@@ -17,9 +17,9 @@ use pyo3::types::{
 // use rug::Integer;
 // use num_bigint::BigInt;
 
-#[derive(FromPyObject)]
+// #[derive(FromPyObject)]
 #[pyclass]
-struct int(BigInt);
+struct int(Integer);
 
 #[pymethods]
 impl int {
