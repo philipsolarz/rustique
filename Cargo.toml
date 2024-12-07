@@ -9,4 +9,6 @@ name = "rustique"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = "0.23.1"
+pyo3 = { version = "0.23.3", features = ["extension-module", "py-clone", "num-bigint"] }
+rug = "1.26.1"
+num-bigint = "*"
