@@ -1,21 +1,202 @@
 use std::borrow::{Borrow, BorrowMut};
 
 use num_bigint::BigInt;
-use pyo3::basic::CompareOp;
+use pyo3::exceptions::PyTypeError;
+use pyo3::{basic::CompareOp, types::PyFloat};
 use pyo3::prelude::*;
+use rug::ops::Pow;
 use rug::{Float, Integer};
+use pyo3::ffi;
 use pyo3::types::{
-    PyAny, PyInt, 
-    // PyList, 
-    // PySequence, 
-    // PyString
+    PyAny, PyInt, PyString
+
 };
-// use pyo3::exceptions::PyIndexError;
-// use pyo3::basic::CompareOp; // for CompareOp::Eq
-// use std::collections::hash_map::DefaultHasher;
-// use std::hash::{Hash, Hasher};
-// use rug::Integer;
-// use num_bigint::BigInt;
+use std::time::Instant;
+use rayon::prelude::*;
+
+fn wrap(obj: &Bound<'_, PyAny>) -> PyResult<Integer> {
+    // If the input is already a Python string
+    if let Ok(py_str) = obj.downcast::<PyString>() {
+        unsafe {
+            let py_data = py_str.data()?; // Access raw bytes
+            let bytes = py_data.as_bytes();
+            return Ok(Integer::from_str_radix(std::str::from_utf8(bytes).map_err(|_| {
+                PyTypeError::new_err("Invalid UTF-8 in input string")
+            })?, 10).map_err(|_| {
+                PyTypeError::new_err("Failed to parse integer from string")
+            })?);
+        }
+    }
+
+    // If the input is a Python int, convert it to a string
+    if let Ok(py_int) = obj.downcast::<PyInt>() {
+        let str_obj = py_int.str()?; // Convert PyInt to PyStr
+        let integer_str = str_obj.to_str()?; // Get the UTF-8 string slice
+        return Ok(Integer::from_str_radix(integer_str, 10).map_err(|_| {
+            PyTypeError::new_err("Failed to parse integer from converted string")
+        })?);
+    }
+
+    // If neither, return an error
+    Err(PyTypeError::new_err(
+        "Provided object cannot be converted to rug::Integer. Expected int or string.",
+    ))
+}
+
+
+// fn wrap(obj: &Bound<'_, PyAny>) -> PyResult<Integer> {
+//     // Downcast to PyStr and parse
+//     if let Ok(py_str) = obj.downcast::<PyString>() {
+//         let integer_str = py_str.to_str()?; // Get the string representation
+//         return Ok(Integer::from_str_radix(integer_str, 10).map_err(|_| {
+//             PyTypeError::new_err("Failed to parse string into Integer")
+//         })?);
+//     }
+
+//     // If it's not already a string, try converting it to a string
+//     let str_obj = obj.str()?; // Convert the input to a PyStr
+//     let integer_str = str_obj.to_str()?; // Get the string representation
+//     Ok(Integer::from_str_radix(integer_str, 10).map_err(|_| {
+//         PyTypeError::new_err("Failed to parse string into Integer")
+//     })?)
+// }
+
+// fn wrap(obj: &Bound<'_, PyAny>) -> PyResult<Integer> {
+//     let overall_start = Instant::now(); // Overall timer
+
+//     // Downcast PyAny to PyInt
+//     let downcast_start = Instant::now();
+//     if let Ok(py_int) = obj.downcast::<PyInt>() {
+//         let downcast_duration = downcast_start.elapsed();
+//         println!("Downcast to PyInt took: {:?}", downcast_duration);
+
+//         unsafe {
+//             // Timer for accessing PyLongObject pointer
+//             let pointer_access_start = Instant::now();
+//             let py_long_ptr = py_int.as_ptr() as *const PyLongObject;
+//             let pointer_access_duration = pointer_access_start.elapsed();
+//             println!("Accessing PyLongObject pointer took: {:?}", pointer_access_duration);
+
+//             // Timer for extracting size and sign
+//             let size_start = Instant::now();
+//             let size = (*py_long_ptr).ob_base.ob_size;
+//             let is_negative = size < 0;
+//             let size = size.abs() as usize;
+//             let size_duration = size_start.elapsed();
+//             println!("Extracting size and sign took: {:?}", size_duration);
+
+//             // Timer for accessing digits
+//             let digits_access_start = Instant::now();
+//             let digits_ptr = (*py_long_ptr).ob_digit.as_ptr();
+//             let digits = std::slice::from_raw_parts(digits_ptr, size);
+//             let digits_access_duration = digits_access_start.elapsed();
+//             println!("Accessing digits took: {:?}", digits_access_duration);
+
+//             // Timer for reconstructing the integer
+//             let reconstruction_start = Instant::now();
+//             // Load the precomputed powers of 2^30 once
+//             let powers = load_powers_of_2_30();
+
+//             // Reconstruct the integer using precomputed powers
+//             let mut result = Integer::from(0u8);
+//             for (i, &digit) in digits.iter().enumerate() {
+//                 if i >= powers.len() {
+//                     panic!("Index {} exceeds precomputed powers of 2^30 table!", i);
+//                 }
+//                 let digit_value = Integer::from(digit as u64) * &powers[i];
+//                 result += digit_value;
+//             }
+
+//             if is_negative {
+//                 result = -result;
+//             }
+//             let reconstruction_duration = reconstruction_start.elapsed();
+//             println!("Reconstructing integer took: {:?}", reconstruction_duration);
+
+//             // Overall time
+//             let overall_duration = overall_start.elapsed();
+//             println!("Total time: {:?}", overall_duration);
+
+//             return Ok(result);
+//         }
+//     }
+
+//     // If not a PyInt, return an error
+//     let overall_duration = overall_start.elapsed();
+//     println!("Total time (failure case): {:?}", overall_duration);
+//     Err(PyTypeError::new_err(
+//         "Provided object cannot be converted to rug::Integer. Expected a Python int.",
+//     ))
+// }
+// fn wrap(obj: &Bound<'_, PyAny>) -> PyResult<Integer> {
+//     // Check if the object is a PyInt (Python int)
+//     let overall_start = Instant::now();
+//     if let Ok(py_int) = obj.downcast::<PyInt>() {
+//         // Timer for direct extraction as i64
+//         let extract_start = Instant::now();
+//         if let Ok(small_int) = py_int.extract::<i64>() {
+//             let duration = extract_start.elapsed();
+//             println!("Direct extraction as i64 took: {:?}", duration);
+//             let overall_duration = overall_start.elapsed();
+//             println!("Overall time: {:?}", overall_duration);
+//             return Ok(Integer::from(small_int));
+//         }
+//         let extract_duration = extract_start.elapsed();
+//         println!("Direct extraction as i64 failed, took: {:?}", extract_duration);
+
+//         // Timer for bit_length calculation
+//         let bit_length_start = Instant::now();
+//         let bit_length: usize = py_int.call_method0("bit_length")?.extract()?;
+//         let bit_length_duration = bit_length_start.elapsed();
+//         println!("bit_length calculation took: {:?}", bit_length_duration);
+
+//         // Timer for byte_length calculation
+//         let byte_length_start = Instant::now();
+//         let byte_length = (bit_length + 7) / 8;
+//         let byte_length_duration = byte_length_start.elapsed();
+//         println!("byte_length calculation took: {:?}", byte_length_duration);
+
+//         // Timer for to_bytes method
+//         let to_bytes_start = Instant::now();
+//         let big_endian_bytes: Vec<u8> = py_int
+//             .call_method1("to_bytes", (byte_length, "big"))?
+//             .extract()?;
+//         let to_bytes_duration = to_bytes_start.elapsed();
+//         println!("to_bytes extraction took: {:?}", to_bytes_duration);
+
+//         // Timer for rug::Integer conversion
+//         let rug_start = Instant::now();
+//         let result = Integer::from_digits(&big_endian_bytes, rug::integer::Order::MsfBe);
+//         let rug_duration = rug_start.elapsed();
+//         println!("Conversion to rug::Integer took: {:?}", rug_duration);
+
+//         // Print overall time
+//         let overall_duration = overall_start.elapsed();
+//         println!("Overall time: {:?}", overall_duration);
+
+//         return Ok(result);
+//     }
+
+//     // Check if the object is a PyFloat (Python float)
+//     if let Ok(py_float) = obj.downcast::<PyFloat>() {
+//         let float_value: f64 = py_float.extract()?; // Extract the float value
+
+//         // Check if the float is equivalent to an integer
+//         if float_value.fract() == 0.0 {
+//             return Ok(Integer::from(float_value as i64)); // Convert to integer if no fractional part
+//         } else {
+//             return Err(PyTypeError::new_err(
+//                 "Cannot convert float with fractional part to Integer",
+//             ));
+//         }
+//     }
+//     let overall_duration = overall_start.elapsed();
+//     println!("Overall time (failure case): {:?}", overall_duration);
+//     // If the object is neither PyInt nor PyFloat, return an error
+//     Err(PyTypeError::new_err(
+//         "Provided object cannot be converted to rug::Integer. Expected int or integer-equivalent float.",
+//     ))
+// }
 
 // #[derive(FromPyObject)]
 #[pyclass]
@@ -24,7 +205,7 @@ struct int(Integer);
 #[pymethods]
 impl int {
     #[new]
-    fn new(value: i32) -> Self {
+    fn new(#[pyo3(from_py_with = "wrap")] value: Integer) -> Self {
         int(Integer::from(value))
     }
 
@@ -39,71 +220,228 @@ impl int {
     // fn __eq__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
     //     if let Ok(other_instance) = other.downcast::<Self>() {
     //         Ok(self.0 == other_instance.borrow().0)
-    //     } else if let Ok(other_int) = other.extract::<BigInt>() {
-    //         Ok(self.0 == BigInt::from(other_int))
+    //     } else if let Ok(other_int) = other.downcast::<PyInt>() {
+    //         let bit_length: usize = other_int.call_method0("bit_length")?.extract()?;
+    //         let byte_length = (bit_length + 7) / 8;
+        
+    //         let big_endian_bytes: Vec<u8> = other_int
+    //             .call_method1("to_bytes", (byte_length, "big"))?
+    //             .extract()?;
+    //         Ok(self.0 == Integer::from_digits(&big_endian_bytes, rug::integer::Order::MsfBe))
+    //     } else if let Ok(other_float) = other.downcast::<PyFloat>() {
+    //         let float_value: f64 = other_float.extract()?;
+
+    //         if float_value.fract() == 0.0 {
+    //             Ok(self.0 == Integer::from(float_value as i64))
+    //         } else {
+    //             Ok(false)
+    //         }
     //     } else {
     //         Ok(false)
     //     }
     // }
 
-    fn __richcmp__(&self, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<bool> {
-        match op {
-            CompareOp::Eq => {
-                if let Ok(other_instance) = other.downcast::<Self>() {
-                    Ok(self.0 == other_instance.borrow().0)
-                } else if let Ok(other_int) = other.extract::<BigInt>() {
-                    Ok(self.0 == BigInt::from(other_int))
-                } else {
-                    Ok(false)
-                }
-            },
-            CompareOp::Lt => {
-                if let Ok(other_instance) = other.downcast::<Self>() {
-                    Ok(self.0 < other_instance.borrow().0)
-                } else if let Ok(other_int) = other.extract::<BigInt>() {
-                    Ok(self.0 < BigInt::from(other_int))
-                } else {
-                    Ok(false)
-                }
-            },
-            CompareOp::Le => {
-                if let Ok(other_instance) = other.downcast::<Self>() {
-                    Ok(self.0 <= other_instance.borrow().0)
-                } else if let Ok(other_int) = other.extract::<BigInt>() {
-                    Ok(self.0 <= BigInt::from(other_int))
-                } else {
-                    Ok(false)
-                }
-            },
-            CompareOp::Ne => {
-                if let Ok(other_instance) = other.downcast::<Self>() {
-                    Ok(self.0 != other_instance.borrow().0)
-                } else if let Ok(other_int) = other.extract::<BigInt>() {
-                    Ok(self.0 != BigInt::from(other_int))
-                } else {
-                    Ok(false)
-                }
-            },
-            CompareOp::Ge => {
-                if let Ok(other_instance) = other.downcast::<Self>() {
-                    Ok(self.0 >= other_instance.borrow().0)
-                } else if let Ok(other_int) = other.extract::<BigInt>() {
-                    Ok(self.0 >= BigInt::from(other_int))
-                } else {
-                    Ok(false)
-                }
-            },
-            CompareOp::Gt => {
-                if let Ok(other_instance) = other.downcast::<Self>() {
-                    Ok(self.0 > other_instance.borrow().0)
-                } else if let Ok(other_int) = other.extract::<BigInt>() {
-                    Ok(self.0 > BigInt::from(other_int))
-                } else {
-                    Ok(false)
-                }
-            },
-        }
-    }
+    // fn __richcmp__(&self, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<bool> {
+    //     match op {
+    //         CompareOp::Eq => {
+    //             if let Ok(other_instance) = other.downcast::<Self>() {
+    //                 Ok(self.0 == other_instance.borrow().0)
+    //             } else if let Ok(other_int) = other.downcast::<PyInt>() {
+    //                 let bit_length: usize = other_int.call_method0("bit_length")?.extract()?;
+    //                 let byte_length = (bit_length + 7) / 8;
+                
+    //                 let big_endian_bytes: Vec<u8> = other_int
+    //                     .call_method1("to_bytes", (byte_length, "big"))?
+    //                     .extract()?;
+    //                 Ok(self.0 == Integer::from_digits(&big_endian_bytes, rug::integer::Order::MsfBe))
+    //             } else if let Ok(other_float) = other.downcast::<PyFloat>() {
+    //                 let float_value: f64 = other_float.extract()?;
+
+    //                 if float_value.fract() == 0.0 {
+    //                     Ok(self.0 == Integer::from(float_value as i64))
+    //                 } else {
+    //                     Ok(false)
+    //                 }
+    //             } else {
+    //                 Ok(false)
+    //             }
+    //         },
+    //         CompareOp::Lt => {
+    //             if let Ok(other_instance) = other.downcast::<Self>() {
+    //                 Ok(self.0 < other_instance.borrow().0)
+    //             } else if let Ok(other_int) = other.downcast::<PyInt>() {
+    //                 let bit_length: usize = other_int.call_method0("bit_length")?.extract()?;
+    //                 let byte_length = (bit_length + 7) / 8;
+                
+    //                 let big_endian_bytes: Vec<u8> = other_int
+    //                     .call_method1("to_bytes", (byte_length, "big"))?
+    //                     .extract()?;
+    //                 Ok(self.0 < Integer::from_digits(&big_endian_bytes, rug::integer::Order::MsfBe))
+    //             } else if let Ok(other_float) = other.downcast::<PyFloat>() {
+    //                 let float_value: f64 = other_float.extract()?;
+
+    //                 if float_value.fract() == 0.0 {
+    //                     Ok(self.0 < Integer::from(float_value as i64))
+    //                 } else {
+    //                     Ok(false)
+    //                 }
+    //             } else {
+    //                 Ok(false)
+    //             }
+    //         },
+    //         CompareOp::Le => {
+    //             if let Ok(other_instance) = other.downcast::<Self>() {
+    //                 Ok(self.0 <= other_instance.borrow().0)
+    //             } else if let Ok(other_int) = other.downcast::<PyInt>() {
+    //                 let bit_length: usize = other_int.call_method0("bit_length")?.extract()?;
+    //                 let byte_length = (bit_length + 7) / 8;
+                
+    //                 let big_endian_bytes: Vec<u8> = other_int
+    //                     .call_method1("to_bytes", (byte_length, "big"))?
+    //                     .extract()?;
+    //                 Ok(self.0 <= Integer::from_digits(&big_endian_bytes, rug::integer::Order::MsfBe))
+    //             } else if let Ok(other_float) = other.downcast::<PyFloat>() {
+    //                 let float_value: f64 = other_float.extract()?;
+
+    //                 if float_value.fract() == 0.0 {
+    //                     Ok(self.0 <= Integer::from(float_value as i64))
+    //                 } else {
+    //                     Ok(false)
+    //                 }
+    //             } else {
+    //                 Ok(false)
+    //             }
+    //         },
+    //         CompareOp::Ne => {
+    //             if let Ok(other_instance) = other.downcast::<Self>() {
+    //                 Ok(self.0 != other_instance.borrow().0)
+    //             } else if let Ok(other_int) = other.downcast::<PyInt>() {
+    //                 let bit_length: usize = other_int.call_method0("bit_length")?.extract()?;
+    //                 let byte_length = (bit_length + 7) / 8;
+                
+    //                 let big_endian_bytes: Vec<u8> = other_int
+    //                     .call_method1("to_bytes", (byte_length, "big"))?
+    //                     .extract()?;
+    //                 Ok(self.0 != Integer::from_digits(&big_endian_bytes, rug::integer::Order::MsfBe))
+    //             } else if let Ok(other_float) = other.downcast::<PyFloat>() {
+    //                 let float_value: f64 = other_float.extract()?;
+
+    //                 if float_value.fract() == 0.0 {
+    //                     Ok(self.0 != Integer::from(float_value as i64))
+    //                 } else {
+    //                     Ok(true)
+    //                 }
+    //             } else {
+    //                 Ok(true)
+    //             }
+    //         },
+    //         CompareOp::Ge => {
+    //             if let Ok(other_instance) = other.downcast::<Self>() {
+    //                 Ok(self.0 >= other_instance.borrow().0)
+    //             } else if let Ok(other_int) = other.downcast::<PyInt>() {
+    //                 let bit_length: usize = other_int.call_method0("bit_length")?.extract()?;
+    //                 let byte_length = (bit_length + 7) / 8;
+                
+    //                 let big_endian_bytes: Vec<u8> = other_int
+    //                     .call_method1("to_bytes", (byte_length, "big"))?
+    //                     .extract()?;
+    //                 Ok(self.0 >= Integer::from_digits(&big_endian_bytes, rug::integer::Order::MsfBe))
+    //             } else if let Ok(other_float) = other.downcast::<PyFloat>() {
+    //                 let float_value: f64 = other_float.extract()?;
+
+    //                 if float_value.fract() == 0.0 {
+    //                     Ok(self.0 >= Integer::from(float_value as i64))
+    //                 } else {
+    //                     Ok(false)
+    //                 }
+    //             } else {
+    //                 Ok(false)
+    //             }
+    //         },
+    //         CompareOp::Gt => {
+    //             if let Ok(other_instance) = other.downcast::<Self>() {
+    //                 Ok(self.0 > other_instance.borrow().0)
+    //             } else if let Ok(other_int) = other.downcast::<PyInt>() {
+    //                 let bit_length: usize = other_int.call_method0("bit_length")?.extract()?;
+    //                 let byte_length = (bit_length + 7) / 8;
+                
+    //                 let big_endian_bytes: Vec<u8> = other_int
+    //                     .call_method1("to_bytes", (byte_length, "big"))?
+    //                     .extract()?;
+    //                 Ok(self.0 > Integer::from_digits(&big_endian_bytes, rug::integer::Order::MsfBe))
+    //             } else if let Ok(other_float) = other.downcast::<PyFloat>() {
+    //                 let float_value: f64 = other_float.extract()?;
+
+    //                 if float_value.fract() == 0.0 {
+    //                     Ok(self.0 > Integer::from(float_value as i64))
+    //                 } else {
+    //                     Ok(false)
+    //                 }
+    //             } else {
+    //                 Ok(false)
+    //             }
+    //         },
+    //     }
+    // }
+
+    // fn __richcmp__(&self, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<bool> {
+    //     match op {
+    //         CompareOp::Eq => {
+    //             if let Ok(other_instance) = other.downcast::<Self>() {
+    //                 Ok(self.0 == other_instance.borrow().0)
+    //             } else if let Ok(other_int) = other.extract::<Integer>() {
+    //                 Ok(self.0 == Integer::from(other_int))
+    //             } else {
+    //                 Ok(false)
+    //             }
+    //         },
+    //         CompareOp::Lt => {
+    //             if let Ok(other_instance) = other.downcast::<Self>() {
+    //                 Ok(self.0 < other_instance.borrow().0)
+    //             } else if let Ok(other_int) = other.extract::<Integer>() {
+    //                 Ok(self.0 < Integer::from(other_int))
+    //             } else {
+    //                 Ok(false)
+    //             }
+    //         },
+    //         CompareOp::Le => {
+    //             if let Ok(other_instance) = other.downcast::<Self>() {
+    //                 Ok(self.0 <= other_instance.borrow().0)
+    //             } else if let Ok(other_int) = other.extract::<Integer>() {
+    //                 Ok(self.0 <= Integer::from(other_int))
+    //             } else {
+    //                 Ok(false)
+    //             }
+    //         },
+    //         CompareOp::Ne => {
+    //             if let Ok(other_instance) = other.downcast::<Self>() {
+    //                 Ok(self.0 != other_instance.borrow().0)
+    //             } else if let Ok(other_int) = other.extract::<Integer>() {
+    //                 Ok(self.0 != Integer::from(other_int))
+    //             } else {
+    //                 Ok(false)
+    //             }
+    //         },
+    //         CompareOp::Ge => {
+    //             if let Ok(other_instance) = other.downcast::<Self>() {
+    //                 Ok(self.0 >= other_instance.borrow().0)
+    //             } else if let Ok(other_int) = other.extract::<Integer>() {
+    //                 Ok(self.0 >= Integer::from(other_int))
+    //             } else {
+    //                 Ok(false)
+    //             }
+    //         },
+    //         CompareOp::Gt => {
+    //             if let Ok(other_instance) = other.downcast::<Self>() {
+    //                 Ok(self.0 > other_instance.borrow().0)
+    //             } else if let Ok(other_int) = other.extract::<Integer>() {
+    //                 Ok(self.0 > Integer::from(other_int))
+    //             } else {
+    //                 Ok(false)
+    //             }
+    //         },
+    //     }
+    // }
     
     // fn __eq__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
     //     // Attempt to extract a reference to Self from the other object

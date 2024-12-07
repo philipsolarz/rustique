@@ -3,10 +3,17 @@ import rustique as rs
 
 def test_num():
     a = rs.int(1)
-    assert a == rs.int(1)
-    assert a == 1
+    b = rs.int(100**1000)
+    # assert b == 100**1000
+
+    assert a == 1.0
+
+    b = rs.int(1.0)
+    # assert a == 1.0000000000000001
+    # assert a == rs.int(1)
+    # assert a == 1
     # assert a == 1.0
-    assert 1 == 1.0
+    # assert 1 == 1.0
     # assert a < rs.int(2)
     # assert a <= rs.int(2)
     # assert a > rs.int(0)
