@@ -1,0 +1,1 @@
+RUSTFLAGS="--cfg Py_3_13" maturin develop --uv --release

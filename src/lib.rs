@@ -1,4 +1,5 @@
 use std::borrow::{Borrow, BorrowMut};
+use std::ffi::{c_longlong, c_ulonglong};
 
 use num_bigint::BigInt;
 use pyo3::exceptions::PyTypeError;
@@ -13,35 +14,135 @@ use pyo3::types::{
 };
 use std::time::Instant;
 use rayon::prelude::*;
+use std::os::raw::{c_void, c_int};
+
+// fn wrap(obj: &Bound<'_, PyAny>) -> PyResult<Integer> {
+//     if let Ok(py_int) = obj.downcast::<PyInt>() {
+//         unsafe {
+//             let py_long_ptr = py_int.as_ptr();
+
+//             // 1. Attempt fast extraction for smaller integers using PyLong_AsLongLong
+//             let fast_path = ffi::PyLong_AsLongLong(py_long_ptr);
+//             if ffi::PyErr_Occurred().is_null() {
+//                 // Successfully extracted as long long
+//                 return Ok(Integer::from(fast_path as c_longlong));
+//             }
+
+//             // Clear the Python error because PyLong_AsLongLong sets one if it fails
+//             ffi::PyErr_Clear();
+
+//             // 2. Attempt unsigned version for smaller positive integers
+//             let fast_unsigned = ffi::PyLong_AsUnsignedLongLong(py_long_ptr);
+//             if ffi::PyErr_Occurred().is_null() {
+//                 return Ok(Integer::from(fast_unsigned as c_ulonglong));
+//             }
+
+//             // Clear the Python error again
+//             ffi::PyErr_Clear();
+
+//             // 3. Fallback to extracting raw bytes for large integers
+//             let num_bits = ffi::_PyLong_NumBits(py_long_ptr);
+
+//             let num_bytes = ((num_bits + 7) / 8) as usize;
+//             let mut buffer = vec![0u8; num_bytes];
+
+//             let res = ffi::_PyLong_AsByteArray(
+//                 py_long_ptr as *mut _,
+//                 buffer.as_mut_ptr(),
+//                 num_bytes,
+//                 0, // Big-endian
+//                 1, // Signed
+//             );
+
+//             if res == -1 {
+//                 return Err(PyTypeError::new_err("Failed to extract integer bytes"));
+//             }
+
+//             // Convert buffer to rug::Integer
+//             let result = Integer::from_digits(&buffer, rug::integer::Order::MsfBe);
+//             return Ok(result);
+//         }
+//     }
+
+//     Err(PyTypeError::new_err(
+//         "Provided object cannot be converted to rug::Integer. Expected a Python int.",
+//     ))
+// }
 
 fn wrap(obj: &Bound<'_, PyAny>) -> PyResult<Integer> {
-    // If the input is already a Python string
-    if let Ok(py_str) = obj.downcast::<PyString>() {
+    if let Ok(py_int) = obj.downcast::<PyInt>() {
         unsafe {
-            let py_data = py_str.data()?; // Access raw bytes
-            let bytes = py_data.as_bytes();
-            return Ok(Integer::from_str_radix(std::str::from_utf8(bytes).map_err(|_| {
-                PyTypeError::new_err("Invalid UTF-8 in input string")
-            })?, 10).map_err(|_| {
-                PyTypeError::new_err("Failed to parse integer from string")
-            })?);
+            let py_long_ptr = py_int.as_ptr() as *mut ffi::PyLongObject;
+
+            let num_bits = ffi::_PyLong_NumBits(py_long_ptr as *mut _);
+            let num_bytes = ((num_bits + 7) / 8) as usize;
+
+            let mut buffer = vec![0u8; num_bytes];
+
+            let res = ffi::_PyLong_AsByteArray(
+                py_long_ptr as *mut _,
+                buffer.as_mut_ptr(),
+                num_bytes,
+                0,
+                1,
+            );
+
+            if res == -1 {
+                return Err(PyTypeError::new_err("Failed to extract integer bytes"));
+            }
+
+            let result = Integer::from_digits(&buffer, rug::integer::Order::MsfBe);
+
+            // let res = ffi::PyLong_AsNativeBytes(
+            //     py_long_ptr as *mut ffi::PyObject,
+            //     buffer.as_mut_ptr() as *mut c_void,
+            //     num_bytes as isize,
+            //     1, // Signed, native byte order
+            // );
+
+            // if res == -1 {
+            //     return Err(PyTypeError::new_err("Failed to extract integer bytes"));
+            // }
+
+            // let result = Integer::from_digits(&buffer, rug::integer::Order::Lsf);
+
+            return Ok(result);
         }
     }
-
-    // If the input is a Python int, convert it to a string
-    if let Ok(py_int) = obj.downcast::<PyInt>() {
-        let str_obj = py_int.str()?; // Convert PyInt to PyStr
-        let integer_str = str_obj.to_str()?; // Get the UTF-8 string slice
-        return Ok(Integer::from_str_radix(integer_str, 10).map_err(|_| {
-            PyTypeError::new_err("Failed to parse integer from converted string")
-        })?);
-    }
-
-    // If neither, return an error
+    // If not a PyInt, return an error
     Err(PyTypeError::new_err(
-        "Provided object cannot be converted to rug::Integer. Expected int or string.",
+        "Provided object cannot be converted to rug::Integer. Expected a Python int.",
     ))
 }
+
+// fn wrap(obj: &Bound<'_, PyAny>) -> PyResult<Integer> {
+//     // If the input is already a Python string
+//     if let Ok(py_str) = obj.downcast::<PyString>() {
+//         unsafe {
+//             let py_data = py_str.data()?; // Access raw bytes
+//             let bytes = py_data.as_bytes();
+//             return Ok(Integer::from_str_radix(std::str::from_utf8(bytes).map_err(|_| {
+//                 PyTypeError::new_err("Invalid UTF-8 in input string")
+//             })?, 10).map_err(|_| {
+//                 PyTypeError::new_err("Failed to parse integer from string")
+//             })?);
+//         }
+//     }
+
+//     // If the input is a Python int, convert it to a string
+//     if let Ok(py_int) = obj.downcast::<PyInt>() {
+//         let str_obj = py_int.str()?; // Convert PyInt to PyStr
+//         let integer_str = str_obj.to_str()?; // Get the UTF-8 string slice
+//         return Ok(Integer::from_str_radix(integer_str, 10).map_err(|_| {
+//             PyTypeError::new_err("Failed to parse integer from converted string")
+//         })?);
+//     }
+
+//     // If neither, return an error
+//     Err(PyTypeError::new_err(
+//         "Provided object cannot be converted to rug::Integer. Expected int or string.",
+//     ))
+// }
 
 
 // fn wrap(obj: &Bound<'_, PyAny>) -> PyResult<Integer> {
