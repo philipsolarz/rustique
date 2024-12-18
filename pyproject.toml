@@ -12,6 +12,7 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
+    "pydantic>=2.10.3",
     "pyright>=1.1.390",
 ]
 [tool.maturin]

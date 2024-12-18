@@ -2,6 +2,19 @@ import sys
 from types import GenericAlias
 from typing import _S, _T, Callable, Iterable, Iterator, MutableSequence, Optional, Any, Self, SupportsIndex, overload
 
+class Vector:
+    pass
+
+class i8:
+    def __init__(self, value: int) -> None: ...
+
+    @property
+    def value(self) -> int: ...
+
+    @value.setter
+    def value(self, new_value: int) -> None: ...
+
+
 class int:
     def __init__(self, value: int) -> None: ...
     def __eq__(self, other: object, /) -> bool: ...

@@ -1,0 +1,9 @@
+name: install uv
+description: This action installs uv
+runs:
+  using: composite
+  steps:
+    - name: install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        uv-version: "0.5.5"

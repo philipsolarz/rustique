@@ -1,14 +1,33 @@
 # from rustique import List
 import rustique as rs
+from rustique import i32
+def test_i32():
+    
+    x: i32 = i32(1)
+
+
+
+
+
 
 def test_num():
-    a = rs.int(1)
-    b = rs.int(100**1000)
-    # assert b == 100**1000
-
+    a = int(1)
+    assert a == 1
     assert a == 1.0
+    assert a == rs.int(1)
+    assert a == rs.int(1.0)
+    assert a == rs.int(1.1)
+    assert not a == 1.1
+    assert a == rs.int(rs.int(1))
 
-    b = rs.int(1.0)
+    assert rs.int(1) + rs.int(1) == 2
+    assert rs.int(1) + 1 == 2
+    # b = rs.int(100**1000)
+    # # assert b == 100**1000
+
+    # assert a == 1.0
+
+    # b = rs.int(1.0)
     # assert a == 1.0000000000000001
     # assert a == rs.int(1)
     # assert a == 1
@@ -34,7 +53,8 @@ def test0_eq():
     # assert not a == b
 
 def tests():
-    test_num()
+    test_i32()
+    # test_num()
     # test0_eq()
 
 if __name__ == "__main__":
