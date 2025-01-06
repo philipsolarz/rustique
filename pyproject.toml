@@ -12,8 +12,13 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
+    "coverage>=7.6.1",
+    "hypothesis>=6.113.0",
+    "mypy>=1.13.0",
     "pydantic>=2.10.3",
     "pyright>=1.1.390",
+    "pytest>=8.3.4",
+    "pytest-mock>=3.14.0",
 ]
 [tool.maturin]
 features = ["pyo3/extension-module"]
