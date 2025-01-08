@@ -13,9 +13,10 @@ fn any_to_list(value: &Bound<'_, PyAny>) -> PyResult<List> {
         return Ok(List { data, _type: None });
     }
 
-    Err(PyTypeError::new_err("Expected Rustique List or Python list"))
+    Err(PyTypeError::new_err(
+        "Expected Rustique List or Python list",
+    ))
 }
-
 
 #[derive(Clone)]
 #[pyclass(subclass)]
@@ -26,10 +27,12 @@ pub struct List {
 
 #[pymethods]
 impl List {
-
     #[new]
     #[pyo3(signature = (*values, _type=None))]
-    pub fn __new__(values: &Bound<'_, PyTuple>, _type: Option<Bound<'_, PyType>>) -> PyResult<Self> {
+    pub fn __new__(
+        values: &Bound<'_, PyTuple>,
+        _type: Option<Bound<'_, PyType>>,
+    ) -> PyResult<Self> {
         let mut vec = Vec::new();
 
         for item in values.as_slice() {
@@ -45,9 +48,8 @@ impl List {
                 }
             }
             vec.push(Py::from(item.clone()));
-
         }
-        Ok(List { 
+        Ok(List {
             data: vec,
             _type: _type.map(|t| t.into()),
         })
@@ -66,20 +68,24 @@ impl List {
         Ok(())
     }
 
-    fn __richcmp__(&self, py: Python, #[pyo3(from_py_with = "any_to_list")] other: List, op: CompareOp) -> PyResult<PyObject> {
+    fn __richcmp__(
+        &self,
+        py: Python,
+        #[pyo3(from_py_with = "any_to_list")] other: List,
+        op: CompareOp,
+    ) -> PyResult<PyObject> {
         match op {
             CompareOp::Eq => {
                 if self.data.len() != other.data.len() {
                     return Ok(false.into_py(py));
                 }
 
-                if self._type.is_some() && self._type != other._type {
-                    return Ok(false.into_py(py));
-                }
+                // if self._type.is_some() && (self._type != other._type) {
+                //     return Ok(false.into_py(py));
+                // }
 
                 for (a, b) in self.data.iter().zip(other.data.iter()) {
-                    if a
-                        .bind(py)
+                    if a.bind(py)
                         .rich_compare(b, CompareOp::Eq)
                         .and_then(|res| res.is_truthy())
                         .unwrap_or(false)
@@ -91,15 +97,14 @@ impl List {
                 }
 
                 Ok(true.into_py(py))
-            },
+            }
             CompareOp::Ne => {
                 if self.data.len() != other.data.len() {
                     return Ok(true.into_py(py));
                 }
 
                 for (a, b) in self.data.iter().zip(other.data.iter()) {
-                    if a
-                        .bind(py)
+                    if a.bind(py)
                         .rich_compare(b, CompareOp::Eq)
                         .and_then(|res| res.is_truthy())
                         .unwrap_or(false)
@@ -111,11 +116,10 @@ impl List {
                 }
 
                 Ok(false.into_py(py))
-            },
+            }
             CompareOp::Lt => {
                 for (a, b) in self.data.iter().zip(other.data.iter()) {
-                    if a
-                        .bind(py)
+                    if a.bind(py)
                         .rich_compare(b, CompareOp::Lt)
                         .and_then(|res| res.is_truthy())
                         .unwrap_or(false)
@@ -132,11 +136,10 @@ impl List {
                 }
 
                 Ok(false.into_py(py))
-            },
+            }
             CompareOp::Le => {
                 for (a, b) in self.data.iter().zip(other.data.iter()) {
-                    if a
-                        .bind(py)
+                    if a.bind(py)
                         .rich_compare(b, CompareOp::Lt)
                         .and_then(|res| res.is_truthy())
                         .unwrap_or(false)
@@ -153,11 +156,10 @@ impl List {
                 }
 
                 Ok(true.into_py(py))
-            },
+            }
             CompareOp::Gt => {
                 for (a, b) in self.data.iter().zip(other.data.iter()) {
-                    if a
-                        .bind(py)
+                    if a.bind(py)
                         .rich_compare(b, CompareOp::Gt)
                         .and_then(|res| res.is_truthy())
                         .unwrap_or(false)
@@ -174,11 +176,10 @@ impl List {
                 }
 
                 Ok(false.into_py(py))
-            },
+            }
             CompareOp::Ge => {
                 for (a, b) in self.data.iter().zip(other.data.iter()) {
-                    if a
-                        .bind(py)
+                    if a.bind(py)
                         .rich_compare(b, CompareOp::Gt)
                         .and_then(|res| res.is_truthy())
                         .unwrap_or(false)
@@ -195,7 +196,7 @@ impl List {
                 }
 
                 Ok(true.into_py(py))
-            },
+            }
         }
     }
 
@@ -212,11 +213,7 @@ impl List {
         } else {
             String::new()
         };
-        Ok(format!(
-            "List{}({})",
-            type_annotation,
-            values.join(", ")
-        ))
+        Ok(format!("List{}({})", type_annotation, values.join(", ")))
     }
 
     pub fn __str__(&self, py: Python) -> PyResult<String> {
@@ -231,11 +228,7 @@ impl List {
         } else {
             String::new()
         };
-        Ok(format!(
-            "List{}({})",
-            type_annotation,
-            values.join(", ")
-        ))
+        Ok(format!("List{}({})", type_annotation, values.join(", ")))
     }
 
     pub fn __len__(&self) -> usize {
@@ -253,7 +246,8 @@ impl List {
             if actual_idx >= self.data.len() {
                 return Err(PyIndexError::new_err(format!(
                     "Index out of range: got {}, length is {}",
-                    idx, self.data.len()
+                    idx,
+                    self.data.len()
                 )));
             }
 
@@ -292,7 +286,12 @@ impl List {
         )))
     }
 
-    pub fn __setitem__(&mut self, py: Python, index: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<()> {
+    pub fn __setitem__(
+        &mut self,
+        py: Python,
+        index: &Bound<'_, PyAny>,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
         if let Ok(idx) = index.extract::<isize>() {
             let actual_idx = if idx < 0 {
                 (self.data.len() as isize + idx) as usize
@@ -303,7 +302,8 @@ impl List {
             if actual_idx >= self.data.len() {
                 return Err(PyIndexError::new_err(format!(
                     "Index out of range: got {}, length is {}",
-                    idx, self.data.len()
+                    idx,
+                    self.data.len()
                 )));
             }
 
@@ -321,7 +321,8 @@ impl List {
             let step = indices.step;
             let slicelen = indices.slicelength;
 
-            let sequence = value.downcast::<PyList>()
+            let sequence = value
+                .downcast::<PyList>()
                 .map_err(|_| PyTypeError::new_err("Assigned value must be a list or sequence"))?;
 
             if sequence.len() != slicelen as usize {
@@ -381,7 +382,7 @@ impl List {
                 )));
             }
         }
-    
+
         Ok(self
             .data
             .iter()
@@ -418,7 +419,7 @@ impl List {
                 )));
             }
         }
-    
+
         for (i, item) in self.data.iter().enumerate() {
             if item
                 .bind(py)
@@ -428,7 +429,7 @@ impl List {
                 return Ok(i);
             }
         }
-    
+
         Err(PyErr::new::<PyValueError, _>("Value not found"))
     }
 
@@ -442,15 +443,15 @@ impl List {
                 )));
             }
         }
-    
+
         self.data.insert(index as usize, Py::from(value.clone()));
         Ok(())
     }
 
     pub fn pop(&mut self, py: Python) -> PyResult<PyObject> {
-        self.data.pop().ok_or_else(|| {
-            PyErr::new::<PyIndexError, _>("pop from empty list")
-        })
+        self.data
+            .pop()
+            .ok_or_else(|| PyErr::new::<PyIndexError, _>("pop from empty list"))
     }
 
     pub fn remove(&mut self, index: isize) {
@@ -460,7 +461,6 @@ impl List {
     pub fn reverse(&mut self) {
         self.data.reverse();
     }
-
 }
 
 #[pymodule]

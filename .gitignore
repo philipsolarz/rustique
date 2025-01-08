@@ -1,5 +1,8 @@
 /target
 /rustique/tests
+/rustique/collections
+/rustique/experiments
+/rustique/primitives
 # Byte-compiled / optimized / DLL files
 __pycache__/
 .pytest_cache/
