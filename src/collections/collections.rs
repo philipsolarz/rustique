@@ -58,11 +58,11 @@ pub trait PyMapping: PyCollection {
         }
     }
 
-    fn keys(&self, py: Python<'_>) -> PyResult<Py<KeysView>>;
+    fn keys(&self, py: Python<'_>) -> PyResult<KeysView>;
 
-    fn values(&self, py: Python<'_>) -> PyResult<Py<ValuesView>>;
+    fn values(&self, py: Python<'_>) -> PyResult<ValuesView>;
 
-    fn items(&self, py: Python<'_>) -> PyResult<Py<ItemsView>>;
+    fn items(&self, py: Python<'_>) -> PyResult<ItemsView>;
 
     fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool>;
 }
@@ -97,16 +97,16 @@ pub trait PySet: PyCollection {
 
     fn isdisjoint(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool>;
 
-    fn __or__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
-    where
-        Self: Sized;
+    // fn __or__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
+    // where
+    //     Self: Sized;
 
-    fn __ror__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
-    where
-        Self: Sized,
-    {
-        self.__or__(py, other)
-    }
+    // fn __ror__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
+    // where
+    //     Self: Sized,
+    // {
+    //     self.__or__(py, other)
+    // }
 
     fn __sub__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
     where
@@ -131,7 +131,7 @@ pub trait PySet: PyCollection {
     //     self.__xor__(py, other)
     // }
 
-    fn _hash(&self, py: Python<'_>) -> PyResult<u64>;
+    // fn _hash(&self, py: Python<'_>) -> PyResult<u64>;
 }
 
 #[derive(Debug, Clone)]
@@ -350,27 +350,27 @@ impl PySet for KeysView {
         }
     }
 
-    fn __or__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
-    where
-        Self: Sized,
-    {
-        if let Ok(other_view) = other.extract::<KeysView>() {
-            let mut set = HashSet::new();
-            set.extend(self.keys.iter().cloned());
-            set.extend(other_view.keys.iter().cloned());
-            let new_keys = set.into_iter().collect();
-            Ok(KeysView { keys: new_keys })
-        } else {
-            Err(PyTypeError::new_err("Expected a KeysView"))
-        }
-    }
+    // fn __or__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
+    // where
+    //     Self: Sized,
+    // {
+    //     if let Ok(other_view) = other.extract::<KeysView>() {
+    //         let mut set = HashSet::new();
+    //         set.extend(self.keys.iter().cloned());
+    //         set.extend(other_view.keys.iter().cloned());
+    //         let new_keys = set.into_iter().collect();
+    //         Ok(KeysView { keys: new_keys })
+    //     } else {
+    //         Err(PyTypeError::new_err("Expected a KeysView"))
+    //     }
+    // }
 
-    fn __ror__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
-    where
-        Self: Sized,
-    {
-        self.__or__(py, other)
-    }
+    // fn __ror__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
+    // where
+    //     Self: Sized,
+    // {
+    //     self.__or__(py, other)
+    // }
 
     fn __sub__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
     where
@@ -403,13 +403,13 @@ impl PySet for KeysView {
     //     left_minus_right.__or__(py, &right_minus_left.into_py(py).into_ref(py))
     // }
 
-    fn _hash(&self, py: Python<'_>) -> PyResult<u64> {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for k in &self.keys {
-            k.hash(&mut hasher);
-        }
-        Ok(hasher.finish())
-    }
+    // fn _hash(&self, py: Python<'_>) -> PyResult<u64> {
+    //     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    //     for k in &self.keys {
+    //         k.hash(&mut hasher);
+    //     }
+    //     Ok(hasher.finish())
+    // }
 }
 impl PyKeysView for KeysView {}
 pub trait PyItemsView: PyMappingView + PySet {}
@@ -596,27 +596,27 @@ impl PySet for ItemsView {
         }
     }
 
-    fn __or__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
-    where
-        Self: Sized,
-    {
-        if let Ok(other_view) = other.extract::<ItemsView>() {
-            let mut set = HashSet::new();
-            set.extend(self.items.iter().cloned());
-            set.extend(other_view.items.iter().cloned());
-            let new_items = set.into_iter().collect();
-            Ok(ItemsView { items: new_items })
-        } else {
-            Err(PyTypeError::new_err("Expected an ItemsView"))
-        }
-    }
+    // fn __or__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
+    // where
+    //     Self: Sized,
+    // {
+    //     if let Ok(other_view) = other.extract::<ItemsView>() {
+    //         let mut set = HashSet::new();
+    //         set.extend(self.items.iter().cloned());
+    //         set.extend(other_view.items.iter().cloned());
+    //         let new_items = set.into_iter().collect();
+    //         Ok(ItemsView { items: new_items })
+    //     } else {
+    //         Err(PyTypeError::new_err("Expected an ItemsView"))
+    //     }
+    // }
 
-    fn __ror__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
-    where
-        Self: Sized,
-    {
-        self.__or__(py, other)
-    }
+    // fn __ror__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
+    // where
+    //     Self: Sized,
+    // {
+    //     self.__or__(py, other)
+    // }
 
     fn __sub__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Self>
     where
@@ -649,14 +649,14 @@ impl PySet for ItemsView {
     //     left_minus_right.__or__(py, &right_minus_left.into_py(py).into_ref(py))
     // }
 
-    fn _hash(&self, py: Python<'_>) -> PyResult<u64> {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for (key, value) in &self.items {
-            key.hash(&mut hasher);
-            value.hash(&mut hasher);
-        }
-        Ok(hasher.finish())
-    }
+    // fn _hash(&self, py: Python<'_>) -> PyResult<u64> {
+    //     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    //     for (key, value) in &self.items {
+    //         key.hash(&mut hasher);
+    //         value.hash(&mut hasher);
+    //     }
+    //     Ok(hasher.finish())
+    // }
 }
 
 pub trait PyValuesView: PyMappingView + PyCollection {}
@@ -770,11 +770,16 @@ impl PyIterable for Dict {
 impl PyCollection for Dict {}
 impl PyMapping for Dict {
     fn __getitem__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<PyObject> {
-        let key_obj = key.to_object(py);
-        match self.dict.get(&key_obj) {
+        let k = key.to_object(py);
+        match self.dict.get(&Key { key: k }) {
             Some(value) => Ok(value.value.clone()),
             None => Err(PyKeyError::new_err("Key not found")),
         }
+    }
+
+    fn __contains__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let k = key.to_object(py);
+        Ok(self.dict.contains_key(&Key { key: k }))
     }
 
     fn get(
@@ -783,53 +788,41 @@ impl PyMapping for Dict {
         key: &Bound<'_, PyAny>,
         default: Option<PyObject>,
     ) -> PyResult<PyObject> {
-        match self.__getitem__(py, key) {
-            Ok(val) => Ok(val),
-            Err(err) => {
-                if err.is_instance_of::<PyKeyError>(py) {
-                    match default {
-                        Some(obj) => Ok(obj),
-                        None => Ok(py.None()),
-                    }
-                } else {
-                    Err(err)
-                }
-            }
+        let k = key.to_object(py);
+        match self.dict.get(&Key { key: k }) {
+            Some(value) => Ok(value.value.clone()),
+            None => match default {
+                Some(obj) => Ok(obj),
+                None => Ok(py.None()),
+            },
         }
     }
-
-    fn __contains__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<bool> {
-        match self.__getitem__(key) {
-            Ok(_value) => Ok(true),
-            Err(err) => {
-                if err.is_instance_of::<PyKeyError>(py) {
-                    Ok(false)
-                } else {
-                    Err(err)
-                }
-            }
-        }
-    }
-
-    fn keys(&self, py: Python<'_>) -> PyResult<Py<KeysView>> {
-        let keys: Vec<PyObject> = self.dict.keys().cloned().collect();
-        KeysView::from_dict(py, &keys)
-    }
-
-    fn values(&self, py: Python<'_>) -> PyResult<Py<ValuesView>> {
-        let vals: Vec<PyObject> = self.dict.values().cloned().collect();
-        ValuesView::from_dict(py, &vals)
-    }
-
-    fn items(&self, py: Python<'_>) -> PyResult<Py<ItemsView>> {
-        let its: Vec<(PyObject, PyObject)> = self
+    fn keys(&self, py: Python<'_>) -> PyResult<KeysView> {
+        let keys = self
             .dict
             .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        ItemsView::from_dict(py, &its)
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<Key>>();
+        Ok(KeysView { keys })
     }
 
+    fn items(&self, py: Python<'_>) -> PyResult<ItemsView> {
+        let items = self
+            .dict
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<(Key, Value)>>();
+        Ok(ItemsView { items })
+    }
+
+    fn values(&self, py: Python<'_>) -> PyResult<ValuesView> {
+        let values = self
+            .dict
+            .iter()
+            .map(|(_, value)| value.clone())
+            .collect::<Vec<Value>>();
+        Ok(ValuesView { values })
+    }
     fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
         if let Ok(other_dict) = other.extract::<PyRef<Dict>>() {
             if self.dict.len() != other_dict.dict.len() {
@@ -861,19 +854,15 @@ impl PyMutableMapping for Dict {
     ) -> PyResult<()> {
         let k = key.to_object(py);
         let v = value.to_object(py);
-        self.dict.insert(k, v);
+        self.dict.insert(Key { key: k }, Value { value: v });
         Ok(())
     }
 
     fn __delitem__(&mut self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<()> {
         let k = key.to_object(py);
-        if self.dict.remove(&k).is_none() {
-            Err(PyKeyError::new_err("Key not found"))
-        } else {
-            Ok(())
-        }
+        self.dict.swap_remove(&Key { key: k });
+        Ok(())
     }
-
     fn clear(&mut self, _py: Python<'_>) -> PyResult<()> {
         self.dict.clear();
         Ok(())
@@ -886,20 +875,15 @@ impl PyMutableMapping for Dict {
         default: Option<PyObject>,
     ) -> PyResult<PyObject> {
         let k = key.to_object(py);
-        match self.dict.shift_remove(&k) {
+        match self.dict.swap_remove(&Key { key: k }) {
             Some(value) => Ok(value.value),
-            None => {
-                // If key not found, return default or raise KeyError
-                match default {
-                    Some(def) => Ok(def),
-                    None => Err(PyKeyError::new_err("Key not found")),
-                }
-            }
+            None => match default {
+                Some(obj) => Ok(obj),
+                None => Err(PyKeyError::new_err("Key not found")),
+            },
         }
     }
-
     fn popitem(&mut self, _py: Python<'_>) -> PyResult<(PyObject, PyObject)> {
-        // IndexMap's pop() removes the last item by default
         match self.dict.pop() {
             Some((k, v)) => Ok((k.key, v.value)),
             None => Err(PyKeyError::new_err("Dict is empty")),
@@ -913,43 +897,32 @@ impl PyMutableMapping for Dict {
         default: Option<PyObject>,
     ) -> PyResult<PyObject> {
         let k = key.to_object(py);
-        if let Some(existing) = self.dict.get(&k) {
-            return Ok(existing.value.clone());
+        match self.dict.get(&Key {
+            key: k.clone_ref(py),
+        }) {
+            Some(value) => Ok(value.value.clone()),
+            None => {
+                let default = default.unwrap_or_else(|| Python::with_gil(|py| py.None().into()));
+                self.dict.insert(
+                    Key { key: k },
+                    Value {
+                        value: default.clone(),
+                    },
+                );
+                Ok(default)
+            }
         }
-        let def_val = default.unwrap_or_else(|| py.None());
-        self.dict.insert(
-            k,
-            Value {
-                value: def_val.clone(),
-            },
-        );
-        Ok(def_val)
     }
 
     fn update(&mut self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<()> {
-        // Mimic Python logic: if `other` has .keys(), treat as mapping;
-        // else treat as iterable of (k, v) pairs
-        if let Ok(keys_method) = other.getattr("keys") {
-            let keys_iterable = keys_method.call0()?;
-            for key_res in keys_iterable.try_iter()? {
-                let key_obj = key_res?;
-                let val_obj = other.get_item(key_obj.clone_ref(py))?;
-                self.__setitem__(py, key_obj.as_ref(py), val_obj.as_ref(py))?;
+        if let Ok(other_dict) = other.extract::<PyRef<Dict>>() {
+            for (k, v) in &other_dict.dict {
+                self.dict.insert(k.clone(), v.clone());
             }
+            Ok(())
         } else {
-            let iter = other.try_iter()?;
-            for pair_res in iter {
-                let pair_obj = pair_res?;
-                let tuple = pair_obj.downcast::<PyTuple>()?;
-                if tuple.len() != 2 {
-                    return Err(PyValueError::new_err("Expected (key, value) pairs"));
-                }
-                let k = tuple.get_item(0)?;
-                let v = tuple.get_item(1)?;
-                self.__setitem__(py, k, v)?;
-            }
+            Err(PyTypeError::new_err("Expected a Dict"))
         }
-        Ok(())
     }
 }
 impl _PyDict for Dict {}
@@ -1094,53 +1067,65 @@ impl Dict {
         })
     }
 
-    pub fn keys(&self) -> KeysView {
-        PyMapping::keys(self)
+    pub fn __len__(&self) -> PyResult<usize> {
+        Ok(self.dict.len())
     }
 
-    pub fn values(&self) -> ValuesView {
-        PyMapping::values(self)
+    pub fn keys(&self) -> PyResult<KeysView> {
+        Python::with_gil(|py| PyMapping::keys(self, py))
     }
 
-    pub fn items(&self) -> ItemsView {
-        PyMapping::items(self)
+    pub fn values(&self) -> PyResult<ValuesView> {
+        Python::with_gil(|py| PyMapping::values(self, py))
     }
 
-    pub fn __getitem__(&self, key: PyObject) -> Option<PyObject> {
-        PyMapping::__getitem__(self, &key)
+    pub fn items(&self) -> PyResult<ItemsView> {
+        Python::with_gil(|py| PyMapping::items(self, py))
     }
 
-    pub fn __setitem__(&mut self, key: PyObject, value: PyObject) {
-        PyMutableMapping::__setitem__(self, key, value)
+    pub fn __getitem__(&self, key: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        Python::with_gil(|py| PyMapping::__getitem__(self, py, key))
     }
 
-    pub fn __delitem__(&mut self, key: PyObject) {
-        PyMutableMapping::__delitem__(self, key)
+    pub fn __contains__(&self, key: &Bound<'_, PyAny>) -> PyResult<bool> {
+        Python::with_gil(|py| PyMapping::__contains__(self, py, key))
     }
 
-    pub fn clear(&mut self) {
-        PyMutableMapping::clear(self)
+    pub fn get(&self, key: &Bound<'_, PyAny>, default: Option<PyObject>) -> PyResult<PyObject> {
+        Python::with_gil(|py| PyMapping::get(self, py, key, default))
     }
 
-    pub fn pop(&mut self, key: PyObject, default: Option<PyObject>) -> Option<PyObject> {
-        PyMutableMapping::pop(self, key, default)
-    }
+    // pub fn __setitem__(&mut self, key: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) {
+    //     Python::with_gil(|py| PyMutableMapping::__setitem__(self, py, key, value))
+    // }
 
-    pub fn popitem(&mut self) -> Option<(PyObject, PyObject)> {
-        PyMutableMapping::popitem(self)
-    }
+    // pub fn __delitem__(&mut self, key: PyObject) {
+    //     PyMutableMapping::__delitem__(self, key)
+    // }
 
-    pub fn setdefault(&mut self, key: PyObject, default: Option<PyObject>) -> PyObject {
-        PyMutableMapping::setdefault(self, key, default)
-    }
+    // pub fn clear(&mut self) {
+    //     PyMutableMapping::clear(self)
+    // }
 
-    pub fn update(&mut self, other: PyObject) {
-        PyMutableMapping::update(self, other)
-    }
+    // pub fn pop(&mut self, key: PyObject, default: Option<PyObject>) -> Option<PyObject> {
+    //     PyMutableMapping::pop(self, key, default)
+    // }
 
-    pub fn __eq__(&self, other: PyObject) -> bool {
-        PyMapping::__eq__(self, &other)
-    }
+    // pub fn popitem(&mut self) -> Option<(PyObject, PyObject)> {
+    //     PyMutableMapping::popitem(self)
+    // }
+
+    // pub fn setdefault(&mut self, key: PyObject, default: Option<PyObject>) -> PyObject {
+    //     PyMutableMapping::setdefault(self, key, default)
+    // }
+
+    // pub fn update(&mut self, other: PyObject) {
+    //     PyMutableMapping::update(self, other)
+    // }
+
+    // pub fn __eq__(&self, other: PyObject) -> bool {
+    //     PyMapping::__eq__(self, &other)
+    // }
 }
 
 #[pymodule]
