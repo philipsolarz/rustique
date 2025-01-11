@@ -1,10 +1,12 @@
 use indexmap::IndexMap;
 use pyo3::exceptions::{PyKeyError, PyTypeError, PyValueError};
+use pyo3::ffi::{PyObject_Hash, PyObject_RichCompareBool, Py_EQ};
 use pyo3::types::{PyBytes, PyDict, PyIterator, PyString, PyTuple, PyType};
 use pyo3::{prelude::*, types::PyList};
 use pyo3::{PyClass, PyObject};
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
+use std::os::raw::c_long;
 
 pub trait PySized {
     fn __len__(&self) -> PyResult<usize>;
@@ -134,6 +136,8 @@ pub trait PySet: PyCollection {
     // fn _hash(&self, py: Python<'_>) -> PyResult<u64>;
 }
 
+///////////////////////////////////////////////////////////
+
 #[derive(Debug, Clone)]
 pub struct Key {
     key: PyObject,
@@ -141,11 +145,10 @@ pub struct Key {
 
 impl PartialEq for Key {
     fn eq(&self, other: &Self) -> bool {
-        Python::with_gil(|py| {
-            let result = self.key.call_method1(py, "__eq__", (&other.key,))?;
-            result.extract::<bool>(py)
+        Python::with_gil(|py| unsafe {
+            let result = PyObject_RichCompareBool(self.key.as_ptr(), other.key.as_ptr(), Py_EQ);
+            result == 1
         })
-        .unwrap_or(false)
     }
 }
 
@@ -153,17 +156,44 @@ impl Eq for Key {}
 
 impl Hash for Key {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        Python::with_gil(|py| match self.key.call_method0(py, "__hash__") {
-            Ok(hash) => {
-                let hash = hash.extract::<isize>(py).unwrap();
+        Python::with_gil(|py| unsafe {
+            let hash = PyObject_Hash(self.key.as_ptr()) as c_long;
+            if hash != -1 {
                 hash.hash(state);
+            } else {
+                eprintln!("Failed to compute hash for Key.");
             }
-            Err(err) => {
-                eprintln!("Failed to compute hash for Key: {:?}", err);
-            }
-        })
+        });
     }
 }
+
+///////////////////////////////////////////////////////////
+
+// impl PartialEq for Key {
+//     fn eq(&self, other: &Self) -> bool {
+//         Python::with_gil(|py| {
+//             let result = self.key.call_method1(py, "__eq__", (&other.key,))?;
+//             result.extract::<bool>(py)
+//         })
+//         .unwrap_or(false)
+//     }
+// }
+
+// impl Eq for Key {}
+
+// impl Hash for Key {
+//     fn hash<H: Hasher>(&self, state: &mut H) {
+//         Python::with_gil(|py| match self.key.call_method0(py, "__hash__") {
+//             Ok(hash) => {
+//                 let hash = hash.extract::<isize>(py).unwrap();
+//                 hash.hash(state);
+//             }
+//             Err(err) => {
+//                 eprintln!("Failed to compute hash for Key: {:?}", err);
+//             }
+//         })
+//     }
+// }
 
 #[derive(Debug, Clone)]
 pub struct Value {
@@ -704,12 +734,7 @@ impl PyCollection for ValuesView {}
 // }
 
 pub trait PyMutableMapping: PyMapping {
-    fn __setitem__(
-        &mut self,
-        py: Python<'_>,
-        key: &Bound<'_, PyAny>,
-        value: &Bound<'_, PyAny>,
-    ) -> PyResult<()>;
+    fn __setitem__(&mut self, key: PyObject, value: PyObject) -> PyResult<()>;
 
     fn __delitem__(&mut self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<()>;
 
@@ -846,17 +871,22 @@ impl PyMapping for Dict {
 }
 
 impl PyMutableMapping for Dict {
-    fn __setitem__(
-        &mut self,
-        py: Python<'_>,
-        key: &Bound<'_, PyAny>,
-        value: &Bound<'_, PyAny>,
-    ) -> PyResult<()> {
-        let k = key.to_object(py);
-        let v = value.to_object(py);
-        self.dict.insert(Key { key: k }, Value { value: v });
+    fn __setitem__(&mut self, key: PyObject, value: PyObject) -> PyResult<()> {
+        self.dict.insert(Key { key: key }, Value { value: value });
         Ok(())
     }
+
+    // fn __setitem__(
+    //     &mut self,
+    //     py: Python<'_>,
+    //     key: &Bound<'_, PyAny>,
+    //     value: &Bound<'_, PyAny>,
+    // ) -> PyResult<()> {
+    //     let k = key.to_object(py);
+    //     let v = value.to_object(py);
+    //     self.dict.insert(Key { key: k }, Value { value: v });
+    //     Ok(())
+    // }
 
     fn __delitem__(&mut self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<()> {
         let k = key.to_object(py);
@@ -1095,9 +1125,9 @@ impl Dict {
         Python::with_gil(|py| PyMapping::get(self, py, key, default))
     }
 
-    // pub fn __setitem__(&mut self, key: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) {
-    //     Python::with_gil(|py| PyMutableMapping::__setitem__(self, py, key, value))
-    // }
+    pub fn __setitem__(&mut self, key: PyObject, value: PyObject) {
+        PyMutableMapping::__setitem__(self, key, value).unwrap()
+    }
 
     // pub fn __delitem__(&mut self, key: PyObject) {
     //     PyMutableMapping::__delitem__(self, key)
