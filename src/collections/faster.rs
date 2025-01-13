@@ -153,18 +153,18 @@ impl Hash for Key {
 }
 
 #[pyclass]
-pub struct Dict {
+pub struct Dict2 {
     dict: IndexMap<Key, PyObject>,
 }
 
 #[pymethods]
-impl Dict {
-    #[new]
-    fn new() -> Self {
-        Dict {
-            dict: IndexMap::new(),
-        }
-    }
+impl Dict2 {
+    // #[new]
+    // fn new() -> Self {
+    //     Dict {
+    //         dict: IndexMap::new(),
+    //     }
+    // }
 
     fn __setitem__(&mut self, py: Python, keys: List, values: List) {
         let num_items = keys.list.len().min(values.list.len());
@@ -182,6 +182,19 @@ impl Dict {
                 );
             }
         }
+    }
+
+    #[new]
+    fn new(keys: List, values: List) -> Self {
+        let mut dict = IndexMap::new();
+        let num_items = keys.list.len().min(values.list.len());
+        dict.reserve(num_items);
+
+        for (key, value) in keys.list.iter().zip(values.list.iter()) {
+            dict.insert(Key { key: key.clone() }, value.clone());
+        }
+
+        Dict2 { dict }
     }
 
     // fn __setitem__(&mut self, keys: List, values: List) {
@@ -327,11 +340,11 @@ impl Dict {
 
 #[pymodule]
 pub fn register_faster(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<Dict>()?;
+    m.add_class::<Dict2>()?;
     // m.add_class::<Dict2>()?;
-    m.add_class::<List>()?;
+    // m.add_class::<List>()?;
     // m.add_class::<List2>()?;
     // m.add_class::<ListIterator>()?;
-    m.add_class::<ListIterator2>()?;
+    // m.add_class::<ListIterator2>()?;
     Ok(())
 }
