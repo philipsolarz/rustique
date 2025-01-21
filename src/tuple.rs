@@ -1,5 +1,7 @@
 use pyo3::prelude::*;
 
+use crate::sequence::{Sequence, SequenceIterator};
+
 #[pyclass]
 pub struct TupleIterator {
     index: usize,
@@ -29,6 +31,47 @@ impl TupleIterator {
         }
     }
 }
+
+// #[derive(Clone)]
+// #[pyclass]
+// pub struct Tuple;
+
+// #[pymethods]
+// impl Tuple {
+//     #[new]
+//     pub fn new(elements: Vec<PyObject>) -> (Self, Sequence) {
+//         (Tuple, Sequence { elements })
+//     }
+
+//     pub fn __repr__(&self, py: Python) -> String {
+//         let reprs: Vec<String> = self
+//             .elements
+//             .iter()
+//             .map(|obj| {
+//                 obj.call_method0(py, "__repr__")
+//                     .and_then(|repr_obj| repr_obj.extract::<String>(py))
+//                     .unwrap_or_else(|_| "<error>".to_string())
+//             })
+//             .collect();
+//         format!("Tuple([{}])", reprs.join(", "))
+//     }
+
+//     pub fn __iter__(
+//         slf: PyRef<'_, Self>,
+//         base: PyRef<'_, Sequence>,
+//     ) -> PyResult<Py<SequenceIterator>> {
+//         let py = slf.py();
+//         let length = base.elements.len();
+//         Py::new(
+//             py,
+//             SequenceIterator {
+//                 index: 0,
+//                 length,
+//                 elements: base.elements.clone(),
+//             },
+//         )
+//     }
+// }
 
 #[derive(Clone)]
 #[pyclass]

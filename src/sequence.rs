@@ -4,9 +4,9 @@ use pyo3::prelude::*;
 
 #[pyclass]
 pub struct SequenceIterator {
-    index: usize,
-    length: usize,
-    elements: Vec<PyObject>,
+    pub index: usize,
+    pub length: usize,
+    pub elements: Vec<PyObject>,
 }
 
 #[pymethods]
