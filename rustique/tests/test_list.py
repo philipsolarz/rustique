@@ -1,5 +1,19 @@
 import pytest
 from rustique import List
+import rustique as rs
+
+# class List(rs.List):
+#     def __new__(cls, *args, **kwargs): 
+#         if kwargs:
+#             raise TypeError("List does not accept keyword arguments")
+#         if len(args) > 1:
+#             raise TypeError(f"List expected at most 1 argument, got {len(args)}")
+#         iterable = args[0] if args else ()
+#         return super().__new__(cls, *iterable)
+
+        # ls  = list(args[0]) if args else []
+        # return super().__new__(cls, ls)
+
 
 def test_constructor_empty():
     """Test List constructor with no arguments."""

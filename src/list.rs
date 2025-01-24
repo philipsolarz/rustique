@@ -1,109 +1,18 @@
 use pyo3::{
     exceptions::{PyIndexError, PyTypeError, PyValueError},
+    ffi,
     prelude::*,
-    types::{PyDict, PyIterator, PyList, PySlice, PyTuple},
+    types::{PyDict, PyInt, PyList, PySlice, PyTuple},
+    IntoPyObjectExt,
 };
+use std::os::raw::c_char;
 
-// #[pyclass]
-// pub struct ListIterator {
-//     index: usize,
-//     length: usize,
-//     list: Vec<PyObject>,
-// }
-
-// #[pymethods]
-// impl ListIterator {
-//     pub fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-//         slf
-//     }
-
-//     pub fn __next__(mut slf: PyRefMut<'_, Self>) -> Option<PyObject> {
-//         let py = slf.py();
-//         if slf.index < slf.length {
-//             let item_ptr = slf.list[slf.index].as_ptr();
-//             if !item_ptr.is_null() {
-//                 let obj = unsafe { PyObject::from_borrowed_ptr(py, item_ptr) };
-//                 slf.index += 1;
-//                 Some(obj)
-//             } else {
-//                 None
-//             }
-//         } else {
-//             None
-//         }
-//     }
-// }
-
-// #[derive(Clone)]
-// #[pyclass]
-// pub struct List {
-//     pub list: Vec<PyObject>,
-// }
-
-// #[pymethods]
-// impl List {
-//     #[new]
-//     pub fn new(iterable: Option<PyObject>, py: Python) -> PyResult<Self> {
-//         let list = match iterable {
-//             Some(obj) => {
-//                 // Attempt to convert the object into an iterator
-//                 let py_iter = PyIterator::from_object(&obj.bind(py))?;
-//                 let mut elements = Vec::new();
-
-//                 // Iterate through Python iterable and push elements into the Rust Vec
-//                 for item in py_iter {
-//                     elements.push(item?);
-//                 }
-
-//                 elements
-//             }
-//             None => Vec::new(),
-//         };
-
-//         Ok(List { list })
-//     }
-//     // #[new]
-//     // pub fn new() -> Self {
-//     //     List { list: Vec::new() }
-//     // }
-
-//     pub fn __repr__(&self) -> String {
-//         Python::with_gil(|py| {
-//             let reprs: Vec<String> = self
-//                 .list
-//                 .iter()
-//                 .map(|obj| {
-//                     obj.call_method0(py, "__repr__")
-//                         .and_then(|repr_obj| repr_obj.extract::<String>(py))
-//                         .unwrap_or_else(|_| "<error>".to_string())
-//                 })
-//                 .collect();
-
-//             format!("List([{}])", reprs.join(", "))
-//         })
-//     }
-
-//     pub fn append(&mut self, item: PyObject) {
-//         self.list.push(item);
-//     }
-
-//     pub fn __iter__(slf: PyRef<'_, Self>) -> PyResult<Py<ListIterator>> {
-//         let py = slf.py();
-//         let length = slf.list.len();
-//         Py::new(
-//             py,
-//             ListIterator {
-//                 index: 0,
-//                 length,
-//                 list: slf.list.clone(),
-//             },
-//         )
-//     }
-// }
-
-#[pyclass]
+type Operation = Box<dyn Fn(Vec<PyObject>, Python) -> PyResult<Vec<PyObject>>>;
+// type Operation = Box<dyn Fn(Vec<PyObject>, Python) -> PyResult<Vec<PyObject>> + Send>;
+#[pyclass(subclass, unsendable)]
 pub struct List {
     pub list: Vec<PyObject>,
+    operations: Vec<Operation>,
 }
 
 #[pymethods]
@@ -118,7 +27,6 @@ impl List {
                 ));
             }
         }
-
         if args.len() > 1 {
             return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
                 "list() takes at most 1 argument",
@@ -129,16 +37,87 @@ impl List {
             Vec::new()
         } else {
             let iterable = args.get_item(0)?;
-            let iter = iterable.try_iter()?;
-            let mut elements = Vec::new();
-            for item_result in iter {
-                let item = item_result?.unbind();
-                elements.push(item);
+            let py = iterable.py();
+
+            unsafe {
+                if ffi::PyList_CheckExact(iterable.as_ptr()) != 0 {
+                    let list_ptr = iterable.as_ptr() as *mut ffi::PyListObject;
+                    let length = ffi::PyList_Size(iterable.as_ptr());
+                    if length < 0 {
+                        return Err(PyErr::fetch(py));
+                    }
+
+                    let len_usize = length as usize;
+                    let mut result = Vec::with_capacity(len_usize);
+
+                    let items_ptr = (*list_ptr).ob_item;
+                    let items_slice: &[*mut ffi::PyObject] =
+                        std::slice::from_raw_parts(items_ptr, len_usize);
+                    result.extend(items_slice.iter().map(|&item_ptr| {
+                        ffi::Py_INCREF(item_ptr);
+                        PyObject::from_owned_ptr(py, item_ptr)
+                    }));
+
+                    result
+                } else if ffi::PyTuple_CheckExact(iterable.as_ptr()) != 0 {
+                    let tuple_ptr = iterable.as_ptr() as *mut ffi::PyTupleObject;
+                    let length = ffi::PyTuple_Size(iterable.as_ptr());
+                    if length < 0 {
+                        return Err(PyErr::fetch(py));
+                    }
+
+                    let len_usize = length as usize;
+                    let mut result = Vec::with_capacity(len_usize);
+
+                    let items_ptr = (*tuple_ptr).ob_item.as_ptr();
+                    let items_slice: &[*mut ffi::PyObject] =
+                        std::slice::from_raw_parts(items_ptr, len_usize);
+                    result.extend(items_slice.iter().map(|&item_ptr| {
+                        ffi::Py_INCREF(item_ptr);
+                        PyObject::from_owned_ptr(py, item_ptr)
+                    }));
+
+                    result
+                } else {
+                    let error_msg: *const c_char = b"expected iterable\0".as_ptr() as *const c_char;
+                    let seq_ptr = ffi::PySequence_Fast(iterable.as_ptr(), error_msg);
+                    if seq_ptr.is_null() {
+                        return Err(PyErr::fetch(py));
+                    }
+
+                    let len = ffi::PySequence_Size(seq_ptr);
+                    if len < 0 {
+                        ffi::Py_DECREF(seq_ptr);
+                        return Err(PyErr::fetch(py));
+                    }
+
+                    let len_usize = len as usize;
+                    let mut result = Vec::with_capacity(len_usize);
+
+                    result.extend(
+                        (0..len_usize)
+                            .map(|i| {
+                                let item_ptr =
+                                    ffi::PySequence_GetItem(seq_ptr, i as ffi::Py_ssize_t);
+                                if item_ptr.is_null() {
+                                    Err(PyErr::fetch(py))
+                                } else {
+                                    Ok(PyObject::from_owned_ptr(py, item_ptr))
+                                }
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                    );
+
+                    ffi::Py_DECREF(seq_ptr);
+                    result
+                }
             }
-            elements
         };
 
-        Ok(List { list })
+        Ok(List {
+            list,
+            operations: Vec::new(),
+        })
     }
 
     // ------------------------------------------------------------------------
@@ -153,8 +132,8 @@ impl List {
     //
     // ------------------------------------------------------------------------
     fn __getitem__(&self, index: &Bound<'_, PyAny>) -> PyResult<PyObject> {
-        // Check if `index` is an int or a slice
-        if let Ok(i) = index.extract::<isize>() {
+        if let Ok(i) = index.downcast::<PyInt>() {
+            let i = i.extract::<isize>()?;
             let idx = self.to_valid_index(i)?;
             Ok(self.list[idx].clone())
         } else if let Ok(slice) = index.downcast::<PySlice>() {
@@ -167,9 +146,21 @@ impl List {
             if step == 0 {
                 return Err(PyErr::new::<PyValueError, _>("slice step cannot be zero"));
             }
+
+            if step == 1 {
+                let range_start = start.max(0) as usize;
+                let range_stop = stop.max(0) as usize;
+                let slice_vec = self.list[range_start..range_stop].to_vec();
+                let new_list = List {
+                    list: slice_vec,
+                    operations: Vec::new(),
+                };
+                return Ok(new_list.into_py_any(index.py())?);
+            }
+
             let mut sliced = Vec::with_capacity(slice_len as usize);
             let mut i = start;
-            if step > 0 {
+            if step > 1 {
                 while i < stop {
                     sliced.push(self.list[i as usize].clone());
                     i += step;
@@ -181,10 +172,11 @@ impl List {
                 }
             }
 
-            let new_list = List { list: sliced };
-            let py_list = Py::new(index.py(), new_list)?;
-            return Ok(py_list.into_any());
-            // return Ok(Py::new(index.py(), new_list)?.into_ref(index.py()).unbind());
+            let new_list = List {
+                list: sliced,
+                operations: Vec::new(),
+            };
+            return Ok(new_list.into_py_any(index.py())?);
         } else {
             Err(PyErr::new::<PyTypeError, _>(
                 "list indices must be integers or slices",
@@ -197,7 +189,6 @@ impl List {
     //
     // ------------------------------------------------------------------------
     fn __setitem__(&mut self, index: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        // If it's an integer
         if let Ok(i) = index.extract::<isize>() {
             let idx = self.to_valid_index(i)?;
             let val = value.clone().unbind();
@@ -205,16 +196,13 @@ impl List {
             return Ok(());
         }
 
-        // Else, try to parse it as a slice
         if let Ok(slice) = index.downcast::<PySlice>() {
-            // Get slice info
             let slice_info = slice.indices(self.list.len() as isize)?;
             let start = slice_info.start;
             let stop = slice_info.stop;
             let step = slice_info.step;
             let slice_len = slice_info.slicelength;
 
-            // Collect the replacement items into a Vec
             let mut replacement = Vec::new();
             if let Ok(iter) = value.try_iter() {
                 for item_result in iter {
@@ -222,35 +210,24 @@ impl List {
                     replacement.push(item);
                 }
             } else {
-                // If the 'value' is not iterable, Python normally raises TypeError
                 return Err(PyErr::new::<PyTypeError, _>("can only assign an iterable"));
             }
 
             if step == 1 {
-                // Regular contiguous slice, e.g. a[start:stop] = replacement
-                // 1) Remove the old slice
-                // 2) Insert replacement
-
                 let start_usize = start as usize;
                 let stop_usize = stop as usize;
-                // Remove the slice range
                 self.list.drain(start_usize..stop_usize);
-                // Insert the replacement
-                // `splicing` approach:
                 let mut idx = start_usize;
                 for val in replacement {
                     self.list.insert(idx, val);
                     idx += 1;
                 }
             } else {
-                // Extended slice, e.g. a[start:stop:step] = replacement
-                // The lengths must match exactly in Python, or ValueError
                 if replacement.len() != slice_len as usize {
                     return Err(PyErr::new::<PyValueError, _>(
                         "attempt to assign sequence of size X to extended slice of size Y",
                     ));
                 }
-                // Assign item by item
                 let mut i = start;
                 let mut rep_idx = 0;
                 if step > 0 {
@@ -280,21 +257,19 @@ impl List {
     //
     // ------------------------------------------------------------------------
     fn __delitem__(&mut self, index: &Bound<'_, PyAny>) -> PyResult<()> {
-        // If it's an integer
         if let Ok(i) = index.extract::<isize>() {
             let idx = self.to_valid_index(i)?;
             self.list.remove(idx);
             return Ok(());
         }
 
-        // Else, try it as a slice
         if let Ok(slice) = index.downcast::<PySlice>() {
-            let slice_info = slice.indices(self.list.len() as isize)?;
+            let len = self.list.len();
+            let slice_info = slice.indices(len as isize)?;
             let start = slice_info.start;
             let stop = slice_info.stop;
             let step = slice_info.step;
 
-            // If step == 1 (contiguous range), we can do a simple drain
             if step == 1 {
                 self.list.drain(start as usize..stop as usize);
             } else if step == -1 && start < stop {
@@ -303,14 +278,10 @@ impl List {
                 //  So there's nothing to delete.
                 // We do nothing
             } else {
-                // For extended slices, let's build a new Vec excluding the slice
-                // approach: skip the indices in the slice
-                let len = self.list.len() as isize;
-                let mut new_list = Vec::with_capacity(self.list.len());
+                let mut new_list = Vec::with_capacity(len);
                 let mut idx: isize = 0;
 
                 if step > 0 {
-                    // gather slice indices in ascending order
                     let mut slice_indices = Vec::new();
                     let mut i = start;
                     while i < stop {
@@ -326,8 +297,6 @@ impl List {
                         idx += 1;
                     }
                 } else {
-                    // step < 0
-                    // gather slice indices in descending order
                     let mut slice_indices = Vec::new();
                     let mut i = start;
                     while i > stop {
@@ -506,18 +475,41 @@ impl List {
     pub fn copy(&self) -> Self {
         List {
             list: self.list.clone(),
+            operations: Vec::new(),
         }
     }
 
     // ------------------------------------------------------------------------
     // __iter__: return an iterator
     // ------------------------------------------------------------------------
-    fn __iter__(slf: PyRef<Self>) -> ListIterator {
-        ListIterator {
-            index: 0,
-            list_ref: slf.into(),
-        }
+
+    // fn __iter__(slf: PyRef<'_, List>) -> PyResult<ListIterator> {
+    //     Ok(ListIterator {
+    //         list: slf.list.clone(),
+    //         index: 0,
+    //     })
+    // }
+
+    fn __iter__(slf: PyRef<'_, List>) -> PyResult<ListIterator> {
+        Ok(ListIterator {
+            iter: slf.list.clone().into_iter(),
+        })
     }
+
+    // fn __iter__(slf: PyRef<'_, List>) -> PyResult<ListIterator2> {
+    //     Ok(ListIterator2 {
+    //         index: 0,
+    //         length: slf.list.len(),
+    //         list: slf.list.clone(),
+    //     })
+    // }
+
+    // fn __iter__(slf: PyRef<Self>) -> ListIterator {
+    //     ListIterator {
+    //         index: 0,
+    //         list_ref: slf.into(),
+    //     }
+    // }
 
     fn __contains__(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<bool> {
         for elem in &self.list {
@@ -564,7 +556,10 @@ impl List {
     fn __mul__(&self, n: isize) -> Self {
         if n <= 0 {
             // Return empty
-            List { list: Vec::new() }
+            List {
+                list: Vec::new(),
+                operations: Vec::new(),
+            }
         } else {
             // Repeat the list
             let times = n as usize;
@@ -572,7 +567,10 @@ impl List {
             for _ in 0..times {
                 repeated.extend(self.list.iter().cloned());
             }
-            List { list: repeated }
+            List {
+                list: repeated,
+                operations: Vec::new(),
+            }
         }
     }
 
@@ -582,15 +580,104 @@ impl List {
     fn __rmul__(&self, n: isize) -> Self {
         self.__mul__(n)
     }
+
+    /// For demonstration, a no-op “iter()” method that simply allows us
+    /// to chain subsequent `map`, `filter`, etc. calls.
+    ///
+    /// In Python, you might call: `list.iter().map(...).filter(...).collect()`.
+    #[pyo3(text_signature = "($self)")]
+    fn iter<'py>(mut slf: PyRefMut<'py, Self>) -> PyResult<PyRefMut<'py, Self>> {
+        slf.operations.push(Box::new(|items, _py| Ok(items)));
+        Ok(slf)
+    }
+
+    /// Applies a Python function to every item in the list (deferred).
+    ///
+    /// In Python: `list.map(lambda x: x + 1)`
+    #[pyo3(text_signature = "($self, func)")]
+    fn map<'py>(mut slf: PyRefMut<'py, Self>, func: PyObject) -> PyResult<PyRefMut<'py, Self>> {
+        slf.operations.push(Box::new(move |items, py| {
+            items
+                .into_iter()
+                .map(|item| func.call1(py, (item,)).map_err(|e| e.into()))
+                .collect::<PyResult<Vec<_>>>()
+        }));
+        Ok(slf)
+    }
+
+    /// Filters items based on a provided Python callable that returns True/False (deferred).
+    ///
+    /// In Python: `list.filter(lambda x: x % 2 == 0)`
+    #[pyo3(text_signature = "($self, predicate)")]
+    fn filter<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        predicate: PyObject,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.operations.push(Box::new(move |items, py| {
+            items
+                .into_iter()
+                .filter_map(|item| {
+                    match predicate
+                        .call1(py, (&item,))
+                        .and_then(|res| res.is_truthy(py))
+                    {
+                        Ok(true) => Some(Ok(item)),    // Keep the item
+                        Ok(false) => None,             // Filter out
+                        Err(e) => Some(Err(e.into())), // Handle errors gracefully
+                    }
+                })
+                .collect::<PyResult<Vec<_>>>()
+        }));
+        Ok(slf)
+    }
+
+    /// Materialize all the lazy transformations into a final `Vec<PyObject>`.
+    /// In Python: `final_list = list.collect()`.
+    #[pyo3(text_signature = "($self)")]
+    fn collect(&mut self, py: Python) -> PyResult<Vec<PyObject>> {
+        let mut result = std::mem::take(&mut self.list); // Move to avoid cloning
+        for operation in self.operations.drain(..) {
+            result = operation(result, py)?;
+        }
+        Ok(result)
+    }
 }
 
 // ------------------------------------------------------------------------
 // A separate iterator class for `__iter__`
 // ------------------------------------------------------------------------
+
+// #[pyclass]
+// pub struct ListIterator {
+//     list: Vec<PyObject>,
+//     index: usize,
+// }
+
+// #[pymethods]
+// impl ListIterator {
+//     #[new]
+//     fn new(list: Vec<PyObject>) -> Self {
+//         Self { list, index: 0 }
+//     }
+
+//     fn __iter__(slf: PyRef<Self>) -> PyRef<Self> {
+//         slf
+//     }
+
+//     fn __next__(&mut self) -> Option<PyObject> {
+//         if self.index < self.list.len() {
+//             let item = self.list[self.index].clone();
+//             self.index += 1;
+//             Some(item)
+//         } else {
+//             None
+//         }
+//     }
+// }
+
 #[pyclass]
 pub struct ListIterator {
-    index: usize,
-    list_ref: Py<List>,
+    iter: std::vec::IntoIter<PyObject>,
 }
 
 #[pymethods]
@@ -599,18 +686,35 @@ impl ListIterator {
         slf
     }
 
-    fn __next__(&mut self, py: Python<'_>) -> Option<PyObject> {
-        // let inner = self.list_ref.as_ref(py);
-        let inner = self.list_ref.borrow(py);
-        if self.index < inner.list.len() {
-            let item = inner.list[self.index].clone();
-            self.index += 1;
-            Some(item)
-        } else {
-            None
-        }
+    fn __next__(&mut self) -> Option<PyObject> {
+        self.iter.next()
     }
 }
+
+// #[pyclass]
+// pub struct ListIterator {
+//     index: usize,
+//     list_ref: Py<List>,
+// }
+
+// #[pymethods]
+// impl ListIterator {
+//     fn __iter__(slf: PyRef<Self>) -> PyRef<Self> {
+//         slf
+//     }
+
+//     fn __next__(&mut self, py: Python<'_>) -> Option<PyObject> {
+//         // let inner = self.list_ref.as_ref(py);
+//         let inner = self.list_ref.borrow(py);
+//         if self.index < inner.list.len() {
+//             let item = inner.list[self.index].clone();
+//             self.index += 1;
+//             Some(item)
+//         } else {
+//             None
+//         }
+//     }
+// }
 
 // ------------------------------------------------------------------------
 // Helper methods (not exposed to Python) for index validation
@@ -630,6 +734,7 @@ impl List {
         Ok(idx as usize)
     }
 }
+
 #[pymodule]
 pub fn register_list(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<List>()?;

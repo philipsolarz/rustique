@@ -18,8 +18,10 @@ dependencies = [
     "py-spy>=0.4.0",
     "pydantic>=2.10.3",
     "pyright>=1.1.390",
+    "pytest-benchmark>=4.0.0",
     "pytest>=8.3.4",
     "pytest-mock>=3.14.0",
+    "jupyterlab>=4.3.4",
 ]
 [tool.maturin]
 features = ["pyo3/extension-module"]
