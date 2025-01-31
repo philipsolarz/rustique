@@ -2,13 +2,425 @@ use pyo3::{
     exceptions::{PyIndexError, PyTypeError, PyValueError},
     ffi,
     prelude::*,
-    types::{PyDict, PyInt, PyList, PySlice, PyTuple},
+    types::{PyDict, PyInt, PyList, PySequence, PySlice, PyTuple},
     IntoPyObjectExt,
 };
 use std::os::raw::c_char;
 
+#[pyclass(subclass)]
+pub struct List6 {
+    data: List6Data,
+}
+
+enum List6Data {
+    Elements(Vec<PyObject>),
+    Buffer(Py<PyList>),
+}
+
+#[pymethods]
+impl List6 {
+    #[new]
+    pub fn new(py: Python, list: Py<PyList>, buffer: bool) -> PyResult<Self> {
+        if buffer {
+            Ok(Self {
+                data: List6Data::Buffer(list),
+            })
+        } else {
+            unsafe {
+                let list_ptr = list.as_ptr() as *mut ffi::PyListObject;
+                let length = ffi::PyList_Size(list.as_ptr());
+                if length < 0 {
+                    return Err(PyErr::fetch(py));
+                }
+                let len = length as usize;
+
+                let items_ptr = (*list_ptr).ob_item;
+                let items_slice = std::slice::from_raw_parts(items_ptr, len);
+
+                let mut vec = Vec::with_capacity(len);
+                vec.extend(items_slice.iter().map(|&item_ptr| {
+                    ffi::Py_INCREF(item_ptr);
+                    PyObject::from_owned_ptr(py, item_ptr)
+                }));
+
+                Ok(Self {
+                    data: List6Data::Elements(vec),
+                })
+            }
+        }
+    }
+
+    /// Convert to buffer representation (PyList)
+    pub fn to_list(&mut self, py: Python) -> PyResult<()> {
+        let current_data =
+            std::mem::replace(&mut self.data, List6Data::Buffer(PyList::empty(py).into()));
+        match current_data {
+            List6Data::Elements(elements) => {
+                let list = PyList::new(py, &elements)?;
+                self.data = List6Data::Buffer(list.into());
+                Ok(())
+            }
+            List6Data::Buffer(_) => {
+                self.data = current_data; // Put back if already buffer
+                Ok(())
+            }
+        }
+    }
+
+    /// Convert to elements representation (Vec<PyObject>)
+    pub fn to_vec(&mut self, py: Python) -> PyResult<()> {
+        let current_data = std::mem::replace(&mut self.data, List6Data::Elements(Vec::new()));
+        match current_data {
+            List6Data::Buffer(buffer) => {
+                // SAFETY: We have GIL and valid PyList
+                unsafe {
+                    let list_ptr = buffer.as_ptr() as *mut ffi::PyListObject;
+                    let length = ffi::PyList_Size(buffer.as_ptr());
+                    if length < 0 {
+                        return Err(PyErr::fetch(py));
+                    }
+                    let len = length as usize;
+
+                    let items_ptr = (*list_ptr).ob_item;
+                    let items_slice = std::slice::from_raw_parts(items_ptr, len);
+
+                    let mut vec = Vec::with_capacity(len);
+                    vec.extend(items_slice.iter().map(|&item_ptr| {
+                        ffi::Py_INCREF(item_ptr);
+                        PyObject::from_owned_ptr(py, item_ptr)
+                    }));
+
+                    self.data = List6Data::Elements(vec);
+                }
+                Ok(())
+            }
+            List6Data::Elements(_) => {
+                self.data = current_data; // Put back if already elements
+                Ok(())
+            }
+        }
+    }
+}
+
+// #[pyclass(subclass)]
+// pub struct List5 {
+//     data: List5Data,
+// }
+
+// enum List5Data {
+//     Elements(Vec<PyObject>),
+//     Buffer(Py<PyList>),
+// }
+
+// #[pymethods]
+// impl List5 {
+//     #[new]
+//     pub fn new(py: Python, list: Py<PyList>, buffer: bool) -> PyResult<Self> {
+//         if buffer {
+//             Ok(Self {
+//                 data: List5Data::Buffer(list),
+//             })
+//         } else {
+//             let list_ptr = list.as_ptr() as *mut ffi::PyListObject;
+//             let length = unsafe { ffi::PyList_Size(list.as_ptr()) };
+//             if length < 0 {
+//                 return Err(PyErr::fetch(py));
+//             }
+//             let len = length as usize;
+
+//             let mut vec = Vec::with_capacity(len);
+//             let items_ptr = unsafe { (*list_ptr).ob_item };
+//             let items_slice = unsafe { std::slice::from_raw_parts(items_ptr, len) };
+
+//             vec.extend(items_slice.iter().map(|&item_ptr| {
+//                 unsafe {
+//                     ffi::Py_INCREF(item_ptr);
+//                 }
+//                 PyObject::from_owned_ptr(py, item_ptr)
+//             });
+
+//             Ok(Self {
+//                 data: List5Data::Elements(vec),
+//             })
+//         }
+//     }
+
+// }
+
+#[pyclass(subclass)]
+pub struct List4 {
+    elements: Vec<PyObject>,
+    buffer: Option<Py<PyList>>,
+}
+
+#[pymethods]
+impl List4 {
+    #[new]
+    pub fn new(py: Python, iterable: PyObject, buffer: bool) -> PyResult<Self> {
+        if buffer == true {
+            let pylist = iterable.extract::<Py<PyList>>(py)?;
+            Ok(Self {
+                elements: Vec::new(),
+                buffer: Some(pylist),
+            })
+        } else {
+            unsafe {
+                let ptr = iterable.as_ptr();
+
+                if ffi::PyList_CheckExact(ptr) != 0 {
+                    // Optimized list handling
+                    let list_ptr = ptr as *mut ffi::PyListObject;
+                    let length = ffi::PyList_Size(ptr);
+                    if length < 0 {
+                        return Err(PyErr::fetch(py));
+                    }
+                    let len = length as usize;
+
+                    let mut vec = Vec::with_capacity(len);
+                    let items = (*list_ptr).ob_item;
+                    let items_slice = std::slice::from_raw_parts(items, len);
+
+                    vec.extend(items_slice.iter().map(|&item_ptr| {
+                        ffi::Py_INCREF(item_ptr);
+                        PyObject::from_owned_ptr(py, item_ptr)
+                    }));
+
+                    Ok(Self {
+                        elements: vec,
+                        buffer: None,
+                    })
+                } else if ffi::PyTuple_CheckExact(ptr) != 0 {
+                    // Optimized tuple handling
+                    let tuple_ptr = ptr as *mut ffi::PyTupleObject;
+                    let length = ffi::PyTuple_Size(ptr);
+                    if length < 0 {
+                        return Err(PyErr::fetch(py));
+                    }
+                    let len = length as usize;
+
+                    let mut vec = Vec::with_capacity(len);
+                    let items = (*tuple_ptr).ob_item.as_ptr();
+                    let items_slice = std::slice::from_raw_parts(items, len);
+
+                    vec.extend(items_slice.iter().map(|&item_ptr| {
+                        ffi::Py_INCREF(item_ptr);
+                        PyObject::from_owned_ptr(py, item_ptr)
+                    }));
+
+                    Ok(Self {
+                        elements: vec,
+                        buffer: None,
+                    })
+                } else {
+                    // Generic iterable handling
+                    let error_msg = b"expected iterable\0".as_ptr() as *const c_char;
+                    let seq_ptr = ffi::PySequence_Fast(ptr, error_msg);
+                    if seq_ptr.is_null() {
+                        return Err(PyErr::fetch(py));
+                    }
+
+                    let length = ffi::PySequence_Size(seq_ptr);
+                    if length < 0 {
+                        ffi::Py_DECREF(seq_ptr);
+                        return Err(PyErr::fetch(py));
+                    }
+                    let len = length as usize;
+
+                    let mut vec = Vec::with_capacity(len);
+                    let list_ptr = seq_ptr as *mut ffi::PyListObject;
+                    let items = (*list_ptr).ob_item;
+                    let items_slice = std::slice::from_raw_parts(items, len);
+
+                    vec.extend(items_slice.iter().map(|&item_ptr| {
+                        ffi::Py_INCREF(item_ptr);
+                        PyObject::from_owned_ptr(py, item_ptr)
+                    }));
+
+                    ffi::Py_DECREF(seq_ptr);
+                    Ok(Self {
+                        elements: vec,
+                        buffer: None,
+                    })
+                }
+            }
+        }
+    }
+}
+
+#[pyclass(subclass)]
+pub struct List3 {
+    elements: Vec<PyObject>,
+}
+
+#[pymethods]
+impl List3 {
+    #[new]
+    pub fn new(py: Python, list: Py<PyList>) -> Self {
+        unsafe {
+            let list_ptr = list.as_ptr() as *mut ffi::PyListObject;
+            let length = ffi::PyList_Size(list.as_ptr());
+            let len_usize = length as usize;
+            let mut elements = Vec::with_capacity(len_usize);
+            let items_ptr = (*list_ptr).ob_item;
+            let items_slice: &[*mut ffi::PyObject] =
+                std::slice::from_raw_parts(items_ptr, len_usize);
+            elements.extend(items_slice.iter().map(|&item_ptr| {
+                ffi::Py_INCREF(item_ptr);
+                PyObject::from_owned_ptr(py, item_ptr)
+            }));
+            Self { elements }
+        }
+    }
+}
+
+#[pyclass(subclass)]
+pub struct List2 {
+    buffer: Py<PyList>,
+    elements: Vec<PyObject>,
+}
+
+#[pymethods]
+impl List2 {
+    #[new]
+    #[pyo3(signature = (*args, **kwargs))]
+    pub fn new(args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+        let mut flush = false;
+
+        // Check kwargs for 'flush' and validate no other keys
+        if let Some(kwargs) = kwargs {
+            let keys = kwargs.keys();
+            for key in keys {
+                let key_str = key.extract::<&str>()?;
+                if key_str != "flush" {
+                    return Err(PyTypeError::new_err(format!(
+                        "list() got an unexpected keyword argument '{}'",
+                        key_str
+                    )));
+                }
+            }
+            // Extract 'flush' value if present
+            if let Some(flush_val) = kwargs.get_item("flush")? {
+                flush = flush_val.extract()?;
+            }
+        }
+
+        // Validate args length
+        if args.len() > 1 {
+            return Err(PyTypeError::new_err("list() takes at most 1 argument"));
+        }
+
+        let (buffer, elements) = if flush {
+            // Process the iterable into elements using the original List's logic
+            let elements = if args.is_empty() {
+                Vec::new()
+            } else {
+                let iterable = args.get_item(0)?;
+                let py = iterable.py();
+                unsafe {
+                    if ffi::PyList_CheckExact(iterable.as_ptr()) != 0 {
+                        let list_ptr = iterable.as_ptr() as *mut ffi::PyListObject;
+                        let length = ffi::PyList_Size(iterable.as_ptr());
+                        if length < 0 {
+                            return Err(PyErr::fetch(py));
+                        }
+                        let len_usize = length as usize;
+                        let mut result = Vec::with_capacity(len_usize);
+                        let items_ptr = (*list_ptr).ob_item;
+                        let items_slice: &[*mut ffi::PyObject] =
+                            std::slice::from_raw_parts(items_ptr, len_usize);
+                        result.extend(items_slice.iter().map(|&item_ptr| {
+                            ffi::Py_INCREF(item_ptr);
+                            PyObject::from_owned_ptr(py, item_ptr)
+                        }));
+                        result
+                    } else if ffi::PyTuple_CheckExact(iterable.as_ptr()) != 0 {
+                        let tuple_ptr = iterable.as_ptr() as *mut ffi::PyTupleObject;
+                        let length = ffi::PyTuple_Size(iterable.as_ptr());
+                        if length < 0 {
+                            return Err(PyErr::fetch(py));
+                        }
+                        let len_usize = length as usize;
+                        let mut result = Vec::with_capacity(len_usize);
+                        let items_ptr = (*tuple_ptr).ob_item.as_ptr();
+                        let items_slice: &[*mut ffi::PyObject] =
+                            std::slice::from_raw_parts(items_ptr, len_usize);
+                        result.extend(items_slice.iter().map(|&item_ptr| {
+                            ffi::Py_INCREF(item_ptr);
+                            PyObject::from_owned_ptr(py, item_ptr)
+                        }));
+                        result
+                    } else {
+                        let error_msg: *const c_char =
+                            b"expected iterable\0".as_ptr() as *const c_char;
+                        let seq_ptr = ffi::PySequence_Fast(iterable.as_ptr(), error_msg);
+                        if seq_ptr.is_null() {
+                            return Err(PyErr::fetch(py));
+                        }
+                        let len = ffi::PySequence_Size(seq_ptr);
+                        if len < 0 {
+                            ffi::Py_DECREF(seq_ptr);
+                            return Err(PyErr::fetch(py));
+                        }
+                        let len_usize = len as usize;
+                        let mut result = Vec::with_capacity(len_usize);
+                        for i in 0..len_usize {
+                            let item_ptr = ffi::PySequence_GetItem(seq_ptr, i as ffi::Py_ssize_t);
+                            if item_ptr.is_null() {
+                                ffi::Py_DECREF(seq_ptr);
+                                return Err(PyErr::fetch(py));
+                            }
+                            result.push(PyObject::from_owned_ptr(py, item_ptr));
+                        }
+                        ffi::Py_DECREF(seq_ptr);
+                        result
+                    }
+                }
+            };
+            // Create an empty buffer
+            let py = if args.is_empty() {
+                args.py()
+            } else {
+                args.get_item(0)?.py()
+            };
+            let buffer = PyList::empty(py).unbind();
+            (buffer, elements)
+        } else {
+            let buffer = if args.is_empty() {
+                PyList::empty(args.py()).unbind()
+            } else {
+                let iterable = args.get_item(0)?;
+
+                // First try to use existing list directly
+                if let Ok(pylist) = iterable.downcast::<PyList>() {
+                    pylist.clone().unbind()
+                }
+                // // Special case for tuples (avoids Python-level iteration)
+                // else if let Ok(tuple) = iterable.downcast::<PyTuple>() {
+                //     let list = PyList::empty(iterable.py());
+                //     list.extend(tuple.iter().map(|item| item.to_object(iterable.py())))?;
+                //     list.unbind()
+                // }
+                // Fallback for other iterables
+                else {
+                    let list: Bound<PyList> = iterable
+                        .py()
+                        .import("builtins")?
+                        .getattr("list")?
+                        .call1((iterable,))?
+                        .downcast_into()?;
+                    list.unbind()
+                }
+            };
+            let elements = Vec::new();
+            (buffer, elements)
+        };
+
+        Ok(Self { buffer, elements })
+    }
+}
+
 type Operation = Box<dyn Fn(Vec<PyObject>, Python) -> PyResult<Vec<PyObject>>>;
-// type Operation = Box<dyn Fn(Vec<PyObject>, Python) -> PyResult<Vec<PyObject>> + Send>;
+
 #[pyclass(subclass, unsendable)]
 pub struct List {
     pub list: Vec<PyObject>,
@@ -738,5 +1150,9 @@ impl List {
 #[pymodule]
 pub fn register_list(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<List>()?;
+    m.add_class::<List2>()?;
+    m.add_class::<List3>()?;
+    m.add_class::<List4>()?;
+    m.add_class::<List6>()?;
     Ok(())
 }
