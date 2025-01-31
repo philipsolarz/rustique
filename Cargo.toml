@@ -15,6 +15,7 @@ num-bigint = "0.4.6"
 num-traits = "0.2.19"
 num-complex = "0.4.6"
 rug = { version = "1.27", features = ["integer"] }
+rustc-hash = "2.1.0"
 
 [build]
 rustflags = ["--cfg", "PYO3_DISABLE_REFERENCE_POOL"]

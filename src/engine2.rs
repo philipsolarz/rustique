@@ -2,7 +2,8 @@ use std::{
     alloc::{alloc, dealloc, Layout},
     cell::RefCell,
     collections::{HashMap, HashSet},
-    sync::{Arc, Weak},
+    hash::{Hash, Hasher},
+    sync::{Arc, Mutex, RwLock, Weak},
 };
 
 use pyo3::prelude::*;
@@ -54,22 +55,66 @@ enum RustiqueValue {
     Tuple(Vec<Arc<RustiqueObject>>),
 }
 
+// ✅ Implement PartialEq Manually
+impl PartialEq for RustiqueValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (RustiqueValue::Int(a), RustiqueValue::Int(b)) => a == b,
+            (RustiqueValue::Float(a), RustiqueValue::Float(b)) => a.to_bits() == b.to_bits(), // ✅ Float comparison workaround
+            (RustiqueValue::Str(a), RustiqueValue::Str(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+// ✅ Implement Eq Manually
+impl Eq for RustiqueValue {}
+
+// ✅ Implement Hash Manually
+impl Hash for RustiqueValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            RustiqueValue::Int(i) => i.hash(state),
+            RustiqueValue::Float(f) => f.to_bits().hash(state), // ✅ Convert f64 to bits before hashing
+            RustiqueValue::Str(s) => s.hash(state),
+            _ => {}
+        }
+    }
+}
+
 #[derive(Debug)]
 struct RustiqueObject {
     value: RustiqueValue,
-    references: RefCell<Vec<Weak<RustiqueObject>>>,
+    references: RwLock<Vec<Weak<RustiqueObject>>>,
+}
+
+// ✅ Implement PartialEq for RustiqueObject
+impl PartialEq for RustiqueObject {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+// ✅ Implement Eq for RustiqueObject
+impl Eq for RustiqueObject {}
+
+// ✅ Implement Hash for RustiqueObject
+impl Hash for RustiqueObject {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.value.hash(state);
+    }
 }
 
 impl RustiqueObject {
     fn new(value: RustiqueValue) -> Arc<Self> {
         Arc::new(RustiqueObject {
             value: value,
-            references: RefCell::new(Vec::new()),
+            references: RwLock::new(Vec::new()),
         })
     }
 
     fn add_reference(&self, other: &Arc<Self>) {
-        self.references.borrow_mut().push(Arc::downgrade(other));
+        self.references.write().unwrap().push(Arc::downgrade(other));
     }
 }
 
@@ -82,7 +127,8 @@ fn gc_collect(objects: &mut HashSet<Arc<RustiqueObject>>) {
             return;
         }
         reachable.insert(Arc::clone(obj));
-        for weak_ref in obj.references.borrow().iter() {
+
+        for weak_ref in obj.references.read().unwrap().iter() {
             if let Some(strong_ref) = weak_ref.upgrade() {
                 mark(&strong_ref, reachable);
             }
@@ -99,7 +145,7 @@ fn gc_collect(objects: &mut HashSet<Arc<RustiqueObject>>) {
 
 #[pyclass]
 struct RustiqueGC {
-    objects: RefCell<HashSet<Arc<RustiqueObject>>>,
+    objects: RwLock<HashSet<Arc<RustiqueObject>>>,
 }
 
 #[pymethods]
@@ -107,18 +153,18 @@ impl RustiqueGC {
     #[new]
     fn new() -> Self {
         Self {
-            objects: RefCell::new(HashSet::new()),
+            objects: RwLock::new(HashSet::new()),
         }
     }
 
     fn create_object(&self, value: String) -> PyRustiqueObject {
-        let obj = RustiqueObject::new(&value);
-        self.objects.borrow_mut().insert(Arc::clone(&obj));
+        let obj = RustiqueObject::new(RustiqueValue::Str(value));
+        self.objects.write().unwrap().insert(Arc::clone(&obj));
         PyRustiqueObject { obj }
     }
 
     fn collect_garbage(&self) {
-        gc_collect(&mut self.objects.borrow_mut());
+        gc_collect(&mut self.objects.write().unwrap());
     }
 }
 
@@ -127,7 +173,15 @@ struct PyRustiqueObject {
     obj: Arc<RustiqueObject>,
 }
 
+#[pymethods]
 impl PyRustiqueObject {
+    #[new]
+    fn new(value: String) -> Self {
+        PyRustiqueObject {
+            obj: RustiqueObject::new(RustiqueValue::Str(value)),
+        }
+    }
+
     fn add_reference(&self, other: &PyRustiqueObject) {
         self.obj.add_reference(&other.obj);
     }
@@ -203,37 +257,11 @@ impl RustiqueDict {
     }
 }
 
-#[pyclass]
-struct RustiqueTuple {
-    items: Vec<Arc<RustiqueObject>>,
-}
-
-#[pymethods]
-impl RustiqueTuple {
-    #[new]
-    fn new(items: Vec<PyRustiqueObject>) -> Self {
-        RustiqueTuple {
-            items: items.into_iter().map(|obj| Arc::clone(&obj.obj)).collect(),
-        }
-    }
-
-    fn get(&self, index: usize) -> Option<PyRustiqueObject> {
-        self.items.get(index).map(|obj| PyRustiqueObject {
-            obj: Arc::clone(obj),
-        })
-    }
-
-    fn length(&self) -> usize {
-        self.items.len()
-    }
-}
-
 #[pymodule]
 pub fn register_engine2(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustiqueGC>()?;
     m.add_class::<PyRustiqueObject>()?;
     m.add_class::<RustiqueList>()?;
     m.add_class::<RustiqueDict>()?;
-    m.add_class::<RustiqueTuple>()?;
     Ok(())
 }
