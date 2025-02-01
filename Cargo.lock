@@ -243,6 +243,7 @@ dependencies = [
  "num-bigint",
  "num-complex",
  "num-traits",
+ "once_cell",
  "pyo3",
  "rug",
  "rustc-hash",

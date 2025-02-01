@@ -1,49 +1,10 @@
+use pyo3::prelude::*;
 use std::{
-    alloc::{alloc, dealloc, Layout},
     cell::RefCell,
     collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
-    sync::{Arc, Mutex, RwLock, Weak},
+    sync::{Arc, RwLock, Weak},
 };
-
-use pyo3::prelude::*;
-
-struct Arena {
-    buffer: RefCell<Vec<*mut u8>>,
-}
-
-impl Arena {
-    fn new() -> Self {
-        Self {
-            buffer: RefCell::new(Vec::new()),
-        }
-    }
-
-    fn allocate<T>(&self, value: T) -> *mut T {
-        let layout = Layout::new::<T>();
-        unsafe {
-            let ptr = alloc(layout) as *mut T;
-            ptr.write(value);
-            self.buffer.borrow_mut().push(ptr as *mut u8);
-            ptr
-        }
-    }
-
-    fn deallocate_all(&self) {
-        for &ptr in self.buffer.borrow().iter() {
-            unsafe {
-                dealloc(ptr, Layout::for_value(&*ptr));
-            }
-        }
-        self.buffer.borrow_mut().clear();
-    }
-}
-
-impl Drop for Arena {
-    fn drop(&mut self) {
-        self.deallocate_all();
-    }
-}
 
 #[derive(Debug)]
 enum RustiqueValue {
@@ -168,6 +129,7 @@ impl RustiqueGC {
     }
 }
 
+#[derive(Clone)]
 #[pyclass]
 struct PyRustiqueObject {
     obj: Arc<RustiqueObject>,
@@ -193,7 +155,7 @@ impl PyRustiqueObject {
 
 #[pyclass]
 struct RustiqueList {
-    items: RefCell<Vec<Arc<RustiqueObject>>>,
+    items: RwLock<Vec<Arc<RustiqueObject>>>,
 }
 
 #[pymethods]
@@ -201,28 +163,32 @@ impl RustiqueList {
     #[new]
     fn new() -> Self {
         RustiqueList {
-            items: RefCell::new(Vec::new()),
+            items: RwLock::new(Vec::new()),
         }
     }
 
     fn append(&self, obj: &PyRustiqueObject) {
-        self.items.borrow_mut().push(Arc::clone(&obj.obj));
+        self.items.write().unwrap().push(Arc::clone(&obj.obj));
     }
 
     fn get(&self, index: usize) -> Option<PyRustiqueObject> {
-        self.items.borrow().get(index).map(|obj| PyRustiqueObject {
-            obj: Arc::clone(obj),
-        })
+        self.items
+            .read()
+            .unwrap()
+            .get(index)
+            .map(|obj| PyRustiqueObject {
+                obj: Arc::clone(obj),
+            })
     }
 
     fn length(&self) -> usize {
-        self.items.borrow().len()
+        self.items.read().unwrap().len()
     }
 }
 
 #[pyclass]
 struct RustiqueDict {
-    items: RefCell<HashMap<String, Arc<RustiqueObject>>>,
+    items: RwLock<HashMap<String, Arc<RustiqueObject>>>,
 }
 
 #[pymethods]
@@ -230,29 +196,39 @@ impl RustiqueDict {
     #[new]
     fn new() -> Self {
         RustiqueDict {
-            items: RefCell::new(HashMap::new()),
+            items: RwLock::new(HashMap::new()),
         }
     }
 
-    fn set(&self, key: String, value: &PyRustiqueObject) {
-        self.items.borrow_mut().insert(key, Arc::clone(&value.obj));
+    fn set(&self, key: String, value: PyRustiqueObject) {
+        self.items
+            .write()
+            .unwrap()
+            .insert(key, Arc::clone(&value.obj));
     }
 
     fn get(&self, key: String) -> Option<PyRustiqueObject> {
-        self.items.borrow().get(&key).map(|obj| PyRustiqueObject {
-            obj: Arc::clone(obj),
-        })
+        self.items
+            .read()
+            .unwrap()
+            .get(&key)
+            .map(|obj| PyRustiqueObject {
+                obj: Arc::clone(obj),
+            })
     }
 
     fn keys(&self) -> Vec<String> {
-        self.items.borrow().keys().cloned().collect()
+        self.items.read().unwrap().keys().cloned().collect()
     }
 
-    fn values(&self) -> Vec<String> {
+    fn values(&self) -> Vec<PyRustiqueObject> {
         self.items
-            .borrow()
+            .read()
+            .unwrap()
             .values()
-            .map(|obj| format!("{:?}", obj.value))
+            .map(|obj| PyRustiqueObject {
+                obj: Arc::clone(obj),
+            })
             .collect()
     }
 }
@@ -265,3 +241,40 @@ pub fn register_engine2(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustiqueDict>()?;
     Ok(())
 }
+
+// struct Arena {
+//     buffer: RefCell<Vec<*mut u8>>,
+// }
+
+// impl Arena {
+//     fn new() -> Self {
+//         Self {
+//             buffer: RefCell::new(Vec::new()),
+//         }
+//     }
+
+//     fn allocate<T>(&self, value: T) -> *mut T {
+//         let layout = Layout::new::<T>();
+//         unsafe {
+//             let ptr = alloc(layout) as *mut T;
+//             ptr.write(value);
+//             self.buffer.borrow_mut().push(ptr as *mut u8);
+//             ptr
+//         }
+//     }
+
+//     fn deallocate_all(&self) {
+//         for &ptr in self.buffer.borrow().iter() {
+//             unsafe {
+//                 dealloc(ptr, Layout::for_value(&*ptr));
+//             }
+//         }
+//         self.buffer.borrow_mut().clear();
+//     }
+// }
+
+// impl Drop for Arena {
+//     fn drop(&mut self) {
+//         self.deallocate_all();
+//     }
+// }
