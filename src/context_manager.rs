@@ -1,7 +1,6 @@
 // context_manager.rs
 
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
 
 // Import the memory-management API from the memory module.
 use crate::memory::{cleanup_memory_system, init_memory_system};
