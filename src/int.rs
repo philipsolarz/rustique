@@ -1,6 +1,6 @@
 use pyo3::exceptions::{PyTypeError, PyValueError, PyZeroDivisionError};
 use pyo3::pyclass::CompareOp;
-use pyo3::types::{PyBytes, PyFloat, PyInt, PyString};
+use pyo3::types::{PyByteArray, PyBytes, PyFloat, PyInt, PyString, PyType};
 use pyo3::{ffi, prelude::*};
 use rug::Integer;
 use std::ops::{Div, Neg};
@@ -15,9 +15,43 @@ impl Int {
     #[new]
     #[pyo3(signature = (val, base=10))]
     fn new(val: &Bound<'_, PyAny>, base: isize) -> PyResult<Self> {
-        let value = convert_to_integer(val)?;
+        if !val.is_instance_of::<PyString>() && base != 10 {
+            return Err(PyTypeError::new_err(
+                "int() can't convert non-string with explicit base",
+            ));
+        }
+        let value = if let Ok(py_str) = val.downcast::<PyString>() {
+            let s = py_str.to_str()?;
+            let (sign, cleaned_digits, parsed_base) = process_string_for_int(s, base)?;
+            let mut num = Integer::from_str_radix(&cleaned_digits, parsed_base as i32)
+                .map_err(|_| PyValueError::new_err("invalid literal for int() with base 0"))?;
+            if sign == -1 {
+                num = -num;
+            }
+            num
+        } else {
+            convert_to_integer(val)?
+        };
         Ok(Self { value })
     }
+
+    // #[new]
+    // #[pyo3(signature = (val, base=10))]
+    // fn new(val: &Bound<'_, PyAny>, base: isize) -> PyResult<Self> {
+    //     if !val.is_instance_of::<PyString>() && base != 10 {
+    //         return Err(PyTypeError::new_err(
+    //             "int() can't convert non-string with explicit base",
+    //         ));
+    //     }
+    //     let value = if let Ok(py_str) = val.downcast::<PyString>() {
+    //         let s = py_str.to_str()?;
+    //         Integer::from_str_radix(s, base as i32)
+    //             .map_err(|_| PyValueError::new_err("Invalid integer string with given base"))?
+    //     } else {
+    //         convert_to_integer(val)?
+    //     };
+    //     Ok(Self { value })
+    // }
 
     fn __repr__(&self) -> String {
         self.value.to_string()
@@ -27,9 +61,14 @@ impl Int {
         self.value.to_string()
     }
 
-    // fn __hash__(&self) -> u64 {
-    //     self.value.mod_u(1 << 63) as u64
-    // }
+    fn __hash__(&self) -> PyResult<isize> {
+        let hash_u64 = self.value.to_u64_wrapping();
+        let mut hash = hash_u64 as i64;
+        if hash == -1 {
+            hash = -2;
+        }
+        Ok(hash as isize)
+    }
 
     fn __index__(&self, py: Python<'_>) -> PyResult<PyObject> {
         if self.value.is_zero() {
@@ -329,15 +368,6 @@ impl Int {
             return Py::new(py, Self { value: result });
         }
 
-        // if exp_val.is_negative() {
-        //     // We do float math, though for extremely large exponents this might
-        //     // become 0.0. Python does the same (overflow to 0.0 or Inf).
-        //     let base_f = self.value.to_f64();
-        //     let e_f = exp_val.to_f64(); // negative
-        //     let result = base_f.powf(e_f);
-        //     return Ok(result.into_py(py));
-        // }
-
         if exp_val.is_negative() {
             return Err(PyValueError::new_err(
                 "negative exponent not supported (use custom Float if desired).",
@@ -362,6 +392,87 @@ impl Int {
 
     fn bit_length(&self) -> usize {
         self.value.significant_bits().try_into().unwrap()
+    }
+
+    #[classmethod]
+    #[pyo3(signature = (bytes, byteorder = "big", *, signed = false))]
+    fn from_bytes(
+        cls: &Bound<'_, PyType>,
+        bytes: &Bound<'_, PyAny>,
+        byteorder: &str,
+        signed: bool,
+    ) -> PyResult<Self> {
+        // Validate byteorder
+        let order = match byteorder {
+            "big" => rug::integer::Order::Msf,
+            "little" => rug::integer::Order::Lsf,
+            _ => return Err(PyValueError::new_err("byteorder must be 'big' or 'little'")),
+        };
+
+        // Convert input to Vec<u8>
+        let bytes_vec = if let Ok(py_bytes) = bytes.downcast::<PyBytes>() {
+            py_bytes.as_bytes().to_vec()
+        } else if let Ok(py_bytearray) = bytes.downcast::<PyByteArray>() {
+            py_bytearray.to_vec()
+        } else {
+            // Handle iterable of integers
+            let iter = bytes.try_iter()?;
+            let mut vec = Vec::new();
+            for item in iter {
+                let item = item?;
+                let byte: u8 = item.extract().map_err(|e| {
+                    PyValueError::new_err(format!("bytes must be integers in range 0-255: {}", e))
+                })?;
+                vec.push(byte);
+            }
+            vec
+        };
+
+        // Handle empty bytes (returns 0)
+        if bytes_vec.is_empty() {
+            return Ok(Self {
+                value: Integer::from(0),
+            });
+        }
+
+        // Convert bytes to Integer
+        let mut value = Integer::from_digits(&bytes_vec, order);
+
+        // Apply two's complement if necessary
+        if signed {
+            let bit_length = bytes_vec.len() * 8;
+            let threshold = Integer::from(1) << (bit_length - 1);
+            if value >= threshold {
+                value -= Integer::from(1) << bit_length;
+            }
+        }
+
+        Ok(Self { value })
+    }
+
+    fn as_integer_ratio(slf: PyRef<'_, Self>) -> PyResult<(Py<Self>, Py<Self>)> {
+        let py = slf.py();
+        let denominator = Py::new(
+            py,
+            Self {
+                value: Integer::from(1),
+            },
+        )?;
+        Ok((slf.into(), denominator))
+    }
+
+    fn is_integer(slf: PyRef<'_, Self>) -> bool {
+        true
+    }
+
+    fn bit_count(&self) -> usize {
+        self.value.significant_bits().try_into().unwrap()
+    }
+
+    fn __trunc__(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+        }
     }
 }
 
@@ -465,6 +576,147 @@ fn convert_to_integer(obj: &Bound<'_, PyAny>) -> PyResult<Integer> {
         "Unsupported type for integer conversion: {}",
         obj.get_type().name()?
     )))
+}
+
+fn process_string_for_int(s: &str, base: isize) -> PyResult<(i8, String, isize)> {
+    let s_trimmed = s.trim();
+
+    if s_trimmed.is_empty() {
+        return Err(PyValueError::new_err(
+            "invalid literal for int() with base 0: ''",
+        ));
+    }
+
+    let (sign, digits_part) = extract_sign(s_trimmed);
+    let (parsed_base, cleaned_digits) = parse_digits_part(digits_part, base)?;
+
+    Ok((sign, cleaned_digits, parsed_base))
+}
+
+fn extract_sign(s: &str) -> (i8, &str) {
+    if let Some(rest) = s.strip_prefix('+') {
+        (1, rest)
+    } else if let Some(rest) = s.strip_prefix('-') {
+        (-1, rest)
+    } else {
+        (1, s)
+    }
+}
+
+fn parse_digits_part(digits_part: &str, base: isize) -> PyResult<(isize, String)> {
+    let mut parsed_base = base;
+    let mut prefix_len = 0;
+
+    if base == 0 {
+        if let Some(rest) = strip_prefix_case_insensitive(digits_part, "0x") {
+            parsed_base = 16;
+            prefix_len = 2;
+        } else if let Some(rest) = strip_prefix_case_insensitive(digits_part, "0o") {
+            parsed_base = 8;
+            prefix_len = 2;
+        } else if let Some(rest) = strip_prefix_case_insensitive(digits_part, "0b") {
+            parsed_base = 2;
+            prefix_len = 2;
+        } else if digits_part.starts_with('0') {
+            let cleaned = digits_part.replace('_', "");
+            if cleaned.is_empty() {
+                return Err(PyValueError::new_err(
+                    "invalid decimal literal for int() with base 0: '0' followed by underscores only",
+                ));
+            }
+            if cleaned.chars().all(|c| c == '0') {
+                parsed_base = 10;
+                prefix_len = 0;
+            } else {
+                return Err(PyValueError::new_err(
+                    "invalid decimal literal with leading zeros",
+                ));
+            }
+        } else {
+            parsed_base = 10;
+            prefix_len = 0;
+        }
+    } else {
+        if let Some(rest) = strip_prefix_case_insensitive(digits_part, "0x") {
+            if base == 16 {
+                prefix_len = 2;
+            } else {
+                return Err(PyValueError::new_err(format!(
+                    "invalid hexadecimal literal for base {}",
+                    base
+                )));
+            }
+        } else if let Some(rest) = strip_prefix_case_insensitive(digits_part, "0o") {
+            if base == 8 {
+                prefix_len = 2;
+            } else {
+                return Err(PyValueError::new_err(format!(
+                    "invalid octal literal for base {}",
+                    base
+                )));
+            }
+        } else if let Some(rest) = strip_prefix_case_insensitive(digits_part, "0b") {
+            if base == 2 {
+                prefix_len = 2;
+            } else {
+                return Err(PyValueError::new_err(format!(
+                    "invalid binary literal for base {}",
+                    base
+                )));
+            }
+        }
+    }
+
+    let digits_after_prefix = &digits_part[prefix_len..];
+    validate_underscores(digits_after_prefix)?;
+
+    let cleaned_digits = digits_after_prefix.replace('_', "");
+
+    if cleaned_digits.is_empty() {
+        return Err(PyValueError::new_err(
+            "invalid literal: no digits after prefix",
+        ));
+    }
+
+    if !cleaned_digits
+        .chars()
+        .all(|c| c.is_digit(parsed_base as u32))
+    {
+        return Err(PyValueError::new_err(format!(
+            "invalid digit for base {}",
+            parsed_base
+        )));
+    }
+
+    Ok((parsed_base, cleaned_digits))
+}
+
+fn strip_prefix_case_insensitive<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    let prefix_len = prefix.len();
+    if s.len() >= prefix_len && s[..prefix_len].eq_ignore_ascii_case(prefix) {
+        Some(&s[prefix_len..])
+    } else {
+        None
+    }
+}
+
+fn validate_underscores(s: &str) -> PyResult<()> {
+    if s.starts_with('_') {
+        return Err(PyValueError::new_err(
+            "invalid underscore placement: leading underscore",
+        ));
+    }
+    if s.ends_with('_') {
+        return Err(PyValueError::new_err(
+            "invalid underscore placement: trailing underscore",
+        ));
+    }
+    if s.contains("__") {
+        return Err(PyValueError::new_err(
+            "invalid underscore placement: consecutive underscores",
+        ));
+    }
+    Ok(())
 }
 
 #[pymodule]

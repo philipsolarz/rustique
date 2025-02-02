@@ -13,9 +13,18 @@ pub struct Float {
 #[pymethods]
 impl Float {
     #[new]
-    // #[pyo3(signature = (val = 0.0))]
-    fn new(val: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let value = convert_to_float(val)?;
+    #[pyo3(signature = (val = None))]
+    fn new(val: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        let value = match val {
+            None => 0.0,
+            Some(obj) => {
+                if obj.is_none() {
+                    0.0
+                } else {
+                    convert_to_float(obj)?
+                }
+            }
+        };
         Ok(Self { value })
     }
 
@@ -240,19 +249,8 @@ impl Float {
     }
 
     fn is_integer(&self) -> bool {
-        self.value.fract() == 0.0
+        self.value.is_finite() && self.value.fract() == 0.0
     }
-
-    #[classmethod]
-    fn fromhex(_cls: &Bound<'_, PyType>, s: &str) -> PyResult<Self> {
-        let value = f64::from_str(s)
-            .map_err(|_| PyValueError::new_err("invalid hexadecimal floating-point string"))?;
-        Ok(Self { value })
-    }
-
-    // fn hex(&self) -> String {
-    //     // format!("{:a}", self.value)
-    // }
 
     fn as_integer_ratio(&self, py: Python<'_>) -> PyResult<PyObject> {
         if self.value.is_nan() {
@@ -263,9 +261,195 @@ impl Float {
                 "cannot convert Infinity to integer ratio",
             ));
         }
-        let py_float = PyFloat::new(py, self.value);
-        let ratio = py_float.call_method0("as_integer_ratio")?;
-        Ok(ratio.into_py(py))
+
+        let bits = self.value.to_bits();
+        let sign_bit = (bits >> 63) as u64;
+        let sign = if sign_bit == 1 { -1 } else { 1 };
+
+        let exponent_bits = ((bits >> 52) & 0x7ff) as i32;
+        let mantissa_bits = bits & 0x000f_ffff_ffff_ffff;
+
+        if self.value == 0.0 {
+            let numerator = 0;
+            let denominator = 1;
+            let numerator_int = Py::new(
+                py,
+                crate::int::Int {
+                    value: Integer::from(numerator),
+                },
+            )?;
+            let denominator_int = Py::new(
+                py,
+                crate::int::Int {
+                    value: Integer::from(denominator),
+                },
+            )?;
+            let tuple = PyTuple::new_bound(py, &[numerator_int, denominator_int]);
+            return Ok(tuple.into_py(py));
+        }
+
+        let (numerator, denominator) = if exponent_bits == 0 {
+            // Denormal number
+            let numerator = Integer::from(mantissa_bits) * sign;
+            let denominator = Integer::from(1) << 1074;
+            (numerator, denominator)
+        } else {
+            // Normal number
+            let m = Integer::from(mantissa_bits) + (Integer::from(1) << 52);
+            let exponent = exponent_bits - 1023;
+            let adjusted_exponent = exponent - 52;
+
+            if adjusted_exponent >= 0 {
+                let numerator = m << adjusted_exponent as u32;
+                (numerator * sign, Integer::from(1))
+            } else {
+                let denominator = Integer::from(1) << (-adjusted_exponent) as u32;
+                (m * sign, denominator)
+            }
+        };
+
+        let numerator_int = Py::new(py, crate::int::Int { value: numerator })?;
+        let denominator_int = Py::new(py, crate::int::Int { value: denominator })?;
+        let tuple = PyTuple::new_bound(py, &[numerator_int, denominator_int]);
+        Ok(tuple.into_py(py))
+    }
+
+    fn hex(&self) -> String {
+        let value = self.value;
+        if value.is_nan() {
+            "nan".to_string()
+        } else if value.is_infinite() {
+            if value.is_sign_negative() {
+                "-inf".to_string()
+            } else {
+                "inf".to_string()
+            }
+        } else if value == 0.0 {
+            let sign = if value.is_sign_negative() { "-" } else { "" };
+            format!("{}0x0.0p+0", sign)
+        } else {
+            let bits = value.to_bits();
+            let sign_bit = (bits >> 63) & 1;
+            let exponent_bits = ((bits >> 52) & 0x7ff) as u16;
+            let mantissa_bits = bits & 0x0fffffffffffff;
+
+            let sign_str = if sign_bit != 0 { "-" } else { "" };
+
+            let (mantissa_part, exponent_value) = if exponent_bits == 0 {
+                // Subnormal number
+                (format!("0.{:013x}", mantissa_bits), -1022)
+            } else {
+                // Normal number
+                (
+                    format!("1.{:013x}", mantissa_bits),
+                    exponent_bits as i32 - 1023,
+                )
+            };
+
+            let exponent_str = if exponent_value >= 0 {
+                format!("+{}", exponent_value)
+            } else {
+                exponent_value.to_string()
+            };
+
+            format!("{}0x{}p{}", sign_str, mantissa_part, exponent_str)
+        }
+    }
+
+    #[classmethod]
+    fn fromhex(_cls: &Bound<'_, PyType>, s: &str) -> PyResult<Self> {
+        let trimmed = s.trim();
+
+        if trimmed.is_empty() {
+            return Err(PyValueError::new_err(
+                "invalid hexadecimal floating-point string",
+            ));
+        }
+
+        let mut chars = trimmed.chars().peekable();
+
+        // Parse sign
+        let sign = match chars.peek() {
+            Some('+') => {
+                chars.next();
+                1.0
+            }
+            Some('-') => {
+                chars.next();
+                -1.0
+            }
+            _ => 1.0,
+        };
+
+        // Check for '0x' or '0X' prefix
+        if chars.next() != Some('0') {
+            return Err(PyValueError::new_err(
+                "invalid hexadecimal floating-point string",
+            ));
+        }
+        match chars.next() {
+            Some('x') | Some('X') => (),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "invalid hexadecimal floating-point string",
+                ))
+            }
+        }
+
+        // Split into significand and exponent parts
+        let remaining: String = chars.collect();
+        let parts: Vec<&str> = remaining.splitn(2, |c| c == 'p' || c == 'P').collect();
+
+        if parts.len() != 2 {
+            return Err(PyValueError::new_err(
+                "invalid hexadecimal floating-point string",
+            ));
+        }
+
+        let significand_str = parts[0];
+        let exponent_str = parts[1];
+
+        // Parse exponent part
+        let exponent: i32 = exponent_str.parse().map_err(|_| {
+            PyValueError::new_err("invalid hexadecimal floating-point string (exponent part)")
+        })?;
+
+        // Split significand into integer and fractional parts
+        let mut split_significand = significand_str.splitn(2, '.');
+        let integer_part_str = split_significand.next().unwrap();
+        let fractional_part_str = split_significand.next().unwrap_or("");
+
+        // Ensure at least one digit is present in significand
+        if integer_part_str.is_empty() && fractional_part_str.is_empty() {
+            return Err(PyValueError::new_err(
+                "invalid hexadecimal floating-point string (empty significand)",
+            ));
+        }
+
+        // Parse integer part of significand
+        let mut integer_value = 0.0;
+        for c in integer_part_str.chars() {
+            let digit = c.to_digit(16).ok_or_else(|| {
+                PyValueError::new_err("invalid hexadecimal floating-point string (invalid digit)")
+            })?;
+            integer_value = integer_value * 16.0 + digit as f64;
+        }
+
+        // Parse fractional part of significand
+        let mut fractional_value = 0.0;
+        for (i, c) in fractional_part_str.chars().enumerate() {
+            let digit = c.to_digit(16).ok_or_else(|| {
+                PyValueError::new_err("invalid hexadecimal floating-point string (invalid digit)")
+            })?;
+            fractional_value += digit as f64 * 16.0f64.powi(-(i as i32 + 1));
+        }
+
+        let total_significand = integer_value + fractional_value;
+
+        // Calculate the final value
+        let value = sign * total_significand * 2.0f64.powi(exponent);
+
+        Ok(Self { value })
     }
 
     fn conjugate(&self) -> Self {
@@ -292,7 +476,11 @@ fn convert_to_float(obj: &Bound<'_, PyAny>) -> PyResult<f64> {
 
     if let Ok(py_str) = obj.downcast::<PyString>() {
         let s = py_str.to_str()?;
-        let val: f64 = s
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Err(PyValueError::new_err("Invalid float string"));
+        }
+        let val: f64 = trimmed
             .parse()
             .map_err(|_| PyValueError::new_err("Invalid float string"))?;
         return Ok(val);
