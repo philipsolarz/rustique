@@ -313,8 +313,7 @@ def test_ingest_numpy(arr: Any) -> None:
         assert lst.strategy != "object" or arr.max() > 2**63 - 1
     # Round trip back to NumPy through the buffer protocol.
     if arr.size and lst.strategy not in ("object", "empty"):
-        back = np.asarray(lst)
-        assert back.dtype.kind == arr.dtype.kind
+        back = np.asarray(lst)  # untyped ingest may widen (e.g. uint8 -> i64 storage)
         assert back.tolist() == arr.tolist()
 
 
