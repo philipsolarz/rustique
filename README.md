@@ -90,8 +90,8 @@ between operations.
 
 ## Install & develop
 
-Requires Rust 1.99.1 (pinned in `rust-toolchain.toml`) and CPython ≥ 3.13
-(3.15.1 / 3.15.1t are the primary targets).
+Requires Rust 1.99.1 (pinned in `rust-toolchain.toml`) and CPython ≥ 3.14
+(3.15.1 / 3.15.1t are the primary targets; 3.14 and 3.14t are tested too).
 
 ```bash
 uv venv --python 3.15.1 .venv

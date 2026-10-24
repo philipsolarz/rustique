@@ -6,11 +6,10 @@ build-backend = "maturin"
 name = "rustique"
 description = "Python's data model, Rust's memory: typed native containers and zero-copy Rust/Python interop"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3.15",
     "Programming Language :: Python :: Free Threading :: 3 - Stable",

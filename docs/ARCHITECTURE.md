@@ -48,7 +48,9 @@ The next Rustique is built around that lesson:
 - Rust **1.99.1** (`rust-toolchain.toml`), edition **2024**, resolver 3.
 - PyO3 **0.30.1**, maturin (latest 1.x).
 - CPython **3.15.1** and free-threaded **3.15.1t** are the primary test targets;
-  `requires-python = ">=3.13"`.
+  `requires-python = ">=3.14"`: free-threading is officially supported from 3.14
+  (PEP 779), PEP 757 integer export/import exists, and error messages match the running
+  interpreter (3.14 unified the `ZeroDivisionError` wording).
 
 ---
 

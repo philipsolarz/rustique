@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.13", "3.14", "3.15", "3.15t"]
+        python: ["3.14", "3.14t", "3.15", "3.15t"]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
@@ -65,8 +65,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: |
-            3.13
             3.14
+            3.14t
             3.15
             3.15t
       - uses: PyO3/maturin-action@v1
