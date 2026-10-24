@@ -1656,20 +1656,17 @@ pub fn arange<'py>(
         let len = isize::try_from(n)
             .map_err(|_| pyo3::exceptions::PyOverflowError::new_err("arange() result has too many items"))?
             as usize;
-        if len > 0
-            && let Some((lo, hi)) = target.int_range()
+        if let Some((lo, hi)) = target.int_range()
+            && let Some(k) = convert::first_out_of_range(a, s, len, lo, hi)
         {
-            let offset = (n - 1) * s.unsigned_abs();
-            let last = if s > 0 { a.checked_add_unsigned(offset) } else { a.checked_sub_unsigned(offset) };
-            let last = last.ok_or_else(|| pyo3::exceptions::PyOverflowError::new_err("arange() bounds overflow"))?;
-            for x in [a, last] {
-                if x < lo || x > hi {
-                    return Err(pyo3::exceptions::PyOverflowError::new_err(format!(
-                        "arange() value {x} is out of range for {}",
-                        if matches!(*schema, Schema::Int) { "int" } else { target.name() }
-                    )));
-                }
-            }
+            // Element `k` exists, so it lies between `a` and `b`: no overflow.
+            let offset = k as u128 * s.unsigned_abs();
+            let x = if s > 0 { a.checked_add_unsigned(offset) } else { a.checked_sub_unsigned(offset) };
+            return Err(pyo3::exceptions::PyOverflowError::new_err(format!(
+                "arange() value {} is out of range for {}",
+                x.unwrap_or(a),
+                if matches!(*schema, Schema::Int) { "int" } else { target.name() }
+            )));
         }
         // Wrapping arithmetic is exact here: the true value of every element fits i128.
         convert::generate(py, target, len, |k| a.wrapping_add((k as i128).wrapping_mul(s)))?

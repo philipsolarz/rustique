@@ -829,19 +829,33 @@ fn ingest_range(py: Python<'_>, schema: &Arc<Schema>, range: &Bound<'_, PyAny>) 
     if len == 0 {
         return Ok(Some(Storage::for_schema(schema)));
     }
-    let last = i128::from(start) + (len as i128 - 1) * i128::from(step);
-    if let Some((lo, hi)) = target.int_range() {
-        let out_of_range = |x: i128| x < lo || x > hi;
-        if out_of_range(i128::from(start)) || out_of_range(last) {
-            // Ranges are monotonic: find the first offending element.
-            let index = (0..len).find(|&k| out_of_range(i128::from(start) + k as i128 * i128::from(step))).unwrap_or(0);
-            let value = i128::from(start) + index as i128 * i128::from(step);
-            let e = CoerceError::Overflow { message: format!("{value} is out of range for {target}") };
-            return Err(coerce_failure(schema, index, e));
-        }
+    if let Some((lo, hi)) = target.int_range()
+        && let Some(index) = first_out_of_range(start.into(), step.into(), len, lo, hi)
+    {
+        let value = i128::from(start) + index as i128 * i128::from(step);
+        let e = CoerceError::Overflow { message: format!("{value} is out of range for {target}") };
+        return Err(coerce_failure(schema, index, e));
     }
     let column = generate(py, target, len, |k| i128::from(start) + k as i128 * i128::from(step))?;
     Ok(Some(Storage::Native(column)))
+}
+
+/// Index of the first of the `len` elements `start + k * step` outside `lo..=hi`, if any.
+/// The sequence is monotonic, so this is arithmetic rather than a scan.
+pub fn first_out_of_range(start: i128, step: i128, len: usize, lo: i128, hi: i128) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    if start < lo || start > hi {
+        return Some(0);
+    }
+    // Room left towards the bound the sequence moves to, in whole steps.
+    let room = match step.cmp(&0) {
+        std::cmp::Ordering::Greater => hi.abs_diff(start),
+        std::cmp::Ordering::Less => start.abs_diff(lo),
+        std::cmp::Ordering::Equal => return None,
+    };
+    usize::try_from(room / step.unsigned_abs() + 1).ok().filter(|&k| k < len)
 }
 
 /// Number of elements of `range(start, stop, step)` (`step != 0`).

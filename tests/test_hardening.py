@@ -301,3 +301,50 @@ def test_m2_arange_huge_lengths_fail_cleanly() -> None:
         rs.arange(2**62)
     with pytest.raises(MemoryError):
         rs.arange(0.0, 1e300, 1e-3, float)
+
+
+# --------------------------------------------------------------------------------------
+# M3: converting a `range` into a fixed-width list scanned linearly (attached, without
+# checking for signals) for the first element out of range: `List[rs.u32](range(2**33))`
+# took over a minute.
+# --------------------------------------------------------------------------------------
+
+
+def test_m3_range_out_of_range_is_found_arithmetically() -> None:
+    import time
+
+    t0 = time.perf_counter()
+    with pytest.raises(OverflowError, match=r"List\[u32\]: 4294967296 is out of range for u32 at index 4294967296"):
+        List[rs.u32](range(2**33))
+    with pytest.raises(OverflowError, match=r"at index 256$"):
+        List[rs.u8](range(2**62))
+    with pytest.raises(OverflowError, match=r"-129 is out of range for i8 at index 129$"):
+        List[rs.i8](range(0, -(2**62), -1))
+    # arange reports the first offending element too.
+    with pytest.raises(OverflowError, match=r"^arange\(\) value 256 is out of range for u8$"):
+        rs.arange(0, 300, 1, rs.u8)
+    with pytest.raises(OverflowError, match=r"^arange\(\) value -2 is out of range for u32$"):
+        rs.arange(10, -(2**60), -3, rs.u32)
+    assert time.perf_counter() - t0 < 5
+
+
+@pytest.mark.parametrize(
+    ("alias", "rng"),
+    [
+        ("u8", range(250, 300)),
+        ("u8", range(300, 250, -1)),
+        ("u8", range(-5, 5)),
+        ("u8", range(10, -10, -3)),
+        ("i8", range(-200, 0, 7)),
+        ("i16", range(0, 10**6, 999)),
+        ("u32", range(2**32 - 5, 2**32 + 5, 3)),
+        ("i32", range(2**31 - 1, -(2**31) - 10, -(2**30))),
+    ],
+)
+def test_m3_range_errors_match_element_wise_conversion(alias: str, rng: range) -> None:
+    typed = List[getattr(rs, alias)]
+    with pytest.raises(OverflowError) as fast:
+        typed(rng)
+    with pytest.raises(OverflowError) as slow:
+        typed(list(rng))
+    assert str(fast.value) == str(slow.value)
