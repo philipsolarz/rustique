@@ -1,12 +1,13 @@
 [workspace]
 resolver = "3"
 members = ["crates/rustique-core", "crates/rustique-py"]
+# A bare `cargo test` exercises the pure-Rust core; use `--workspace` for everything.
+default-members = ["crates/rustique-core"]
 
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.99"
-license = "MIT OR Apache-2.0"
 repository = "https://github.com/philipsolarz/rustique"
 
 [workspace.dependencies]
@@ -31,7 +32,7 @@ lto = "fat"
 codegen-units = 1
 panic = "unwind"
 
-# Fast iteration profile for `maturin develop --profile dev-release`.
+# Optimised but quick to build: `maturin develop --profile dev-release` for benchmarks.
 [profile.dev-release]
 inherits = "release"
 lto = "thin"

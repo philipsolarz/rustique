@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 16f62ce2cb6d045189dd2b1fbd0be5ba6e9828345158fe78adb54a489e53654b # shrinks to c = F32([-0.0, 0.0, 1.0]), reverse = true
+cc 99c59eb6cc08d97e1fd45360d62be5488781dbf950aac601552c9ae05de0aaf7 # shrinks to c = I8([127, 126]), reverse = true
+cc a14f9ddf6ebcae521b99ad67c8bd92f030d616108a003b4fe296d8ac482bbf08 # shrinks to (a, b) = (F32([1e-45, 0.0]), I8([0, 0]))
+cc ad804df51df698eeadb507cd415caf8923a025b34ce208b36467cdcd9323d35a # shrinks to da = F64, db = Bool, x = F(-5.849966623065624e-181), y = F(-0.0)
+cc 1c17779ee498e79ad0d33875781c305133b6490f911721ace85c51f33d1cdad4 # shrinks to c = Bool([false, true]), reverse = true
+cc 34c7df15d87bc02de96fe41cccacd1abd95577e8228cae4b1148c373d6770ebb # shrinks to c = F32([inf]), needle_dtype = F64, needle = F(1e308), start = 0, stop = 0
