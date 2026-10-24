@@ -92,3 +92,77 @@ def test_update_from_builtin_still_converts_valid_values():
         d.update({"f": 300})
     u = rs.Dict({"x": 1.5, "y": "s", "z": None})
     assert u.to_dict() == {"x": 1.5, "y": "s", "z": None}
+
+
+# --- H1: Python objects are never released while a container lock is held -------------------
+
+
+def test_setdefault_releases_an_unused_default_after_the_lock():
+    out = run_isolated(
+        """
+        import rustique as rs
+
+        d = rs.Dict[str, rs.List]()
+
+        class Bomb:
+            def __del__(self):
+                print("del", len(d), flush=True)  # needs d's lock
+
+        def gen():
+            d["k"] = []  # the key appears while the default is being converted
+            yield Bomb()
+
+        print("got", d.setdefault("k", gen()), flush=True)
+        """,
+        timeout=30,
+    )
+    assert out.split() == ["del", "1", "got", "List([])"]
+
+
+def test_failed_batch_releases_pending_items_after_the_lock():
+    # Under -bb the bytes/str comparison raises; the value in flight and the items not yet
+    # inserted are released (finalizers touching the dict run) only after the lock.
+    out = run_isolated(
+        """
+        import rustique as rs
+
+        d = rs.Dict({b"a": 1})
+
+        class Bomb:
+            def __del__(self):
+                print("del", len(d), flush=True)
+
+        try:
+            d.update(iter([("a", Bomb()), ("z", Bomb())]))
+        except BytesWarning:
+            print("BytesWarning", flush=True)
+        print("len", len(d))
+        """,
+        "-bb",
+        timeout=30,
+    )
+    assert out.split() == ["del", "1", "del", "1", "BytesWarning", "len", "1"]
+
+
+def test_failed_eq_mid_batch_keeps_prefix_and_releases_rest():
+    class BadEq:
+        def __hash__(self):
+            return hash("x")
+
+        def __eq__(self, other):
+            raise ValueError("no eq")
+
+    released = []
+
+    class Value:
+        def __init__(self, n):
+            self.n = n
+
+        def __del__(self):
+            released.append((self.n, len(d)))
+
+    d = rs.Dict({"x": 0})
+    with pytest.raises(ValueError, match="no eq"):
+        d.update([("a", Value(1)), (BadEq(), Value(2)), ("b", Value(3))])
+    assert list(d) == ["x", "a"]
+    assert sorted(released) == [(2, 2), (3, 2)]

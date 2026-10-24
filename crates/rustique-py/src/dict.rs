@@ -58,8 +58,19 @@ impl DictInner {
         self.values.get(py, pos).unwrap_or_else(|| py.None())
     }
 
-    fn push_entry(&mut self, py: Python<'_>, key: &Key<'_>, value: Coerced) -> PyResult<()> {
-        self.table.push(py, key)?;
+    /// Append an entry for an absent key. If the key cannot be stored, the value goes to
+    /// `out` (it may hold the last reference to an object: never drop it under the lock).
+    fn push_entry(
+        &mut self,
+        py: Python<'_>,
+        key: &Key<'_>,
+        value: Coerced,
+        out: &mut Displaced,
+    ) -> PyResult<()> {
+        if let Err(e) = self.table.push(py, key) {
+            out.extend(coerced_object(value));
+            return Err(e);
+        }
         self.values.push(py, value);
         Ok(())
     }
@@ -113,6 +124,14 @@ impl DictInner {
             .into_iter()
             .map(|p| self.value(py, p))
             .collect()
+    }
+}
+
+/// The Python object a coerced value holds, if any.
+fn coerced_object(value: Coerced) -> Option<Py<PyAny>> {
+    match value {
+        Coerced::Object(obj) => Some(obj),
+        Coerced::Native(_) => None,
     }
 }
 
@@ -697,7 +716,7 @@ impl Dict {
                     debug_assert_eq!(pos, inner.values.len());
                     inner.values.push(py, value);
                 }
-                Slot::Absent(key) => inner.push_entry(py, key, value)?,
+                Slot::Absent(key) => inner.push_entry(py, key, value, &mut displaced)?,
             }
             Ok(())
         });
@@ -751,9 +770,9 @@ impl Dict {
             let value = self.prepare_value(value)?;
             keys::batch_upsert(py, &self.inner, [(key, value)], |inner, value, slot| {
                 match slot {
-                    Slot::Existing(pos) => displaced = inner.values.set(py, pos, value),
+                    Slot::Existing(pos) => displaced.extend(inner.values.set(py, pos, value)),
                     Slot::Inserted(_) => inner.values.push(py, value),
-                    Slot::Absent(key) => inner.push_entry(py, key, value)?,
+                    Slot::Absent(key) => inner.push_entry(py, key, value, &mut displaced)?,
                 }
                 Ok(())
             })?;
@@ -1229,26 +1248,34 @@ impl Dict {
         let none = py.None().into_bound(py);
         let value = self.prepare_value(default.unwrap_or(&none))?;
         let mut result = None;
-        keys::batch_upsert(
+        // The converted default may be a new container holding the last references to its
+        // elements: when the key turned up meanwhile it is released after the lock.
+        let mut unused = Vec::new();
+        let res = keys::batch_upsert(
             py,
             &self.inner,
             [(prepared, value)],
             |inner, value, slot| {
                 let pos = match slot {
-                    Slot::Existing(pos) => pos,
+                    Slot::Existing(pos) => {
+                        unused.extend(coerced_object(value));
+                        pos
+                    }
                     Slot::Inserted(pos) => {
                         inner.values.push(py, value);
                         pos
                     }
                     Slot::Absent(key) => {
-                        inner.push_entry(py, key, value)?;
+                        inner.push_entry(py, key, value, &mut unused)?;
                         inner.table.entries() - 1
                     }
                 };
                 result = Some(inner.value(py, pos));
                 Ok(())
             },
-        )?;
+        );
+        drop(unused);
+        res?;
         Ok(result.unwrap_or_else(|| py.None()))
     }
 

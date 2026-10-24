@@ -1151,8 +1151,9 @@ pub(crate) fn with_entry_mut<T: Keyed, R>(
 }
 
 /// Apply `commit` to each item's located entry in order, holding the exclusive lock except
-/// while Python comparisons run. Items are dropped only after the lock is released
-/// (dropping a key object may run `__del__`).
+/// while Python comparisons run. Items — processed or not, also when an error stops the
+/// batch — are dropped only after the lock is released (dropping a key object may run
+/// `__del__`). `commit` must not drop Python objects itself.
 pub(crate) fn batch_mut<'py, T: Keyed, I>(
     py: Python<'py>,
     lock: &Locked<T>,
@@ -1160,16 +1161,18 @@ pub(crate) fn batch_mut<'py, T: Keyed, I>(
     key_of: impl Fn(&I) -> &Key<'py>,
     commit: impl FnMut(&mut T, &I, Option<usize>) -> PyResult<()>,
 ) -> PyResult<()> {
+    let mut items = items.into_iter();
     let mut spent = Vec::new();
-    let result = batch_mut_locked(py, lock, items, key_of, commit, &mut spent);
+    let result = batch_mut_locked(py, lock, &mut items, key_of, commit, &mut spent);
     drop(spent);
+    drop(items);
     result
 }
 
 fn batch_mut_locked<'py, T: Keyed, I>(
     py: Python<'py>,
     lock: &Locked<T>,
-    items: impl IntoIterator<Item = I>,
+    items: &mut impl Iterator<Item = I>,
     key_of: impl Fn(&I) -> &Key<'py>,
     mut commit: impl FnMut(&mut T, &I, Option<usize>) -> PyResult<()>,
     spent: &mut Vec<I>,
@@ -1197,9 +1200,16 @@ fn batch_mut_locked<'py, T: Keyed, I>(
                 }
             };
             drop(guard);
-            let found = pending.compare(&key_of(&item).obj)?;
+            let found = pending.compare(&key_of(&item).obj);
             let version = pending.version;
             drop(pending);
+            let found = match found {
+                Ok(found) => found,
+                Err(e) => {
+                    spent.push(item);
+                    return Err(e);
+                }
+            };
             guard = lock.write(py);
             if guard.table().version == version {
                 let res = commit(&mut guard, &item, found);
@@ -1212,27 +1222,41 @@ fn batch_mut_locked<'py, T: Keyed, I>(
     Ok(())
 }
 
+/// What a batch upsert releases after its lock: the keys and values it consumed or did not
+/// get to (an error may stop it mid-way).
+struct Spent<'py, V> {
+    keys: Vec<Key<'py>>,
+    values: Vec<V>,
+}
+
 /// Insert-or-update each item's key in order under the exclusive lock (released only while
 /// Python comparisons run), then `commit` its value. Native keys take a single-probe path.
-/// Key objects are dropped only after the lock is released.
+/// Key objects and values that are not committed are dropped only after the lock is
+/// released; `commit` must not drop Python objects itself (it stores the value, or moves it
+/// to a holder of its own that outlives the call).
 pub(crate) fn batch_upsert<'py, T: Keyed, V>(
     py: Python<'py>,
     lock: &Locked<T>,
     items: impl IntoIterator<Item = (Prepared<'py>, V)>,
     commit: impl FnMut(&mut T, V, Slot<'_, 'py>) -> PyResult<()>,
 ) -> PyResult<()> {
-    let mut spent = Vec::new();
-    let result = batch_upsert_locked(py, lock, items, commit, &mut spent);
+    let mut items = items.into_iter();
+    let mut spent = Spent {
+        keys: Vec::new(),
+        values: Vec::new(),
+    };
+    let result = batch_upsert_locked(py, lock, &mut items, commit, &mut spent);
     drop(spent);
+    drop(items);
     result
 }
 
 fn batch_upsert_locked<'py, T: Keyed, V>(
     py: Python<'py>,
     lock: &Locked<T>,
-    items: impl IntoIterator<Item = (Prepared<'py>, V)>,
+    items: &mut impl Iterator<Item = (Prepared<'py>, V)>,
     mut commit: impl FnMut(&mut T, V, Slot<'_, 'py>) -> PyResult<()>,
-    spent: &mut Vec<Key<'py>>,
+    spent: &mut Spent<'py, V>,
 ) -> PyResult<()> {
     let slot = |pos, inserted| {
         if inserted {
@@ -1245,17 +1269,21 @@ fn batch_upsert_locked<'py, T: Keyed, V>(
     for (prepared, value) in items {
         let key = match prepared {
             Prepared::Key(key) => key,
-            native => match guard.table_mut().upsert(py, native)? {
-                Ok((pos, inserted)) => {
+            native => match guard.table_mut().upsert(py, native) {
+                Ok(Ok((pos, inserted))) => {
                     commit(&mut guard, value, slot(pos, inserted))?;
                     continue;
                 }
-                Err(key) => key,
+                Ok(Err(key)) => key,
+                Err(e) => {
+                    spent.values.push(value);
+                    return Err(e);
+                }
             },
         };
         if let Some((pos, inserted)) = guard.table_mut().upsert_fast(&key) {
             let res = commit(&mut guard, value, slot(pos, inserted));
-            spent.push(key);
+            spent.keys.push(key);
             res?;
             continue;
         }
@@ -1263,26 +1291,35 @@ fn batch_upsert_locked<'py, T: Keyed, V>(
             let pending = match guard.table().resolve(py, &key) {
                 Ok(Resolve::Found(pos)) => {
                     let res = commit(&mut guard, value, Slot::Existing(pos));
-                    spent.push(key);
+                    spent.keys.push(key);
                     res?;
                     break;
                 }
                 Ok(Resolve::Absent) => {
                     let res = commit(&mut guard, value, Slot::Absent(&key));
-                    spent.push(key);
+                    spent.keys.push(key);
                     res?;
                     break;
                 }
                 Ok(Resolve::Compare(pending)) => pending,
                 Err(e) => {
-                    spent.push(key);
+                    spent.keys.push(key);
+                    spent.values.push(value);
                     return Err(e);
                 }
             };
             drop(guard);
-            let found = pending.compare(&key.obj)?;
+            let found = pending.compare(&key.obj);
             let version = pending.version;
             drop(pending);
+            let found = match found {
+                Ok(found) => found,
+                Err(e) => {
+                    spent.keys.push(key);
+                    spent.values.push(value);
+                    return Err(e);
+                }
+            };
             guard = lock.write(py);
             if guard.table().version == version {
                 let res = commit(
@@ -1290,7 +1327,7 @@ fn batch_upsert_locked<'py, T: Keyed, V>(
                     value,
                     found.map_or(Slot::Absent(&key), Slot::Existing),
                 );
-                spent.push(key);
+                spent.keys.push(key);
                 res?;
                 break;
             }
