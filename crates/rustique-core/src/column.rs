@@ -259,6 +259,14 @@ impl Value {
     }
 }
 
+fn gather<T: Clone>(v: &[T], indices: &[usize]) -> Vec<T> {
+    indices.iter().map(|&i| v[i].clone()).collect()
+}
+
+fn select<T: Clone>(v: &[T], mask: &[bool]) -> Vec<T> {
+    v.iter().zip(mask).filter(|(_, keep)| **keep).map(|(x, _)| x.clone()).collect()
+}
+
 fn type_mismatch(expected: DType, value: &Value) -> ColumnError {
     ColumnError::TypeMismatch { expected, found: value.dtype() }
 }
@@ -431,13 +439,13 @@ impl Column {
 
     /// Gather the elements at `indices` (all must be in range).
     pub fn take(&self, indices: &[usize]) -> Column {
-        map_column!(self, v => indices.iter().map(|&i| v[i].clone()).collect())
+        map_column!(self, v => gather(v, indices))
     }
 
     /// Keep the elements whose mask entry is `true` (`mask.len() == self.len()`).
     pub fn filter(&self, mask: &[bool]) -> Column {
         debug_assert_eq!(mask.len(), self.len());
-        map_column!(self, v => v.iter().zip(mask).filter(|(_, keep)| **keep).map(|(x, _)| x.clone()).collect())
+        map_column!(self, v => select(v, mask))
     }
 
     pub fn reverse(&mut self) {
@@ -453,7 +461,7 @@ impl Column {
     /// `None` for `Str`. The pointer is valid until the column is mutated or dropped.
     pub fn raw_parts(&self) -> Option<(*const u8, usize, usize)> {
         let item = self.dtype().item_size()?;
-        let ptr = with_column!(self, v => v.as_ptr() as *const u8);
+        let ptr = with_column!(self, v => v.as_ptr().cast::<u8>());
         Some((ptr, self.len(), item))
     }
 }
