@@ -230,12 +230,17 @@ Native key strategies: `I64`, `Str` (plus `Bool` folded into int keys per Python
 equality `True == 1`); values use any `Storage` strategy. Object keys use Python
 `__hash__`/`__eq__`.
 API parity with `dict`: `__getitem__` (`KeyError`), `__setitem__`, `__delitem__`,
-`__contains__`, `__len__`, `__iter__` (live; `RuntimeError: dictionary changed size during
-iteration`), `__eq__` (vs `Dict` or `dict`), `__repr__` (`Dict[str, int]({'a': 1})`),
+`__contains__`, `__len__`, `__iter__` (live, following CPython's `dictiter_iternextkey`:
+sticky `RuntimeError: dictionary changed size during iteration`, "keys changed" only for
+forward iteration, CPython's `__length_hint__`), `__eq__` (vs `Dict` or `dict`), `__repr__` (`Dict[str, int]({'a': 1})`),
 `__or__`, `__ror__`, `__ior__`, `keys()`, `values()`, `items()` (view objects with `len`,
 `iter`, `contains`; keys/items views support set operators), `get`, `pop`, `popitem`
 (LIFO, `KeyError` when empty), `setdefault`, `update`, `clear`, `copy`, `fromkeys`
 (classmethod), `to_dict()`, `__hash__ = None`.
+Entry storage compacts on growth with CPython's policy (`USABLE_FRACTION`, `GROWTH_RATE`);
+deletions leave tombstones until the next growing insert. Untyped dicts keep each key's
+original type (`Dict({True: 1})` keeps `True`, switching to object keys); typed
+`Dict[int, V]` normalises per the schema.
 Lookup with a key that cannot be converted to the key schema is a miss (`KeyError` /
 `False`), never `TypeError` — except unhashable keys, which raise `TypeError` like `dict`.
 Numeric key equivalence follows Python: `1`, `1.0`, `True` are the same key.
@@ -295,7 +300,10 @@ column-at-a-time in Rust.
 - `repr(X * 2 + 1)` → `((X * 2) + 1)`.
 - `bool(expr)` raises `TypeError` (prevents `if X > 1:` mistakes; use `&`/`|`, not
   `and`/`or`).
-- Evaluating on `Object` storage falls back to per-element Python evaluation.
+- Evaluating on `Object` storage falls back to per-element Python evaluation (checking
+  for signals once per element).
+- Expressions are DAGs: shared subexpressions are planned and evaluated once (memoised by
+  node). An expression may contain at most 100 000 nodes (`ValueError` beyond).
 
 ---
 
@@ -405,7 +413,13 @@ cost of a borrow/release pair is about 0.1 µs.
 
 - Every container is a `#[pyclass(frozen)]` whose mutable state lives behind a lock.
   Readers share, writers exclude. Lock acquisition must never deadlock against the GIL /
-  interpreter: when contended, wait while *detached* from the interpreter.
+  interpreter: when contended, wait while *detached* from the interpreter — and **never
+  hold or queue on a Rustique lock while detached**. A waiter spins briefly attached, then
+  waits detached *without touching the lock* (spin, then sleeps capped at 500 µs) and only
+  calls `try_*` once re-attached. This keeps lock state frozen during a stop-the-world GC,
+  so `__traverse__`'s `try_lock` sees the same answer in every GC phase. After 200 µs a
+  waiter counts as starving; only starving threads may barge, and starving writers go
+  before starving readers (no writer starvation, at some cost to read-heavy throughput).
 - **No Python code under a Rustique lock.** Operations are three-phase:
   1. *prepare* (outside the lock): convert/validate Python inputs, compute hashes, may run
      arbitrary Python code;
@@ -414,8 +428,14 @@ cost of a borrow/release pair is about 0.1 µs.
   3. *finalize* (outside the lock): drop replaced `Py<PyAny>` objects (decref → may run
      `__del__`), build Python result objects.
   Comparisons that need Python (`Object` storage `__eq__`, object-keyed dict lookups)
-  snapshot the needed references under the lock, compare outside it, and re-validate with
-  a mutation counter (retry / `RuntimeError` like CPython).
+  snapshot the needed references under the lock and compare outside it. Lists then
+  continue against the *live* list after any comparison that ran Python code (CPython
+  re-reads `ob_item[i]` each step). Dict/Set validate **per candidate**, like CPython:
+  after re-locking, the table layout must be unchanged and the stored key at the
+  candidate's position must still be the same object; unrelated concurrent changes never
+  force a restart (no livelock).
+- Nothing Python-owned is dropped while a guard is held — including *rejected* inputs on
+  error paths (they are returned to the caller and dropped after unlocking).
 - Bulk reads of *builtin* mutable sources (`list`, `dict`, `set`) happen inside **one**
   critical section on the source object (`pyo3::sync::with_critical_section`), never
   element-by-element without a lock — on 3.15t that is a data race. Only exact-type
