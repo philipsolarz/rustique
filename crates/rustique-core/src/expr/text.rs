@@ -49,10 +49,7 @@ pub(super) fn parse_int(s: &str) -> Result<i64, Fault> {
     }
     let mut v: u64 = 0;
     for d in clean.bytes() {
-        v = v
-            .checked_mul(10)
-            .and_then(|v| v.checked_add(u64::from(d - b'0')))
-            .ok_or(Fault::Fallback)?;
+        v = v.checked_mul(10).and_then(|v| v.checked_add(u64::from(d - b'0'))).ok_or(Fault::Fallback)?;
     }
     let v = if negative { -(v as i128) } else { v as i128 };
     i64::try_from(v).map_err(|_| Fault::Fallback)

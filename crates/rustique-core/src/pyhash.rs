@@ -19,11 +19,7 @@ pub const INF: isize = 314_159;
 /// Apply the sign to a reduced magnitude and avoid the reserved value `-1`.
 #[inline]
 fn finish(magnitude: usize, negative: bool) -> isize {
-    let x = if negative {
-        magnitude.wrapping_neg()
-    } else {
-        magnitude
-    };
+    let x = if negative { magnitude.wrapping_neg() } else { magnitude };
     if x == usize::MAX { -2 } else { x as isize }
 }
 
@@ -104,11 +100,7 @@ pub fn hash_f64(v: f64) -> Option<isize> {
         }
     }
     // Multiply by 2**e: reduce e modulo HASH_BITS (2**HASH_BITS ≡ 1), then rotate.
-    let e = if e >= 0 {
-        e % bits
-    } else {
-        bits - 1 - ((-1 - e) % bits)
-    } as u32;
+    let e = if e >= 0 { e % bits } else { bits - 1 - ((-1 - e) % bits) } as u32;
     x = ((x << e) & MODULUS) | (x >> (HASH_BITS - e));
     Some(finish(x, negative))
 }

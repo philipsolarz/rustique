@@ -56,11 +56,7 @@ impl Binary for f64 {
     fn decompose(self) -> (u64, i32) {
         let bits = self.to_bits();
         let (biased, frac) = ((bits >> 52) as i32 & 0x7ff, bits & ((1 << 52) - 1));
-        if biased == 0 {
-            (frac, -1074)
-        } else {
-            (frac | 1 << 52, biased - 1075)
-        }
+        if biased == 0 { (frac, -1074) } else { (frac | 1 << 52, biased - 1075) }
     }
 }
 
@@ -73,15 +69,8 @@ impl Binary for f32 {
     }
     fn decompose(self) -> (u64, i32) {
         let bits = self.to_bits();
-        let (biased, frac) = (
-            (bits >> 23) as i32 & 0xff,
-            u64::from(bits & ((1 << 23) - 1)),
-        );
-        if biased == 0 {
-            (frac, -149)
-        } else {
-            (frac | 1 << 23, biased - 150)
-        }
+        let (biased, frac) = ((bits >> 23) as i32 & 0xff, u64::from(bits & ((1 << 23) - 1)));
+        if biased == 0 { (frac, -149) } else { (frac | 1 << 23, biased - 150) }
     }
 }
 
@@ -139,10 +128,7 @@ fn shortest<F: Binary>(x: F) -> Decimal {
         return rust;
     }
     let (low, e) = (exact.digits / 10, exact.exp + 1);
-    let Some(scaled) = u32::try_from(rust.exp - e)
-        .ok()
-        .and_then(|k| 10u128.checked_pow(k))
-    else {
+    let Some(scaled) = u32::try_from(rust.exp - e).ok().and_then(|k| 10u128.checked_pow(k)) else {
         return rust;
     };
     let other = match rust.digits.checked_mul(scaled) {
@@ -219,10 +205,7 @@ struct StackBuf {
 
 impl StackBuf {
     fn new() -> Self {
-        StackBuf {
-            bytes: [0; 48],
-            len: 0,
-        }
+        StackBuf { bytes: [0; 48], len: 0 }
     }
 
     fn as_str(&self) -> &str {
@@ -234,10 +217,7 @@ impl StackBuf {
 impl Write for StackBuf {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let end = self.len + s.len();
-        self.bytes
-            .get_mut(self.len..end)
-            .ok_or(fmt::Error)?
-            .copy_from_slice(s.as_bytes());
+        self.bytes.get_mut(self.len..end).ok_or(fmt::Error)?.copy_from_slice(s.as_bytes());
         self.len = end;
         Ok(())
     }

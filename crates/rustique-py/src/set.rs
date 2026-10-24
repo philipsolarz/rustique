@@ -59,10 +59,7 @@ impl<'py> Operand<'py> {
             return Ok(Operand::Rustique(s.clone()));
         }
         let is_set = obj.is_instance_of::<PySet>() || obj.is_instance_of::<PyFrozenSet>();
-        Ok(Operand::Local {
-            table: local_table(obj)?,
-            is_set,
-        })
+        Ok(Operand::Local { table: local_table(obj)?, is_set })
     }
 
     fn is_set(&self) -> bool {
@@ -138,10 +135,7 @@ fn union_native<K: Hash + Eq + Clone>(mut a: KeyIndex<K>, b: &KeyIndex<K>) -> Ke
     a
 }
 
-fn intersection_native<K: Hash + Eq + Clone + Default>(
-    a: &KeyIndex<K>,
-    b: &KeyIndex<K>,
-) -> KeyIndex<K> {
+fn intersection_native<K: Hash + Eq + Clone + Default>(a: &KeyIndex<K>, b: &KeyIndex<K>) -> KeyIndex<K> {
     let (small, large) = if b.len() < a.len() { (b, a) } else { (a, b) };
     let mut out = KeyIndex::default();
     for (_, k) in small.iter() {
@@ -152,10 +146,7 @@ fn intersection_native<K: Hash + Eq + Clone + Default>(
     out
 }
 
-fn difference_native<K: Hash + Eq + Clone + Default>(
-    a: &KeyIndex<K>,
-    b: &KeyIndex<K>,
-) -> KeyIndex<K> {
+fn difference_native<K: Hash + Eq + Clone + Default>(a: &KeyIndex<K>, b: &KeyIndex<K>) -> KeyIndex<K> {
     let mut out = KeyIndex::default();
     for (_, k) in a.iter() {
         if !b.contains(k) {
@@ -165,10 +156,7 @@ fn difference_native<K: Hash + Eq + Clone + Default>(
     out
 }
 
-fn symmetric_difference_native<K: Hash + Eq + Clone + Default>(
-    a: &KeyIndex<K>,
-    b: &KeyIndex<K>,
-) -> KeyIndex<K> {
+fn symmetric_difference_native<K: Hash + Eq + Clone + Default>(a: &KeyIndex<K>, b: &KeyIndex<K>) -> KeyIndex<K> {
     let mut out = KeyIndex::default();
     for (_, k) in a.iter() {
         if !b.contains(k) {
@@ -241,10 +229,7 @@ impl Set {
     }
 
     fn with_table(schema: Arc<Schema>, table: KeyTable) -> Set {
-        Set {
-            schema,
-            inner: Locked::new(SetInner { table }),
-        }
+        Set { schema, inner: Locked::new(SetInner { table }) }
     }
 
     fn empty(schema: Arc<Schema>) -> Set {
@@ -252,11 +237,7 @@ impl Set {
         Set::with_table(schema, table)
     }
 
-    fn build<'py>(
-        py: Python<'py>,
-        schema: Arc<Schema>,
-        iterable: Option<&Bound<'py, PyAny>>,
-    ) -> PyResult<Set> {
+    fn build<'py>(py: Python<'py>, schema: Arc<Schema>, iterable: Option<&Bound<'py, PyAny>>) -> PyResult<Set> {
         if let Some(it) = iterable
             && let Ok(other) = it.cast::<Set>()
             && other.get().same_schema(&schema)
@@ -276,11 +257,7 @@ impl Set {
     }
 
     fn type_name(&self) -> String {
-        if self.schema.is_any() {
-            "Set".to_owned()
-        } else {
-            format!("Set[{}]", self.schema)
-        }
+        if self.schema.is_any() { "Set".to_owned() } else { format!("Set[{}]", self.schema) }
     }
 
     fn prepare<'py>(&self, elem: Bound<'py, PyAny>) -> PyResult<Prepared<'py>> {
@@ -288,10 +265,7 @@ impl Set {
     }
 
     /// Read and validate the elements of `iterable`; stops at the first invalid one.
-    fn prepare_all<'py>(
-        &self,
-        iterable: &Bound<'py, PyAny>,
-    ) -> (Vec<Prepared<'py>>, Option<PyErr>) {
+    fn prepare_all<'py>(&self, iterable: &Bound<'py, PyAny>) -> (Vec<Prepared<'py>>, Option<PyErr>) {
         let (raw, mut err) = read_elements(iterable, &self.schema);
         let mut out = Vec::with_capacity(raw.len());
         for item in raw {
@@ -314,11 +288,8 @@ impl Set {
     /// (like CPython).
     fn probe<'py>(elem: &Bound<'py, PyAny>) -> PyResult<Key<'py>> {
         match Key::classify(elem, Role::SetElement) {
-            Err(e)
-                if elem.is_instance_of::<PySet>() && e.is_instance_of::<PyTypeError>(elem.py()) =>
-            {
-                let frozen =
-                    PyFrozenSet::new(elem.py(), elem.try_iter()?.collect::<PyResult<Vec<_>>>()?)?;
+            Err(e) if elem.is_instance_of::<PySet>() && e.is_instance_of::<PyTypeError>(elem.py()) => {
+                let frozen = PyFrozenSet::new(elem.py(), elem.try_iter()?.collect::<PyResult<Vec<_>>>()?)?;
                 Key::classify(frozen.as_any(), Role::SetElement)
             }
             other => other,
@@ -334,9 +305,7 @@ impl Set {
     }
 
     fn contains(&self, elem: &Bound<'_, PyAny>) -> PyResult<bool> {
-        keys::lookup(elem.py(), &self.inner, elem, Set::probe, |_, pos| {
-            pos.is_some()
-        })
+        keys::lookup(elem.py(), &self.inner, elem, Set::probe, |_, pos| pos.is_some())
     }
 
     fn contains_key(&self, key: &Key<'_>) -> PyResult<bool> {
@@ -354,17 +323,12 @@ impl Set {
         if prepared.len() > 1 {
             self.inner.write(py).table.reserve(prepared.len());
         }
-        keys::batch_upsert(
-            py,
-            &self.inner,
-            prepared.into_iter().map(|p| (p, ())),
-            |inner, (), slot| {
-                if let Slot::Absent(key) = slot {
-                    inner.table.push(py, key)?;
-                }
-                Ok(())
-            },
-        )?;
+        keys::batch_upsert(py, &self.inner, prepared.into_iter().map(|p| (p, ())), |inner, (), slot| {
+            if let Slot::Absent(key) = slot {
+                inner.table.push(py, key)?;
+            }
+            Ok(())
+        })?;
         err.map_or(Ok(()), Err)
     }
 
@@ -396,8 +360,7 @@ impl Set {
     fn discard_elem(&self, py: Python<'_>, elem: &Bound<'_, PyAny>) -> PyResult<bool> {
         let mut displaced = Vec::new();
         let found = keys::lookup_mut(py, &self.inner, elem, Set::probe, |inner, pos| {
-            pos.map(|p| inner.remove_at(py, p, &mut displaced))
-                .is_some()
+            pos.map(|p| inner.remove_at(py, p, &mut displaced)).is_some()
         })?;
         drop(displaced);
         Ok(found)
@@ -410,11 +373,7 @@ impl Set {
     /// Result schema of a binary operation: ours when every operand is a `Set` of the
     /// same schema, otherwise untyped.
     fn result_schema(&self, others: &[Operand<'_>]) -> Arc<Schema> {
-        if !self.schema.is_any()
-            && others
-                .iter()
-                .all(|o| o.schema().is_some_and(|s| self.same_schema(s)))
-        {
+        if !self.schema.is_any() && others.iter().all(|o| o.schema().is_some_and(|s| self.same_schema(s))) {
             self.schema.clone()
         } else {
             schema::any()
@@ -422,10 +381,7 @@ impl Set {
     }
 
     fn compute(&self, py: Python<'_>, op: Algebra, others: &[Bound<'_, PyAny>]) -> PyResult<Set> {
-        let operands = others
-            .iter()
-            .map(Operand::new)
-            .collect::<PyResult<Vec<_>>>()?;
+        let operands = others.iter().map(Operand::new).collect::<PyResult<Vec<_>>>()?;
         let schema = self.result_schema(&operands);
         let kind = KeyKind::for_schema(&schema);
         let mut table = self.snapshot_table(py).with_kind(kind);
@@ -443,11 +399,7 @@ impl Set {
         let typed = !self.schema.is_any();
         // Native keys on every side need no Python code: one step under the write lock, so
         // concurrent writers cannot invalidate it.
-        if let Some(natives) = operands
-            .iter()
-            .map(Operand::native)
-            .collect::<Option<Vec<_>>>()
-        {
+        if let Some(natives) = operands.iter().map(Operand::native).collect::<Option<Vec<_>>>() {
             let mut inner = self.inner.write(py);
             if let Some(table) = native_intersection(&inner.table, &natives, kind, typed) {
                 let displaced = inner.table.replace(table);
@@ -481,11 +433,7 @@ impl Set {
             }
         }
         let mut displaced = Vec::new();
-        let res = self
-            .inner
-            .write(py)
-            .table
-            .apply_fates(py, &fates, &mut displaced);
+        let res = self.inner.write(py).table.apply_fates(py, &fates, &mut displaced);
         drop(displaced);
         drop(fates);
         drop(result);
@@ -570,45 +518,26 @@ impl Set {
         if !is_set_operand(other) {
             return Ok(py.NotImplemented());
         }
-        Ok(
-            Bound::new(py, self.compute(py, op, std::slice::from_ref(other))?)?
-                .into_any()
-                .unbind(),
-        )
+        Ok(Bound::new(py, self.compute(py, op, std::slice::from_ref(other))?)?.into_any().unbind())
     }
 
     /// `other <op> self` with a builtin set on the left: an untyped result.
-    fn reflected(
-        &self,
-        py: Python<'_>,
-        op: Algebra,
-        other: &Bound<'_, PyAny>,
-    ) -> PyResult<Py<PyAny>> {
+    fn reflected(&self, py: Python<'_>, op: Algebra, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if !is_set_operand(other) {
             return Ok(py.NotImplemented());
         }
         let left = local_table(other)?;
-        let me = Operand::Local {
-            table: self.snapshot_table(py),
-            is_set: true,
-        };
+        let me = Operand::Local { table: self.snapshot_table(py), is_set: true };
         let table = table_algebra(py, op, left, &me, KeyKind::Adaptive)?;
-        Ok(Bound::new(py, Set::with_table(schema::any(), table))?
-            .into_any()
-            .unbind())
+        Ok(Bound::new(py, Set::with_table(schema::any(), table))?.into_any().unbind())
     }
 
     fn in_place(&self, py: Python<'_>, op: Algebra, others: &[Bound<'_, PyAny>]) -> PyResult<()> {
         match op {
             Algebra::Union => others.iter().try_for_each(|other| self.add_all(py, other)),
-            Algebra::Difference => others
-                .iter()
-                .try_for_each(|other| self.remove_all(py, other)),
+            Algebra::Difference => others.iter().try_for_each(|other| self.remove_all(py, other)),
             Algebra::Intersection => {
-                let operands = others
-                    .iter()
-                    .map(Operand::new)
-                    .collect::<PyResult<Vec<_>>>()?;
+                let operands = others.iter().map(Operand::new).collect::<PyResult<Vec<_>>>()?;
                 self.intersection_update_with(py, &operands)
             }
             Algebra::SymmetricDifference => {
@@ -647,9 +576,7 @@ impl Set {
 
 /// Operator forms accept only `Set`, `set` and `frozenset`.
 fn is_set_operand(obj: &Bound<'_, PyAny>) -> bool {
-    obj.is_instance_of::<Set>()
-        || obj.is_instance_of::<PySet>()
-        || obj.is_instance_of::<PyFrozenSet>()
+    obj.is_instance_of::<Set>() || obj.is_instance_of::<PySet>() || obj.is_instance_of::<PyFrozenSet>()
 }
 
 /// `mine <op> other` on private tables: natively when both store the same native keys,
@@ -722,25 +649,14 @@ fn table_algebra(
 }
 
 /// The elements of `mine` (keeping their objects) that `other` contains.
-fn retain_contained(
-    py: Python<'_>,
-    mine: KeyTable,
-    other: &Operand<'_>,
-    kind: KeyKind,
-) -> PyResult<KeyTable> {
+fn retain_contained(py: Python<'_>, mine: KeyTable, other: &Operand<'_>, kind: KeyKind) -> PyResult<KeyTable> {
     if let Some(theirs) = other.native() {
         match (mine.native_clone(), &theirs) {
             (Some(NativeKeys::Int(a)), NativeKeys::Int(b)) => {
-                return Ok(KeyTable::from_native(
-                    NativeKeys::Int(retain_native(&a, b)),
-                    kind,
-                ));
+                return Ok(KeyTable::from_native(NativeKeys::Int(retain_native(&a, b)), kind));
             }
             (Some(NativeKeys::Str(a)), NativeKeys::Str(b)) => {
-                return Ok(KeyTable::from_native(
-                    NativeKeys::Str(retain_native(&a, b)),
-                    kind,
-                ));
+                return Ok(KeyTable::from_native(NativeKeys::Str(retain_native(&a, b)), kind));
             }
             _ => {}
         }
@@ -756,12 +672,7 @@ fn retain_contained(
 
 /// `table & natives[0] & …` when all of them store native keys of one kind (`None`
 /// otherwise); typed tables keep their own order, like [`retain_contained`].
-fn native_intersection(
-    table: &KeyTable,
-    natives: &[NativeKeys],
-    kind: KeyKind,
-    typed: bool,
-) -> Option<KeyTable> {
+fn native_intersection(table: &KeyTable, natives: &[NativeKeys], kind: KeyKind, typed: bool) -> Option<KeyTable> {
     let (first, rest) = natives.split_first()?;
     let mut result = match (table.store(), first) {
         (KeyStore::Int(a), NativeKeys::Int(b)) if typed => NativeKeys::Int(retain_native(a, b)),
@@ -772,12 +683,8 @@ fn native_intersection(
     };
     for theirs in rest {
         result = match (result, theirs) {
-            (NativeKeys::Int(a), NativeKeys::Int(b)) if typed => {
-                NativeKeys::Int(retain_native(&a, b))
-            }
-            (NativeKeys::Str(a), NativeKeys::Str(b)) if typed => {
-                NativeKeys::Str(retain_native(&a, b))
-            }
+            (NativeKeys::Int(a), NativeKeys::Int(b)) if typed => NativeKeys::Int(retain_native(&a, b)),
+            (NativeKeys::Str(a), NativeKeys::Str(b)) if typed => NativeKeys::Str(retain_native(&a, b)),
             (a, b) => native_algebra(Algebra::Intersection, a, b).ok()?,
         };
     }
@@ -788,26 +695,8 @@ fn native_intersection(
 fn same_key(a: &Key<'_>, b: &Key<'_>) -> bool {
     a.obj.is(&b.obj)
         || match (&a.class, &b.class) {
-            (
-                Class::Int {
-                    value: x,
-                    exact: true,
-                },
-                Class::Int {
-                    value: y,
-                    exact: true,
-                },
-            ) => x == y,
-            (
-                Class::Str {
-                    text: x,
-                    exact: true,
-                },
-                Class::Str {
-                    text: y,
-                    exact: true,
-                },
-            ) => **x == **y,
+            (Class::Int { value: x, exact: true }, Class::Int { value: y, exact: true }) => x == y,
+            (Class::Str { text: x, exact: true }, Class::Str { text: y, exact: true }) => **x == **y,
             _ => false,
         }
 }
@@ -831,10 +720,7 @@ impl Set {
     }
 
     #[classmethod]
-    fn __class_getitem__<'py>(
-        cls: &Bound<'py, PyType>,
-        item: &Bound<'py, PyAny>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn __class_getitem__<'py>(cls: &Bound<'py, PyType>, item: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         crate::typing::set_alias(cls.py(), item)
     }
 
@@ -853,17 +739,9 @@ impl Set {
         let py = slf.py();
         let inner = slf.get().inner.read(py);
         let len = inner.table.len();
-        let state = SetIterState {
-            pos: 0,
-            expected: len,
-            remaining: len,
-            exhausted: false,
-        };
+        let state = SetIterState { pos: 0, expected: len, remaining: len, exhausted: false };
         drop(inner);
-        SetIterator {
-            set: slf.clone().unbind(),
-            state: Locked::new(state),
-        }
+        SetIterator { set: slf.clone().unbind(), state: Locked::new(state) }
     }
 
     fn __repr__(slf: &Bound<'_, Self>) -> PyResult<String> {
@@ -888,11 +766,7 @@ impl Set {
         Ok(out)
     }
 
-    fn __richcmp__(
-        slf: &Bound<'_, Self>,
-        other: &Bound<'_, PyAny>,
-        op: CompareOp,
-    ) -> PyResult<Py<PyAny>> {
+    fn __richcmp__(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         if !is_set_operand(other) {
             return Ok(py.NotImplemented());
@@ -928,11 +802,7 @@ impl Set {
     }
 
     fn remove(&self, py: Python<'_>, elem: &Bound<'_, PyAny>) -> PyResult<()> {
-        if self.discard_elem(py, elem)? {
-            Ok(())
-        } else {
-            Err(PyKeyError::new_err((elem.clone().unbind(),)))
-        }
+        if self.discard_elem(py, elem)? { Ok(()) } else { Err(PyKeyError::new_err((elem.clone().unbind(),))) }
     }
 
     /// Remove and return an element (the most recently inserted one).
@@ -978,11 +848,7 @@ impl Set {
     }
 
     fn symmetric_difference(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Set> {
-        self.compute(
-            py,
-            Algebra::SymmetricDifference,
-            std::slice::from_ref(other),
-        )
+        self.compute(py, Algebra::SymmetricDifference, std::slice::from_ref(other))
     }
 
     #[pyo3(signature = (*others))]
@@ -1000,16 +866,8 @@ impl Set {
         self.in_place(py, Algebra::Difference, &others)
     }
 
-    fn symmetric_difference_update(
-        &self,
-        py: Python<'_>,
-        other: &Bound<'_, PyAny>,
-    ) -> PyResult<()> {
-        self.in_place(
-            py,
-            Algebra::SymmetricDifference,
-            std::slice::from_ref(other),
-        )
+    fn symmetric_difference_update(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.in_place(py, Algebra::SymmetricDifference, std::slice::from_ref(other))
     }
 
     fn issubset(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
@@ -1069,11 +927,7 @@ impl Set {
     }
 
     fn __ixor__(&self, py: Python<'_>, other: SetLike<'_>) -> PyResult<()> {
-        self.in_place(
-            py,
-            Algebra::SymmetricDifference,
-            std::slice::from_ref(&other.0),
-        )
+        self.in_place(py, Algebra::SymmetricDifference, std::slice::from_ref(&other.0))
     }
 
     /// A builtin `set` with the same elements.
@@ -1081,14 +935,8 @@ impl Set {
         PySet::new(py, self.element_objects(py))
     }
 
-    fn __reduce__<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyList>,))> {
-        Ok((
-            self.schema_type_of(py)?,
-            (PyList::new(py, self.element_objects(py))?,),
-        ))
+    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyList>,))> {
+        Ok((self.schema_type_of(py)?, (PyList::new(py, self.element_objects(py))?,)))
     }
 
     /// The alias describing this set's type (`Set[int]`, or `Set` when untyped).
@@ -1126,10 +974,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for SetLike<'py> {
     type Error = PyErr;
 
     fn extract(obj: Borrowed<'a, 'py, PyAny>) -> Result<Self, Self::Error> {
-        if obj.is_instance_of::<Set>()
-            || obj.is_instance_of::<PySet>()
-            || obj.is_instance_of::<PyFrozenSet>()
-        {
+        if obj.is_instance_of::<Set>() || obj.is_instance_of::<PySet>() || obj.is_instance_of::<PyFrozenSet>() {
             Ok(SetLike(obj.to_owned()))
         } else {
             Err(PyTypeError::new_err("expected a set"))

@@ -135,14 +135,38 @@ views!(
 macro_rules! with_int {
     ($dtype:expr, $T:ident => $body:expr, _ => $other:expr) => {
         match $dtype {
-            DType::I8 => { type $T = i8; $body }
-            DType::I16 => { type $T = i16; $body }
-            DType::I32 => { type $T = i32; $body }
-            DType::I64 => { type $T = i64; $body }
-            DType::U8 => { type $T = u8; $body }
-            DType::U16 => { type $T = u16; $body }
-            DType::U32 => { type $T = u32; $body }
-            DType::U64 => { type $T = u64; $body }
+            DType::I8 => {
+                type $T = i8;
+                $body
+            }
+            DType::I16 => {
+                type $T = i16;
+                $body
+            }
+            DType::I32 => {
+                type $T = i32;
+                $body
+            }
+            DType::I64 => {
+                type $T = i64;
+                $body
+            }
+            DType::U8 => {
+                type $T = u8;
+                $body
+            }
+            DType::U16 => {
+                type $T = u16;
+                $body
+            }
+            DType::U32 => {
+                type $T = u32;
+                $body
+            }
+            DType::U64 => {
+                type $T = u64;
+                $body
+            }
             _ => $other,
         }
     };
@@ -477,8 +501,7 @@ fn shift_loop<T: PyInt, C: Num>(left: bool, a: Side<'_, T>, b: Side<'_, C>, out:
         let n = if ok { n as u32 } else { 0 };
         (if left { x.shl_bits(n) } else { x.shr_bits(n) }, !ok)
     };
-    map2(a, b, out, shift)
-        .map(|i| (i, if b.at(i).to_i128() < 0 { Fault::NegativeShift } else { Fault::ShiftRange }))
+    map2(a, b, out, shift).map(|i| (i, if b.at(i).to_i128() < 0 { Fault::NegativeShift } else { Fault::ShiftRange }))
 }
 
 /// `x + c` with a constant checks precomputed bounds instead of per-element overflow flags,
@@ -683,7 +706,13 @@ fn earliest(a: Option<Failure>, b: Option<Failure>) -> Option<Failure> {
 }
 
 /// The operand view of node `j` for the current block.
-fn operand<'a>(program: &'a Program, j: usize, input: Arr<'a>, done: &'a [Option<Column>], len: usize) -> Option<Opd<'a>> {
+fn operand<'a>(
+    program: &'a Program,
+    j: usize,
+    input: Arr<'a>,
+    done: &'a [Option<Column>],
+    len: usize,
+) -> Option<Opd<'a>> {
     Some(match &program.nodes.get(j)?.kind {
         Kind::Input => Opd { arr: input, one: false },
         Kind::Const(c) => Opd { arr: Arr::of(c), one: true },
@@ -748,7 +777,14 @@ fn exec_block(
 
 /// Evaluate `input` (elements `base..`) block by block into `out`, stopping after the first
 /// block with a failure, or before blocks past a failure another worker found (`limit`).
-fn run_range(program: &Program, input: Arr<'_>, base: usize, out: ArrMut<'_>, chunk: usize, limit: &AtomicUsize) -> Option<Failure> {
+fn run_range(
+    program: &Program,
+    input: Arr<'_>,
+    base: usize,
+    out: ArrMut<'_>,
+    chunk: usize,
+    limit: &AtomicUsize,
+) -> Option<Failure> {
     let mut buffers = vec![None; program.nodes.len()];
     let mut best = None;
     let mut out = out;

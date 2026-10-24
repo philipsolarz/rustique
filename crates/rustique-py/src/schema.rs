@@ -409,7 +409,6 @@ fn coerce_set(item: &Arc<Schema>, obj: &Bound<'_, PyAny>, schema: &Schema) -> Re
     Ok(Coerced::Object(set.into_any().unbind()))
 }
 
-
 /// INTERFACE. The shared `Any` schema.
 pub fn any() -> Arc<Schema> {
     static ANY: OnceLock<Arc<Schema>> = OnceLock::new();
@@ -430,4 +429,3 @@ pub fn intern(schema: Schema) -> Arc<Schema> {
     set.insert(interned.clone());
     interned
 }
-

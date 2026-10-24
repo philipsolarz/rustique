@@ -45,21 +45,13 @@ pub struct HashIndex {
 
 impl fmt::Debug for HashIndex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HashIndex")
-            .field("len", &self.len)
-            .field("entries", &self.entries())
-            .finish()
+        f.debug_struct("HashIndex").field("len", &self.len).field("entries", &self.entries()).finish()
     }
 }
 
 impl HashIndex {
     pub const fn new() -> Self {
-        HashIndex {
-            table: HashTable::new(),
-            hashes: Vec::new(),
-            dead: Vec::new(),
-            len: 0,
-        }
+        HashIndex { table: HashTable::new(), hashes: Vec::new(), dead: Vec::new(), len: 0 }
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
@@ -80,12 +72,7 @@ impl HashIndex {
             table.insert_unique(hash, Slot { hash, pos }, |s| s.hash);
         }
         let len = hashes.len();
-        HashIndex {
-            table,
-            hashes,
-            dead: Vec::new(),
-            len,
-        }
+        HashIndex { table, hashes, dead: Vec::new(), len }
     }
 
     /// Number of live entries.
@@ -125,19 +112,14 @@ impl HashIndex {
     /// Position of the live entry with `hash` for which `eq(position)` holds.
     #[inline]
     pub fn find(&self, hash: u64, mut eq: impl FnMut(usize) -> bool) -> Option<usize> {
-        self.table
-            .find(hash, |s| s.hash == hash && eq(s.pos))
-            .map(|s| s.pos)
+        self.table.find(hash, |s| s.hash == hash && eq(s.pos)).map(|s| s.pos)
     }
 
     /// Positions of all live entries whose hash equals `hash`, in probe order. Use this when
     /// the equality test cannot run while the index is borrowed (e.g. it calls back into a
     /// runtime that may mutate the container).
     pub fn candidates(&self, hash: u64) -> impl Iterator<Item = usize> + '_ {
-        self.table
-            .iter_hash(hash)
-            .filter(move |s| s.hash == hash)
-            .map(|s| s.pos)
+        self.table.iter_hash(hash).filter(move |s| s.hash == hash).map(|s| s.pos)
     }
 
     /// Append a new live entry with `hash` and return its position (always the previous
@@ -146,8 +128,7 @@ impl HashIndex {
     #[inline]
     pub fn push(&mut self, hash: u64) -> usize {
         let pos = self.entries();
-        self.table
-            .insert_unique(hash, Slot { hash, pos }, |s| s.hash);
+        self.table.insert_unique(hash, Slot { hash, pos }, |s| s.hash);
         self.record_push(hash);
         pos
     }
@@ -158,10 +139,7 @@ impl HashIndex {
     #[inline]
     pub fn find_or_push(&mut self, hash: u64, mut eq: impl FnMut(usize) -> bool) -> (usize, bool) {
         let pos = self.entries();
-        match self
-            .table
-            .entry(hash, |s| s.hash == hash && eq(s.pos), |s| s.hash)
-        {
+        match self.table.entry(hash, |s| s.hash == hash && eq(s.pos), |s| s.hash) {
             hashbrown::hash_table::Entry::Occupied(entry) => (entry.get().pos, false),
             hashbrown::hash_table::Entry::Vacant(entry) => {
                 entry.insert(Slot { hash, pos });
@@ -190,10 +168,7 @@ impl HashIndex {
 
     /// Remove the live entry with `hash` for which `eq(position)` holds, leaving a tombstone.
     pub fn remove(&mut self, hash: u64, mut eq: impl FnMut(usize) -> bool) -> Option<usize> {
-        let entry = self
-            .table
-            .find_entry(hash, |s| s.hash == hash && eq(s.pos))
-            .ok()?;
+        let entry = self.table.find_entry(hash, |s| s.hash == hash && eq(s.pos)).ok()?;
         let (slot, _) = entry.remove();
         self.mark_dead(slot.pos);
         Some(slot.pos)
@@ -259,12 +234,7 @@ impl HashIndex {
 
     /// Live positions in insertion order.
     pub fn iter(&self) -> LivePositions<'_> {
-        LivePositions {
-            dead: &self.dead,
-            front: 0,
-            back: self.entries(),
-            remaining: self.len,
-        }
+        LivePositions { dead: &self.dead, front: 0, back: self.entries(), remaining: self.len }
     }
 
     /// First live position `>= from`.
@@ -308,10 +278,7 @@ impl HashIndex {
     pub fn compact(&mut self) -> Remap {
         let dead = std::mem::take(&mut self.dead);
         if dead.is_empty() {
-            return Remap {
-                dead,
-                old_len: self.entries(),
-            };
+            return Remap { dead, old_len: self.entries() };
         }
         let old_len = dead.len();
         let mut new_pos = Vec::with_capacity(old_len);
@@ -345,8 +312,7 @@ impl HashIndex {
             if self.is_live(pos) {
                 let hash = rehash(pos);
                 self.hashes[pos] = hash;
-                self.table
-                    .insert_unique(hash, Slot { hash, pos }, |s| s.hash);
+                self.table.insert_unique(hash, Slot { hash, pos }, |s| s.hash);
             }
         }
     }
@@ -436,10 +402,7 @@ impl Remap {
 
     /// `(old, new)` position pairs of the surviving entries.
     pub fn moves(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        (0..self.old_len)
-            .filter(|&old| self.keeps(old))
-            .enumerate()
-            .map(|(new, old)| (old, new))
+        (0..self.old_len).filter(|&old| self.keeps(old)).enumerate().map(|(new, old)| (old, new))
     }
 
     /// Compact a parallel vector the same way, dropping the elements at tombstones.
@@ -508,19 +471,11 @@ impl<K, S: Default> Default for KeyIndex<K, S> {
 
 impl<K, S> KeyIndex<K, S> {
     pub fn with_hasher(hasher: S) -> Self {
-        KeyIndex {
-            keys: Vec::new(),
-            index: HashIndex::new(),
-            hasher,
-        }
+        KeyIndex { keys: Vec::new(), index: HashIndex::new(), hasher }
     }
 
     pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
-        KeyIndex {
-            keys: Vec::with_capacity(capacity),
-            index: HashIndex::with_capacity(capacity),
-            hasher,
-        }
+        KeyIndex { keys: Vec::with_capacity(capacity), index: HashIndex::with_capacity(capacity), hasher }
     }
 
     #[inline]
@@ -558,11 +513,7 @@ impl<K, S> KeyIndex<K, S> {
     /// The live key at `pos`.
     #[inline]
     pub fn get_at(&self, pos: usize) -> Option<&K> {
-        if self.index.is_live(pos) {
-            self.keys.get(pos)
-        } else {
-            None
-        }
+        if self.index.is_live(pos) { self.keys.get(pos) } else { None }
     }
 
     /// Live `(position, key)` pairs in insertion order.
@@ -588,31 +539,19 @@ impl<K, S> KeyIndex<K, S> {
     /// dropped, when `pos` is not live). The caller guarantees that `key` hashes like the
     /// key it replaces.
     pub fn replace_at(&mut self, pos: usize, key: K) -> Option<K> {
-        if self.index.is_live(pos) {
-            Some(std::mem::replace(&mut self.keys[pos], key))
-        } else {
-            None
-        }
+        if self.index.is_live(pos) { Some(std::mem::replace(&mut self.keys[pos], key)) } else { None }
     }
 
     /// Tombstone the live entry at `pos`, swapping `placeholder` into its slot; returns the
     /// removed key.
     pub fn remove_at(&mut self, pos: usize, placeholder: K) -> Option<K> {
-        if self.index.remove_at(pos) {
-            Some(std::mem::replace(&mut self.keys[pos], placeholder))
-        } else {
-            None
-        }
+        if self.index.remove_at(pos) { Some(std::mem::replace(&mut self.keys[pos], placeholder)) } else { None }
     }
 
     /// Drop positions `>= len`, returning the removed key slots (live or placeholder).
     pub fn truncate(&mut self, len: usize) -> Vec<K> {
         self.index.truncate(len);
-        if len < self.keys.len() {
-            self.keys.split_off(len)
-        } else {
-            Vec::new()
-        }
+        if len < self.keys.len() { self.keys.split_off(len) } else { Vec::new() }
     }
 
     /// Remove everything, returning the key slots.
@@ -655,11 +594,7 @@ impl<K, S> KeyIndex<K, S> {
     /// the index hashes were produced consistently with how lookups will hash.
     pub fn from_parts(keys: Vec<K>, index: HashIndex, hasher: S) -> Self {
         debug_assert_eq!(keys.len(), index.entries());
-        KeyIndex {
-            keys,
-            index,
-            hasher,
-        }
+        KeyIndex { keys, index, hasher }
     }
 }
 
@@ -710,9 +645,7 @@ impl<K: Hash + Eq, S: BuildHasher> KeyIndex<K, S> {
     {
         let hash = self.hash_key(key);
         let keys = &self.keys;
-        let (pos, new) = self
-            .index
-            .find_or_push(hash, |pos| keys[pos].borrow() == key);
+        let (pos, new) = self.index.find_or_push(hash, |pos| keys[pos].borrow() == key);
         if new {
             self.keys.push(make(key));
         }
@@ -722,24 +655,14 @@ impl<K: Hash + Eq, S: BuildHasher> KeyIndex<K, S> {
     /// Build from keys that are known to be pairwise distinct.
     pub fn from_distinct(keys: Vec<K>, hasher: S) -> Self {
         let index = HashIndex::from_hashes(keys.iter().map(|k| hasher.hash_one(k)));
-        KeyIndex {
-            keys,
-            index,
-            hasher,
-        }
+        KeyIndex { keys, index, hasher }
     }
 
     /// Recompute every hash with a new hasher (positions and tombstones are preserved).
     pub fn rehash_with<T: BuildHasher>(self, hasher: T) -> KeyIndex<K, T> {
-        let KeyIndex {
-            keys, mut index, ..
-        } = self;
+        let KeyIndex { keys, mut index, .. } = self;
         index.rehash(|pos| hasher.hash_one(&keys[pos]));
-        KeyIndex {
-            keys,
-            index,
-            hasher,
-        }
+        KeyIndex { keys, index, hasher }
     }
 }
 
@@ -773,10 +696,7 @@ impl<K: fmt::Debug, V: fmt::Debug, S> fmt::Debug for OrderedMap<K, V, S> {
 
 impl<K, V, S: Default> Default for OrderedMap<K, V, S> {
     fn default() -> Self {
-        OrderedMap {
-            keys: KeyIndex::default(),
-            values: Vec::new(),
-        }
+        OrderedMap { keys: KeyIndex::default(), values: Vec::new() }
     }
 }
 
@@ -797,9 +717,7 @@ impl<K, V, S> OrderedMap<K, V, S> {
 
     /// Entries in insertion order.
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&K, &V)> + '_ {
-        self.keys
-            .iter()
-            .filter_map(|(pos, k)| self.values[pos].as_ref().map(|v| (k, v)))
+        self.keys.iter().filter_map(|(pos, k)| self.values[pos].as_ref().map(|v| (k, v)))
     }
 
     pub fn clear(&mut self) {
@@ -817,10 +735,7 @@ impl<K, V, S> OrderedMap<K, V, S> {
 
 impl<K: Hash + Eq + Default, V, S: BuildHasher> OrderedMap<K, V, S> {
     pub fn with_hasher(hasher: S) -> Self {
-        OrderedMap {
-            keys: KeyIndex::with_hasher(hasher),
-            values: Vec::new(),
-        }
+        OrderedMap { keys: KeyIndex::with_hasher(hasher), values: Vec::new() }
     }
 
     pub fn get<Q>(&self, key: &Q) -> Option<&V>
@@ -880,9 +795,7 @@ impl<K: Hash + Eq + Default, V, S: BuildHasher> OrderedMap<K, V, S> {
     }
 }
 
-impl<K: Hash + Eq + Default, V, S: BuildHasher + Default> FromIterator<(K, V)>
-    for OrderedMap<K, V, S>
-{
+impl<K: Hash + Eq + Default, V, S: BuildHasher + Default> FromIterator<(K, V)> for OrderedMap<K, V, S> {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
         let mut map = OrderedMap::with_hasher(S::default());
         for (k, v) in iter {
@@ -930,10 +843,7 @@ mod tests {
         assert_eq!(ki.remove_at(0, 0), Some(1));
         assert_eq!(ki.replace_at(0, 1), None);
         assert_eq!(ki.replace_at(5, 1), None);
-        assert_eq!(
-            ki.iter().map(|(p, k)| (p, *k)).collect::<Vec<_>>(),
-            vec![(1, 2)]
-        );
+        assert_eq!(ki.iter().map(|(p, k)| (p, *k)).collect::<Vec<_>>(), vec![(1, 2)]);
     }
 
     #[test]
@@ -1082,10 +992,7 @@ mod tests {
         assert_eq!(idx.find(6, |p| keys[p] == 6), Some(6));
         idx.remove_at(3);
         idx.rehash(|p| (keys[p] as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        assert_eq!(
-            idx.find(5u64.wrapping_mul(0x9E37_79B9_7F4A_7C15), |p| keys[p] == 5),
-            Some(5)
-        );
+        assert_eq!(idx.find(5u64.wrapping_mul(0x9E37_79B9_7F4A_7C15), |p| keys[p] == 5), Some(5));
         assert_eq!(idx.find(5, |p| keys[p] == 5), None);
         assert!(!idx.is_live(3));
         assert_eq!(idx.push(99), 7);
@@ -1105,10 +1012,7 @@ mod tests {
         assert_eq!(ki.remove("a"), Some((0, CompactString::from("a"))));
         assert_eq!(ki.get("a"), None);
         assert_eq!(ki.insert("a".into()), (2, true));
-        assert_eq!(
-            ki.iter().map(|(_, k)| k.as_str()).collect::<Vec<_>>(),
-            ["b", "a"]
-        );
+        assert_eq!(ki.iter().map(|(_, k)| k.as_str()).collect::<Vec<_>>(), ["b", "a"]);
         let ki = ki.rehash_with(foldhash::fast::FixedState::with_seed(7));
         assert_eq!(ki.get("a"), Some(2));
         assert_eq!(ki.get_at(0), None);
@@ -1128,10 +1032,7 @@ mod tests {
         assert_eq!(m.pop(), Some((2, "b")));
         assert_eq!(m.pop(), None);
         let m: OrderedMap<i64, i64> = (0..5).map(|i| (i % 3, i)).collect();
-        assert_eq!(
-            m.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>(),
-            [(0, 3), (1, 4), (2, 2)]
-        );
+        assert_eq!(m.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>(), [(0, 3), (1, 4), (2, 2)]);
     }
 
     #[test]

@@ -15,9 +15,7 @@ use pyo3::prelude::*;
 use pyo3::pyclass::CompareOp;
 use pyo3::sync::PyOnceLock;
 use pyo3::sync::critical_section::with_critical_section;
-use pyo3::types::{
-    PyBool, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple, PyType,
-};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple, PyType};
 use pyo3::{PyTraverseError, ffi};
 use rustique_core::Column;
 use rustique_core::index::Remap;
@@ -26,9 +24,7 @@ use crate::convert;
 use crate::schema::{self, Coerced, Schema};
 use crate::storage::{Displaced, Storage};
 
-use keys::{
-    Key, KeyKind, KeyStore, KeyTable, Keyed, Locked, NativeKeys, Prepared, Quick, Role, Slot,
-};
+use keys::{Key, KeyKind, KeyStore, KeyTable, Keyed, Locked, NativeKeys, Prepared, Quick, Role, Slot};
 
 /// Keys and the parallel value storage (same positions, tombstones included).
 pub(crate) struct DictInner {
@@ -55,10 +51,7 @@ impl Keyed for DictInner {
 
 impl DictInner {
     fn new(key_schema: &Schema, value_schema: &Schema) -> DictInner {
-        DictInner {
-            table: KeyTable::new(KeyKind::for_schema(key_schema)),
-            values: Storage::for_schema(value_schema),
-        }
+        DictInner { table: KeyTable::new(KeyKind::for_schema(key_schema)), values: Storage::for_schema(value_schema) }
     }
 
     fn value(&self, py: Python<'_>, pos: usize) -> Py<PyAny> {
@@ -67,13 +60,7 @@ impl DictInner {
 
     /// Append an entry for an absent key. If the key cannot be stored, the value goes to
     /// `out` (it may hold the last reference to an object: never drop it under the lock).
-    fn push_entry(
-        &mut self,
-        py: Python<'_>,
-        key: &Key<'_>,
-        value: Coerced,
-        out: &mut Displaced,
-    ) -> PyResult<()> {
+    fn push_entry(&mut self, py: Python<'_>, key: &Key<'_>, value: Coerced, out: &mut Displaced) -> PyResult<()> {
         if let Err(e) = self.table.push(py, key) {
             out.extend(coerced_object(value));
             return Err(e);
@@ -109,26 +96,15 @@ impl DictInner {
     }
 
     fn clone_ref(&self, py: Python<'_>) -> DictInner {
-        DictInner {
-            table: self.table.clone_ref(py),
-            values: self.values.clone_ref(py),
-        }
+        DictInner { table: self.table.clone_ref(py), values: self.values.clone_ref(py) }
     }
 
     fn items(&self, py: Python<'_>) -> Vec<(Py<PyAny>, Py<PyAny>)> {
-        self.table
-            .positions()
-            .into_iter()
-            .map(|p| (self.table.key_object(py, p), self.value(py, p)))
-            .collect()
+        self.table.positions().into_iter().map(|p| (self.table.key_object(py, p), self.value(py, p))).collect()
     }
 
     fn values_list(&self, py: Python<'_>) -> Vec<Py<PyAny>> {
-        self.table
-            .positions()
-            .into_iter()
-            .map(|p| self.value(py, p))
-            .collect()
+        self.table.positions().into_iter().map(|p| self.value(py, p)).collect()
     }
 }
 
@@ -143,9 +119,7 @@ fn coerced_object(value: Coerced) -> Option<Py<PyAny>> {
 /// Take the value at `pos` out of `values` (object slots are replaced by `None`).
 fn take_value(py: Python<'_>, values: &mut Storage, pos: usize) -> Py<PyAny> {
     match values {
-        Storage::Object(objs) => objs
-            .get_mut(pos)
-            .map_or_else(|| py.None(), |slot| std::mem::replace(slot, py.None())),
+        Storage::Object(objs) => objs.get_mut(pos).map_or_else(|| py.None(), |slot| std::mem::replace(slot, py.None())),
         other => other.get(py, pos).unwrap_or_else(|| py.None()),
     }
 }
@@ -199,15 +173,12 @@ pub(crate) fn frozendict_type(py: Python<'_>) -> Option<&Bound<'_, PyType>> {
 
 /// Whether `obj` is a builtin `dict` (or subclass) or `frozendict`.
 fn is_builtin_mapping(obj: &Bound<'_, PyAny>) -> bool {
-    obj.is_instance_of::<PyDict>()
-        || frozendict_type(obj.py()).is_some_and(|t| obj.is_instance(t).unwrap_or(false))
+    obj.is_instance_of::<PyDict>() || frozendict_type(obj.py()).is_some_and(|t| obj.is_instance(t).unwrap_or(false))
 }
 
 /// Strong references to everything an iterable yields, plus the error that stopped it.
 /// Builtin lists, sets and dicts are read inside one critical section on the source.
-pub(crate) fn collect_iterable<'py>(
-    obj: &Bound<'py, PyAny>,
-) -> (Vec<Bound<'py, PyAny>>, Option<PyErr>) {
+pub(crate) fn collect_iterable<'py>(obj: &Bound<'py, PyAny>) -> (Vec<Bound<'py, PyAny>>, Option<PyErr>) {
     if let Ok(list) = obj.cast_exact::<PyList>() {
         let out = RefCell::new(Vec::with_capacity(list.len()));
         let res = list.locked_for_each(|item| {
@@ -220,10 +191,7 @@ pub(crate) fn collect_iterable<'py>(
         return (tuple.iter().collect(), None);
     }
     if let Ok(set) = obj.cast_exact::<PySet>() {
-        return (
-            with_critical_section(set.as_any(), || set.iter().collect()),
-            None,
-        );
+        return (with_critical_section(set.as_any(), || set.iter().collect()), None);
     }
     if let Ok(set) = obj.cast_exact::<PyFrozenSet>() {
         return (set.iter().collect(), None);
@@ -321,10 +289,7 @@ fn is_plain_scalar(obj: &Bound<'_, PyAny>) -> bool {
 /// Read what `iter(obj)` yields, classifying exact `int`/`str` items natively while the
 /// source is held: a builtin `list` or `dict` inside one critical section, a `tuple`
 /// directly. Returns the error that stopped iteration, if any.
-pub(crate) fn read_elements<'py>(
-    obj: &Bound<'py, PyAny>,
-    schema: &Schema,
-) -> (Vec<Raw<'py>>, Option<PyErr>) {
+pub(crate) fn read_elements<'py>(obj: &Bound<'py, PyAny>, schema: &Schema) -> (Vec<Raw<'py>>, Option<PyErr>) {
     let py = obj.py();
     if let Ok(list) = obj.cast_exact::<PyList>() {
         let items = with_critical_section(list.as_any(), || {
@@ -343,13 +308,7 @@ pub(crate) fn read_elements<'py>(
         return (items, None);
     }
     if let Ok(tuple) = obj.cast_exact::<PyTuple>() {
-        return (
-            tuple
-                .iter_borrowed()
-                .map(|item| raw_key(&item, schema))
-                .collect(),
-            None,
-        );
+        return (tuple.iter_borrowed().map(|item| raw_key(&item, schema)).collect(), None);
     }
     if let Ok(dict) = obj.cast_exact::<PyDict>() {
         let items = with_critical_section(dict.as_any(), || {
@@ -367,13 +326,7 @@ pub(crate) fn read_elements<'py>(
         return (items, None);
     }
     let (items, err) = collect_iterable(obj);
-    (
-        items
-            .into_iter()
-            .map(|item| raw_key(&item, schema))
-            .collect(),
-        err,
-    )
+    (items.into_iter().map(|item| raw_key(&item, schema)).collect(), err)
 }
 
 /// The pairs `dict(arg)` would insert, read like [`read_elements`].
@@ -391,12 +344,7 @@ fn read_pairs<'py>(
     let element = |item: &Bound<'py, PyAny>, index: usize| match item.cast_exact::<PyTuple>() {
         Ok(t) if t.len() == 2 => {
             // SAFETY: indices 0 and 1 are in bounds of this tuple.
-            let (k, v) = unsafe {
-                (
-                    t.get_borrowed_item_unchecked(0),
-                    t.get_borrowed_item_unchecked(1),
-                )
-            };
+            let (k, v) = unsafe { (t.get_borrowed_item_unchecked(0), t.get_borrowed_item_unchecked(1)) };
             pair(&k, &v)
         }
         _ => RawPair::Item(item.clone(), index),
@@ -433,27 +381,12 @@ fn read_pairs<'py>(
         return (items, None);
     }
     if let Ok(tuple) = arg.cast_exact::<PyTuple>() {
-        return (
-            tuple
-                .iter_borrowed()
-                .enumerate()
-                .map(|(i, item)| element(&item, i))
-                .collect(),
-            None,
-        );
+        return (tuple.iter_borrowed().enumerate().map(|(i, item)| element(&item, i)).collect(), None);
     }
-    let later = |(k, v): (Bound<'py, PyAny>, Bound<'py, PyAny>)| {
-        RawPair::Pair(Raw::Later(k), RawValue::Later(v))
-    };
+    let later = |(k, v): (Bound<'py, PyAny>, Bound<'py, PyAny>)| RawPair::Pair(Raw::Later(k), RawValue::Later(v));
     if let Ok(d) = arg.cast::<Dict>() {
         let items = d.get().inner.read(py).items(py);
-        return (
-            items
-                .into_iter()
-                .map(|(k, v)| later((k.into_bound(py), v.into_bound(py))))
-                .collect(),
-            None,
-        );
+        return (items.into_iter().map(|(k, v)| later((k.into_bound(py), v.into_bound(py)))).collect(), None);
     }
     match arg.hasattr(pyo3::intern!(py, "keys")) {
         Ok(true) => {
@@ -464,14 +397,7 @@ fn read_pairs<'py>(
         Err(e) => return (Vec::new(), Some(e)),
     }
     let (items, err) = collect_iterable(arg);
-    (
-        items
-            .into_iter()
-            .enumerate()
-            .map(|(i, item)| RawPair::Item(item, i))
-            .collect(),
-        err,
-    )
+    (items.into_iter().enumerate().map(|(i, item)| RawPair::Item(item, i)).collect(), err)
 }
 
 /// Mapping protocol: `for k in m.keys(): m[k]`.
@@ -494,10 +420,7 @@ fn collect_mapping<'py>(map: &Bound<'py, PyAny>) -> (Pairs<'py>, Option<PyErr>) 
     (out, err)
 }
 
-fn pair_of<'py>(
-    item: Bound<'py, PyAny>,
-    index: usize,
-) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+fn pair_of<'py>(item: Bound<'py, PyAny>, index: usize) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
     if let Ok(t) = item.cast_exact::<PyTuple>()
         && t.len() == 2
     {
@@ -506,9 +429,7 @@ fn pair_of<'py>(
     let py = item.py();
     let iter = item.try_iter().map_err(|e| {
         if e.is_instance_of::<PyTypeError>(py) {
-            PyTypeError::new_err(format!(
-                "cannot convert dictionary update sequence element #{index} to a sequence"
-            ))
+            PyTypeError::new_err(format!("cannot convert dictionary update sequence element #{index} to a sequence"))
         } else {
             e
         }
@@ -595,11 +516,7 @@ impl Dict {
 
     fn empty(key_schema: Arc<Schema>, value_schema: Arc<Schema>) -> Dict {
         let inner = Locked::new(DictInner::new(&key_schema, &value_schema));
-        Dict {
-            key_schema,
-            value_schema,
-            inner,
-        }
+        Dict { key_schema, value_schema, inner }
     }
 
     fn build<'py>(
@@ -614,11 +531,7 @@ impl Dict {
             && other.get().same_schema(&key_schema, &value_schema)
         {
             let inner = other.get().inner.read(py).clone_ref(py);
-            let dict = Dict {
-                key_schema,
-                value_schema,
-                inner: Locked::new(inner),
-            };
+            let dict = Dict { key_schema, value_schema, inner: Locked::new(inner) };
             if let Some(kwargs) = kwargs {
                 dict.update_from(py, kwargs.as_any())?;
             }
@@ -636,8 +549,7 @@ impl Dict {
 
     fn same_schema(&self, key_schema: &Arc<Schema>, value_schema: &Arc<Schema>) -> bool {
         (Arc::ptr_eq(&self.key_schema, key_schema) || *self.key_schema == **key_schema)
-            && (Arc::ptr_eq(&self.value_schema, value_schema)
-                || *self.value_schema == **value_schema)
+            && (Arc::ptr_eq(&self.value_schema, value_schema) || *self.value_schema == **value_schema)
     }
 
     fn is_typed(&self) -> bool {
@@ -646,11 +558,7 @@ impl Dict {
 
     /// `Dict` or `Dict[K, V]`, for reprs and error messages.
     fn type_name(&self) -> String {
-        if self.is_typed() {
-            format!("Dict[{}, {}]", self.key_schema, self.value_schema)
-        } else {
-            "Dict".to_owned()
-        }
+        if self.is_typed() { format!("Dict[{}, {}]", self.key_schema, self.value_schema) } else { "Dict".to_owned() }
     }
 
     fn prepare_key<'py>(&self, key: Bound<'py, PyAny>) -> PyResult<Prepared<'py>> {
@@ -658,9 +566,7 @@ impl Dict {
     }
 
     fn prepare_value(&self, value: &Bound<'_, PyAny>) -> PyResult<Coerced> {
-        self.value_schema
-            .coerce(value)
-            .map_err(|e| e.into_pyerr(&self.type_name(), None))
+        self.value_schema.coerce(value).map_err(|e| e.into_pyerr(&self.type_name(), None))
     }
 
     /// Finish reading: unpack, validate and convert in order. Stops at the first invalid
@@ -730,16 +636,8 @@ impl Dict {
         err.map_or(Ok(()), Err)
     }
 
-    fn insert_pairs<'py>(
-        &self,
-        py: Python<'py>,
-        pairs: Pairs<'py>,
-        err: Option<PyErr>,
-    ) -> PyResult<()> {
-        let raw = pairs
-            .into_iter()
-            .map(|(k, v)| RawPair::Pair(Raw::Later(k), RawValue::Later(v)))
-            .collect();
+    fn insert_pairs<'py>(&self, py: Python<'py>, pairs: Pairs<'py>, err: Option<PyErr>) -> PyResult<()> {
+        let raw = pairs.into_iter().map(|(k, v)| RawPair::Pair(Raw::Later(k), RawValue::Later(v))).collect();
         let (items, err) = self.finish_pairs(raw, err);
         self.insert_items(py, items, err)
     }
@@ -750,12 +648,7 @@ impl Dict {
         self.insert_items(py, items, err)
     }
 
-    fn set_item(
-        &self,
-        py: Python<'_>,
-        key: &Bound<'_, PyAny>,
-        value: &Bound<'_, PyAny>,
-    ) -> PyResult<()> {
+    fn set_item(&self, py: Python<'_>, key: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let key = self.prepare_key(key.clone())?;
         let mut displaced = Vec::new();
         if self.value_schema.is_any() {
@@ -787,9 +680,7 @@ impl Dict {
     }
 
     fn get_value(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyAny>>> {
-        keys::lookup(py, &self.inner, key, classify_key, |inner, pos| {
-            pos.map(|p| inner.value(py, p))
-        })
+        keys::lookup(py, &self.inner, key, classify_key, |inner, pos| pos.map(|p| inner.value(py, p)))
     }
 
     /// Remove `key`, returning its value (`None` if absent).
@@ -862,9 +753,7 @@ impl Dict {
             return Ok(false);
         }
         for (key, v) in keys.iter().zip(values) {
-            let theirs = keys::with_entry(py, &other.inner, key, |inner, pos| {
-                pos.map(|p| inner.value(py, p))
-            })?;
+            let theirs = keys::with_entry(py, &other.inner, key, |inner, pos| pos.map(|p| inner.value(py, p)))?;
             match theirs {
                 Some(theirs) if objects_equal(v.bind(py), theirs.bind(py))? => {}
                 _ => return Ok(false),
@@ -964,10 +853,7 @@ impl Dict {
         let dict = Dict::empty(schema::any(), schema::any());
         dict.insert_pairs(
             py,
-            self.items_snapshot(py)
-                .into_iter()
-                .map(|(k, v)| (k.into_bound(py), v.into_bound(py)))
-                .collect(),
+            self.items_snapshot(py).into_iter().map(|(k, v)| (k.into_bound(py), v.into_bound(py))).collect(),
             None,
         )?;
         Ok(dict)
@@ -986,19 +872,9 @@ impl Dict {
         let inner = slf.get().inner.read(py);
         let len = inner.table.len();
         let pos = if reverse { inner.table.entries() } else { 0 };
-        let state = IterState {
-            pos,
-            expected: len,
-            remaining: len,
-            exhausted: false,
-        };
+        let state = IterState { pos, expected: len, remaining: len, exhausted: false };
         drop(inner);
-        DictIterator {
-            dict: slf.clone().unbind(),
-            kind,
-            reverse,
-            state: Locked::new(state),
-        }
+        DictIterator { dict: slf.clone().unbind(), kind, reverse, state: Locked::new(state) }
     }
 }
 
@@ -1026,20 +902,11 @@ impl Dict {
         mapping_or_iterable: Option<&Bound<'_, PyAny>>,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Self> {
-        Dict::build(
-            py,
-            schema::any(),
-            schema::any(),
-            mapping_or_iterable,
-            kwargs,
-        )
+        Dict::build(py, schema::any(), schema::any(), mapping_or_iterable, kwargs)
     }
 
     #[classmethod]
-    fn __class_getitem__<'py>(
-        cls: &Bound<'py, PyType>,
-        params: &Bound<'py, PyAny>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn __class_getitem__<'py>(cls: &Bound<'py, PyType>, params: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         crate::typing::dict_alias(cls.py(), params)
     }
 
@@ -1058,10 +925,7 @@ impl Dict {
         let value = value.cloned().unwrap_or_else(|| py.None().into_bound(py));
         let (raw, err) = read_elements(iterable, &Schema::Any);
         let dict = Dict::empty(schema::any(), schema::any());
-        let pairs = raw
-            .into_iter()
-            .map(|k| RawPair::Pair(k, RawValue::Later(value.clone())))
-            .collect();
+        let pairs = raw.into_iter().map(|k| RawPair::Pair(k, RawValue::Later(value.clone()))).collect();
         let (items, err) = dict.finish_pairs(pairs, err);
         dict.insert_items(py, items, err)?;
         Bound::new(py, dict)
@@ -1079,19 +943,12 @@ impl Dict {
         self.get_value(py, key)?.ok_or_else(|| key_error(key))
     }
 
-    fn __setitem__(
-        &self,
-        py: Python<'_>,
-        key: &Bound<'_, PyAny>,
-        value: &Bound<'_, PyAny>,
-    ) -> PyResult<()> {
+    fn __setitem__(&self, py: Python<'_>, key: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<()> {
         self.set_item(py, key, value)
     }
 
     fn __delitem__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<()> {
-        self.remove_key(py, key)?
-            .map(drop)
-            .ok_or_else(|| key_error(key))
+        self.remove_key(py, key)?.map(drop).ok_or_else(|| key_error(key))
     }
 
     fn __iter__(slf: &Bound<'_, Self>) -> DictIterator {
@@ -1102,22 +959,14 @@ impl Dict {
         Dict::iter_of(slf, ItemKind::Keys, true)
     }
 
-    fn __richcmp__(
-        slf: &Bound<'_, Self>,
-        other: &Bound<'_, PyAny>,
-        op: CompareOp,
-    ) -> PyResult<Py<PyAny>> {
+    fn __richcmp__(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let eq = match op {
             CompareOp::Eq | CompareOp::Ne => Dict::equals(slf, other)?,
             _ => None,
         };
         Ok(match eq {
-            Some(eq) => (eq == matches!(op, CompareOp::Eq))
-                .into_pyobject(py)?
-                .to_owned()
-                .into_any()
-                .unbind(),
+            Some(eq) => (eq == matches!(op, CompareOp::Eq)).into_pyobject(py)?.to_owned().into_any().unbind(),
             None => py.NotImplemented(),
         })
     }
@@ -1159,11 +1008,7 @@ impl Dict {
         }
         let result = Dict::empty(schema::any(), schema::any());
         result.update_from(py, other)?;
-        let pairs = self
-            .items_snapshot(py)
-            .into_iter()
-            .map(|(k, v)| (k.into_bound(py), v.into_bound(py)))
-            .collect();
+        let pairs = self.items_snapshot(py).into_iter().map(|(k, v)| (k.into_bound(py), v.into_bound(py))).collect();
         result.insert_pairs(py, pairs, None)?;
         Ok(Bound::new(py, result)?.into_any().unbind())
     }
@@ -1173,49 +1018,27 @@ impl Dict {
     }
 
     fn keys(slf: &Bound<'_, Self>) -> DictKeys {
-        DictKeys {
-            dict: slf.clone().unbind(),
-        }
+        DictKeys { dict: slf.clone().unbind() }
     }
 
     fn values(slf: &Bound<'_, Self>) -> DictValues {
-        DictValues {
-            dict: slf.clone().unbind(),
-        }
+        DictValues { dict: slf.clone().unbind() }
     }
 
     fn items(slf: &Bound<'_, Self>) -> DictItems {
-        DictItems {
-            dict: slf.clone().unbind(),
-        }
+        DictItems { dict: slf.clone().unbind() }
     }
 
     #[pyo3(signature = (key, default=None))]
-    fn get(
-        &self,
-        py: Python<'_>,
-        key: &Bound<'_, PyAny>,
-        default: Option<Py<PyAny>>,
-    ) -> PyResult<Py<PyAny>> {
-        Ok(self
-            .get_value(py, key)?
-            .or(default)
-            .unwrap_or_else(|| py.None()))
+    fn get(&self, py: Python<'_>, key: &Bound<'_, PyAny>, default: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
+        Ok(self.get_value(py, key)?.or(default).unwrap_or_else(|| py.None()))
     }
 
     /// `pop(key[, default])`.
     #[pyo3(signature = (key, *default))]
-    fn pop(
-        &self,
-        py: Python<'_>,
-        key: &Bound<'_, PyAny>,
-        default: &Bound<'_, PyTuple>,
-    ) -> PyResult<Py<PyAny>> {
+    fn pop(&self, py: Python<'_>, key: &Bound<'_, PyAny>, default: &Bound<'_, PyTuple>) -> PyResult<Py<PyAny>> {
         if default.len() > 1 {
-            return Err(PyTypeError::new_err(format!(
-                "pop expected at most 2 arguments, got {}",
-                default.len() + 1
-            )));
+            return Err(PyTypeError::new_err(format!("pop expected at most 2 arguments, got {}", default.len() + 1)));
         }
         match self.remove_key(py, key)? {
             Some(value) => Ok(value),
@@ -1244,9 +1067,8 @@ impl Dict {
     ) -> PyResult<Py<PyAny>> {
         let prepared = self.prepare_key(key.clone())?;
         // Present: no value conversion (typed dicts only validate what they store).
-        if let Some(v) = keys::lookup(py, &self.inner, key, classify_key, |inner, pos| {
-            pos.map(|p| inner.value(py, p))
-        })? {
+        if let Some(v) = keys::lookup(py, &self.inner, key, classify_key, |inner, pos| pos.map(|p| inner.value(py, p)))?
+        {
             return Ok(v);
         }
         let none = py.None().into_bound(py);
@@ -1255,29 +1077,24 @@ impl Dict {
         // The converted default may be a new container holding the last references to its
         // elements: when the key turned up meanwhile it is released after the lock.
         let mut unused = Vec::new();
-        let res = keys::batch_upsert(
-            py,
-            &self.inner,
-            [(prepared, value)],
-            |inner, value, slot| {
-                let pos = match slot {
-                    Slot::Existing(pos) => {
-                        unused.extend(coerced_object(value));
-                        pos
-                    }
-                    Slot::Inserted(pos) => {
-                        inner.values.push(py, value);
-                        pos
-                    }
-                    Slot::Absent(key) => {
-                        inner.push_entry(py, key, value, &mut unused)?;
-                        inner.table.entries() - 1
-                    }
-                };
-                result = Some(inner.value(py, pos));
-                Ok(())
-            },
-        );
+        let res = keys::batch_upsert(py, &self.inner, [(prepared, value)], |inner, value, slot| {
+            let pos = match slot {
+                Slot::Existing(pos) => {
+                    unused.extend(coerced_object(value));
+                    pos
+                }
+                Slot::Inserted(pos) => {
+                    inner.values.push(py, value);
+                    pos
+                }
+                Slot::Absent(key) => {
+                    inner.push_entry(py, key, value, &mut unused)?;
+                    inner.table.entries() - 1
+                }
+            };
+            result = Some(inner.value(py, pos));
+            Ok(())
+        });
         drop(unused);
         res?;
         Ok(result.unwrap_or_else(|| py.None()))
@@ -1301,9 +1118,7 @@ impl Dict {
 
     fn clear(&self, py: Python<'_>) {
         let mut displaced = Vec::new();
-        self.inner
-            .write(py)
-            .clear(&self.value_schema, &mut displaced);
+        self.inner.write(py).clear(&self.value_schema, &mut displaced);
         drop(displaced);
     }
 
@@ -1324,10 +1139,7 @@ impl Dict {
         Ok(out)
     }
 
-    fn __reduce__<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyDict>,))> {
+    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyDict>,))> {
         Ok((self.schema_type_of(py)?, (self.to_dict(py)?,)))
     }
 
@@ -1418,15 +1230,9 @@ impl DictIterator {
             let inner = self.dict.get().inner.read(py);
             if inner.table.len() != st.expected {
                 st.expected = usize::MAX;
-                return Err(PyRuntimeError::new_err(
-                    "dictionary changed size during iteration",
-                ));
+                return Err(PyRuntimeError::new_err("dictionary changed size during iteration"));
             }
-            let next = if self.reverse {
-                inner.table.prev_live(st.pos)
-            } else {
-                inner.table.next_live(st.pos)
-            };
+            let next = if self.reverse { inner.table.prev_live(st.pos) } else { inner.table.next_live(st.pos) };
             let Some(pos) = next else {
                 st.exhausted = true;
                 return Ok(None);
@@ -1434,9 +1240,7 @@ impl DictIterator {
             // CPython checks this for forward iteration only.
             if st.remaining == 0 && !self.reverse {
                 st.exhausted = true;
-                return Err(PyRuntimeError::new_err(
-                    "dictionary keys changed during iteration",
-                ));
+                return Err(PyRuntimeError::new_err("dictionary keys changed during iteration"));
             }
             st.remaining = st.remaining.saturating_sub(1);
             st.pos = if self.reverse { pos } else { pos + 1 };
@@ -1479,16 +1283,9 @@ fn is_setlike(obj: &Bound<'_, PyAny>) -> bool {
 }
 
 fn is_builtin_view(obj: &Bound<'_, PyAny>) -> bool {
-    let name = obj
-        .get_type()
-        .name()
-        .map(|n| n.to_string())
-        .unwrap_or_default();
+    let name = obj.get_type().name().map(|n| n.to_string()).unwrap_or_default();
     (name == "dict_keys" || name == "dict_items")
-        && obj
-            .get_type()
-            .module()
-            .is_ok_and(|m| m.to_cow().is_ok_and(|m| m == "builtins"))
+        && obj.get_type().module().is_ok_and(|m| m.to_cow().is_ok_and(|m| m == "builtins"))
 }
 
 /// Shared set-like behaviour of key and item views.

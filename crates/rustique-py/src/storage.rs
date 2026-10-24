@@ -322,7 +322,13 @@ impl Storage {
     }
 
     /// Append Python objects for `self[range]` to `out`, in reverse order if `reversed`.
-    pub fn extend_objects(&self, py: Python<'_>, range: std::ops::Range<usize>, reversed: bool, out: &mut Vec<Py<PyAny>>) {
+    pub fn extend_objects(
+        &self,
+        py: Python<'_>,
+        range: std::ops::Range<usize>,
+        reversed: bool,
+        out: &mut Vec<Py<PyAny>>,
+    ) {
         match self {
             Storage::Empty => {}
             Storage::Native(column) => with_column!(column, v => {
@@ -403,7 +409,12 @@ impl Storage {
     /// `self[s] = values` with list semantics; demotes when the strategies differ. On a
     /// length mismatch nothing changes and the rejected `values` are handed back with the
     /// error: they may hold Python objects, which the caller drops after unlocking.
-    pub fn assign_slice(&mut self, py: Python<'_>, s: &SliceIndices, values: Storage) -> Result<Displaced, (SliceError, Storage)> {
+    pub fn assign_slice(
+        &mut self,
+        py: Python<'_>,
+        s: &SliceIndices,
+        values: Storage,
+    ) -> Result<Displaced, (SliceError, Storage)> {
         if s.step != 1 && values.len() != s.len {
             return Err((SliceError::LengthMismatch { expected: s.len, got: values.len() }, values));
         }
@@ -471,7 +482,9 @@ impl Storage {
         let total = checked_total(len, n as usize, self.item_size())?;
         Ok(match self {
             Storage::Empty => Storage::Empty,
-            Storage::Native(column) => Storage::Native(with_column!(column, v => Column::from(repeat_slice(v, total)?))),
+            Storage::Native(column) => {
+                Storage::Native(with_column!(column, v => Column::from(repeat_slice(v, total)?)))
+            }
             Storage::Object(objects) => {
                 let mut out = reserve(total)?;
                 while out.len() < total {
@@ -515,7 +528,9 @@ impl Storage {
         };
         match column.dtype() {
             DType::Bool | DType::I64 | DType::F64 | DType::Str => Storage::Native(column),
-            DType::F32 => Storage::Native(Column::F64(column.as_slice::<f32>().unwrap_or(&[]).iter().map(|&x| f64::from(x)).collect())),
+            DType::F32 => Storage::Native(Column::F64(
+                column.as_slice::<f32>().unwrap_or(&[]).iter().map(|&x| f64::from(x)).collect(),
+            )),
             DType::U64 => {
                 let values = column.as_slice::<u64>().unwrap_or(&[]);
                 if values.iter().all(|&x| i64::try_from(x).is_ok()) {

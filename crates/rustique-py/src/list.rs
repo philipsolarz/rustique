@@ -132,10 +132,7 @@ impl Index {
                 return Ok(Index::Int(i));
             }
         }
-        Err(PyTypeError::new_err(format!(
-            "list indices must be integers or slices, not {}",
-            convert::type_name(obj)
-        )))
+        Err(PyTypeError::new_err(format!("list indices must be integers or slices, not {}", convert::type_name(obj))))
     }
 }
 
@@ -653,7 +650,9 @@ impl List {
         if let Some(native) = NativeKeys::classify(py, keys) {
             match native {
                 NativeKeys::Int(k) => perm.sort_by_key(|&i| k[i]),
-                NativeKeys::Float(k) => perm.sort_by(|&a, &b| k[a].partial_cmp(&k[b]).unwrap_or(std::cmp::Ordering::Equal)),
+                NativeKeys::Float(k) => {
+                    perm.sort_by(|&a, &b| k[a].partial_cmp(&k[b]).unwrap_or(std::cmp::Ordering::Equal))
+                }
                 NativeKeys::Str(k) => perm.sort_by(|&a, &b| k[a].cmp(&k[b])),
             }
         } else {
@@ -1221,7 +1220,9 @@ impl List {
             // Native search and removal under one write lock.
             let mut data = self.mutate(py)?;
             let found = match (&*data, &probe) {
-                (Storage::Native(column), Probe::Native(needle)) => Some(kernels::find(column, needle, 0, column.len())),
+                (Storage::Native(column), Probe::Native(needle)) => {
+                    Some(kernels::find(column, needle, 0, column.len()))
+                }
                 (Storage::Native(_), _) | (Storage::Empty, _) => Some(None),
                 (Storage::Object(_), _) => None,
             };
@@ -1291,7 +1292,13 @@ impl List {
         signature = (value, start = SliceBound::Omitted, stop = SliceBound::Omitted, /),
         text_signature = "($self, value, start=0, stop=sys.maxsize, /)"
     )]
-    fn index(&self, py: Python<'_>, value: &Bound<'_, PyAny>, start: SliceBound<'_>, stop: SliceBound<'_>) -> PyResult<usize> {
+    fn index(
+        &self,
+        py: Python<'_>,
+        value: &Bound<'_, PyAny>,
+        start: SliceBound<'_>,
+        stop: SliceBound<'_>,
+    ) -> PyResult<usize> {
         let (start, stop) = (start.value(0)?, stop.value(isize::MAX)?);
         let len = self.len();
         let (start, stop) = (clamp_bound(start, len), clamp_bound(stop, len));
@@ -1491,7 +1498,8 @@ impl List {
             this.exports.fetch_add(1, Ordering::AcqRel);
             parts
         };
-        let meta: *mut [ffi::Py_ssize_t; 2] = Box::into_raw(Box::new([count as ffi::Py_ssize_t, item as ffi::Py_ssize_t]));
+        let meta: *mut [ffi::Py_ssize_t; 2] =
+            Box::into_raw(Box::new([count as ffi::Py_ssize_t, item as ffi::Py_ssize_t]));
         // SAFETY: `view` is a valid Py_buffer to fill; `ptr` stays valid while exports > 0
         // (no mutation can happen) and the view holds a strong reference to the list.
         unsafe {
@@ -1600,7 +1608,11 @@ impl IterState {
     /// Takes the guard so that stale elements, and the list once exhausted, are dropped
     /// only after unlocking.
     #[inline(never)]
-    fn refill_and_pop<'py>(py: Python<'py>, mut guard: MutexGuard<'_, IterState>, forward: bool) -> Option<Bound<'py, PyAny>> {
+    fn refill_and_pop<'py>(
+        py: Python<'py>,
+        mut guard: MutexGuard<'_, IterState>,
+        forward: bool,
+    ) -> Option<Bound<'py, PyAny>> {
         let state = &mut *guard;
         let stale = std::mem::take(&mut state.batch);
         let mut item = None;
@@ -1637,7 +1649,12 @@ impl IterState {
 
     /// Yield the next element (`forward` selects the direction).
     #[inline]
-    fn next<'py>(py: Python<'py>, state: &PyMutex<IterState>, list: ListRef, forward: bool) -> Option<Bound<'py, PyAny>> {
+    fn next<'py>(
+        py: Python<'py>,
+        state: &PyMutex<IterState>,
+        list: ListRef,
+        forward: bool,
+    ) -> Option<Bound<'py, PyAny>> {
         let mut guard = state.lock(py);
         match guard.pop_current(list, forward) {
             Some(item) => {
@@ -1854,7 +1871,11 @@ fn generate_floats(py: Python<'_>, len: usize, value: impl Fn(usize) -> f64 + Se
     let mut v = Vec::new();
     v.try_reserve_exact(len).map_err(|_| PyMemoryError::new_err(()))?;
     let run = |v: &mut Vec<f64>| v.extend((0..len).map(&value));
-    if len >= DETACH_THRESHOLD { py.detach(|| run(&mut v)) } else { run(&mut v) }
+    if len >= DETACH_THRESHOLD {
+        py.detach(|| run(&mut v))
+    } else {
+        run(&mut v)
+    }
     Ok(v)
 }
 

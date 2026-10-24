@@ -71,13 +71,19 @@ fn python_division_semantics() {
 fn python_int_overflow_falls_back() {
     let col = Column::I64(vec![1, i64::MAX]);
     assert_eq!(eval(&bin(Add, X(), c(1i64)), &col, IntMode::Python), Err(ExprError::Overflow));
-    assert_eq!(eval(&Expr::unary(UnaryOp::Neg, X()), &Column::I64(vec![i64::MIN]), IntMode::Python), Err(ExprError::Overflow));
+    assert_eq!(
+        eval(&Expr::unary(UnaryOp::Neg, X()), &Column::I64(vec![i64::MIN]), IntMode::Python),
+        Err(ExprError::Overflow)
+    );
     assert_eq!(eval(&bin(Mul, X(), X()), &col, IntMode::Python), Err(ExprError::Overflow));
     // Constants beyond i64 compare natively but leave arithmetic to Python.
     let big = c(1u64 << 63);
     assert_eq!(eval(&bin(Lt, X(), big.clone()), &col, IntMode::Python), Ok(Column::Bool(vec![true, true])));
     assert_eq!(eval(&bin(Sub, X(), big.clone()), &col, IntMode::Python), Err(ExprError::Overflow));
-    assert_eq!(eval(&bin(Add, X(), big.clone()), &Column::F64(vec![0.5]), IntMode::Python), Ok(Column::F64(vec![9.223372036854776e18])));
+    assert_eq!(
+        eval(&bin(Add, X(), big.clone()), &Column::F64(vec![0.5]), IntMode::Python),
+        Ok(Column::F64(vec![9.223372036854776e18]))
+    );
 }
 
 #[test]
@@ -90,7 +96,10 @@ fn first_failing_element_wins() {
     assert_eq!(eval(&e, &col, IntMode::Python), Err(raise(ErrorKind::ZeroDivisionError, "division by zero")));
     // A type error raises at the first element, after operations evaluated before it.
     let e = bin(Add, bin(FloorDiv, c(1i64), X()), c("a"));
-    assert_eq!(kind_of(&eval(&e, &Column::I64(vec![0, 1]), IntMode::Python).unwrap_err()), Some(ErrorKind::ZeroDivisionError));
+    assert_eq!(
+        kind_of(&eval(&e, &Column::I64(vec![0, 1]), IntMode::Python).unwrap_err()),
+        Some(ErrorKind::ZeroDivisionError)
+    );
     assert_eq!(
         eval(&e, &Column::I64(vec![1, 0]), IntMode::Python),
         Err(raise(ErrorKind::TypeError, "unsupported operand type(s) for +: 'int' and 'str'"))
@@ -125,9 +134,15 @@ fn fixed_width_semantics() {
     let wide = bin(Mul, Expr::cast(ExprType::Int, X()), c(i64::MAX));
     assert_eq!(ev(&wide), Err(ExprError::Overflow));
     let u = Column::U8(vec![0, 5]);
-    assert_eq!(eval(&bin(Sub, X(), c(1i64)), &u, IntMode::Fixed).map_err(|e| kind_of(&e)), Err(Some(ErrorKind::OverflowError)));
+    assert_eq!(
+        eval(&bin(Sub, X(), c(1i64)), &u, IntMode::Fixed).map_err(|e| kind_of(&e)),
+        Err(Some(ErrorKind::OverflowError))
+    );
     assert_eq!(eval(&Expr::unary(UnaryOp::Invert, X()), &u, IntMode::Fixed), Ok(Column::U8(vec![255, 250])));
-    assert_eq!(eval(&bin(Sub, X(), c(-1i64)), &u, IntMode::Fixed).map_err(|e| kind_of(&e)), Err(Some(ErrorKind::OverflowError)));
+    assert_eq!(
+        eval(&bin(Sub, X(), c(-1i64)), &u, IntMode::Fixed).map_err(|e| kind_of(&e)),
+        Err(Some(ErrorKind::OverflowError))
+    );
     // Different fixed types do not mix; == is False, ordering raises.
     let i16x = Expr::cast(ExprType::Fixed(DType::I16), X());
     assert_eq!(ev(&bin(Eq, i16x.clone(), X())), Ok(Column::Bool(vec![false, false])));
@@ -214,12 +229,21 @@ fn bools_and_logic() {
 #[test]
 fn exact_comparisons() {
     let col = Column::I64(vec![(1 << 53) + 1, i64::MAX, -3]);
-    assert_eq!(eval(&bin(Gt, X(), c(9007199254740992.0)), &col, IntMode::Python), Ok(Column::Bool(vec![true, true, false])));
-    assert_eq!(eval(&bin(Eq, X(), c(9.223_372_036_854_776e18)), &col, IntMode::Python), Ok(Column::Bool(vec![false; 3])));
+    assert_eq!(
+        eval(&bin(Gt, X(), c(9007199254740992.0)), &col, IntMode::Python),
+        Ok(Column::Bool(vec![true, true, false]))
+    );
+    assert_eq!(
+        eval(&bin(Eq, X(), c(9.223_372_036_854_776e18)), &col, IntMode::Python),
+        Ok(Column::Bool(vec![false; 3]))
+    );
     assert_eq!(eval(&bin(Ne, X(), c(f64::NAN)), &col, IntMode::Python), Ok(Column::Bool(vec![true; 3])));
     let u = Column::U64(vec![u64::MAX, 0]);
     assert_eq!(eval(&bin(Gt, X(), c(-1i64)), &u, IntMode::Fixed), Ok(Column::Bool(vec![true, true])));
-    assert_eq!(eval(&bin(Lt, X(), bin(Sub, Expr::cast(ExprType::Int, X()), c(1i64))), &Column::U64(vec![5]), IntMode::Fixed), Ok(Column::Bool(vec![false])));
+    assert_eq!(
+        eval(&bin(Lt, X(), bin(Sub, Expr::cast(ExprType::Int, X()), c(1i64))), &Column::U64(vec![5]), IntMode::Fixed),
+        Ok(Column::Bool(vec![false]))
+    );
 }
 
 #[test]
@@ -236,8 +260,14 @@ fn strings() {
         ev(&bin(Lt, X(), c(1i64))),
         Err(raise(ErrorKind::TypeError, "'<' not supported between instances of 'str' and 'int'"))
     );
-    assert_eq!(ev(&bin(Add, X(), c(1i64))), Err(raise(ErrorKind::TypeError, "can only concatenate str (not \"int\") to str")));
-    assert_eq!(ev(&bin(Mul, X(), c(1.5))), Err(raise(ErrorKind::TypeError, "can't multiply sequence by non-int of type 'float'")));
+    assert_eq!(
+        ev(&bin(Add, X(), c(1i64))),
+        Err(raise(ErrorKind::TypeError, "can only concatenate str (not \"int\") to str"))
+    );
+    assert_eq!(
+        ev(&bin(Mul, X(), c(1.5))),
+        Err(raise(ErrorKind::TypeError, "can't multiply sequence by non-int of type 'float'"))
+    );
     assert_eq!(ev(&bin(Mod, X(), c(1i64))), Err(ExprError::Overflow));
     assert_eq!(ev(&Expr::cast(ExprType::Bool, X())), Ok(Column::Bool(vec![true, false, true])));
     let nums = Column::from(vec![" 12 ", "-1_0"]);
@@ -247,14 +277,20 @@ fn strings() {
         ev(&Expr::cast(ExprType::Int, X())),
         Err(raise(ErrorKind::ValueError, "invalid literal for int() with base 10: 'ab'"))
     );
-    assert_eq!(eval(&Expr::cast(ExprType::Int, X()), &Column::from(vec!["١"]), IntMode::Python), Err(ExprError::Overflow));
+    assert_eq!(
+        eval(&Expr::cast(ExprType::Int, X()), &Column::from(vec!["١"]), IntMode::Python),
+        Err(ExprError::Overflow)
+    );
     assert_eq!(kind_of(&ev(&Expr::cast(ExprType::Fixed(DType::I8), X())).unwrap_err()), Some(ErrorKind::TypeError));
 }
 
 #[test]
 fn casts() {
     let f = Column::F64(vec![2.9, -2.9, 1e19]);
-    assert_eq!(eval(&Expr::cast(ExprType::Int, X()), &Column::F64(vec![2.9, -2.9]), IntMode::Python), Ok(Column::I64(vec![2, -2])));
+    assert_eq!(
+        eval(&Expr::cast(ExprType::Int, X()), &Column::F64(vec![2.9, -2.9]), IntMode::Python),
+        Ok(Column::I64(vec![2, -2]))
+    );
     assert_eq!(eval(&Expr::cast(ExprType::Int, X()), &f, IntMode::Python), Err(ExprError::Overflow));
     assert_eq!(
         eval(&Expr::cast(ExprType::Fixed(DType::U64), X()), &f, IntMode::Python).map_err(|e| kind_of(&e)),
@@ -268,9 +304,18 @@ fn casts() {
         eval(&Expr::cast(ExprType::Fixed(DType::I8), X()), &Column::F64(vec![f64::INFINITY]), IntMode::Python),
         Err(raise(ErrorKind::OverflowError, "cannot convert float infinity to integer"))
     );
-    assert_eq!(eval(&Expr::cast(ExprType::Bool, X()), &Column::F64(vec![0.0, f64::NAN, -0.0]), IntMode::Python), Ok(Column::Bool(vec![false, true, false])));
-    assert_eq!(eval(&Expr::cast(ExprType::Fixed(DType::F32), X()), &Column::I64(vec![16777217]), IntMode::Python), Ok(Column::F32(vec![16777216.0])));
-    assert_eq!(eval(&Expr::cast(ExprType::Float, X()), &Column::I32(vec![-4]), IntMode::Fixed), Ok(Column::F64(vec![-4.0])));
+    assert_eq!(
+        eval(&Expr::cast(ExprType::Bool, X()), &Column::F64(vec![0.0, f64::NAN, -0.0]), IntMode::Python),
+        Ok(Column::Bool(vec![false, true, false]))
+    );
+    assert_eq!(
+        eval(&Expr::cast(ExprType::Fixed(DType::F32), X()), &Column::I64(vec![16777217]), IntMode::Python),
+        Ok(Column::F32(vec![16777216.0]))
+    );
+    assert_eq!(
+        eval(&Expr::cast(ExprType::Float, X()), &Column::I32(vec![-4]), IntMode::Fixed),
+        Ok(Column::F64(vec![-4.0]))
+    );
     let e = Expr::cast(ExprType::Fixed(DType::I8), X());
     assert_eq!(e.to_string(), "X.cast(i8)");
     assert_eq!(e.result_type(ExprType::Int), Ok(ExprType::Fixed(DType::I8)));
@@ -305,14 +350,20 @@ fn types_render_and_limits() {
     assert_eq!(bin(Add, X(), c(1i64)).result_type(ExprType::Fixed(DType::U8)), Ok(ExprType::Fixed(DType::U8)));
     assert_eq!(Expr::unary(UnaryOp::IsNan, X()).to_string(), "X.is_nan()");
     assert_eq!(Expr::unary(UnaryOp::Neg, c(-1i64)).to_string(), "(--1)");
-    assert_eq!(eval(&Expr::unary(UnaryOp::IsNan, X()), &Column::F64(vec![f64::NAN, 1.0]), IntMode::Python), Ok(Column::Bool(vec![true, false])));
+    assert_eq!(
+        eval(&Expr::unary(UnaryOp::IsNan, X()), &Column::F64(vec![f64::NAN, 1.0]), IntMode::Python),
+        Ok(Column::Bool(vec![true, false]))
+    );
     assert_eq!(eval(&X(), &Column::I32(vec![7]), IntMode::Python), Ok(Column::I64(vec![7])));
     assert_eq!(eval(&c(5i64), &Column::I8(vec![1, 2]), IntMode::Fixed), Ok(Column::I64(vec![5, 5])));
     let mut deep = X();
     for _ in 0..MAX_DEPTH {
         deep = bin(Add, deep, c(1i64));
     }
-    assert_eq!(kind_of(&eval(&deep, &Column::I64(vec![1]), IntMode::Python).unwrap_err()), Some(ErrorKind::RecursionError));
+    assert_eq!(
+        kind_of(&eval(&deep, &Column::I64(vec![1]), IntMode::Python).unwrap_err()),
+        Some(ErrorKind::RecursionError)
+    );
     assert_eq!(truthy(&Column::F64(vec![0.0, f64::NAN])), vec![false, true]);
 }
 
@@ -523,7 +574,9 @@ fn ref_cast(t: ExprType, a: V) -> R {
         })),
         (ExprType::Float, V::F(f)) => Ok(V::F(*f)),
         (ExprType::Float, other) => Ok(V::F(as_int(other).unwrap() as f64)),
-        (_, V::F(f)) if f.is_nan() => Err(Event::Raise(ErrorKind::ValueError, "cannot convert float NaN to integer".into())),
+        (_, V::F(f)) if f.is_nan() => {
+            Err(Event::Raise(ErrorKind::ValueError, "cannot convert float NaN to integer".into()))
+        }
         (_, V::F(f)) if f.is_infinite() => {
             Err(Event::Raise(ErrorKind::OverflowError, "cannot convert float infinity to integer".into()))
         }
@@ -537,8 +590,8 @@ fn ref_cast(t: ExprType, a: V) -> R {
 
 fn ref_binary(op: BinaryOp, a: V, b: V, rhs_constant: bool) -> R {
     if op.is_comparison() {
-        let unrelated = matches!(a, V::S(_)) != matches!(b, V::S(_))
-            || matches!((&a, &b), (V::X(x, _), V::X(y, _)) if x != y);
+        let unrelated =
+            matches!(a, V::S(_)) != matches!(b, V::S(_)) || matches!((&a, &b), (V::X(x, _), V::X(y, _)) if x != y);
         let ord = if unrelated {
             return match op {
                 Eq => Ok(V::B(false)),
@@ -590,10 +643,9 @@ fn ref_binary(op: BinaryOp, a: V, b: V, rhs_constant: bool) -> R {
             FloorDiv | Mod if y == 0 => Err(zero_div()),
             FloorDiv => fixed(d, floor_div(x, y)),
             Mod => fixed(d, x - floor_div(x, y) * y),
-            Pow if y < 0 => Err(Event::Raise(
-                ErrorKind::ValueError,
-                "Integers to negative integer powers are not allowed.".into(),
-            )),
+            Pow if y < 0 => {
+                Err(Event::Raise(ErrorKind::ValueError, "Integers to negative integer powers are not allowed.".into()))
+            }
             Pow => ipow(x, y).map_or(Err(Event::Raise(ErrorKind::OverflowError, String::new())), |v| fixed(d, v)),
             LShift | RShift if y < 0 => neg_shift(),
             LShift | RShift if y >= bits => Err(Event::Raise(
@@ -746,7 +798,11 @@ fn arb_expr(fixed_casts: bool) -> impl Strategy<Value = Arc<Expr>> {
         1 => any::<bool>().prop_map(Expr::constant),
     ];
     let unary = prop_oneof![
-        Just(UnaryOp::Neg), Just(UnaryOp::Pos), Just(UnaryOp::Abs), Just(UnaryOp::Invert), Just(UnaryOp::IsNan)
+        Just(UnaryOp::Neg),
+        Just(UnaryOp::Pos),
+        Just(UnaryOp::Abs),
+        Just(UnaryOp::Invert),
+        Just(UnaryOp::IsNan)
     ];
     let binary = prop::sample::select(vec![
         Add, Sub, Mul, TrueDiv, FloorDiv, Mod, Pow, LShift, RShift, BitAnd, BitOr, BitXor, Eq, Ne, Lt, Le, Gt, Ge,

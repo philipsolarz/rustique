@@ -20,10 +20,9 @@ impl fmt::Display for SliceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SliceError::ZeroStep => f.write_str("slice step cannot be zero"),
-            SliceError::LengthMismatch { expected, got } => write!(
-                f,
-                "attempt to assign sequence of size {got} to extended slice of size {expected}"
-            ),
+            SliceError::LengthMismatch { expected, got } => {
+                write!(f, "attempt to assign sequence of size {got} to extended slice of size {expected}")
+            }
         }
     }
 }
@@ -106,11 +105,7 @@ pub fn normalize_index(index: isize, len: usize) -> Option<usize> {
 /// `list.insert` position semantics: negative indices count from the end and the result
 /// is clamped into `0..=len`.
 pub fn clamp_insert_index(index: isize, len: usize) -> usize {
-    if index < 0 {
-        (index.saturating_add(len as isize)).max(0) as usize
-    } else {
-        (index as usize).min(len)
-    }
+    if index < 0 { (index.saturating_add(len as isize)).max(0) as usize } else { (index as usize).min(len) }
 }
 
 /// Copy the selected elements (`v[s]`).
@@ -252,10 +247,7 @@ mod tests {
     fn assign_extended_checks_length() {
         let mut v = vec![0, 1, 2, 3, 4, 5];
         let s = SliceIndices::new(None, None, Some(2), v.len()).unwrap();
-        assert_eq!(
-            assign_slice(&mut v, &s, vec![1, 2]),
-            Err(SliceError::LengthMismatch { expected: 3, got: 2 })
-        );
+        assert_eq!(assign_slice(&mut v, &s, vec![1, 2]), Err(SliceError::LengthMismatch { expected: 3, got: 2 }));
         assign_slice(&mut v, &s, vec![10, 12, 14]).unwrap();
         assert_eq!(v, vec![10, 1, 12, 3, 14, 5]);
         // The rejected values are handed back untouched (the binding drops them unlocked).

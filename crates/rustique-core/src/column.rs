@@ -45,9 +45,15 @@ pub enum Column {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ColumnError {
     /// A value or column of the wrong dtype was supplied (a bug in the caller).
-    TypeMismatch { expected: DType, found: DType },
+    TypeMismatch {
+        expected: DType,
+        found: DType,
+    },
     /// Position outside `0..len` (or `0..=len` for insertion).
-    IndexOutOfRange { index: usize, len: usize },
+    IndexOutOfRange {
+        index: usize,
+        len: usize,
+    },
     Slice(SliceError),
 }
 

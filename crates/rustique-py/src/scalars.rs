@@ -112,9 +112,7 @@ impl PyIntVal {
                 None => Ok(Self::Small(-1)),
             },
             0 => Ok(Self::Small(v.into())),
-            1 => Ok(obj
-                .extract::<u64>()
-                .map_or(Self::Above, |u| Self::Small(u.into()))),
+            1 => Ok(obj.extract::<u64>().map_or(Self::Above, |u| Self::Small(u.into()))),
             _ => Ok(Self::Below),
         }
     }
@@ -165,9 +163,7 @@ fn compare(ord: Option<Ordering>, op: CompareOp) -> bool {
 }
 
 fn type_name(obj: &Bound<'_, PyAny>) -> String {
-    obj.get_type()
-        .name()
-        .map_or_else(|_| "?".to_owned(), |n| n.to_string())
+    obj.get_type().name().map_or_else(|_| "?".to_owned(), |n| n.to_string())
 }
 
 fn zero_division() -> PyErr {
@@ -181,14 +177,11 @@ fn bool_obj(py: Python<'_>, b: bool) -> PyResult<Py<PyAny>> {
 /// A `u32` count argument of a named method (shift amount, exponent, rotation).
 fn count_arg(obj: &Bound<'_, PyAny>, what: &str) -> PyResult<u32> {
     match PyIntVal::of(obj)? {
-        PyIntVal::Small(i128::MIN..0) | PyIntVal::Below => {
-            Err(PyValueError::new_err(format!("negative {what}")))
+        PyIntVal::Small(i128::MIN..0) | PyIntVal::Below => Err(PyValueError::new_err(format!("negative {what}"))),
+        PyIntVal::Small(v) => {
+            u32::try_from(v).map_err(|_| PyOverflowError::new_err(format!("{what} {v} does not fit in u32")))
         }
-        PyIntVal::Small(v) => u32::try_from(v)
-            .map_err(|_| PyOverflowError::new_err(format!("{what} {v} does not fit in u32"))),
-        PyIntVal::Above => Err(PyOverflowError::new_err(format!(
-            "{what} does not fit in u32"
-        ))),
+        PyIntVal::Above => Err(PyOverflowError::new_err(format!("{what} does not fit in u32"))),
     }
 }
 
@@ -200,17 +193,10 @@ fn bytes_arg(obj: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     PyBuffer::<u8>::get(obj)?.to_vec(obj.py())
 }
 
-fn fixed_bytes<const N: usize>(
-    name: &str,
-    method: &str,
-    obj: &Bound<'_, PyAny>,
-) -> PyResult<[u8; N]> {
+fn fixed_bytes<const N: usize>(name: &str, method: &str, obj: &Bound<'_, PyAny>) -> PyResult<[u8; N]> {
     let bytes = bytes_arg(obj)?;
     <[u8; N]>::try_from(bytes.as_slice()).map_err(|_| {
-        PyValueError::new_err(format!(
-            "{name}.{method}() requires exactly {N} bytes, got {}",
-            bytes.len()
-        ))
+        PyValueError::new_err(format!("{name}.{method}() requires exactly {N} bytes, got {}", bytes.len()))
     })
 }
 
@@ -337,12 +323,7 @@ trait IntScalar: pyo3::PyClass {
 }
 
 fn int_range_error<T: IntPrim>(value: impl Display) -> PyErr {
-    PyOverflowError::new_err(format!(
-        "{value} is out of range for {} ({}..={})",
-        T::NAME,
-        T::MIN,
-        T::MAX
-    ))
+    PyOverflowError::new_err(format!("{value} is out of range for {} ({}..={})", T::NAME, T::MIN, T::MAX))
 }
 
 fn int_overflow<T: IntPrim>(a: impl Display, op: &str, b: impl Display) -> PyErr {
@@ -378,13 +359,8 @@ fn int_operand<C: IntScalar>(other: &Bound<'_, PyAny>) -> PyResult<Option<C::Pri
 
 /// A named method's argument: the same class or a Python `int` in range.
 fn int_arg<C: IntScalar>(other: &Bound<'_, PyAny>) -> PyResult<C::Prim> {
-    int_operand::<C>(other)?.ok_or_else(|| {
-        PyTypeError::new_err(format!(
-            "expected {} or int, got '{}'",
-            C::Prim::NAME,
-            type_name(other)
-        ))
-    })
+    int_operand::<C>(other)?
+        .ok_or_else(|| PyTypeError::new_err(format!("expected {} or int, got '{}'", C::Prim::NAME, type_name(other))))
 }
 
 /// A non-zero divisor argument of a named method.
@@ -401,29 +377,16 @@ fn int_floordiv<T: IntPrim>(a: T, b: T) -> Option<T> {
     let q = a.checked_div(b)?;
     let r = a.wrapping_rem(b);
     // |q| < |a| here, so `q - 1` cannot overflow.
-    Some(if r != T::ZERO && (r < T::ZERO) != (b < T::ZERO) {
-        q - T::ONE
-    } else {
-        q
-    })
+    Some(if r != T::ZERO && (r < T::ZERO) != (b < T::ZERO) { q - T::ONE } else { q })
 }
 
 /// Python's `a % b` (sign of the divisor) for `b != 0`; never overflows.
 fn int_mod<T: IntPrim>(a: T, b: T) -> T {
     let r = a.wrapping_rem(b);
-    if r != T::ZERO && (r < T::ZERO) != (b < T::ZERO) {
-        r + b
-    } else {
-        r
-    }
+    if r != T::ZERO && (r < T::ZERO) != (b < T::ZERO) { r + b } else { r }
 }
 
-fn int_binop<C: IntScalar>(
-    lhs: C::Prim,
-    other: &Bound<'_, PyAny>,
-    reflected: bool,
-    op: Op,
-) -> PyResult<Py<PyAny>> {
+fn int_binop<C: IntScalar>(lhs: C::Prim, other: &Bound<'_, PyAny>, reflected: bool, op: Op) -> PyResult<Py<PyAny>> {
     let py = other.py();
     let Some(rhs) = int_operand::<C>(other)? else {
         return Ok(py.NotImplemented());
@@ -448,11 +411,7 @@ fn int_binop<C: IntScalar>(
     }
 }
 
-fn int_divmod<C: IntScalar>(
-    lhs: C::Prim,
-    other: &Bound<'_, PyAny>,
-    reflected: bool,
-) -> PyResult<Py<PyAny>> {
+fn int_divmod<C: IntScalar>(lhs: C::Prim, other: &Bound<'_, PyAny>, reflected: bool) -> PyResult<Py<PyAny>> {
     let py = other.py();
     let Some(rhs) = int_operand::<C>(other)? else {
         return Ok(py.NotImplemented());
@@ -466,20 +425,12 @@ fn int_divmod<C: IntScalar>(
 }
 
 /// `a / b` for integers: a Python `float`, correctly rounded like `int.__truediv__`.
-fn int_truediv<C: IntScalar>(
-    lhs: C::Prim,
-    other: &Bound<'_, PyAny>,
-    reflected: bool,
-) -> PyResult<Py<PyAny>> {
+fn int_truediv<C: IntScalar>(lhs: C::Prim, other: &Bound<'_, PyAny>, reflected: bool) -> PyResult<Py<PyAny>> {
     let py = other.py();
     let Some(rhs) = int_operand::<C>(other)? else {
         return Ok(py.NotImplemented());
     };
-    let (a, b): (i128, i128) = if reflected {
-        (rhs.into(), lhs.into())
-    } else {
-        (lhs.into(), rhs.into())
-    };
+    let (a, b): (i128, i128) = if reflected { (rhs.into(), lhs.into()) } else { (lhs.into(), rhs.into()) };
     if b == 0 {
         return Err(zero_division());
     }
@@ -494,26 +445,15 @@ fn int_truediv<C: IntScalar>(
 /// The shift amount of an operator: negative → `ValueError`, `>= BITS` → `OverflowError`.
 fn shift_amount<T: IntPrim>(count: PyIntVal) -> PyResult<u32> {
     match count {
-        PyIntVal::Small(i128::MIN..0) | PyIntVal::Below => {
-            Err(PyValueError::new_err("negative shift count"))
-        }
+        PyIntVal::Small(i128::MIN..0) | PyIntVal::Below => Err(PyValueError::new_err("negative shift count")),
         PyIntVal::Small(n) if n < T::BITS as i128 => Ok(n as u32),
-        _ => Err(PyOverflowError::new_err(format!(
-            "shift count out of range for {} (must be < {})",
-            T::NAME,
-            T::BITS
-        ))),
+        _ => Err(PyOverflowError::new_err(format!("shift count out of range for {} (must be < {})", T::NAME, T::BITS))),
     }
 }
 
 /// `a << n` / `a >> n` with Rust's meaning: bits shifted out are dropped (`>>` is
 /// arithmetic for signed types), but the shift amount is checked.
-fn int_shift<C: IntScalar>(
-    lhs: C::Prim,
-    other: &Bound<'_, PyAny>,
-    reflected: bool,
-    left: bool,
-) -> PyResult<Py<PyAny>> {
+fn int_shift<C: IntScalar>(lhs: C::Prim, other: &Bound<'_, PyAny>, reflected: bool, left: bool) -> PyResult<Py<PyAny>> {
     let py = other.py();
     let (value, count) = if reflected {
         let Some(value) = int_operand::<C>(other)? else {
@@ -591,11 +531,7 @@ fn int_pow<C: IntScalar>(
     }
 }
 
-fn int_richcmp<C: IntScalar>(
-    lhs: C::Prim,
-    other: &Bound<'_, PyAny>,
-    op: CompareOp,
-) -> PyResult<Py<PyAny>> {
+fn int_richcmp<C: IntScalar>(lhs: C::Prim, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<Py<PyAny>> {
     let py = other.py();
     let ord = if let Some(v) = C::exact(other) {
         Some(lhs.cmp(&v))
@@ -620,10 +556,7 @@ fn int_new<C: IntScalar>(args: &Bound<'_, PyTuple>) -> PyResult<C::Prim> {
                 None => int_from_pyint(&obj),
             }
         }
-        n => Err(PyTypeError::new_err(format!(
-            "{}() takes at most 1 argument ({n} given)",
-            C::Prim::NAME
-        ))),
+        n => Err(PyTypeError::new_err(format!("{}() takes at most 1 argument ({n} given)", C::Prim::NAME))),
     }
 }
 
@@ -1301,13 +1234,8 @@ trait FloatScalar: pyo3::PyClass {
 }
 
 fn float_narrow<F: FloatPrim>(v: f64) -> PyResult<F> {
-    F::narrow(v).ok_or_else(|| {
-        PyOverflowError::new_err(format!(
-            "{} is out of range for {}",
-            pyfmt::float_repr(v),
-            F::NAME
-        ))
-    })
+    F::narrow(v)
+        .ok_or_else(|| PyOverflowError::new_err(format!("{} is out of range for {}", pyfmt::float_repr(v), F::NAME)))
 }
 
 fn float_from_pyint<F: FloatPrim>(obj: &Bound<'_, PyAny>) -> PyResult<F> {
@@ -1335,26 +1263,14 @@ fn float_operand<C: FloatScalar>(other: &Bound<'_, PyAny>) -> PyResult<Option<C:
 
 fn float_arg<C: FloatScalar>(other: &Bound<'_, PyAny>) -> PyResult<C::Prim> {
     float_operand::<C>(other)?.ok_or_else(|| {
-        PyTypeError::new_err(format!(
-            "expected {}, float or int, got '{}'",
-            C::Prim::NAME,
-            type_name(other)
-        ))
+        PyTypeError::new_err(format!("expected {}, float or int, got '{}'", C::Prim::NAME, type_name(other)))
     })
 }
 
 /// Python's float `%` (`float_rem`): the result takes the divisor's sign.
 fn float_mod<F: FloatPrim>(a: F, b: F) -> F {
     let m = a % b;
-    if m != F::ZERO {
-        if (b < F::ZERO) != (m < F::ZERO) {
-            m + b
-        } else {
-            m
-        }
-    } else {
-        F::ZERO.copysign(b)
-    }
+    if m != F::ZERO { if (b < F::ZERO) != (m < F::ZERO) { m + b } else { m } } else { F::ZERO.copysign(b) }
 }
 
 /// Python's float `divmod` (`_float_div_mod`), in the type's own precision.
@@ -1372,11 +1288,7 @@ fn float_divmod<F: FloatPrim>(a: F, b: F) -> (F, F) {
     let floordiv = if div != F::ZERO {
         let f = div.floor();
         // Snap to the nearest integer: `div` is within an ulp of one.
-        if div - f > F::ONE / (F::ONE + F::ONE) {
-            f + F::ONE
-        } else {
-            f
-        }
+        if div - f > F::ONE / (F::ONE + F::ONE) { f + F::ONE } else { f }
     } else {
         F::ZERO.copysign(a / b)
     };
@@ -1429,9 +1341,7 @@ fn float_pow<F: FloatPrim>(v: F, w: F) -> PyResult<F> {
     let (mut base, mut negate) = (v, false);
     if v < F::ZERO {
         if w.floor() != w {
-            return Err(PyValueError::new_err(
-                "negative number cannot be raised to a fractional power",
-            ));
+            return Err(PyValueError::new_err("negative number cannot be raised to a fractional power"));
         }
         base = -v;
         negate = is_odd_integer(w);
@@ -1441,20 +1351,12 @@ fn float_pow<F: FloatPrim>(v: F, w: F) -> PyResult<F> {
     }
     let r = base.powf(w);
     if r.is_infinite() {
-        return Err(PyOverflowError::new_err((
-            34,
-            "Numerical result out of range",
-        )));
+        return Err(PyOverflowError::new_err((34, "Numerical result out of range")));
     }
     Ok(if negate { -r } else { r })
 }
 
-fn float_binop<C: FloatScalar>(
-    lhs: C::Prim,
-    other: &Bound<'_, PyAny>,
-    reflected: bool,
-    op: Op,
-) -> PyResult<Py<PyAny>> {
+fn float_binop<C: FloatScalar>(lhs: C::Prim, other: &Bound<'_, PyAny>, reflected: bool, op: Op) -> PyResult<Py<PyAny>> {
     let py = other.py();
     let Some(rhs) = float_operand::<C>(other)? else {
         return Ok(py.NotImplemented());
@@ -1472,11 +1374,7 @@ fn float_binop<C: FloatScalar>(
     C::object(py, v)
 }
 
-fn float_truediv<C: FloatScalar>(
-    lhs: C::Prim,
-    other: &Bound<'_, PyAny>,
-    reflected: bool,
-) -> PyResult<Py<PyAny>> {
+fn float_truediv<C: FloatScalar>(lhs: C::Prim, other: &Bound<'_, PyAny>, reflected: bool) -> PyResult<Py<PyAny>> {
     let py = other.py();
     let Some(rhs) = float_operand::<C>(other)? else {
         return Ok(py.NotImplemented());
@@ -1488,11 +1386,7 @@ fn float_truediv<C: FloatScalar>(
     C::object(py, a / b)
 }
 
-fn float_divmod_op<C: FloatScalar>(
-    lhs: C::Prim,
-    other: &Bound<'_, PyAny>,
-    reflected: bool,
-) -> PyResult<Py<PyAny>> {
+fn float_divmod_op<C: FloatScalar>(lhs: C::Prim, other: &Bound<'_, PyAny>, reflected: bool) -> PyResult<Py<PyAny>> {
     let py = other.py();
     let Some(rhs) = float_operand::<C>(other)? else {
         return Ok(py.NotImplemented());
@@ -1516,19 +1410,13 @@ fn float_pow_op<C: FloatScalar>(
         return Ok(py.NotImplemented());
     };
     if modulo.is_some() {
-        return Err(PyTypeError::new_err(
-            "pow() 3rd argument not allowed unless all arguments are integers",
-        ));
+        return Err(PyTypeError::new_err("pow() 3rd argument not allowed unless all arguments are integers"));
     }
     let (a, b) = if reflected { (rhs, lhs) } else { (lhs, rhs) };
     C::object(py, float_pow(a, b)?)
 }
 
-fn float_richcmp<C: FloatScalar>(
-    lhs: C::Prim,
-    other: &Bound<'_, PyAny>,
-    op: CompareOp,
-) -> PyResult<Py<PyAny>> {
+fn float_richcmp<C: FloatScalar>(lhs: C::Prim, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<Py<PyAny>> {
     let py = other.py();
     let x = lhs.widen();
     let ord = if let Some(v) = C::exact(other) {
@@ -1554,10 +1442,7 @@ fn float_new<C: FloatScalar>(args: &Bound<'_, PyTuple>) -> PyResult<C::Prim> {
         0 => return Ok(C::Prim::ZERO),
         1 => args.get_item(0)?,
         n => {
-            return Err(PyTypeError::new_err(format!(
-                "{}() takes at most 1 argument ({n} given)",
-                C::Prim::NAME
-            )));
+            return Err(PyTypeError::new_err(format!("{}() takes at most 1 argument ({n} given)", C::Prim::NAME)));
         }
     };
     if let Some(v) = float_operand::<C>(&obj)? {
@@ -1725,10 +1610,7 @@ macro_rules! float_scalar {
                 slf.clone()
             }
 
-            fn __deepcopy__<'py>(
-                slf: &Bound<'py, Self>,
-                _memo: &Bound<'py, PyAny>,
-            ) -> Bound<'py, Self> {
+            fn __deepcopy__<'py>(slf: &Bound<'py, Self>, _memo: &Bound<'py, PyAny>) -> Bound<'py, Self> {
                 slf.clone()
             }
 
@@ -1746,11 +1628,7 @@ macro_rules! float_scalar {
 
             /// `round(x)` is a Python `int`; `round(x, n)` stays in the type.
             #[pyo3(signature = (ndigits=None))]
-            fn __round__(
-                &self,
-                py: Python<'_>,
-                ndigits: Option<&Bound<'_, PyAny>>,
-            ) -> PyResult<Py<PyAny>> {
+            fn __round__(&self, py: Python<'_>, ndigits: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
                 let x = PyFloat::new(py, FloatPrim::widen(self.0));
                 match ndigits {
                     None => Ok(x.call_method0(intern!(py, "__round__"))?.unbind()),
@@ -1803,18 +1681,10 @@ macro_rules! float_scalar {
             fn __rdivmod__(&self, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
                 float_divmod_op::<Self>(self.0, other, true)
             }
-            fn __pow__(
-                &self,
-                other: &Bound<'_, PyAny>,
-                modulo: Option<&Bound<'_, PyAny>>,
-            ) -> PyResult<Py<PyAny>> {
+            fn __pow__(&self, other: &Bound<'_, PyAny>, modulo: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
                 float_pow_op::<Self>(self.0, other, modulo, false)
             }
-            fn __rpow__(
-                &self,
-                other: &Bound<'_, PyAny>,
-                modulo: Option<&Bound<'_, PyAny>>,
-            ) -> PyResult<Py<PyAny>> {
+            fn __rpow__(&self, other: &Bound<'_, PyAny>, modulo: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
                 float_pow_op::<Self>(self.0, other, modulo, true)
             }
 
@@ -1908,43 +1778,21 @@ macro_rules! float_scalar {
             #[classmethod]
             #[pyo3(signature = (bytes, /))]
             fn from_be_bytes(_cls: &Bound<'_, PyType>, bytes: &Bound<'_, PyAny>) -> PyResult<Self> {
-                Ok(Self($t::from_be_bytes(fixed_bytes(
-                    stringify!($t),
-                    "from_be_bytes",
-                    bytes,
-                )?)))
+                Ok(Self($t::from_be_bytes(fixed_bytes(stringify!($t), "from_be_bytes", bytes)?)))
             }
             #[classmethod]
             #[pyo3(signature = (bytes, /))]
             fn from_le_bytes(_cls: &Bound<'_, PyType>, bytes: &Bound<'_, PyAny>) -> PyResult<Self> {
-                Ok(Self($t::from_le_bytes(fixed_bytes(
-                    stringify!($t),
-                    "from_le_bytes",
-                    bytes,
-                )?)))
+                Ok(Self($t::from_le_bytes(fixed_bytes(stringify!($t), "from_le_bytes", bytes)?)))
             }
             #[classmethod]
             #[pyo3(signature = (bytes, /))]
             fn from_ne_bytes(_cls: &Bound<'_, PyType>, bytes: &Bound<'_, PyAny>) -> PyResult<Self> {
-                Ok(Self($t::from_ne_bytes(fixed_bytes(
-                    stringify!($t),
-                    "from_ne_bytes",
-                    bytes,
-                )?)))
+                Ok(Self($t::from_ne_bytes(fixed_bytes(stringify!($t), "from_ne_bytes", bytes)?)))
             }
         }
     };
 }
 
-float_scalar!(
-    F32,
-    f32,
-    "f32",
-    "32-bit IEEE 754 float; arithmetic rounds to single precision."
-);
-float_scalar!(
-    F64,
-    f64,
-    "f64",
-    "64-bit IEEE 754 float with Python `float` semantics."
-);
+float_scalar!(F32, f32, "f32", "32-bit IEEE 754 float; arithmetic rounds to single precision.");
+float_scalar!(F64, f64, "f64", "64-bit IEEE 754 float with Python `float` semantics.");

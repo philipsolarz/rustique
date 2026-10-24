@@ -297,7 +297,10 @@ unsafe fn non_ascii_str(data: *mut std::ffi::c_void, len: usize, kind: std::ffi:
                 std::slice::from_raw_parts(data.cast::<u16>(), len).iter().map(|&u| char::from_u32(u32::from(u))),
                 len * 3,
             ),
-            _ => encode_utf8(std::slice::from_raw_parts(data.cast::<u32>(), len).iter().map(|&u| char::from_u32(u)), len * 4),
+            _ => encode_utf8(
+                std::slice::from_raw_parts(data.cast::<u32>(), len).iter().map(|&u| char::from_u32(u)),
+                len * 4,
+            ),
         }
     }
 }
@@ -405,11 +408,7 @@ pub fn ingest(py: Python<'_>, schema: &Arc<Schema>, obj: &Bound<'_, PyAny>) -> R
     let p = obj.as_ptr();
     // SAFETY: exact type checks on a valid object.
     let (is_list, is_tuple, is_range) = unsafe {
-        (
-            ffi::PyList_CheckExact(p) != 0,
-            ffi::PyTuple_CheckExact(p) != 0,
-            ffi::Py_TYPE(p) == &raw mut ffi::PyRange_Type,
-        )
+        (ffi::PyList_CheckExact(p) != 0, ffi::PyTuple_CheckExact(p) != 0, ffi::Py_TYPE(p) == &raw mut ffi::PyRange_Type)
     };
     if is_list {
         // SAFETY: checked exact type above.
@@ -537,7 +536,11 @@ enum Fast {
     Done(Storage),
     /// The fast pass stopped at `offset`; `rest` holds strong references to the remaining
     /// items, to be converted on the general path.
-    Bail { storage: Storage, rest: Vec<Py<PyAny>>, offset: usize },
+    Bail {
+        storage: Storage,
+        rest: Vec<Py<PyAny>>,
+        offset: usize,
+    },
 }
 
 fn ingest_list(py: Python<'_>, schema: &Arc<Schema>, list: &Bound<'_, PyList>) -> Result<Storage, IngestError> {
@@ -814,7 +817,11 @@ unsafe fn any_column<T: ObjectPtr>(items: &[T]) -> Option<Column> {
 }
 
 /// `range` with int bounds: generated natively for schemas that store ints or floats.
-fn ingest_range(py: Python<'_>, schema: &Arc<Schema>, range: &Bound<'_, PyAny>) -> Result<Option<Storage>, IngestError> {
+fn ingest_range(
+    py: Python<'_>,
+    schema: &Arc<Schema>,
+    range: &Bound<'_, PyAny>,
+) -> Result<Option<Storage>, IngestError> {
     let target = match &**schema {
         Schema::Any | Schema::Int => DType::I64,
         Schema::Float => DType::F64,
@@ -889,7 +896,11 @@ pub fn generate(
             v.try_reserve_exact(len).map_err(|_| PyMemoryError::new_err(()))?;
             let conv = $conv;
             let run = |v: &mut Vec<$t>| v.extend((0..len).map(|k| conv(value(k))));
-            if len >= 1 << 16 { py.detach(|| run(&mut v)) } else { run(&mut v) }
+            if len >= 1 << 16 {
+                py.detach(|| run(&mut v))
+            } else {
+                run(&mut v)
+            }
             Column::from(v)
         }};
     }
@@ -929,11 +940,7 @@ fn ingest_buffer(py: Python<'_>, schema: &Arc<Schema>, obj: &Bound<'_, PyAny>) -
     };
     buffer.release(py);
     let storage = Storage::Native(column);
-    if schema.is_any() {
-        Ok(Some(storage.normalize_any(py)))
-    } else {
-        cast_native(py, storage, schema).map(Some)
-    }
+    if schema.is_any() { Ok(Some(storage.normalize_any(py))) } else { cast_native(py, storage, schema).map(Some) }
 }
 
 fn buffer_column(py: Python<'_>, buffer: &PyUntypedBuffer) -> PyResult<Option<Column>> {

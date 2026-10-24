@@ -33,9 +33,7 @@ const MAX_DEPTH: usize = 128;
 
 /// Class names of the fixed-width scalar types (`rs.i8` …); only these are offered to
 /// `scalars::dtype_of_type`.
-const SCALAR_NAMES: [&str; 10] = [
-    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
-];
+const SCALAR_NAMES: [&str; 10] = ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"];
 
 // ---------------------------------------------------------------------------------------
 // Compilation
@@ -76,9 +74,7 @@ fn refs(py: Python<'_>) -> PyResult<&'static Refs> {
     once(&REFS, py, || {
         let typing = py.import("typing")?;
         let types = py.import("types")?;
-        let class = |name: &str| -> PyResult<Py<PyType>> {
-            Ok(typing.getattr(name)?.cast_into::<PyType>()?.unbind())
-        };
+        let class = |name: &str| -> PyResult<Py<PyType>> { Ok(typing.getattr(name)?.cast_into::<PyType>()?.unbind()) };
         let type_type = py.get_type::<PyType>();
         Ok(Refs {
             any: typing.getattr("Any")?.unbind(),
@@ -110,18 +106,13 @@ fn refs(py: Python<'_>) -> PyResult<&'static Refs> {
 
 /// Initialise a `PyOnceLock` without holding any lock while `init` runs Python code
 /// (a racing initialiser may win; both values are equivalent).
-fn once<'a, T>(
-    cell: &'a PyOnceLock<T>,
-    py: Python<'_>,
-    init: impl FnOnce() -> PyResult<T>,
-) -> PyResult<&'a T> {
+fn once<'a, T>(cell: &'a PyOnceLock<T>, py: Python<'_>, init: impl FnOnce() -> PyResult<T>) -> PyResult<&'a T> {
     if let Some(value) = cell.get(py) {
         return Ok(value);
     }
     let value = init()?;
     let _ = cell.set(py, value);
-    cell.get(py)
-        .ok_or_else(|| PyRuntimeError::new_err("rustique: failed to initialise a typing cache"))
+    cell.get(py).ok_or_else(|| PyRuntimeError::new_err("rustique: failed to initialise a typing cache"))
 }
 
 /// `#[pyclass]` wrapper so compiled schemas can live in a Python dict.
@@ -204,10 +195,7 @@ static_schema!(str_schema, Schema::Str);
 
 fn none_schema(py: Python<'_>, refs: &Refs) -> PyResult<Arc<Schema>> {
     static CELL: PyOnceLock<Arc<Schema>> = PyOnceLock::new();
-    once(&CELL, py, || {
-        Ok(intern(Schema::Class(refs.none_type.clone_ref(py))))
-    })
-    .cloned()
+    once(&CELL, py, || Ok(intern(Schema::Class(refs.none_type.clone_ref(py))))).cloned()
 }
 
 /// Schemas for the leaf expressions that need no `typing` machinery.
@@ -263,9 +251,7 @@ impl<'py> Compiler<'py> {
             return Ok(schema);
         }
         if self.depth >= MAX_DEPTH {
-            return Err(PyRecursionError::new_err(format!(
-                "type expression nested more than {MAX_DEPTH} levels deep"
-            )));
+            return Err(PyRecursionError::new_err(format!("type expression nested more than {MAX_DEPTH} levels deep")));
         }
         self.depth += 1;
         let result = self.compile_node(ty);
@@ -275,9 +261,7 @@ impl<'py> Compiler<'py> {
         // result (`T = List[T]` repeated); every schema stays within MAX_DEPTH so the
         // recursive walks over it (render, hash, display) cannot overflow the stack.
         if schema_depth(&schema) > MAX_DEPTH {
-            return Err(PyRecursionError::new_err(format!(
-                "type expression nested more than {MAX_DEPTH} levels deep"
-            )));
+            return Err(PyRecursionError::new_err(format!("type expression nested more than {MAX_DEPTH} levels deep")));
         }
         Ok(schema)
     }
@@ -311,9 +295,7 @@ impl<'py> Compiler<'py> {
                 .map(|(_, schema)| schema.clone());
             return Ok(bound.unwrap_or_else(any));
         }
-        if ty.is_instance(refs.param_spec.bind(py))?
-            || ty.is_instance(refs.type_var_tuple.bind(py))?
-        {
+        if ty.is_instance(refs.param_spec.bind(py))? || ty.is_instance(refs.type_var_tuple.bind(py))? {
             return Err(PyTypeError::new_err(format!(
                 "{} is not a valid element type (ParamSpec and TypeVarTuple describe argument lists)",
                 type_repr(ty)
@@ -367,24 +349,14 @@ impl<'py> Compiler<'py> {
             return Ok(true);
         }
         Ok(meta.getattr(intern!(py, "__eq__"))?.is(&self.refs.type_eq)
-            && meta
-                .getattr(intern!(py, "__hash__"))?
-                .is(&self.refs.type_hash))
+            && meta.getattr(intern!(py, "__hash__"))?.is(&self.refs.type_hash))
     }
 
     /// Expressions with a `typing.get_origin`: unions, `Annotated`, generic aliases.
-    fn compile_generic(
-        &mut self,
-        ty: &Bound<'py, PyAny>,
-        origin: &Bound<'py, PyAny>,
-    ) -> PyResult<Arc<Schema>> {
+    fn compile_generic(&mut self, ty: &Bound<'py, PyAny>, origin: &Bound<'py, PyAny>) -> PyResult<Arc<Schema>> {
         let py = self.py;
         let refs = self.refs;
-        let args = refs
-            .get_args
-            .bind(py)
-            .call1((ty,))?
-            .cast_into::<PyTuple>()?;
+        let args = refs.get_args.bind(py).call1((ty,))?.cast_into::<PyTuple>()?;
         if origin.is(&refs.annotated) {
             return self.compile(&args.get_item(0)?);
         }
@@ -449,29 +421,20 @@ impl<'py> Compiler<'py> {
         for arg in args.iter() {
             schemas.push(self.compile(&arg)?);
         }
-        schemas
-            .try_into()
-            .map_err(|_| PyRuntimeError::new_err("rustique: container arity mismatch"))
+        schemas.try_into().map_err(|_| PyRuntimeError::new_err("rustique: container arity mismatch"))
     }
 
     /// `A | B | None`: flatten nested unions/optionals, dedupe preserving order, and
     /// collapse to `Optional`/a single member/`Any` where possible.
     fn compile_union(&mut self, args: &Bound<'py, PyTuple>) -> PyResult<Arc<Schema>> {
-        fn absorb(
-            schema: &Arc<Schema>,
-            none: &Arc<Schema>,
-            members: &mut Vec<Arc<Schema>>,
-            has_none: &mut bool,
-        ) {
+        fn absorb(schema: &Arc<Schema>, none: &Arc<Schema>, members: &mut Vec<Arc<Schema>>, has_none: &mut bool) {
             match &**schema {
                 _ if schema == none => *has_none = true,
                 Schema::Optional(inner) => {
                     *has_none = true;
                     absorb(inner, none, members, has_none);
                 }
-                Schema::Union(inner) => inner
-                    .iter()
-                    .for_each(|m| absorb(m, none, members, has_none)),
+                Schema::Union(inner) => inner.iter().for_each(|m| absorb(m, none, members, has_none)),
                 _ if members.contains(schema) => {}
                 _ => members.push(schema.clone()),
             }
@@ -501,20 +464,12 @@ impl<'py> Compiler<'py> {
                 intern(Schema::Union(members))
             }
         };
-        Ok(if has_none {
-            intern(Schema::Optional(core))
-        } else {
-            core
-        })
+        Ok(if has_none { intern(Schema::Optional(core)) } else { core })
     }
 
     /// PEP 695 `type Alias[T] = ...`: compile `__value__` with the type parameters bound
     /// to `args` (unbound parameters erase to `Any`).
-    fn expand_alias(
-        &mut self,
-        alias: &Bound<'py, PyAny>,
-        args: Option<&Bound<'py, PyTuple>>,
-    ) -> PyResult<Arc<Schema>> {
+    fn expand_alias(&mut self, alias: &Bound<'py, PyAny>, args: Option<&Bound<'py, PyTuple>>) -> PyResult<Arc<Schema>> {
         let py = self.py;
         let name = alias.getattr(intern!(py, "__name__"))?.to_string();
         if self.expanding.iter().any(|a| a.is(alias)) {
@@ -522,9 +477,7 @@ impl<'py> Compiler<'py> {
                 "recursive type alias {name} is not supported as an element type"
             )));
         }
-        let params = alias
-            .getattr(intern!(py, "__type_params__"))?
-            .cast_into::<PyTuple>()?;
+        let params = alias.getattr(intern!(py, "__type_params__"))?.cast_into::<PyTuple>()?;
         let mut frame = Vec::new();
         if let Some(args) = args {
             if args.len() > params.len() {
@@ -541,20 +494,13 @@ impl<'py> Compiler<'py> {
             }
         }
         let value = alias.getattr(intern!(py, "__value__")).map_err(|err| {
-            let wrapped =
-                PyTypeError::new_err(format!("could not resolve type alias {name}: {err}"));
+            let wrapped = PyTypeError::new_err(format!("could not resolve type alias {name}: {err}"));
             wrapped.set_cause(py, Some(err));
             wrapped
         })?;
         self.expanding.push(alias.clone());
         self.frames.push(frame);
-        let result = self.expand_alias_body(
-            &name,
-            &params,
-            args.map_or(0, |a| a.len()),
-            args.is_some(),
-            &value,
-        );
+        let result = self.expand_alias_body(&name, &params, args.map_or(0, |a| a.len()), args.is_some(), &value);
         self.frames.pop();
         self.expanding.pop();
         result
@@ -571,10 +517,7 @@ impl<'py> Compiler<'py> {
         if applied {
             // PEP 696 defaults for trailing parameters; they may refer to earlier ones.
             for param in params.iter().skip(given) {
-                if !param
-                    .call_method0(intern!(self.py, "has_default"))?
-                    .is_truthy()?
-                {
+                if !param.call_method0(intern!(self.py, "has_default"))?.is_truthy()? {
                     return Err(alias_arity(name, params.len(), given));
                 }
                 let schema = self.compile(&param.getattr(intern!(self.py, "__default__"))?)?;
@@ -588,9 +531,7 @@ impl<'py> Compiler<'py> {
 }
 
 fn alias_arity(name: &str, expected: usize, got: usize) -> PyErr {
-    PyTypeError::new_err(format!(
-        "type alias {name} expects {expected} type arguments, got {got}"
-    ))
+    PyTypeError::new_err(format!("type alias {name} expects {expected} type arguments, got {got}"))
 }
 
 fn unsupported(ty: &Bound<'_, PyAny>) -> PyErr {
@@ -612,10 +553,7 @@ fn type_repr(ty: &Bound<'_, PyAny>) -> String {
             format!("{module}.{qualname}")
         };
     }
-    ty.repr().map_or_else(
-        |_| "<unprintable type expression>".to_owned(),
-        |r| r.to_string(),
-    )
+    ty.repr().map_or_else(|_| "<unprintable type expression>".to_owned(), |r| r.to_string())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -654,12 +592,7 @@ fn render(py: Python<'_>, schema: &Schema, out: &mut String) {
     }
 }
 
-fn render_joined<'a>(
-    py: Python<'_>,
-    schemas: impl IntoIterator<Item = &'a Arc<Schema>>,
-    sep: &str,
-    out: &mut String,
-) {
+fn render_joined<'a>(py: Python<'_>, schemas: impl IntoIterator<Item = &'a Arc<Schema>>, sep: &str, out: &mut String) {
     for (i, schema) in schemas.into_iter().enumerate() {
         if i > 0 {
             out.push_str(sep);
@@ -701,10 +634,7 @@ fn canonical<'py>(py: Python<'py>, schema: &Arc<Schema>) -> PyResult<Bound<'py, 
             members.push(refs.none_type.bind(py).clone().into_any());
             refs.union.bind(py).get_item(PyTuple::new(py, members)?)?
         }
-        Schema::Union(members) => refs
-            .union
-            .bind(py)
-            .get_item(PyTuple::new(py, canonical_all(py, members)?)?)?,
+        Schema::Union(members) => refs.union.bind(py).get_item(PyTuple::new(py, canonical_all(py, members)?)?)?,
         Schema::List(item) => list_alias_for(py, item)?,
         Schema::Dict(key, value) => dict_alias_for(py, key, value)?,
         Schema::Set(item) => set_alias_for(py, item)?,
@@ -712,10 +642,7 @@ fn canonical<'py>(py: Python<'py>, schema: &Arc<Schema>) -> PyResult<Bound<'py, 
     })
 }
 
-fn canonical_all<'py>(
-    py: Python<'py>,
-    schemas: &[Arc<Schema>],
-) -> PyResult<Vec<Bound<'py, PyAny>>> {
+fn canonical_all<'py>(py: Python<'py>, schemas: &[Arc<Schema>]) -> PyResult<Vec<Bound<'py, PyAny>>> {
     schemas.iter().map(|s| canonical(py, s)).collect()
 }
 
@@ -904,8 +831,7 @@ alias_methods!(ListType, List, "List", {
     }
 
     fn __instancecheck__(&self, obj: &Bound<'_, PyAny>) -> bool {
-        obj.cast::<List>()
-            .is_ok_and(|list| same_schema(list.get().schema(), &self.item))
+        obj.cast::<List>().is_ok_and(|list| same_schema(list.get().schema(), &self.item))
     }
 
     /// The element schema, e.g. `'int | None'`.
@@ -925,21 +851,13 @@ alias_methods!(DictType, Dict, "Dict", {
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let arg = single_positional(args, || self.repr(py))?;
-        Ok(Dict::from_args(
-            py,
-            self.key.clone(),
-            self.value.clone(),
-            arg.as_ref(),
-            kwargs,
-        )?
-        .into_any())
+        Ok(Dict::from_args(py, self.key.clone(), self.value.clone(), arg.as_ref(), kwargs)?.into_any())
     }
 
     fn __instancecheck__(&self, obj: &Bound<'_, PyAny>) -> bool {
         obj.cast::<Dict>().is_ok_and(|dict| {
             let dict = dict.get();
-            same_schema(dict.key_schema(), &self.key)
-                && same_schema(dict.value_schema(), &self.value)
+            same_schema(dict.key_schema(), &self.key) && same_schema(dict.value_schema(), &self.value)
         })
     }
 
@@ -967,8 +885,7 @@ alias_methods!(SetType, Set, "Set", {
     }
 
     fn __instancecheck__(&self, obj: &Bound<'_, PyAny>) -> bool {
-        obj.cast::<Set>()
-            .is_ok_and(|set| same_schema(set.get().schema(), &self.item))
+        obj.cast::<Set>().is_ok_and(|set| same_schema(set.get().schema(), &self.item))
     }
 
     /// The element schema, e.g. `'str'`.
@@ -981,10 +898,9 @@ alias_methods!(SetType, Set, "Set", {
 /// `list()`/`set()` take no keyword arguments.
 fn no_keywords(kwargs: Option<&Bound<'_, PyDict>>, repr: impl FnOnce() -> String) -> PyResult<()> {
     match kwargs {
-        Some(kwargs) if !kwargs.is_empty() => Err(PyTypeError::new_err(format!(
-            "{}() takes no keyword arguments",
-            repr()
-        ))),
+        Some(kwargs) if !kwargs.is_empty() => {
+            Err(PyTypeError::new_err(format!("{}() takes no keyword arguments", repr())))
+        }
         _ => Ok(()),
     }
 }
@@ -997,10 +913,7 @@ fn single_positional<'py>(
     match args.len() {
         0 => Ok(None),
         1 => Ok(Some(args.get_item(0)?)),
-        n => Err(PyTypeError::new_err(format!(
-            "{} expected at most 1 argument, got {n}",
-            repr()
-        ))),
+        n => Err(PyTypeError::new_err(format!("{} expected at most 1 argument, got {n}", repr()))),
     }
 }
 
@@ -1040,36 +953,26 @@ where
     K: Eq + std::hash::Hash,
     T: pyo3::PyClass + Into<pyo3::PyClassInitializer<T>>,
 {
-    let hit = map(&mut lock_aliases(py))
-        .get(&key)
-        .map(|alias| alias.clone_ref(py));
+    let hit = map(&mut lock_aliases(py)).get(&key).map(|alias| alias.clone_ref(py));
     if let Some(alias) = hit {
         return Ok(alias.into_bound(py).into_any());
     }
     let fresh = Py::new(py, make())?;
-    let winner = map(&mut lock_aliases(py))
-        .entry(key)
-        .or_insert_with(|| fresh.clone_ref(py))
-        .clone_ref(py);
+    let winner = map(&mut lock_aliases(py)).entry(key).or_insert_with(|| fresh.clone_ref(py)).clone_ref(py);
     drop(fresh);
     Ok(winner.into_bound(py).into_any())
 }
 
 /// The per-kind dict from subscript expression to alias: the `List[int]` fast path.
 fn expr_cache<'py>(py: Python<'py>, cell: &PyOnceLock<Py<PyDict>>) -> PyResult<Bound<'py, PyDict>> {
-    Ok(once(cell, py, || Ok(PyDict::new(py).unbind()))?
-        .bind(py)
-        .clone())
+    Ok(once(cell, py, || Ok(PyDict::new(py).unbind()))?.bind(py).clone())
 }
 
 /// The subscript of a one-parameter alias: `T` or the 1-tuple `(T,)`.
 fn single_param<'py>(name: &str, params: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
     match params.cast::<PyTuple>() {
         Ok(tuple) if tuple.len() == 1 => tuple.get_item(0),
-        Ok(tuple) => Err(PyTypeError::new_err(format!(
-            "{name}[...] expects 1 type argument, got {}",
-            tuple.len()
-        ))),
+        Ok(tuple) => Err(PyTypeError::new_err(format!("{name}[...] expects 1 type argument, got {}", tuple.len()))),
         Err(_) => Ok(params.clone()),
     }
 }
@@ -1093,9 +996,7 @@ pub fn dict_alias<'py>(py: Python<'py>, params: &Bound<'py, PyAny>) -> PyResult<
         Ok(tuple) if tuple.len() == 2 => (tuple.get_item(0)?, tuple.get_item(1)?),
         other => {
             let got = other.map_or(1, |t| t.len());
-            return Err(PyTypeError::new_err(format!(
-                "Dict[...] expects 2 type arguments (key, value), got {got}"
-            )));
+            return Err(PyTypeError::new_err(format!("Dict[...] expects 2 type arguments (key, value), got {got}")));
         }
     };
     let refs = refs(py)?;
@@ -1107,10 +1008,7 @@ pub fn dict_alias<'py>(py: Python<'py>, params: &Bound<'py, PyAny>) -> PyResult<
     let (alias, _) = cached(&expr_cache(py, &BY_EXPR)?, cache_key.as_ref(), || {
         let (key, key_storable) = compile_cached(&key)?;
         let (value, value_storable) = compile_cached(&value)?;
-        Ok((
-            dict_alias_for(py, &key, &value)?,
-            key_storable && value_storable,
-        ))
+        Ok((dict_alias_for(py, &key, &value)?, key_storable && value_storable))
     })?;
     Ok(alias)
 }
@@ -1137,18 +1035,11 @@ pub fn list_alias_for<'py>(py: Python<'py>, schema: &Arc<Schema>) -> PyResult<Bo
         py,
         schema.clone(),
         |maps| &mut maps.list,
-        || ListType {
-            item: schema.clone(),
-            args: PyOnceLock::new(),
-        },
+        || ListType { item: schema.clone(), args: PyOnceLock::new() },
     )
 }
 
-pub fn dict_alias_for<'py>(
-    py: Python<'py>,
-    key: &Arc<Schema>,
-    value: &Arc<Schema>,
-) -> PyResult<Bound<'py, PyAny>> {
+pub fn dict_alias_for<'py>(py: Python<'py>, key: &Arc<Schema>, value: &Arc<Schema>) -> PyResult<Bound<'py, PyAny>> {
     if key.is_any() && value.is_any() {
         return Ok(py.get_type::<Dict>().into_any());
     }
@@ -1156,11 +1047,7 @@ pub fn dict_alias_for<'py>(
         py,
         (key.clone(), value.clone()),
         |maps| &mut maps.dict,
-        || DictType {
-            key: key.clone(),
-            value: value.clone(),
-            args: PyOnceLock::new(),
-        },
+        || DictType { key: key.clone(), value: value.clone(), args: PyOnceLock::new() },
     )
 }
 
@@ -1168,15 +1055,7 @@ pub fn set_alias_for<'py>(py: Python<'py>, schema: &Arc<Schema>) -> PyResult<Bou
     if schema.is_any() {
         return Ok(py.get_type::<Set>().into_any());
     }
-    cached_alias(
-        py,
-        schema.clone(),
-        |maps| &mut maps.set,
-        || SetType {
-            item: schema.clone(),
-            args: PyOnceLock::new(),
-        },
-    )
+    cached_alias(py, schema.clone(), |maps| &mut maps.set, || SetType { item: schema.clone(), args: PyOnceLock::new() })
 }
 
 /// `_schema_repr(tp)`: the compiled schema of a type expression, rendered (debug helper).

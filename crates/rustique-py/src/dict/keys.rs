@@ -58,11 +58,7 @@ pub(crate) enum Class {
     Str { text: PyBackedStr, exact: bool },
     /// Anything else, with its Python hash. `exotic` objects may compare equal to native
     /// keys through a custom `__eq__`; `simple` says when comparisons run no Python code.
-    Other {
-        hash: isize,
-        exotic: bool,
-        simple: Simple,
-    },
+    Other { hash: isize, exotic: bool, simple: Simple },
 }
 
 /// Whether comparing a key with another runs Python code (and so must not happen under a
@@ -83,10 +79,7 @@ impl Simple {
     /// Whether two keys of these kinds compare without running Python code.
     #[inline]
     fn inline_with(self, other: Simple) -> bool {
-        matches!(
-            (self, other),
-            (Simple::Yes, Simple::Yes) | (Simple::Bytes, Simple::Bytes)
-        )
+        matches!((self, other), (Simple::Yes, Simple::Yes) | (Simple::Bytes, Simple::Bytes))
     }
 }
 
@@ -120,42 +113,21 @@ impl<'py> Key<'py> {
         Ok(if obj.is_exact_instance_of::<PyInt>() {
             match int_value(obj) {
                 Some(value) => Class::Int { value, exact: true },
-                None => Class::Other {
-                    hash: hash()?,
-                    exotic: false,
-                    simple: Simple::Yes,
-                },
+                None => Class::Other { hash: hash()?, exotic: false, simple: Simple::Yes },
             }
         } else if obj.is_exact_instance_of::<PyString>() {
             str_class(obj, true, hash)?
         } else if let Ok(b) = obj.cast_exact::<PyBool>() {
-            Class::Int {
-                value: i64::from(b.is_true()),
-                exact: false,
-            }
+            Class::Int { value: i64::from(b.is_true()), exact: false }
         } else if let Ok(f) = obj.cast_exact::<PyFloat>() {
             match integral_float(f.value()) {
-                Some(value) => Class::Int {
-                    value,
-                    exact: false,
-                },
-                None => Class::Other {
-                    hash: hash()?,
-                    exotic: false,
-                    simple: Simple::Yes,
-                },
+                Some(value) => Class::Int { value, exact: false },
+                None => Class::Other { hash: hash()?, exotic: false, simple: Simple::Yes },
             }
         } else if obj.is_instance_of::<PyInt>() && has_builtin_slots(obj, BuiltinBase::Int) {
             match int_value(obj) {
-                Some(value) => Class::Int {
-                    value,
-                    exact: false,
-                },
-                None => Class::Other {
-                    hash: hash()?,
-                    exotic: false,
-                    simple: Simple::Yes,
-                },
+                Some(value) => Class::Int { value, exact: false },
+                None => Class::Other { hash: hash()?, exotic: false, simple: Simple::Yes },
             }
         } else if obj.is_instance_of::<PyString>() && has_builtin_slots(obj, BuiltinBase::Str) {
             str_class(obj, false, hash)?
@@ -164,11 +136,7 @@ impl<'py> Key<'py> {
                 Some(h) => h,
                 None => hash_or_unhashable(obj, role)?,
             };
-            Class::Other {
-                hash,
-                exotic: !never_equals_native(obj),
-                simple: simplicity(obj, 0),
-            }
+            Class::Other { hash, exotic: !never_equals_native(obj), simple: simplicity(obj, 0) }
         })
     }
 
@@ -191,23 +159,14 @@ impl<'py> Key<'py> {
 
 impl<'py> Key<'py> {
     pub(crate) fn from_int(py: Python<'py>, value: i64) -> Key<'py> {
-        let obj = value
-            .into_pyobject(py)
-            .map(|o| o.into_any())
-            .unwrap_or_else(|e| match e {});
-        Key {
-            obj,
-            class: Class::Int { value, exact: true },
-        }
+        let obj = value.into_pyobject(py).map(|o| o.into_any()).unwrap_or_else(|e| match e {});
+        Key { obj, class: Class::Int { value, exact: true } }
     }
 
     pub(crate) fn from_str(py: Python<'py>, value: &str) -> PyResult<Key<'py>> {
         let obj = PyString::new(py, value);
         let text = PyBackedStr::try_from(obj.clone())?;
-        Ok(Key {
-            obj: obj.into_any(),
-            class: Class::Str { text, exact: true },
-        })
+        Ok(Key { obj: obj.into_any(), class: Class::Str { text, exact: true } })
     }
 }
 
@@ -288,10 +247,7 @@ pub(crate) fn values_equal(a: &Value, b: &Value) -> bool {
             (Some(i), None) => float_equals_int(b.as_f64().unwrap_or(f64::NAN), i),
             (None, Some(i)) => float_equals_int(a.as_f64().unwrap_or(f64::NAN), i),
             (None, None) => {
-                let (x, y) = (
-                    a.as_f64().unwrap_or(f64::NAN),
-                    b.as_f64().unwrap_or(f64::NAN),
-                );
+                let (x, y) = (a.as_f64().unwrap_or(f64::NAN), b.as_f64().unwrap_or(f64::NAN));
                 x == y || (x.is_nan() && y.is_nan())
             }
         },
@@ -303,20 +259,12 @@ fn float_equals_int(f: f64, i: i128) -> bool {
     f.fract() == 0.0 && f.abs() < 1.7e38 && f as i128 == i
 }
 
-fn str_class(
-    obj: &Bound<'_, PyAny>,
-    exact: bool,
-    hash: impl FnOnce() -> PyResult<isize>,
-) -> PyResult<Class> {
+fn str_class(obj: &Bound<'_, PyAny>, exact: bool, hash: impl FnOnce() -> PyResult<isize>) -> PyResult<Class> {
     let s = obj.cast::<PyString>().map_err(PyErr::from)?;
     Ok(match PyBackedStr::try_from(s.clone()) {
         Ok(text) => Class::Str { text, exact },
         // Lone surrogates: not representable natively, never equal to a native key.
-        Err(_) => Class::Other {
-            hash: hash()?,
-            exotic: false,
-            simple: Simple::Yes,
-        },
+        Err(_) => Class::Other { hash: hash()?, exotic: false, simple: Simple::Yes },
     })
 }
 
@@ -338,8 +286,7 @@ fn int_value(obj: &Bound<'_, PyAny>) -> Option<i64> {
 /// The i64 equal to `f`, if any.
 pub(crate) fn integral_float(f: f64) -> Option<i64> {
     // 2**63 is exactly representable; every float in [-2**63, 2**63) that is integral fits.
-    if f.fract() == 0.0 && (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&f)
-    {
+    if f.fract() == 0.0 && (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&f) {
         Some(f as i64)
     } else {
         None
@@ -375,21 +322,11 @@ fn has_builtin_slots(obj: &Bound<'_, PyAny>, base: BuiltinBase) -> bool {
 fn hash_or_unhashable(obj: &Bound<'_, PyAny>, role: Role) -> PyResult<isize> {
     obj.hash().map_err(|err| {
         let py = obj.py();
-        let unhashable = err.is_instance_of::<PyTypeError>(py)
-            && obj
-                .get_type()
-                .getattr("__hash__")
-                .is_ok_and(|h| h.is_none());
+        let unhashable =
+            err.is_instance_of::<PyTypeError>(py) && obj.get_type().getattr("__hash__").is_ok_and(|h| h.is_none());
         if unhashable {
-            let name = obj
-                .get_type()
-                .name()
-                .map(|n| n.to_string())
-                .unwrap_or_else(|_| "?".into());
-            PyTypeError::new_err(format!(
-                "cannot use '{name}' as {} (unhashable type: '{name}')",
-                role.noun()
-            ))
+            let name = obj.get_type().name().map(|n| n.to_string()).unwrap_or_else(|_| "?".into());
+            PyTypeError::new_err(format!("cannot use '{name}' as {} (unhashable type: '{name}')", role.noun()))
         } else {
             err
         }
@@ -432,9 +369,7 @@ pub(crate) fn simplicity(obj: &Bound<'_, PyAny>, depth: u32) -> Simple {
         return Simple::Bytes;
     } else if let Ok(t) = obj.cast_exact::<PyTuple>() {
         // Tuples compare item by item, so `bytes` items would meet anything.
-        depth < 8
-            && t.iter_borrowed()
-                .all(|item| simplicity(&item, depth + 1) == Simple::Yes)
+        depth < 8 && t.iter_borrowed().all(|item| simplicity(&item, depth + 1) == Simple::Yes)
     } else {
         (obj.is_instance_of::<PyInt>() && has_builtin_slots(obj, BuiltinBase::Int))
             || (obj.is_instance_of::<PyString>() && has_builtin_slots(obj, BuiltinBase::Str))
@@ -580,10 +515,7 @@ impl Token {
     fn object<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
         match self {
             Token::Object(obj) => obj.bind(py).clone(),
-            Token::Int(v) => v
-                .into_pyobject(py)
-                .map(|o| o.into_any())
-                .unwrap_or_else(|e| match e {}),
+            Token::Int(v) => v.into_pyobject(py).map(|o| o.into_any()).unwrap_or_else(|e| match e {}),
             Token::Str(s) => PyString::new(py, s).into_any(),
         }
     }
@@ -616,12 +548,7 @@ pub(crate) struct Lookup {
 impl Lookup {
     /// Compare `stored == probe` (CPython's operand order) for each token in turn, up to the
     /// first equal one. Runs Python code: never call it while holding a lock.
-    fn compare(
-        &mut self,
-        py: Python<'_>,
-        probe: &Bound<'_, PyAny>,
-        tokens: Vec<Token>,
-    ) -> PyResult<()> {
+    fn compare(&mut self, py: Python<'_>, probe: &Bound<'_, PyAny>, tokens: Vec<Token>) -> PyResult<()> {
         let mut tokens = tokens.into_iter();
         while let Some(token) = tokens.next() {
             match token.object(py).eq(probe) {
@@ -701,13 +628,7 @@ impl KeyTable {
             NativeKeys::Int(ki) => KeyStore::Int(ki),
             NativeKeys::Str(ki) => KeyStore::Str(ki),
         };
-        KeyTable {
-            store,
-            kind,
-            reserve_hint: 0,
-            usable: MIN_USABLE,
-            str_hashes: OnceLock::new(),
-        }
+        KeyTable { store, kind, reserve_hint: 0, usable: MIN_USABLE, str_hashes: OnceLock::new() }
     }
 
     /// The same keys under a different pinned strategy (e.g. an untyped copy of a typed set).
@@ -754,9 +675,7 @@ impl KeyTable {
     /// Last live position `< before`.
     pub(crate) fn prev_live(&self, before: usize) -> Option<usize> {
         let index = self.index()?;
-        (0..before.min(index.entries()))
-            .rev()
-            .find(|&p| index.is_live(p))
+        (0..before.min(index.entries())).rev().find(|&p| index.is_live(p))
     }
 
     pub(crate) fn last_live(&self) -> Option<usize> {
@@ -782,10 +701,9 @@ impl KeyTable {
     pub(crate) fn key_object(&self, py: Python<'_>, pos: usize) -> Py<PyAny> {
         match &self.store {
             KeyStore::Empty => py.None(),
-            KeyStore::Int(ki) => ki.raw_keys()[pos]
-                .into_pyobject(py)
-                .map(|o| o.into_any().unbind())
-                .unwrap_or_else(|e| match e {}),
+            KeyStore::Int(ki) => {
+                ki.raw_keys()[pos].into_pyobject(py).map(|o| o.into_any().unbind()).unwrap_or_else(|e| match e {})
+            }
             KeyStore::Str(ki) => PyString::new(py, &ki.raw_keys()[pos]).into_any().unbind(),
             KeyStore::Object(ki) => ki.raw_keys()[pos].clone_ref(py),
         }
@@ -794,10 +712,7 @@ impl KeyTable {
     /// All live keys as classified [`Key`]s, in order, reusing stored hashes (no Python
     /// `__hash__` calls; only `int`/`str` objects are created, so this is fine under a lock).
     pub(crate) fn element_keys<'py>(&self, py: Python<'py>) -> PyResult<Vec<Key<'py>>> {
-        self.positions()
-            .into_iter()
-            .map(|pos| self.element_key(py, pos))
-            .collect()
+        self.positions().into_iter().map(|pos| self.element_key(py, pos)).collect()
     }
 
     /// The live key at `pos` as a classified [`Key`] (see [`element_keys`]).
@@ -828,14 +743,11 @@ impl KeyTable {
                     stored.is(&key.obj)
                         || match class {
                             Class::Int { value, exact: true } => {
-                                stored.is_exact_instance_of::<PyInt>()
-                                    && int_value(stored) == Some(*value)
+                                stored.is_exact_instance_of::<PyInt>() && int_value(stored) == Some(*value)
                             }
                             Class::Str { text, exact: true } => {
                                 stored.is_exact_instance_of::<PyString>()
-                                    && stored
-                                        .cast::<PyString>()
-                                        .is_ok_and(|s| s.to_str().is_ok_and(|s| s == &**text))
+                                    && stored.cast::<PyString>().is_ok_and(|s| s.to_str().is_ok_and(|s| s == &**text))
                             }
                             _ => false,
                         }
@@ -847,13 +759,7 @@ impl KeyTable {
 
     /// Store `key`, which equals the live key at `pos`, in its place (demoting native keys);
     /// the replaced object goes to `out`.
-    fn replace_at(
-        &mut self,
-        py: Python<'_>,
-        pos: usize,
-        key: &Key<'_>,
-        out: &mut Vec<Py<PyAny>>,
-    ) -> PyResult<()> {
+    fn replace_at(&mut self, py: Python<'_>, pos: usize, key: &Key<'_>, out: &mut Vec<Py<PyAny>>) -> PyResult<()> {
         if !matches!(self.store, KeyStore::Object(_)) {
             self.demote(py)?;
         }
@@ -896,10 +802,7 @@ impl KeyTable {
 
     /// All live keys as Python objects, in order.
     pub(crate) fn key_objects(&self, py: Python<'_>) -> Vec<Py<PyAny>> {
-        self.positions()
-            .into_iter()
-            .map(|p| self.key_object(py, p))
-            .collect()
+        self.positions().into_iter().map(|p| self.key_object(py, p)).collect()
     }
 
     /// A copy of the native keys (`None` for object or empty tables).
@@ -921,13 +824,7 @@ impl KeyTable {
                 KeyStore::Object(KeyIndex::from_parts(keys, ki.index().clone(), ()))
             }
         };
-        KeyTable {
-            store,
-            kind: self.kind,
-            reserve_hint: 0,
-            usable: self.usable,
-            str_hashes: OnceLock::new(),
-        }
+        KeyTable { store, kind: self.kind, reserve_hint: 0, usable: self.usable, str_hashes: OnceLock::new() }
     }
 
     /// Make room for `additional` more keys.
@@ -987,11 +884,7 @@ impl KeyTable {
     /// Insert-or-find a native key in a native table of its kind with a single probe;
     /// anything else (object tables, demotion) is handed back.
     #[inline(always)]
-    fn upsert_native<'py>(
-        &mut self,
-        py: Python<'py>,
-        key: Prepared<'py>,
-    ) -> Result<(usize, bool), Prepared<'py>> {
+    fn upsert_native<'py>(&mut self, py: Python<'py>, key: Prepared<'py>) -> Result<(usize, bool), Prepared<'py>> {
         match (&mut self.store, key) {
             (KeyStore::Int(ki), Prepared::Int(v)) => Ok(ki.insert(v)),
             (KeyStore::Str(ki), Prepared::Str(s)) => {
@@ -1013,12 +906,8 @@ impl KeyTable {
         key: Prepared<'py>,
     ) -> Result<(usize, bool), Prepared<'py>> {
         match (&self.store, &key) {
-            (KeyStore::Empty, Prepared::Int(_)) => {
-                self.set_store(KeyStore::Int(KeyIndex::default()))
-            }
-            (KeyStore::Empty, Prepared::Str(_)) => {
-                self.set_store(KeyStore::Str(KeyIndex::default()))
-            }
+            (KeyStore::Empty, Prepared::Int(_)) => self.set_store(KeyStore::Int(KeyIndex::default())),
+            (KeyStore::Empty, Prepared::Str(_)) => self.set_store(KeyStore::Str(KeyIndex::default())),
             _ => return Err(key),
         }
         self.upsert_native(py, key)
@@ -1030,13 +919,7 @@ impl KeyTable {
     pub(crate) fn upsert_fast(&mut self, key: &Key<'_>) -> Option<(usize, bool)> {
         let (pos, inserted) = match (&mut self.store, &key.class) {
             (KeyStore::Int(ki), Class::Int { value, exact: true }) => ki.insert(*value),
-            (
-                KeyStore::Int(ki),
-                Class::Int {
-                    value,
-                    exact: false,
-                },
-            ) => (ki.get(value)?, false),
+            (KeyStore::Int(ki), Class::Int { value, exact: false }) => (ki.get(value)?, false),
             (KeyStore::Str(ki), Class::Str { text, exact: true }) => {
                 let (pos, inserted) = ki.insert_with(&**text, |s: &str| CompactString::from(s));
                 if inserted {
@@ -1066,12 +949,7 @@ impl KeyTable {
             (KeyStore::Empty, _) => return Ok(Scan::Absent),
             (KeyStore::Int(ki), Class::Int { value, .. }) => return Ok(found(ki.get(value))),
             (KeyStore::Str(ki), Class::Str { text, .. }) => return Ok(found(ki.get(&**text))),
-            (
-                KeyStore::Int(ki),
-                Class::Other {
-                    hash, exotic: true, ..
-                },
-            ) => {
+            (KeyStore::Int(ki), Class::Other { hash, exotic: true, .. }) => {
                 for v in int_hash_preimages(*hash) {
                     let Some(pos) = ki.get(&v) else { continue };
                     match state.known(|t| matches!(t, Token::Int(x) if *x == v)) {
@@ -1081,15 +959,8 @@ impl KeyTable {
                     }
                 }
             }
-            (
-                KeyStore::Str(ki),
-                Class::Other {
-                    hash, exotic: true, ..
-                },
-            ) => {
-                let index = self
-                    .str_hashes
-                    .get_or_init(|| Box::new(str_hash_index(py, ki)));
+            (KeyStore::Str(ki), Class::Other { hash, exotic: true, .. }) => {
+                let index = self.str_hashes.get_or_init(|| Box::new(str_hash_index(py, ki)));
                 for pos in index.candidates(mix(*hash)) {
                     let s = &ki.raw_keys()[pos];
                     match state.known(|t| matches!(t, Token::Str(x) if x == s)) {
@@ -1123,11 +994,7 @@ impl KeyTable {
         }
         // A key found equal in an earlier round has been removed since.
         state.spent.extend(state.equal.take());
-        Ok(if compare.is_empty() {
-            Scan::Absent
-        } else {
-            Scan::Compare(compare)
-        })
+        Ok(if compare.is_empty() { Scan::Absent } else { Scan::Compare(compare) })
     }
 
     /// Find `key` in a table nobody else can reach, comparing inline.
@@ -1213,14 +1080,8 @@ impl KeyTable {
             }
             KeyStore::Str(ki) => {
                 let (keys, mut index, _) = ki.into_parts();
-                let objs: Vec<Py<PyAny>> = keys
-                    .iter()
-                    .map(|k| PyString::new(py, k).into_any().unbind())
-                    .collect();
-                let hashes = objs
-                    .iter()
-                    .map(|o| o.bind(py).hash())
-                    .collect::<PyResult<Vec<_>>>();
+                let objs: Vec<Py<PyAny>> = keys.iter().map(|k| PyString::new(py, k).into_any().unbind()).collect();
+                let hashes = objs.iter().map(|o| o.bind(py).hash()).collect::<PyResult<Vec<_>>>();
                 match hashes {
                     Ok(hashes) => {
                         index.rehash(|pos| mix(hashes[pos]));
@@ -1352,9 +1213,7 @@ const MIN_USABLE: usize = 5;
 /// `USABLE_FRACTION` of the dict table CPython sizes for `minsize` keys
 /// (`calculate_log2_keysize`: the smallest power of two that is at least `minsize | 8`).
 fn usable_size(minsize: usize) -> usize {
-    (minsize | 8)
-        .checked_next_power_of_two()
-        .map_or(usize::MAX, |size| size / 3 * 2 + (size % 3) * 2 / 3)
+    (minsize | 8).checked_next_power_of_two().map_or(usize::MAX, |size| size / 3 * 2 + (size % 3) * 2 / 3)
 }
 
 /// Python's `hash()` of a `str` (creating and hashing a `str` runs no Python code, and
@@ -1367,13 +1226,8 @@ fn str_hash(py: Python<'_>, s: &str) -> isize {
 fn str_hash_index(py: Python<'_>, ki: &KeyIndex<CompactString>) -> HashIndex {
     let live = |pos| ki.index().is_live(pos);
     let keys = ki.raw_keys();
-    let mut index = HashIndex::from_hashes((0..keys.len()).map(|pos| {
-        if live(pos) {
-            mix(str_hash(py, &keys[pos]))
-        } else {
-            0
-        }
-    }));
+    let mut index =
+        HashIndex::from_hashes((0..keys.len()).map(|pos| if live(pos) { mix(str_hash(py, &keys[pos])) } else { 0 }));
     for pos in (0..keys.len()).filter(|&pos| !live(pos)) {
         index.remove_at(pos);
     }
@@ -1556,11 +1410,7 @@ fn upsert_one_general<'py, T: Keyed, V>(
     let mut displaced = Vec::new();
     let mut guard = lock.write(py);
     if let Some((pos, inserted)) = guard.table_mut().upsert_fast(&key) {
-        let slot = if inserted {
-            Slot::Inserted(pos)
-        } else {
-            Slot::Existing(pos)
-        };
+        let slot = if inserted { Slot::Inserted(pos) } else { Slot::Existing(pos) };
         commit(&mut guard, value, slot)?;
         if inserted {
             guard.inserted(&mut displaced);
@@ -1568,11 +1418,7 @@ fn upsert_one_general<'py, T: Keyed, V>(
         return Ok(());
     }
     let (mut guard, pos) = locate(py, guard, || lock.write(py), &key, &mut state)?;
-    commit(
-        &mut guard,
-        value,
-        pos.map_or(Slot::Absent(&key), Slot::Existing),
-    )?;
+    commit(&mut guard, value, pos.map_or(Slot::Absent(&key), Slot::Existing))?;
     if pos.is_none() {
         guard.inserted(&mut displaced);
     }
@@ -1600,12 +1446,7 @@ pub(crate) fn batch_upsert<'py, T: Keyed, V>(
     commit: impl FnMut(&mut T, V, Slot<'_, 'py>) -> PyResult<()>,
 ) -> PyResult<()> {
     let mut items = items.into_iter();
-    let mut spent = Spent {
-        keys: Vec::new(),
-        values: Vec::new(),
-        objects: Vec::new(),
-        lookup: Lookup::default(),
-    };
+    let mut spent = Spent { keys: Vec::new(), values: Vec::new(), objects: Vec::new(), lookup: Lookup::default() };
     let result = batch_upsert_locked(py, lock, &mut items, commit, &mut spent);
     drop(spent);
     drop(items);
@@ -1620,11 +1461,7 @@ fn batch_upsert_locked<'py, T: Keyed, V>(
     spent: &mut Spent<'py, V>,
 ) -> PyResult<()> {
     let slot = |pos, inserted| {
-        if inserted {
-            Slot::Inserted(pos)
-        } else {
-            Slot::Existing(pos)
-        }
+        if inserted { Slot::Inserted(pos) } else { Slot::Existing(pos) }
     };
     let mut guard = lock.write(py);
     for (prepared, value) in items {
@@ -1667,11 +1504,7 @@ fn batch_upsert_locked<'py, T: Keyed, V>(
             }
         };
         guard = relocked;
-        let res = commit(
-            &mut guard,
-            value,
-            pos.map_or(Slot::Absent(&key), Slot::Existing),
-        );
+        let res = commit(&mut guard, value, pos.map_or(Slot::Absent(&key), Slot::Existing));
         spent.keys.push(key);
         res?;
         if pos.is_none() {
@@ -1720,10 +1553,7 @@ pub(crate) fn lookup_mut<'py, T: Keyed, R>(
 
 /// The Python object for a coerced value, reusing `original` when it already has the
 /// stored type.
-pub(crate) fn materialize<'py>(
-    original: &Bound<'py, PyAny>,
-    coerced: Coerced,
-) -> PyResult<Bound<'py, PyAny>> {
+pub(crate) fn materialize<'py>(original: &Bound<'py, PyAny>, coerced: Coerced) -> PyResult<Bound<'py, PyAny>> {
     use rustique_core::Value;
     let py = original.py();
     let value = match coerced {
@@ -1805,28 +1635,12 @@ mod tests {
         assert_eq!(py_hash_i64((1 << 61) - 1), 0);
         assert_eq!(py_hash_i64(1 << 61), 1);
         assert_eq!(py_hash_i64(i64::MIN), -4);
-        assert_eq!(
-            py_hash_i64(i64::MAX),
-            (i64::MAX as u64 % HASH_MODULUS) as isize
-        );
+        assert_eq!(py_hash_i64(i64::MAX), (i64::MAX as u64 % HASH_MODULUS) as isize);
     }
 
     #[test]
     fn preimages_invert_the_hash() {
-        for v in [
-            0i64,
-            1,
-            -1,
-            -2,
-            2,
-            12345,
-            -12345,
-            i64::MAX,
-            i64::MIN,
-            (1 << 61) - 1,
-            1 << 62,
-            -(1 << 62),
-        ] {
+        for v in [0i64, 1, -1, -2, 2, 12345, -12345, i64::MAX, i64::MIN, (1 << 61) - 1, 1 << 62, -(1 << 62)] {
             let h = py_hash_i64(v);
             let pre = int_hash_preimages(h);
             assert!(pre.contains(&v), "{v} not among preimages of {h}: {pre:?}");
@@ -1839,17 +1653,7 @@ mod tests {
 
     #[test]
     fn mix_is_invertible() {
-        for raw in [
-            0isize,
-            1,
-            -1,
-            -2,
-            42,
-            isize::MAX,
-            isize::MIN,
-            0x1234_5678_9abc_def0,
-            -987_654_321,
-        ] {
+        for raw in [0isize, 1, -1, -2, 42, isize::MAX, isize::MIN, 0x1234_5678_9abc_def0, -987_654_321] {
             assert_eq!(unmix(mix(raw)), raw);
         }
         assert_eq!(inverse(MIX_1).wrapping_mul(MIX_1), 1);
@@ -1871,10 +1675,7 @@ mod tests {
         assert!(values_equal(&V::F32(0.5), &V::F64(0.5)));
         assert!(values_equal(&V::F64(f64::NAN), &V::F64(f64::NAN)));
         assert!(!values_equal(&V::F64(1.5), &V::I64(1)));
-        assert!(!values_equal(
-            &V::F64(9_007_199_254_740_992.0),
-            &V::I64(9_007_199_254_740_993)
-        ));
+        assert!(!values_equal(&V::F64(9_007_199_254_740_992.0), &V::I64(9_007_199_254_740_993)));
         assert!(!values_equal(&V::Str("1".into()), &V::I64(1)));
         assert!(values_equal(&V::Str("a".into()), &V::Str("a".into())));
         assert!(!values_equal(&V::F64(f64::INFINITY), &V::I64(i64::MAX)));

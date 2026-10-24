@@ -121,9 +121,7 @@ impl Kind {
         match *self {
             Kind::Input | Kind::Const(_) => ([0, 0], 0),
             Kind::Convert(a) | Kind::Cast(a) | Kind::Unary(_, a) => ([a, 0], 1),
-            Kind::Arith(_, a, b) | Kind::Compare(_, a, b) | Kind::Concat(a, b) | Kind::Repeat(a, b) => {
-                ([a, b], 2)
-            }
+            Kind::Arith(_, a, b) | Kind::Compare(_, a, b) | Kind::Concat(a, b) | Kind::Repeat(a, b) => ([a, b], 2),
         }
     }
 }
@@ -341,9 +339,7 @@ impl Planner {
             UnaryOp::IsNan if ty.is_float() => self.node(Kind::Unary(op, arg), ExprType::Bool, order),
             // Integers are never NaN (the operand still runs: it may raise).
             UnaryOp::IsNan => Ok(self.bool_constant(false, order)),
-            UnaryOp::Invert if ty.is_float() => {
-                Err(type_error(order, format!("bad operand type for unary ~: '{ty}'")))
-            }
+            UnaryOp::Invert if ty.is_float() => Err(type_error(order, format!("bad operand type for unary ~: '{ty}'"))),
             UnaryOp::Invert => self.node(Kind::Unary(op, arg), ty, order),
             UnaryOp::Pos if ty == ExprType::Bool => self.convert(arg, ExprType::Int, order),
             UnaryOp::Pos => Ok(arg),
@@ -383,8 +379,7 @@ impl Planner {
             return self.node(Kind::Arith(op, lhs, rhs), ExprType::Bool, order);
         }
         // `int ** negative` is a float; for a constant exponent that is known statically.
-        let negative_exponent = op == Pow
-            && self.constant_value(rhs).and_then(|v| v.as_i128()).is_some_and(|e| e < 0);
+        let negative_exponent = op == Pow && self.constant_value(rhs).and_then(|v| v.as_i128()).is_some_and(|e| e < 0);
         if float || negative_exponent {
             let lhs = self.convert(lhs, ExprType::Float, order)?;
             let rhs = self.convert(rhs, ExprType::Float, order)?;
@@ -407,10 +402,8 @@ impl Planner {
             ExprType::Fixed(d) => d == dtype,
             ExprType::Str => false,
         };
-        let bitwise = matches!(
-            op,
-            BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::LShift | BinaryOp::RShift
-        );
+        let bitwise =
+            matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::LShift | BinaryOp::RShift);
         if !compatible || (bitwise && dtype.is_float()) {
             return Err(unsupported(op, lt, rt, order));
         }
@@ -428,9 +421,7 @@ impl Planner {
         let (lt, rt) = (self.ty(lhs), self.ty(rhs));
         let is_text = lt == ExprType::Str;
         match op {
-            BinaryOp::Add if is_text && rt == ExprType::Str => {
-                self.node(Kind::Concat(lhs, rhs), ExprType::Str, order)
-            }
+            BinaryOp::Add if is_text && rt == ExprType::Str => self.node(Kind::Concat(lhs, rhs), ExprType::Str, order),
             BinaryOp::Add if is_text => {
                 Err(type_error(order, format!("can only concatenate str (not \"{rt}\") to str")))
             }

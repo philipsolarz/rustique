@@ -10,12 +10,12 @@
 
 use std::sync::Arc;
 
+use pyo3::PyTypeInfo;
 use pyo3::basic::CompareOp;
 use pyo3::exceptions::{
     PyOverflowError, PyRecursionError, PySystemError, PyTypeError, PyValueError, PyZeroDivisionError,
 };
 use pyo3::prelude::*;
-use pyo3::PyTypeInfo;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBool, PyFloat, PyInt, PyString, PyTuple, PyType};
 use rustique_core::expr::{self as engine, BinaryOp, ErrorKind, ExprError, ExprType, IntMode, Node, UnaryOp};
@@ -245,9 +245,7 @@ impl Expr {
     }
 
     fn __bool__(&self) -> PyResult<bool> {
-        Err(PyTypeError::new_err(
-            "an Expr has no truth value: combine conditions with & | ~ instead of and/or/not",
-        ))
+        Err(PyTypeError::new_err("an Expr has no truth value: combine conditions with & | ~ instead of and/or/not"))
     }
 
     fn __hash__(&self) -> PyResult<isize> {
@@ -255,9 +253,8 @@ impl Expr {
     }
 
     fn __repr__(&self, py: Python<'_>) -> String {
-        self.inner.render(&mut |v| {
-            convert::value_to_python(py, v).repr().map_or_else(|_| "?".to_owned(), |r| r.to_string())
-        })
+        self.inner
+            .render(&mut |v| convert::value_to_python(py, v).repr().map_or_else(|_| "?".to_owned(), |r| r.to_string()))
     }
 
     fn __copy__(slf: Bound<'_, Self>) -> Bound<'_, Self> {
@@ -451,18 +448,14 @@ fn fits_exactly(schema: &Schema, obj: &Bound<'_, PyAny>) -> bool {
 /// Storage holding `values`: with `preferred` when every value has exactly its type,
 /// otherwise untyped (adaptive strategies).
 fn collect(py: Python<'_>, values: Vec<Py<PyAny>>, preferred: Option<Arc<Schema>>) -> PyResult<(Storage, Arc<Schema>)> {
-    let schema = preferred
-        .filter(|s| values.iter().all(|v| fits_exactly(s, v.bind(py))))
-        .unwrap_or_else(schema::any);
+    let schema = preferred.filter(|s| values.iter().all(|v| fits_exactly(s, v.bind(py)))).unwrap_or_else(schema::any);
     let mut storage = Storage::for_schema(&schema);
     for (i, value) in values.iter().enumerate() {
         let value = value.bind(py);
         if schema.is_any() {
             storage.push_any(py, value);
         } else {
-            let coerced = schema
-                .coerce(value)
-                .map_err(|e| e.into_pyerr(&convert::container_name(&schema), Some(i)))?;
+            let coerced = schema.coerce(value).map_err(|e| e.into_pyerr(&convert::container_name(&schema), Some(i)))?;
             storage.push(py, coerced);
         }
     }
@@ -472,7 +465,12 @@ fn collect(py: Python<'_>, values: Vec<Py<PyAny>>, preferred: Option<Arc<Schema>
 /// The elements as Python objects. With `scalars`, the native numbers of a fixed-width
 /// schema become rustique scalars (so expression fallback keeps fixed-width semantics);
 /// otherwise they are what element reads return.
-fn elements<'py>(py: Python<'py>, storage: &Storage, schema: &Schema, scalars: bool) -> PyResult<Vec<Bound<'py, PyAny>>> {
+fn elements<'py>(
+    py: Python<'py>,
+    storage: &Storage,
+    schema: &Schema,
+    scalars: bool,
+) -> PyResult<Vec<Bound<'py, PyAny>>> {
     let scalars = scalars && matches!(schema, Schema::Fixed(_));
     match storage {
         Storage::Empty => Ok(Vec::new()),
@@ -502,7 +500,12 @@ fn not_callable(f: &Bound<'_, PyAny>, method: &str) -> PyErr {
 }
 
 /// Evaluate natively; `None` when the column is not native (or empty).
-fn native(py: Python<'_>, expr: &engine::Expr, storage: &Storage, schema: &Schema) -> Option<Result<Column, ExprError>> {
+fn native(
+    py: Python<'_>,
+    expr: &engine::Expr,
+    storage: &Storage,
+    schema: &Schema,
+) -> Option<Result<Column, ExprError>> {
     let Storage::Native(column) = storage else { return None };
     if column.is_empty() {
         return None;

@@ -266,14 +266,26 @@ impl<T: Send + Sync> PyRwLock<T> {
     #[inline(never)]
     fn read_contended(&self, py: Python<'_>, held: Option<ReadGuard<'_, T>>) -> ReadGuard<'_, T> {
         drop(held);
-        acquire_contended(py, Some(&self.starving), Access::Shared, || self.inner.try_read(), || !self.inner.is_locked_exclusive())
+        acquire_contended(
+            py,
+            Some(&self.starving),
+            Access::Shared,
+            || self.inner.try_read(),
+            || !self.inner.is_locked_exclusive(),
+        )
     }
 
     #[cold]
     #[inline(never)]
     fn write_contended(&self, py: Python<'_>, held: Option<WriteGuard<'_, T>>) -> WriteGuard<'_, T> {
         drop(held);
-        acquire_contended(py, Some(&self.starving), Access::Exclusive, || self.inner.try_write(), || !self.inner.is_locked())
+        acquire_contended(
+            py,
+            Some(&self.starving),
+            Access::Exclusive,
+            || self.inner.try_write(),
+            || !self.inner.is_locked(),
+        )
     }
 }
 

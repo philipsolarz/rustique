@@ -44,9 +44,9 @@ use crate::dtype::DType;
 mod exec;
 mod kernels;
 mod plan;
-mod text;
 #[cfg(test)]
 mod tests;
+mod text;
 
 /// Expressions nested deeper than this are rejected (`RecursionError`), which keeps every
 /// recursive walk over a tree (planning, rendering, dropping) far from the stack limit.
@@ -131,10 +131,7 @@ impl BinaryOp {
     }
 
     pub const fn is_comparison(self) -> bool {
-        matches!(
-            self,
-            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
-        )
+        matches!(self, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge)
     }
 }
 
@@ -343,9 +340,7 @@ impl Expr {
         } else if self.size > MAX_NODES {
             Some(ExprError::raise(
                 ErrorKind::ValueError,
-                format!(
-                    "expression has more than {MAX_NODES} nodes (a subexpression used n times counts n times)"
-                ),
+                format!("expression has more than {MAX_NODES} nodes (a subexpression used n times counts n times)"),
             ))
         } else {
             None

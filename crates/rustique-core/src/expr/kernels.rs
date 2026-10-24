@@ -205,31 +205,57 @@ macro_rules! impl_py_int_common {
         const MAX: Self = <$t>::MAX;
         const WIDTH: u32 = <$t>::BITS;
         #[inline(always)]
-        fn shl_bits(self, n: u32) -> Self { self.wrapping_shl(n) }
+        fn shl_bits(self, n: u32) -> Self {
+            self.wrapping_shl(n)
+        }
         #[inline(always)]
-        fn shr_bits(self, n: u32) -> Self { self.wrapping_shr(n) }
+        fn shr_bits(self, n: u32) -> Self {
+            self.wrapping_shr(n)
+        }
         #[inline(always)]
-        fn wrapping_add(self, b: Self) -> Self { self.wrapping_add(b) }
+        fn wrapping_add(self, b: Self) -> Self {
+            self.wrapping_add(b)
+        }
         #[inline(always)]
-        fn wrapping_sub(self, b: Self) -> Self { self.wrapping_sub(b) }
+        fn wrapping_sub(self, b: Self) -> Self {
+            self.wrapping_sub(b)
+        }
         #[inline(always)]
-        fn wrapping_mul(self, b: Self) -> Self { self.wrapping_mul(b) }
+        fn wrapping_mul(self, b: Self) -> Self {
+            self.wrapping_mul(b)
+        }
         #[inline(always)]
-        fn overflowing_add(self, b: Self) -> (Self, bool) { self.overflowing_add(b) }
+        fn overflowing_add(self, b: Self) -> (Self, bool) {
+            self.overflowing_add(b)
+        }
         #[inline(always)]
-        fn overflowing_sub(self, b: Self) -> (Self, bool) { self.overflowing_sub(b) }
+        fn overflowing_sub(self, b: Self) -> (Self, bool) {
+            self.overflowing_sub(b)
+        }
         #[inline(always)]
-        fn overflowing_mul(self, b: Self) -> (Self, bool) { self.overflowing_mul(b) }
+        fn overflowing_mul(self, b: Self) -> (Self, bool) {
+            self.overflowing_mul(b)
+        }
         #[inline(always)]
-        fn checked_mul(self, b: Self) -> Option<Self> { self.checked_mul(b) }
+        fn checked_mul(self, b: Self) -> Option<Self> {
+            self.checked_mul(b)
+        }
         #[inline(always)]
-        fn not(self) -> Self { !self }
+        fn not(self) -> Self {
+            !self
+        }
         #[inline(always)]
-        fn and(self, b: Self) -> Self { self & b }
+        fn and(self, b: Self) -> Self {
+            self & b
+        }
         #[inline(always)]
-        fn or(self, b: Self) -> Self { self | b }
+        fn or(self, b: Self) -> Self {
+            self | b
+        }
         #[inline(always)]
-        fn xor(self, b: Self) -> Self { self ^ b }
+        fn xor(self, b: Self) -> Self {
+            self ^ b
+        }
         #[inline]
         fn py_pow(self, e: Self) -> (Self, bool) {
             if e < 0 as Self {
@@ -518,11 +544,7 @@ impl_py_float!(f32, f64);
 #[inline(always)]
 pub(super) fn float_mod<F: PyFloat>(v: F, w: F) -> F {
     let m = v % w;
-    if m != F::ZERO {
-        if (w < F::ZERO) != (m < F::ZERO) { m + w } else { m }
-    } else {
-        F::ZERO.copysign(w)
-    }
+    if m != F::ZERO { if (w < F::ZERO) != (m < F::ZERO) { m + w } else { m } } else { F::ZERO.copysign(w) }
 }
 
 /// CPython's `float.__floordiv__` for `w != 0` (`_float_div_mod`).
