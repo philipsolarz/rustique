@@ -138,6 +138,64 @@ fn fixed_width_semantics() {
 }
 
 #[test]
+fn fixed_width_shifts_drop_bits_and_check_the_count() {
+    let i8s = Column::I8(vec![127, -128, 1, -1]);
+    let ev = |e: &Arc<Expr>, col: &Column| eval(e, col, IntMode::Fixed);
+    assert_eq!(ev(&bin(LShift, X(), c(1i64)), &i8s), Ok(Column::I8(vec![-2, 0, 2, -2])));
+    assert_eq!(ev(&bin(RShift, X(), c(7i64)), &i8s), Ok(Column::I8(vec![0, -1, 0, -1])));
+    assert_eq!(ev(&bin(LShift, X(), c(0i64)), &i8s), Ok(i8s.clone()));
+    let range = raise(ErrorKind::OverflowError, "shift count out of range for i8 (must be < 8)");
+    assert_eq!(ev(&bin(LShift, X(), c(8i64)), &i8s), Err(range.clone()));
+    assert_eq!(ev(&bin(RShift, X(), c(100i64)), &i8s), Err(range));
+    assert_eq!(ev(&bin(RShift, X(), c(-1i64)), &i8s), Err(raise(ErrorKind::ValueError, "negative shift count")));
+    let u8s = Column::U8(vec![255, 1, 9]);
+    assert_eq!(ev(&bin(LShift, X(), c(1i64)), &u8s), Ok(Column::U8(vec![254, 2, 18])));
+    assert_eq!(ev(&bin(LShift, X(), c(-2i64)), &u8s), Err(raise(ErrorKind::ValueError, "negative shift count")));
+    // A count of the element type, and a reflected shift (the value must fit the type).
+    assert_eq!(
+        ev(&bin(LShift, c(1i64), X()), &u8s),
+        Err(raise(ErrorKind::OverflowError, "shift count out of range for u8 (must be < 8)"))
+    );
+    assert_eq!(ev(&bin(LShift, c(1i64), X()), &Column::U8(vec![0, 7])), Ok(Column::U8(vec![1, 128])));
+    assert_eq!(kind_of(&ev(&bin(LShift, c(300i64), X()), &u8s).unwrap_err()), Some(ErrorKind::OverflowError));
+    let u64s = Column::U64(vec![u64::MAX]);
+    assert_eq!(ev(&bin(LShift, X(), c(63i64)), &u64s), Ok(Column::U64(vec![1 << 63])));
+    assert_eq!(ev(&bin(RShift, X(), c(64i64)), &u64s).map_err(|e| kind_of(&e)), Err(Some(ErrorKind::OverflowError)));
+    // Python ints keep exact semantics: no width, big results fall back to Python.
+    let ints = Column::I64(vec![1, -5]);
+    assert_eq!(eval(&bin(RShift, X(), c(100i64)), &ints, IntMode::Python), Ok(Column::I64(vec![0, -1])));
+    assert_eq!(eval(&bin(LShift, X(), c(64i64)), &ints, IntMode::Python), Err(ExprError::Overflow));
+}
+
+#[test]
+fn shared_subexpressions_are_planned_once_and_size_is_bounded() {
+    let mut e = X();
+    for _ in 0..15 {
+        e = bin(Add, e.clone(), e);
+    }
+    assert_eq!(e.size(), (1 << 16) - 1);
+    let col = Column::I64(vec![1, 2, 3]);
+    assert_eq!(eval(&e, &col, IntMode::Python), Ok(Column::I64(vec![1 << 15, 2 << 15, 3 << 15])));
+    assert!(plan::plan(&e, DType::I64, ExprType::Int).nodes.len() < 40);
+    let big = bin(Add, e.clone(), e);
+    assert_eq!(big.size(), (1 << 17) - 1);
+    assert_eq!(kind_of(&eval(&big, &col, IntMode::Python).unwrap_err()), Some(ErrorKind::ValueError));
+    assert_eq!(kind_of(&big.result_type(ExprType::Int).unwrap_err()), Some(ErrorKind::ValueError));
+    let mut huge = X();
+    for _ in 0..200 {
+        huge = bin(Mul, huge.clone(), huge);
+    }
+    assert_eq!(huge.size(), u64::MAX);
+    // A failure inside a shared subexpression keeps the rank of its first use: `a + (b + a)`
+    // fails in `a` (not in `b`) on an element where both fail.
+    let a = bin(FloorDiv, c(1i64), X());
+    let b = bin(LShift, c(1i64), bin(Sub, X(), c(5i64)));
+    let e = bin(Add, a.clone(), bin(Add, b, a));
+    let err = eval(&e, &Column::I64(vec![7, 0]), IntMode::Python).unwrap_err();
+    assert_eq!(err, raise(ErrorKind::ZeroDivisionError, "division by zero"));
+}
+
+#[test]
 fn bools_and_logic() {
     let col = Column::Bool(vec![true, false]);
     let ev = |e: &Arc<Expr>| eval(e, &col, IntMode::Python);
@@ -320,6 +378,13 @@ fn int(v: i128) -> R {
 fn fixed(d: DType, v: i128) -> R {
     let (lo, hi) = d.int_range().unwrap();
     if (lo..=hi).contains(&v) { Ok(V::X(d, v)) } else { Err(Event::Raise(ErrorKind::OverflowError, String::new())) }
+}
+
+/// `v` reduced to the width of `d` (two's complement).
+fn wrap(d: DType, v: i128) -> i128 {
+    let bits = d.bits().unwrap();
+    let low = v & ((1i128 << bits) - 1);
+    if d.is_signed() && low >= 1i128 << (bits - 1) { low - (1i128 << bits) } else { low }
 }
 
 fn as_int(v: &V) -> Option<i128> {
@@ -513,8 +578,12 @@ fn ref_binary(op: BinaryOp, a: V, b: V, rhs_constant: bool) -> R {
         }
         let (x, y) = (as_int(&a).unwrap(), as_int(&b).unwrap());
         fixed(d, x)?;
-        fixed(d, y)?;
+        // A shift count is not converted to the type (it is checked against the width).
+        if !matches!(op, LShift | RShift) || matches!(b, V::X(..)) {
+            fixed(d, y)?;
+        }
         let neg_shift = || Err(Event::Raise(ErrorKind::ValueError, "negative shift count".into()));
+        let bits = i128::from(d.bits().unwrap());
         return match op {
             TrueDiv if y == 0 => Err(zero_div()),
             TrueDiv => Ok(V::F(kernels::int_truediv(x as i64, y as i64).0)),
@@ -527,10 +596,13 @@ fn ref_binary(op: BinaryOp, a: V, b: V, rhs_constant: bool) -> R {
             )),
             Pow => ipow(x, y).map_or(Err(Event::Raise(ErrorKind::OverflowError, String::new())), |v| fixed(d, v)),
             LShift | RShift if y < 0 => neg_shift(),
-            LShift if x == 0 => Ok(V::X(d, 0)),
-            LShift if y >= 64 => fixed(d, i128::MAX),
-            LShift => fixed(d, x << y),
-            RShift => fixed(d, x >> y.min(127)),
+            LShift | RShift if y >= bits => Err(Event::Raise(
+                ErrorKind::OverflowError,
+                format!("shift count out of range for {d} (must be < {bits})"),
+            )),
+            // Bits shifted out are dropped: keep the low `bits` bits, two's complement.
+            LShift => Ok(V::X(d, wrap(d, x << y))),
+            RShift => Ok(V::X(d, x >> y)),
             BitAnd => fixed(d, x & y),
             BitOr => fixed(d, x | y),
             BitXor => fixed(d, x ^ y),

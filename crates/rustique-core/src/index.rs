@@ -584,6 +584,17 @@ impl<K, S> KeyIndex<K, S> {
         pos
     }
 
+    /// Swap `key` into the live entry at `pos`, returning the old key (`None`, and `key` is
+    /// dropped, when `pos` is not live). The caller guarantees that `key` hashes like the
+    /// key it replaces.
+    pub fn replace_at(&mut self, pos: usize, key: K) -> Option<K> {
+        if self.index.is_live(pos) {
+            Some(std::mem::replace(&mut self.keys[pos], key))
+        } else {
+            None
+        }
+    }
+
     /// Tombstone the live entry at `pos`, swapping `placeholder` into its slot; returns the
     /// removed key.
     pub fn remove_at(&mut self, pos: usize, placeholder: K) -> Option<K> {
@@ -908,6 +919,21 @@ mod tests {
         fn get(&self, k: &K) -> Option<&V> {
             self.0.iter().find(|(key, _)| key == k).map(|(_, v)| v)
         }
+    }
+
+    #[test]
+    fn replace_at_swaps_live_keys_only() {
+        let mut ki: KeyIndex<i64> = KeyIndex::default();
+        ki.insert(1);
+        ki.insert(2);
+        assert_eq!(ki.replace_at(1, 2), Some(2));
+        assert_eq!(ki.remove_at(0, 0), Some(1));
+        assert_eq!(ki.replace_at(0, 1), None);
+        assert_eq!(ki.replace_at(5, 1), None);
+        assert_eq!(
+            ki.iter().map(|(p, k)| (p, *k)).collect::<Vec<_>>(),
+            vec![(1, 2)]
+        );
     }
 
     #[test]

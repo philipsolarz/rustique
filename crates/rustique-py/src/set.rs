@@ -15,7 +15,7 @@ use pyo3::types::{PyFrozenSet, PyList, PySet, PyType};
 use rustique_core::index::KeyIndex;
 
 use crate::dict::keys::{
-    self, Key, KeyKind, KeyTable, Keyed, Locked, NativeKeys, Prepared, Role, Slot,
+    self, Class, Key, KeyKind, KeyStore, KeyTable, Keyed, Locked, NativeKeys, Prepared, Role, Slot,
 };
 use crate::dict::{Raw, ReprGuard, collect_iterable, read_elements};
 use crate::schema::{self, Schema};
@@ -125,9 +125,7 @@ fn local_table(obj: &Bound<'_, PyAny>) -> PyResult<KeyTable> {
             Raw::Ready(native) => native,
             Raw::Later(obj) => Prepared::Key(Key::classify_owned(obj, Role::SetElement)?),
         };
-        if let Err(key) = table.upsert(py, prepared)? {
-            table.insert_local(py, &key)?;
-        }
+        table.insert_prepared(py, prepared)?;
     }
     Ok(table)
 }
@@ -405,9 +403,8 @@ impl Set {
         Ok(found)
     }
 
-    fn snapshot_table(&self, py: Python<'_>) -> (KeyTable, u64) {
-        let inner = self.inner.read(py);
-        (inner.table.clone_ref(py), inner.table.version())
+    fn snapshot_table(&self, py: Python<'_>) -> KeyTable {
+        self.inner.read(py).table.clone_ref(py)
     }
 
     /// Result schema of a binary operation: ours when every operand is a `Set` of the
@@ -431,32 +428,68 @@ impl Set {
             .collect::<PyResult<Vec<_>>>()?;
         let schema = self.result_schema(&operands);
         let kind = KeyKind::for_schema(&schema);
-        let mut table = self.snapshot_table(py).0.with_kind(kind);
+        let mut table = self.snapshot_table(py).with_kind(kind);
         for operand in &operands {
             table = table_algebra(py, op, table, operand, kind)?;
         }
         Ok(Set::with_table(schema, table))
     }
 
-    /// Replace the contents with `f(snapshot)`, retrying if the set changed meanwhile.
-    fn replace_with(
-        &self,
-        py: Python<'_>,
-        f: impl Fn(KeyTable) -> PyResult<KeyTable>,
-    ) -> PyResult<()> {
-        loop {
-            let (snapshot, version) = self.snapshot_table(py);
-            let table = f(snapshot)?;
-            let displaced = {
-                let mut inner = self.inner.write(py);
-                if inner.table.version() != version {
-                    continue;
-                }
-                inner.table.replace(table)
-            };
-            drop(displaced);
-            return Ok(());
+    /// `self &= operand & …` in place. Untyped sets keep the elements CPython keeps (which
+    /// side's object survives depends on the operand sizes); typed sets keep their own,
+    /// already validated, elements.
+    fn intersection_update_with(&self, py: Python<'_>, operands: &[Operand<'_>]) -> PyResult<()> {
+        let kind = KeyKind::for_schema(&self.schema);
+        let typed = !self.schema.is_any();
+        // Native keys on every side need no Python code: one step under the write lock, so
+        // concurrent writers cannot invalidate it.
+        if let Some(natives) = operands
+            .iter()
+            .map(Operand::native)
+            .collect::<Option<Vec<_>>>()
+        {
+            let mut inner = self.inner.write(py);
+            if let Some(table) = native_intersection(&inner.table, &natives, kind, typed) {
+                let displaced = inner.table.replace(table);
+                drop(inner);
+                drop(displaced);
+                return Ok(());
+            }
         }
+        // Decide each element's fate on a snapshot (Python equality, unlocked), then apply
+        // the decisions to the elements still present; elements added meanwhile stay.
+        let snapshot = self.snapshot_table(py);
+        let elements = snapshot.element_keys(py)?;
+        let mut result = snapshot;
+        for operand in operands {
+            result = if typed {
+                retain_contained(py, result, operand, kind)?
+            } else {
+                table_algebra(py, Algebra::Intersection, result, operand, kind)?
+            };
+        }
+        let mut fates = Vec::new();
+        for key in elements {
+            match result.find_local(py, &key)? {
+                None => fates.push((key, None)),
+                Some(pos) => {
+                    let kept = result.element_key(py, pos)?;
+                    if !same_key(&key, &kept) {
+                        fates.push((key, Some(kept)));
+                    }
+                }
+            }
+        }
+        let mut displaced = Vec::new();
+        let res = self
+            .inner
+            .write(py)
+            .table
+            .apply_fates(py, &fates, &mut displaced);
+        drop(displaced);
+        drop(fates);
+        drop(result);
+        res
     }
 
     fn is_subset_of(&self, py: Python<'_>, other: &Operand<'_>) -> PyResult<bool> {
@@ -556,7 +589,7 @@ impl Set {
         }
         let left = local_table(other)?;
         let me = Operand::Local {
-            table: self.snapshot_table(py).0,
+            table: self.snapshot_table(py),
             is_set: true,
         };
         let table = table_algebra(py, op, left, &me, KeyKind::Adaptive)?;
@@ -576,20 +609,7 @@ impl Set {
                     .iter()
                     .map(Operand::new)
                     .collect::<PyResult<Vec<_>>>()?;
-                let kind = KeyKind::for_schema(&self.schema);
-                // Untyped sets keep the elements CPython keeps; typed sets keep their own
-                // (already validated) elements.
-                let typed = !self.schema.is_any();
-                self.replace_with(py, |mut table| {
-                    for operand in &operands {
-                        table = if typed {
-                            retain_contained(py, table, operand, kind)?
-                        } else {
-                            table_algebra(py, Algebra::Intersection, table, operand, kind)?
-                        };
-                    }
-                    Ok(table)
-                })
+                self.intersection_update_with(py, &operands)
             }
             Algebra::SymmetricDifference => {
                 // Validate, then de-duplicate the incoming elements (Python equality) first.
@@ -599,9 +619,7 @@ impl Set {
                 }
                 let mut incoming = KeyTable::new(KeyKind::Adaptive);
                 for p in prepared {
-                    if let Err(key) = incoming.upsert(py, p)? {
-                        incoming.insert_local(py, &key)?;
-                    }
+                    incoming.insert_prepared(py, p)?;
                 }
                 let incoming = incoming.element_keys(py)?;
                 let mut displaced = Vec::new();
@@ -736,6 +754,64 @@ fn retain_contained(
     Ok(out)
 }
 
+/// `table & natives[0] & …` when all of them store native keys of one kind (`None`
+/// otherwise); typed tables keep their own order, like [`retain_contained`].
+fn native_intersection(
+    table: &KeyTable,
+    natives: &[NativeKeys],
+    kind: KeyKind,
+    typed: bool,
+) -> Option<KeyTable> {
+    let (first, rest) = natives.split_first()?;
+    let mut result = match (table.store(), first) {
+        (KeyStore::Int(a), NativeKeys::Int(b)) if typed => NativeKeys::Int(retain_native(a, b)),
+        (KeyStore::Int(a), NativeKeys::Int(b)) => NativeKeys::Int(intersection_native(a, b)),
+        (KeyStore::Str(a), NativeKeys::Str(b)) if typed => NativeKeys::Str(retain_native(a, b)),
+        (KeyStore::Str(a), NativeKeys::Str(b)) => NativeKeys::Str(intersection_native(a, b)),
+        _ => return None,
+    };
+    for theirs in rest {
+        result = match (result, theirs) {
+            (NativeKeys::Int(a), NativeKeys::Int(b)) if typed => {
+                NativeKeys::Int(retain_native(&a, b))
+            }
+            (NativeKeys::Str(a), NativeKeys::Str(b)) if typed => {
+                NativeKeys::Str(retain_native(&a, b))
+            }
+            (a, b) => native_algebra(Algebra::Intersection, a, b).ok()?,
+        };
+    }
+    Some(KeyTable::from_native(result, kind))
+}
+
+/// Whether two keys are the same stored key: one object, or equal native `int`s/`str`s.
+fn same_key(a: &Key<'_>, b: &Key<'_>) -> bool {
+    a.obj.is(&b.obj)
+        || match (&a.class, &b.class) {
+            (
+                Class::Int {
+                    value: x,
+                    exact: true,
+                },
+                Class::Int {
+                    value: y,
+                    exact: true,
+                },
+            ) => x == y,
+            (
+                Class::Str {
+                    text: x,
+                    exact: true,
+                },
+                Class::Str {
+                    text: y,
+                    exact: true,
+                },
+            ) => **x == **y,
+            _ => false,
+        }
+}
+
 fn retain_native<K: Hash + Eq + Clone + Default>(a: &KeyIndex<K>, b: &KeyIndex<K>) -> KeyIndex<K> {
     let mut out = KeyIndex::default();
     for (_, k) in a.iter() {
@@ -780,7 +856,7 @@ impl Set {
         let state = SetIterState {
             pos: 0,
             expected: len,
-            layout: inner.table.layout(),
+            remaining: len,
             exhausted: false,
         };
         drop(inner);
@@ -839,7 +915,7 @@ impl Set {
 
     fn add(&self, py: Python<'_>, elem: &Bound<'_, PyAny>) -> PyResult<()> {
         let key = self.prepare(elem.clone())?;
-        keys::batch_upsert(py, &self.inner, [(key, ())], |inner, (), slot| {
+        keys::upsert_one(py, &self.inner, key, (), |inner, (), slot| {
             if let Slot::Absent(key) = slot {
                 inner.table.push(py, key)?;
             }
@@ -879,7 +955,7 @@ impl Set {
     }
 
     fn copy(&self, py: Python<'_>) -> Set {
-        Set::with_table(self.schema.clone(), self.snapshot_table(py).0)
+        Set::with_table(self.schema.clone(), self.snapshot_table(py))
     }
 
     fn __copy__(&self, py: Python<'_>) -> Set {
@@ -1061,10 +1137,15 @@ impl<'a, 'py> FromPyObject<'a, 'py> for SetLike<'py> {
     }
 }
 
+/// CPython's `setiterobject` state: only a size change is an error. Positions are insertion
+/// positions, so an element discarded and re-added goes to the end; yielding at most the
+/// size at creation keeps such loops from seeing it again (CPython's table reuses the slot).
 struct SetIterState {
     pos: usize,
+    /// The size at creation; `usize::MAX` once a size change was reported (sticky).
     expected: usize,
-    layout: u64,
+    /// Elements left to yield.
+    remaining: usize,
     exhausted: bool,
 }
 
@@ -1091,15 +1172,13 @@ impl SetIterator {
             st.expected = usize::MAX;
             return Err(PyRuntimeError::new_err("Set changed size during iteration"));
         }
-        if inner.table.layout() != st.layout {
-            return Err(PyRuntimeError::new_err("Set changed during iteration"));
-        }
         match inner.table.next_live(st.pos) {
-            Some(pos) => {
+            Some(pos) if st.remaining > 0 => {
                 st.pos = pos + 1;
+                st.remaining -= 1;
                 Ok(Some(inner.table.key_object(py, pos)))
             }
-            None => {
+            _ => {
                 st.exhausted = true;
                 Ok(None)
             }
@@ -1112,13 +1191,8 @@ impl SetIterator {
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
         let st = self.state.read(py);
-        if st.exhausted {
-            return 0;
-        }
-        let inner = self.set.get().inner.read(py);
-        inner.table.index().map_or(0, |i| {
-            (st.pos..i.entries()).filter(|&p| i.is_live(p)).count()
-        })
+        let unchanged = !st.exhausted && self.set.get().len(py) == st.expected;
+        if unchanged { st.remaining } else { 0 }
     }
 }
 

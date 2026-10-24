@@ -52,6 +52,12 @@ mod tests;
 /// recursive walk over a tree (planning, rendering, dropping) far from the stack limit.
 pub const MAX_DEPTH: usize = 512;
 
+/// Expressions with more nodes than this are rejected (`ValueError`). Subexpressions are
+/// shared, so `e = e + e` repeated `n` times is a tree of `2**(n+1) - 1` nodes in `n + 1`
+/// objects: rendering it, comparing it or evaluating it element by element in Python walks
+/// every one of them. (Native evaluation plans each shared subexpression once.)
+pub const MAX_NODES: u64 = 100_000;
+
 /// Unary operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
@@ -258,6 +264,8 @@ impl std::error::Error for ExprError {}
 pub struct Expr {
     node: Node,
     depth: usize,
+    /// Nodes of the tree, shared subexpressions counted once per use (saturating).
+    size: u64,
     has_element: bool,
 }
 
@@ -277,13 +285,17 @@ pub enum Node {
 
 impl Expr {
     fn new(node: Node) -> Arc<Expr> {
-        let (depth, has_element) = match &node {
-            Node::Element => (1, true),
-            Node::Const(_) => (1, false),
-            Node::Unary(_, a) | Node::Cast(_, a) => (a.depth + 1, a.has_element),
-            Node::Binary(_, a, b) => (a.depth.max(b.depth) + 1, a.has_element || b.has_element),
+        let (depth, size, has_element) = match &node {
+            Node::Element => (1, 1, true),
+            Node::Const(_) => (1, 1, false),
+            Node::Unary(_, a) | Node::Cast(_, a) => (a.depth + 1, a.size.saturating_add(1), a.has_element),
+            Node::Binary(_, a, b) => (
+                a.depth.max(b.depth) + 1,
+                a.size.saturating_add(b.size).saturating_add(1),
+                a.has_element || b.has_element,
+            ),
         };
-        Arc::new(Expr { node, depth, has_element })
+        Arc::new(Expr { node, depth, size, has_element })
     }
 
     /// The placeholder `X`.
@@ -316,6 +328,30 @@ impl Expr {
         self.depth
     }
 
+    /// Number of nodes, counting a shared subexpression once per use (saturating).
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// The error for an expression beyond [`MAX_DEPTH`] or [`MAX_NODES`], if it is one.
+    pub fn limit_error(&self) -> Option<ExprError> {
+        if self.depth > MAX_DEPTH {
+            Some(ExprError::raise(
+                ErrorKind::RecursionError,
+                format!("expression nesting exceeds the maximum depth of {MAX_DEPTH}"),
+            ))
+        } else if self.size > MAX_NODES {
+            Some(ExprError::raise(
+                ErrorKind::ValueError,
+                format!(
+                    "expression has more than {MAX_NODES} nodes (a subexpression used n times counts n times)"
+                ),
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Whether the tree mentions `X` (otherwise it is a constant expression).
     pub fn has_element(&self) -> bool {
         self.has_element
@@ -324,8 +360,8 @@ impl Expr {
     /// The static result type for input elements of type `input`, or the error every
     /// element would raise (type errors, failing constant subexpressions).
     pub fn result_type(&self, input: ExprType) -> Result<ExprType, ExprError> {
-        if self.depth > MAX_DEPTH {
-            return Err(depth_error());
+        if let Some(error) = self.limit_error() {
+            return Err(error);
         }
         let input = input.normalized();
         let program = plan::plan(self, input.dtype(), input);
@@ -391,13 +427,6 @@ impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.render(&mut |v| text::format_value(v)))
     }
-}
-
-fn depth_error() -> ExprError {
-    ExprError::raise(
-        ErrorKind::RecursionError,
-        format!("expression nesting exceeds the maximum depth of {MAX_DEPTH}"),
-    )
 }
 
 /// Evaluate `expr` for every element of `column`.

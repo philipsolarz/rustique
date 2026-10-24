@@ -15,11 +15,14 @@ use pyo3::prelude::*;
 use pyo3::pyclass::CompareOp;
 use pyo3::sync::PyOnceLock;
 use pyo3::sync::critical_section::with_critical_section;
-use pyo3::types::{PyDict, PyFloat, PyFrozenSet, PyList, PySet, PyTuple, PyType};
+use pyo3::types::{
+    PyBool, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple, PyType,
+};
 use pyo3::{PyTraverseError, ffi};
 use rustique_core::Column;
 use rustique_core::index::Remap;
 
+use crate::convert;
 use crate::schema::{self, Coerced, Schema};
 use crate::storage::{Displaced, Storage};
 
@@ -41,6 +44,13 @@ impl Keyed for DictInner {
     fn table_mut(&mut self) -> &mut KeyTable {
         &mut self.table
     }
+
+    #[inline]
+    fn inserted(&mut self, out: &mut Vec<Py<PyAny>>) {
+        if let Some(remap) = self.table.grow() {
+            out.extend(remap_storage(&mut self.values, &remap));
+        }
+    }
 }
 
 impl DictInner {
@@ -55,19 +65,28 @@ impl DictInner {
         self.values.get(py, pos).unwrap_or_else(|| py.None())
     }
 
-    fn push_entry(&mut self, py: Python<'_>, key: &Key<'_>, value: Coerced) -> PyResult<()> {
-        self.table.push(py, key)?;
+    /// Append an entry for an absent key. If the key cannot be stored, the value goes to
+    /// `out` (it may hold the last reference to an object: never drop it under the lock).
+    fn push_entry(
+        &mut self,
+        py: Python<'_>,
+        key: &Key<'_>,
+        value: Coerced,
+        out: &mut Displaced,
+    ) -> PyResult<()> {
+        if let Err(e) = self.table.push(py, key) {
+            out.extend(coerced_object(value));
+            return Err(e);
+        }
         self.values.push(py, value);
         Ok(())
     }
 
     /// Remove the live entry at `pos`, returning its value; displaced objects go to `out`.
+    /// Like `dict`, the tombstone stays until the table next grows.
     fn remove_entry(&mut self, py: Python<'_>, pos: usize, out: &mut Displaced) -> Py<PyAny> {
         let value = take_value(py, &mut self.values, pos);
         out.extend(self.table.remove_at(py, pos));
-        if let Some(remap) = self.table.maybe_compact() {
-            out.extend(remap_storage(&mut self.values, &remap));
-        }
         value
     }
 
@@ -110,6 +129,14 @@ impl DictInner {
             .into_iter()
             .map(|p| self.value(py, p))
             .collect()
+    }
+}
+
+/// The Python object a coerced value holds, if any.
+fn coerced_object(value: Coerced) -> Option<Py<PyAny>> {
+    match value {
+        Coerced::Object(obj) => Some(obj),
+        Coerced::Native(_) => None,
     }
 }
 
@@ -261,12 +288,34 @@ fn raw_key<'py>(obj: &Bound<'py, PyAny>, schema: &Schema) -> Raw<'py> {
     }
 }
 
+/// A value read inside a source's critical section, possibly through a borrowed reference.
+/// Only exact `int`/`float`/`bool`/`str` values are converted in place, and only when the
+/// schema is pure: converting anything else — even unsuccessfully — may run Python code (a
+/// subclass's `__str__`/`__repr__` in an error message, …) that could free the borrowed
+/// item, so it gets a strong reference and is converted after the critical section.
 #[inline]
 fn raw_value<'py>(obj: &Bound<'py, PyAny>, schema: &Schema, pure: bool) -> RawValue<'py> {
-    if pure && let Ok(coerced) = schema.coerce(obj) {
+    if schema.is_any() {
+        // Exact-type classification only reads the object (anything else is kept as is).
+        return RawValue::Ready(convert::classify(obj));
+    }
+    if pure
+        && is_plain_scalar(obj)
+        && let Ok(coerced) = schema.coerce(obj)
+    {
         return RawValue::Ready(coerced);
     }
     RawValue::Later(obj.clone())
+}
+
+/// An exact `int`, `float`, `bool` or `str`: values whose conversion by a pure schema runs
+/// no Python code.
+#[inline]
+fn is_plain_scalar(obj: &Bound<'_, PyAny>) -> bool {
+    obj.is_exact_instance_of::<PyInt>()
+        || obj.is_exact_instance_of::<PyFloat>()
+        || obj.is_exact_instance_of::<PyBool>()
+        || obj.is_exact_instance_of::<PyString>()
 }
 
 /// Read what `iter(obj)` yields, classifying exact `int`/`str` items natively while the
@@ -356,8 +405,8 @@ fn read_pairs<'py>(
         let items = with_critical_section(dict.as_any(), || {
             let mut out = Vec::with_capacity(dict.len());
             let (mut pos, mut k, mut v) = (0, std::ptr::null_mut(), std::ptr::null_mut());
-            // SAFETY: we hold the dict's critical section and run no Python code (only pure
-            // classification), so the iteration state and borrowed items stay valid.
+            // SAFETY: we hold the dict's critical section and run no Python code (only exact-type
+            // reads, see `raw_value`), so the iteration state and borrowed items stay valid.
             while unsafe { ffi::PyDict_Next(dict.as_ptr(), &mut pos, &mut k, &mut v) } != 0 {
                 // SAFETY: live borrowed key and value (see above).
                 let (k, v) = unsafe { (Borrowed::from_ptr(py, k), Borrowed::from_ptr(py, v)) };
@@ -672,7 +721,7 @@ impl Dict {
                     debug_assert_eq!(pos, inner.values.len());
                     inner.values.push(py, value);
                 }
-                Slot::Absent(key) => inner.push_entry(py, key, value)?,
+                Slot::Absent(key) => inner.push_entry(py, key, value, &mut displaced)?,
             }
             Ok(())
         });
@@ -711,7 +760,7 @@ impl Dict {
         let mut displaced = Vec::new();
         if self.value_schema.is_any() {
             // Untyped values keep their identity in object storage.
-            keys::batch_upsert(py, &self.inner, [(key, value)], |inner, value, slot| {
+            keys::upsert_one(py, &self.inner, key, value, |inner, value, slot| {
                 match slot {
                     Slot::Existing(pos) => displaced.extend(inner.values.set_any(py, pos, value)),
                     Slot::Inserted(_) => inner.values.push_any(py, value),
@@ -724,11 +773,11 @@ impl Dict {
             })?;
         } else {
             let value = self.prepare_value(value)?;
-            keys::batch_upsert(py, &self.inner, [(key, value)], |inner, value, slot| {
+            keys::upsert_one(py, &self.inner, key, value, |inner, value, slot| {
                 match slot {
-                    Slot::Existing(pos) => displaced = inner.values.set(py, pos, value),
+                    Slot::Existing(pos) => displaced.extend(inner.values.set(py, pos, value)),
                     Slot::Inserted(_) => inner.values.push(py, value),
-                    Slot::Absent(key) => inner.push_entry(py, key, value)?,
+                    Slot::Absent(key) => inner.push_entry(py, key, value, &mut displaced)?,
                 }
                 Ok(())
             })?;
@@ -941,7 +990,6 @@ impl Dict {
             pos,
             expected: len,
             remaining: len,
-            layout: inner.table.layout(),
             exhausted: false,
         };
         drop(inner);
@@ -1204,26 +1252,34 @@ impl Dict {
         let none = py.None().into_bound(py);
         let value = self.prepare_value(default.unwrap_or(&none))?;
         let mut result = None;
-        keys::batch_upsert(
+        // The converted default may be a new container holding the last references to its
+        // elements: when the key turned up meanwhile it is released after the lock.
+        let mut unused = Vec::new();
+        let res = keys::batch_upsert(
             py,
             &self.inner,
             [(prepared, value)],
             |inner, value, slot| {
                 let pos = match slot {
-                    Slot::Existing(pos) => pos,
+                    Slot::Existing(pos) => {
+                        unused.extend(coerced_object(value));
+                        pos
+                    }
                     Slot::Inserted(pos) => {
                         inner.values.push(py, value);
                         pos
                     }
                     Slot::Absent(key) => {
-                        inner.push_entry(py, key, value)?;
+                        inner.push_entry(py, key, value, &mut unused)?;
                         inner.table.entries() - 1
                     }
                 };
                 result = Some(inner.value(py, pos));
                 Ok(())
             },
-        )?;
+        );
+        drop(unused);
+        res?;
         Ok(result.unwrap_or_else(|| py.None()))
     }
 
@@ -1325,12 +1381,16 @@ enum ItemKind {
     Items,
 }
 
+/// CPython's `dictiterobject` state. Positions are entry positions, which move only when
+/// the table grows (as in CPython), so iteration over a dict mutated at constant size
+/// behaves like `dict`'s.
 struct IterState {
     /// Next position to examine (forward), or one past it (reverse).
     pos: usize,
+    /// The size at creation; `usize::MAX` once a size change was reported (sticky).
     expected: usize,
+    /// Keys left to yield; finding more (forward) means the keys changed.
     remaining: usize,
-    layout: u64,
     exhausted: bool,
 }
 
@@ -1362,11 +1422,6 @@ impl DictIterator {
                     "dictionary changed size during iteration",
                 ));
             }
-            if inner.table.layout() != st.layout {
-                return Err(PyRuntimeError::new_err(
-                    "dictionary keys changed during iteration",
-                ));
-            }
             let next = if self.reverse {
                 inner.table.prev_live(st.pos)
             } else {
@@ -1376,13 +1431,14 @@ impl DictIterator {
                 st.exhausted = true;
                 return Ok(None);
             };
-            if st.remaining == 0 {
-                st.expected = usize::MAX;
+            // CPython checks this for forward iteration only.
+            if st.remaining == 0 && !self.reverse {
+                st.exhausted = true;
                 return Err(PyRuntimeError::new_err(
                     "dictionary keys changed during iteration",
                 ));
             }
-            st.remaining -= 1;
+            st.remaining = st.remaining.saturating_sub(1);
             st.pos = if self.reverse { pos } else { pos + 1 };
             let key = (self.kind != ItemKind::Values).then(|| inner.table.key_object(py, pos));
             let value = (self.kind != ItemKind::Keys).then(|| inner.value(py, pos));
@@ -1398,7 +1454,8 @@ impl DictIterator {
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
         let st = self.state.read(py);
-        if st.exhausted { 0 } else { st.remaining }
+        let unchanged = !st.exhausted && self.dict.get().len(py) == st.expected;
+        if unchanged { st.remaining } else { 0 }
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
