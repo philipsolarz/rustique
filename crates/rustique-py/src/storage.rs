@@ -269,7 +269,9 @@ impl Storage {
                 objects.iter().position(|o| o.is(item))
             }
             Storage::Native(column) => {
-                let Coerced::Native(value) = convert::classify(item) else {
+                // `probe`, not `classify`: a materialised `u64` above `i64::MAX` is an exact
+                // `int` that classifies as an object but probes natively.
+                let convert::Probe::Native(value) = convert::probe(item) else {
                     return None;
                 };
                 if hint < column.len() && rustique_core::kernels::find(column, &value, hint, hint + 1).is_some() {

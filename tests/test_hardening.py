@@ -163,3 +163,56 @@ def test_c1_rejected_values_are_not_leaked_or_stored() -> None:
     assert lst.to_list() == [1, 2, 3, 4]
     del objs
     assert all(r() is None for r in refs)
+
+
+# --------------------------------------------------------------------------------------
+# H1: remove() through the Python-equality path re-located the matched element with the
+# untyped classification, which rejects u64 values above i64::MAX: 64 retries, then a
+# spurious RuntimeError although the list never changed.
+# --------------------------------------------------------------------------------------
+
+
+class _EqBig:
+    def __eq__(self, other: object) -> bool:
+        return other == 2**64 - 1
+
+    __hash__ = None  # type: ignore[assignment]
+
+
+@pytest.mark.parametrize("value", [rs.u64(2**64 - 1), _EqBig(), 2**64 - 1], ids=["u64", "custom-eq", "int"])
+def test_h1_remove_relocates_u64_above_i64_max(value: object) -> None:
+    lst = List[rs.u64]([1, 2**64 - 1, 7, 2**64 - 1])
+    assert lst.index(value) == 1
+    lst.remove(value)
+    assert lst.to_list() == [1, 7, 2**64 - 1]
+    lst.remove(value)
+    assert lst.to_list() == [1, 7]
+    with pytest.raises(ValueError, match=r"list.remove\(x\): x not in list"):
+        lst.remove(value)
+
+
+def test_h1_remove_python_path_on_every_native_dtype() -> None:
+    class EqAll:
+        def __init__(self, target: object) -> None:
+            self.target = target
+
+        def __eq__(self, other: object) -> bool:
+            return other == self.target
+
+        __hash__ = None  # type: ignore[assignment]
+
+    cases = [
+        (List[rs.u64], [0, 2**63, 2**64 - 1]),
+        (List[rs.i64], [-(2**63), 0, 2**63 - 1]),
+        (List[rs.f32], [0.5, -1.5, 3.0]),
+        (List[float], [float("nan"), 1.0, -0.0]),
+        (List[bool], [False, True]),
+        (List[str], ["a", "é", "z"]),
+    ]
+    for alias, values in cases:
+        for target in values:
+            lst = alias(values)
+            expected = list(values)
+            lst.remove(EqAll(target) if target == target else target)
+            expected.remove(target) if target == target else expected.pop(0)
+            assert repr(lst.to_list()) == repr(expected), (alias, target)
