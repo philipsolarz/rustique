@@ -765,8 +765,8 @@ fn run(program: &Program, input: Arr<'_>, out: ArrMut<'_>, tuning: &Tuning) -> O
 }
 
 pub(super) fn evaluate(expr: &Expr, column: &Column, mode: IntMode, tuning: &Tuning) -> Result<Column, ExprError> {
-    if expr.depth() > super::MAX_DEPTH {
-        return Err(super::depth_error());
+    if let Some(error) = expr.limit_error() {
+        return Err(error);
     }
     let ty = ExprType::of_column(column.dtype(), mode);
     let program = plan::plan(expr, column.dtype(), ty);

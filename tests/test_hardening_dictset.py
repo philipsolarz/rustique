@@ -572,3 +572,73 @@ def test_dict_growth_compaction_keeps_values_aligned():
         if i % 2:
             del d[str(i - 1)]
     assert [list(v) for v in d.values()] == [[i] for i in range(1, 200, 2)]
+
+
+# --- M2: expressions sharing subexpressions cannot blow up exponentially ---------------------
+
+
+def test_exponential_expression_dags_are_rejected():
+    e = rs.X
+    for _ in range(15):
+        e = e + e
+    # 2**16 - 1 nodes: fine, and evaluated natively once per shared subexpression.
+    assert list(rs.List([1, 2, 3]).map(e)) == [2**15, 2**16, 3 * 2**15]
+    assert len(repr(e)) < 2_000_000
+    with pytest.raises(ValueError, match="more than 100000 nodes"):
+        e + e
+    with pytest.raises(ValueError, match="more than 100000 nodes"):
+        e * e
+    deep = rs.X
+    for _ in range(511):
+        deep = deep + 1
+    with pytest.raises(RecursionError):
+        deep + 1
+
+
+def test_dag_blowup_probe_fails_fast():
+    out = run_isolated(
+        """
+        import time
+        import rustique as rs
+
+        start = time.perf_counter()
+        e = rs.X
+        try:
+            for _ in range(40):
+                e = e + e
+        except ValueError:
+            print("rejected", time.perf_counter() - start < 1)
+        """,
+        timeout=60,
+    )
+    assert out.split() == ["rejected", "True"]
+
+
+@pytest.mark.skipif(not hasattr(__import__("signal"), "setitimer"), reason="needs signal.setitimer")
+def test_python_fallback_evaluation_is_interruptible():
+    out = run_isolated(
+        """
+        import signal, time
+        import rustique as rs
+
+        e = rs.X
+        for _ in range(15):
+            e = e + e
+        lst = rs.List([1] * 5000 + [2**70])  # object storage: evaluated with Python operators
+        assert lst.strategy == "object"
+
+        def interrupt(signum, frame):
+            raise KeyboardInterrupt
+
+        signal.signal(signal.SIGALRM, interrupt)  # like Ctrl-C, delivered by the OS
+        signal.setitimer(signal.ITIMER_REAL, 0.3)
+        start = time.perf_counter()
+        try:
+            lst.map(e)
+            print("finished")
+        except KeyboardInterrupt:
+            print("interrupted", time.perf_counter() - start < 5)
+        """,
+        timeout=120,
+    )
+    assert out.split() == ["interrupted", "True"]

@@ -18,9 +18,7 @@ use pyo3::prelude::*;
 use pyo3::PyTypeInfo;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBool, PyFloat, PyInt, PyString, PyTuple, PyType};
-use rustique_core::expr::{
-    self as engine, BinaryOp, ErrorKind, ExprError, ExprType, IntMode, MAX_DEPTH, Node, UnaryOp,
-};
+use rustique_core::expr::{self as engine, BinaryOp, ErrorKind, ExprError, ExprType, IntMode, Node, UnaryOp};
 use rustique_core::{Column, DType, Value};
 
 use crate::convert;
@@ -29,6 +27,9 @@ use crate::storage::Storage;
 
 /// Columns at least this long are evaluated with the interpreter detached.
 const DETACH_MIN: usize = 4096;
+
+/// Native evaluations of at least this many node-elements also run detached.
+const DETACH_WORK: u64 = 1 << 20;
 
 /// An expression over the element placeholder `X`, e.g. `X * 2 + 1` or `(X % 3 == 0)`.
 ///
@@ -46,10 +47,8 @@ impl Expr {
     }
 
     fn wrap(py: Python<'_>, inner: Arc<engine::Expr>) -> PyResult<Py<PyAny>> {
-        if inner.depth() > MAX_DEPTH {
-            return Err(PyRecursionError::new_err(format!(
-                "expression nesting exceeds the maximum depth of {MAX_DEPTH}"
-            )));
+        if let Some(error) = inner.limit_error() {
+            return Err(expr_error(py, error));
         }
         Ok(Bound::new(py, Expr { inner })?.into_any().unbind())
     }
@@ -509,7 +508,8 @@ fn native(py: Python<'_>, expr: &engine::Expr, storage: &Storage, schema: &Schem
         return None;
     }
     let mode = int_mode(schema);
-    Some(if column.len() >= DETACH_MIN {
+    let work = (column.len() as u64).saturating_mul(expr.size());
+    Some(if column.len() >= DETACH_MIN || work >= DETACH_WORK {
         py.detach(|| engine::eval(expr, column, mode))
     } else {
         engine::eval(expr, column, mode)
@@ -552,6 +552,8 @@ pub fn map_storage(
     }
     let mut results = Vec::with_capacity(storage.len());
     for x in elements(py, &storage, schema, true)? {
+        // Builtin operators never check for signals: keep long evaluations interruptible.
+        py.check_signals()?;
         results.push(call(&expr, &x)?.unbind());
     }
     if results.is_empty() {
@@ -577,7 +579,10 @@ pub fn filter_storage(
                 Some(Err(error @ ExprError::Raise { .. })) => return Err(expr_error(py, error)),
                 Some(Err(ExprError::Overflow)) | None => elements(py, &storage, schema, true)?
                     .iter()
-                    .map(|x| call(&expr, x)?.is_truthy())
+                    .map(|x| {
+                        py.check_signals()?;
+                        call(&expr, x)?.is_truthy()
+                    })
                     .collect::<PyResult<Vec<bool>>>()?,
             }
         }

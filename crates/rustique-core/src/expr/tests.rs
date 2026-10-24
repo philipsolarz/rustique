@@ -138,6 +138,34 @@ fn fixed_width_semantics() {
 }
 
 #[test]
+fn shared_subexpressions_are_planned_once_and_size_is_bounded() {
+    let mut e = X();
+    for _ in 0..15 {
+        e = bin(Add, e.clone(), e);
+    }
+    assert_eq!(e.size(), (1 << 16) - 1);
+    let col = Column::I64(vec![1, 2, 3]);
+    assert_eq!(eval(&e, &col, IntMode::Python), Ok(Column::I64(vec![1 << 15, 2 << 15, 3 << 15])));
+    assert!(plan::plan(&e, DType::I64, ExprType::Int).nodes.len() < 40);
+    let big = bin(Add, e.clone(), e);
+    assert_eq!(big.size(), (1 << 17) - 1);
+    assert_eq!(kind_of(&eval(&big, &col, IntMode::Python).unwrap_err()), Some(ErrorKind::ValueError));
+    assert_eq!(kind_of(&big.result_type(ExprType::Int).unwrap_err()), Some(ErrorKind::ValueError));
+    let mut huge = X();
+    for _ in 0..200 {
+        huge = bin(Mul, huge.clone(), huge);
+    }
+    assert_eq!(huge.size(), u64::MAX);
+    // A failure inside a shared subexpression keeps the rank of its first use: `a + (b + a)`
+    // fails in `a` (not in `b`) on an element where both fail.
+    let a = bin(FloorDiv, c(1i64), X());
+    let b = bin(LShift, c(1i64), bin(Sub, X(), c(5i64)));
+    let e = bin(Add, a.clone(), bin(Add, b, a));
+    let err = eval(&e, &Column::I64(vec![7, 0]), IntMode::Python).unwrap_err();
+    assert_eq!(err, raise(ErrorKind::ZeroDivisionError, "division by zero"));
+}
+
+#[test]
 fn bools_and_logic() {
     let col = Column::Bool(vec![true, false]);
     let ev = |e: &Arc<Expr>| eval(e, &col, IntMode::Python);

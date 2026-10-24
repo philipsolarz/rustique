@@ -8,6 +8,7 @@
 //! only operations before it can fail first.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 use crate::column::{Column, Value};
 use crate::dtype::DType;
@@ -147,7 +148,7 @@ pub(super) struct Program {
 /// Plan `expr` for input elements stored as `dtype` and typed `ty` (`dtype` may differ
 /// from `ty.dtype()`, e.g. an i32 column of Python ints; the input is then converted).
 pub(super) fn plan(expr: &Expr, dtype: DType, ty: ExprType) -> Program {
-    let mut planner = Planner { nodes: Vec::new(), next_order: 0, input: (dtype, ty) };
+    let mut planner = Planner { nodes: Vec::new(), next_order: 0, input: (dtype, ty), planned: HashMap::new() };
     let result = planner.visit(expr).and_then(|root| {
         // A Python int beyond i64 as the result: only Python can hold it.
         if planner.is_big(root) { Err(fallback(planner.nodes[root].order)) } else { Ok(root) }
@@ -161,6 +162,10 @@ struct Planner {
     nodes: Vec<PNode>,
     next_order: u32,
     input: (DType, ExprType),
+    /// The node implementing each subexpression planned so far, by address: a shared
+    /// subexpression is planned (and evaluated) once. Its first use is the one Python
+    /// evaluates first, so failures keep their rank.
+    planned: HashMap<*const Expr, usize>,
 }
 
 fn type_error(order: u32, message: String) -> Failure {
@@ -189,6 +194,16 @@ fn natural(dtype: DType) -> ExprType {
 
 impl Planner {
     fn visit(&mut self, expr: &Expr) -> Planned {
+        let key = std::ptr::from_ref(expr);
+        if let Some(&n) = self.planned.get(&key) {
+            return Ok(n);
+        }
+        let n = self.visit_new(expr)?;
+        self.planned.insert(key, n);
+        Ok(n)
+    }
+
+    fn visit_new(&mut self, expr: &Expr) -> Planned {
         match expr.node() {
             Node::Element => {
                 let order = self.tick();
