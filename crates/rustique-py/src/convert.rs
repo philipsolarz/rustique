@@ -231,6 +231,7 @@ pub fn as_str(obj: &Bound<'_, PyAny>) -> StrValue {
 ///
 /// # Safety
 /// `p` must point to a live object whose type is exactly `str`.
+#[inline]
 pub unsafe fn exact_str(p: *mut ffi::PyObject) -> Option<CompactString> {
     // SAFETY: guaranteed by the caller; exact `str` objects are immutable PEP 393 strings
     // whose data pointer covers `length` code units of `kind` bytes each.
@@ -240,12 +241,28 @@ pub unsafe fn exact_str(p: *mut ffi::PyObject) -> Option<CompactString> {
             return Some(CompactString::default());
         }
         let data = ffi::PyUnicode_DATA(p);
-        match ffi::PyUnicode_KIND(p) {
+        let kind = ffi::PyUnicode_KIND(p);
+        if kind == ffi::PyUnicode_1BYTE_KIND {
+            let bytes = std::slice::from_raw_parts(data.cast::<u8>(), len);
+            if bytes.is_ascii() {
+                return Some(CompactString::from(std::str::from_utf8_unchecked(bytes)));
+            }
+        }
+        non_ascii_str(data, len, kind)
+    }
+}
+
+/// The non-ASCII part of [`exact_str`] (kept out of line so the ASCII path inlines).
+///
+/// # Safety
+/// `data` must hold `len` code units of `kind` bytes each, of a live exact `str`.
+#[inline(never)]
+unsafe fn non_ascii_str(data: *mut std::ffi::c_void, len: usize, kind: std::ffi::c_uint) -> Option<CompactString> {
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        match kind {
             ffi::PyUnicode_1BYTE_KIND => {
                 let bytes = std::slice::from_raw_parts(data.cast::<u8>(), len);
-                if bytes.is_ascii() {
-                    return Some(CompactString::from(std::str::from_utf8_unchecked(bytes)));
-                }
                 encode_utf8(bytes.iter().map(|&b| Some(char::from(b))), len * 2)
             }
             // Canonical 2-byte strings never hold surrogate pairs: any surrogate code unit
@@ -709,6 +726,9 @@ impl ObjectPtr for Py<PyAny> {
 /// The native column for items that all have the same exact builtin type (`int` fitting
 /// i64, `float`, `bool`, `str` without lone surrogates); `None` otherwise (or if empty).
 ///
+/// Type check and conversion happen in one pass, so each object is read once: large inputs
+/// do not fit in cache and the reads, not the conversions, dominate.
+///
 /// # Safety
 /// Every item must be a live object for the duration of the call.
 unsafe fn any_column<T: ObjectPtr>(items: &[T]) -> Option<Column> {
@@ -716,12 +736,13 @@ unsafe fn any_column<T: ObjectPtr>(items: &[T]) -> Option<Column> {
     // SAFETY: live items (caller contract); every read matches the checked exact type.
     unsafe {
         let ty = ffi::Py_TYPE(first);
-        if !items.iter().all(|p| ffi::Py_TYPE(p.ptr()) == ty) {
-            return None;
-        }
+        let same = |p: &T| ffi::Py_TYPE(p.ptr()) == ty;
         if ty == &raw mut ffi::PyLong_Type {
             let mut out = Vec::with_capacity(items.len());
             for p in items {
+                if !same(p) {
+                    return None;
+                }
                 let mut overflow = 0;
                 let v = ffi::PyLong_AsLongLongAndOverflow(p.ptr(), &mut overflow);
                 if overflow != 0 {
@@ -731,13 +752,32 @@ unsafe fn any_column<T: ObjectPtr>(items: &[T]) -> Option<Column> {
             }
             Some(Column::I64(out))
         } else if ty == &raw mut ffi::PyFloat_Type {
-            Some(Column::F64(items.iter().map(|p| ffi::PyFloat_AS_DOUBLE(p.ptr())).collect()))
+            let mut out = Vec::with_capacity(items.len());
+            for p in items {
+                if !same(p) {
+                    return None;
+                }
+                out.push(ffi::PyFloat_AS_DOUBLE(p.ptr()));
+            }
+            Some(Column::F64(out))
         } else if ty == &raw mut ffi::PyBool_Type {
-            let t = ffi::Py_True();
-            Some(Column::Bool(items.iter().map(|p| p.ptr() == t).collect()))
+            // Bools are the two singletons: pointer compares, no object reads.
+            let (t, f) = (ffi::Py_True(), ffi::Py_False());
+            let mut out = Vec::with_capacity(items.len());
+            for p in items {
+                let p = p.ptr();
+                if p != t && p != f {
+                    return None;
+                }
+                out.push(p == t);
+            }
+            Some(Column::Bool(out))
         } else if ty == &raw mut ffi::PyUnicode_Type {
             let mut out = Vec::with_capacity(items.len());
             for p in items {
+                if !same(p) {
+                    return None;
+                }
                 out.push(exact_str(p.ptr())?);
             }
             Some(Column::Str(out))
