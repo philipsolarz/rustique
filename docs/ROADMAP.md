@@ -15,7 +15,7 @@ contract and `ARCHAEOLOGY.md` for the history that motivated it.
 | Scalars | `i8 … u64`, `f32`, `f64` with type-preserving checked operators and Rust-named overflow families |
 | Concurrency | frozen pyclasses with interior locks, detached waiting that never holds or queues on a lock (GC-consistent), writer-starvation-free, no Python code under locks (including rejected inputs on error paths), critical sections for bulk reads of builtin sources; tested on 3.14t and 3.15t with the GIL disabled |
 | Rust interop | versioned C-API capsule (`rustique._rustique._C_API`) + `rustique-api` crate: other PyO3 extensions build real `rustique.List`s from slices with one memcpy and borrow list data zero-copy; demo extension with tests |
-| Hardening | two independent safety reviews (≈30 findings incl. a use-after-free, deadlocks, a stack overflow, livelocks) — all fixed with regression tests (`tests/test_hardening*.py`) |
+| Hardening | two independent safety reviews (26 findings incl. a use-after-free, deadlocks, a stack overflow, livelocks) — all fixed with regression tests (`tests/test_hardening*.py`) |
 | Validation | 107 Rust unit/property tests incl. CPython-recorded oracles; ~3400 pytest cases on 3.14, 3.14t, 3.15.1, 3.15.1t incl. the historical parity suite, Hypothesis state machines vs builtins, thread stress, crash/deadlock regressions in subprocesses; mypy/pyright strict stubs; honest benchmark harness |
 
 ## Known trade-offs
