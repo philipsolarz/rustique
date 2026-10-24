@@ -69,6 +69,7 @@ crates/
     src/index.rs              # CPython-style compact hash index (Dict/Set)
     src/pyhash.rs             # CPython-compatible hashing of ints/floats
     src/pyfmt.rs              # CPython-compatible float repr
+  rustique-api/               # downstream Rust client of the C-API capsule (§5.1); pyo3 only
   rustique-py/                # PyO3 binding → module `rustique._rustique`
     src/lib.rs                # #[pymodule] registration only
     src/storage.rs            # Storage = Native(Column) | Object(Vec<Py<PyAny>>), strategies
@@ -80,13 +81,14 @@ crates/
     src/set.rs                # Set pyclass + iterator
     src/scalars.rs            # i8..u64, f32, f64 scalar pyclasses
     src/expr.rs               # Python-facing expression builder `X`
+    src/capi.rs               # versioned C-API capsule `rustique._rustique._C_API` (§5.1)
 python/rustique/
   __init__.py                 # public re-exports
   __init__.pyi                # hand-written, precise type stubs
   py.typed
 tests/                        # pytest (parity, typing, strategies, expr, threads, buffer)
 benches/                      # honest benchmark harness
-examples/                     # runnable examples (Python + Rust)
+examples/                     # runnable examples; rust_extension/ is a downstream crate
 docs/                         # ARCHITECTURE.md (this), ARCHAEOLOGY.md, ROADMAP.md
 ```
 

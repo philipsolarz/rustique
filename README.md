@@ -55,8 +55,14 @@ rewrite stores data natively and pays per *operation* instead of per *element*.
   round-trip.
 - **Zero-copy interop** — numeric lists export read-only buffers (`memoryview`, NumPy);
   while an export is alive the list is frozen (`BufferError` on mutation). Lists ingest
-  buffers (`array.array`, NumPy) by `memcpy`. Rust code builds a Python `List` from a
-  `Vec<T>` in O(1) (`rustique_py::list::List::from_column`).
+  buffers (`array.array`, NumPy) by `memcpy`.
+- **Rust interop for other extensions** — a versioned C-API capsule
+  (`rustique._rustique._C_API`, like NumPy's) and the `rustique-api` crate let any PyO3
+  extension return real `rustique.List[...]` objects from Rust slices with one `memcpy`, and
+  borrow a list's native data zero-copy (the list is frozen while borrowed). See
+  `examples/rust_extension`: returning 10M-sieve primes costs 0.8 ms of conversion instead
+  of 12.6 ms through PyO3's `Vec<i64> → list`, and summing 10M floats from a borrowed list
+  takes 7 ms instead of 119 ms through `Vec<f64>` extraction.
 - **Free-threading ready** — every container is a frozen PyO3 class with interior locking;
   no Python code ever runs while a Rustique lock is held. Tested on CPython 3.15t with the
   GIL disabled.
@@ -103,7 +109,9 @@ Free-threaded build: `uv venv --python 3.15.1t .venv-ft` and
 ```
 crates/rustique-core   pure Rust: columns, slices, kernels, expression engine, hash index,
                        CPython-compatible hashing and float repr (no Python dependency)
-crates/rustique-py     PyO3 bindings → rustique._rustique
+crates/rustique-py     PyO3 bindings → rustique._rustique (incl. the C-API capsule)
+crates/rustique-api    safe Rust client of the capsule, for downstream PyO3 extensions
+examples/rust_extension  a downstream extension built on rustique-api
 python/rustique        Python package and type stubs
 docs/                  ARCHITECTURE.md (contract), ARCHAEOLOGY.md, ROADMAP.md
 ```
