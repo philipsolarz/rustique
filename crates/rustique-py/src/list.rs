@@ -31,6 +31,8 @@ use crate::sync::{MutationCounter, PyMutex, PyRwLock, ReadGuard, WriteGuard, rea
 const CHUNK: usize = 256;
 /// Native kernels on at least this many elements run detached from the interpreter.
 const DETACH_THRESHOLD: usize = 1 << 16;
+/// Sorting goes parallel (rayon) from this size: always detach then.
+const SORT_DETACH_THRESHOLD: usize = 1 << 14;
 /// How often `remove` re-runs a Python-level search invalidated by concurrent mutation.
 const MAX_RETRIES: usize = 64;
 
@@ -218,14 +220,11 @@ fn cmp_op(op: CompareOp) -> Option<CmpOp> {
     }
 }
 
-/// Native comparison of two columns, or `None` when Python semantics need the
-/// object path (ordering `str` against numbers raises `TypeError` in Python).
+/// Native comparison of two columns, or `None` where Python raises `TypeError` (ordering a
+/// `str` against a number); the object path then raises it with CPython's message.
 fn native_compare(a: &Column, b: &Column, op: CompareOp) -> Option<bool> {
     match cmp_op(op) {
-        Some(cmp) => {
-            let orderable = (a.dtype() == DType::Str) == (b.dtype() == DType::Str);
-            orderable.then(|| kernels::lex_compare(a, b, cmp))
-        }
+        Some(cmp) => kernels::try_lex_compare(a, b, cmp),
         None => Some(kernels::equal(a, b) == matches!(op, CompareOp::Eq)),
     }
 }
@@ -434,7 +433,13 @@ impl List {
         {
             let data = self.read(py);
             match (&*data, &probe) {
-                (Storage::Native(column), Probe::Native(needle)) => return Ok(kernels::count(column, needle)),
+                (Storage::Native(column), Probe::Native(needle)) => {
+                    return Ok(if column.len() >= DETACH_THRESHOLD {
+                        py.detach(|| kernels::count(column, needle))
+                    } else {
+                        kernels::count(column, needle)
+                    });
+                }
                 (Storage::Native(_), Probe::Never) | (Storage::Empty, _) => return Ok(0),
                 _ => {}
             }
@@ -1108,7 +1113,7 @@ impl List {
             match &mut *data {
                 Storage::Empty => return Ok(()),
                 Storage::Native(column) => {
-                    if column.len() >= DETACH_THRESHOLD {
+                    if column.len() >= SORT_DETACH_THRESHOLD {
                         py.detach(|| kernels::sort(column, reverse));
                     } else {
                         kernels::sort(column, reverse);

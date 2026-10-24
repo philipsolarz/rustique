@@ -127,7 +127,11 @@ impl fmt::Display for Schema {
             Schema::Dict(k, v) => write!(f, "Dict[{k}, {v}]"),
             Schema::Set(s) => write!(f, "Set[{s}]"),
             Schema::Class(c) => Python::attach(|py| {
-                let name = c.bind(py).qualname().map(|n| n.to_string()).unwrap_or_else(|_| "?".into());
+                let ty = c.bind(py);
+                if ty.is(py.get_type::<pyo3::types::PyNone>()) {
+                    return f.write_str("None");
+                }
+                let name = ty.qualname().map(|n| n.to_string()).unwrap_or_else(|_| "?".into());
                 f.write_str(&name)
             }),
         }
