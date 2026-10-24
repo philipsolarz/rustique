@@ -234,8 +234,21 @@ mod rustique_demo {
         Ok((api.version(), api.raw().abi_size))
     }
 
+    /// Element size of a fixed-size dtype code (`None` for `str` and unknown codes).
+    fn fixed_item_size(code: u8) -> Option<usize> {
+        Some(match DType::from_code(code)? {
+            DType::Bool | DType::I8 | DType::U8 => 1,
+            DType::I16 | DType::U16 => 2,
+            DType::I32 | DType::U32 | DType::F32 => 4,
+            DType::I64 | DType::U64 | DType::F64 => 8,
+            _ => return None,
+        })
+    }
+
     /// Raw `list_from_slice` on bytes (for testing the C-level checks): the elements of
     /// dtype `code` in `data[offset:]` (`offset` lets tests pass a misaligned pointer).
+    /// `itemsize` must be the dtype's element size; codes without one (unknown, `str`) are
+    /// passed with no elements, so the C API reports them.
     #[pyfunction]
     #[pyo3(signature = (code, data, itemsize, offset = 0))]
     fn raw_from_slice<'py>(
@@ -247,9 +260,18 @@ mod rustique_demo {
     ) -> PyResult<Bound<'py, PyAny>> {
         let api = RustiqueApi::get(py)?.raw();
         let data = data.get(offset..).unwrap_or_default();
-        let len = data.len() / itemsize.max(1);
-        // SAFETY: `data` is readable for `len * itemsize` bytes; the C API copies without
-        // alignment requirements and validates the dtype code; we are attached.
+        let len = match fixed_item_size(code) {
+            Some(size) if size == itemsize => data.len() / size,
+            Some(size) => {
+                return Err(PyValueError::new_err(format!(
+                    "itemsize {itemsize} does not match dtype code {code} ({size} bytes per element)"
+                )));
+            }
+            None => 0,
+        };
+        // SAFETY: the C API reads `len` elements of dtype `code`, i.e. `len * itemsize` bytes
+        // (the size checked above), and `data` holds at least that many; it copies without
+        // alignment requirements and validates the code; we are attached.
         let list = unsafe { (api.list_from_slice)(code, data.as_ptr(), len) };
         // SAFETY: a new reference or NULL with an exception set.
         unsafe { Bound::from_owned_ptr_or_err(py, list) }

@@ -698,3 +698,22 @@ def test_large_native_filter():
     assert len(kept) == n // 3 and kept[0] == 0 and kept[-1] == n - 3
     strs = rs.List([str(i) for i in range(140_000)])
     assert len(strs.filter(rs.X < "2")) == sum(1 for i in range(140_000) if str(i) < "2")
+
+
+# --- L2: the demo extension's raw_from_slice cannot read past its buffer --------------------
+
+
+def test_demo_raw_from_slice_validates_itemsize():
+    demo = pytest.importorskip(
+        "rustique_demo", reason="build it with `maturin develop --uv -m examples/rust_extension/Cargo.toml`"
+    )
+    with pytest.raises(ValueError, match="itemsize 1 does not match"):
+        demo.raw_from_slice(4, b"\x01" * 8, 1)  # i64: 8 bytes per element
+    with pytest.raises(ValueError, match="itemsize 0 does not match"):
+        demo.raw_from_slice(10, b"\x00" * 4096, 0)
+    assert list(demo.raw_from_slice(4, (7).to_bytes(8, "little") + b"\x01", 8)) == [7]
+    assert list(demo.raw_from_slice(1, b"\xff\x01", 1)) == [-1, 1]
+    with pytest.raises(ValueError, match="unknown dtype code 200"):
+        demo.raw_from_slice(200, b"abc", 1)
+    with pytest.raises(ValueError, match="list_from_utf8"):
+        demo.raw_from_slice(11, b"abc", 1)
