@@ -949,10 +949,17 @@ impl List {
         Ok(copy)
     }
 
-    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyList>,))> {
+    /// Pickle as `List()`/`List[T]()` plus list items: pickle memoizes the empty list
+    /// before saving its items (then restored with `extend`), so self-references and
+    /// shared elements round-trip.
+    #[allow(clippy::type_complexity)]
+    fn __reduce__<'py>(
+        slf: &Bound<'py, Self>,
+    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>, Option<Py<PyAny>>, Bound<'py, PyAny>)> {
         let py = slf.py();
         let this = slf.get();
-        Ok((this.schema_type(py)?, (this.to_pylist(py)?,)))
+        let items = this.to_pylist(py)?.into_any().try_iter()?.into_any();
+        Ok((this.schema_type(py)?, PyTuple::empty(py), None, items))
     }
 
     fn __sizeof__(&self, py: Python<'_>) -> usize {
