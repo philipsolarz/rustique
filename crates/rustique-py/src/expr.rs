@@ -483,10 +483,11 @@ fn collect(py: Python<'_>, values: Vec<Py<PyAny>>, preferred: Option<Arc<Schema>
     Ok((storage, schema))
 }
 
-/// The elements as Python objects. Fixed-width elements become rustique scalars when
-/// `scalars` is set (expression fallback keeps their semantics), Python numbers otherwise
-/// (what element reads return).
-fn elements<'py>(py: Python<'py>, storage: &Storage, scalars: bool) -> PyResult<Vec<Bound<'py, PyAny>>> {
+/// The elements as Python objects. With `scalars`, the native numbers of a fixed-width
+/// schema become rustique scalars (so expression fallback keeps fixed-width semantics);
+/// otherwise they are what element reads return.
+fn elements<'py>(py: Python<'py>, storage: &Storage, schema: &Schema, scalars: bool) -> PyResult<Vec<Bound<'py, PyAny>>> {
+    let scalars = scalars && matches!(schema, Schema::Fixed(_));
     match storage {
         Storage::Empty => Ok(Vec::new()),
         Storage::Object(objects) => Ok(objects.iter().map(|o| o.bind(py).clone()).collect()),
@@ -542,7 +543,7 @@ pub fn map_storage(
             return Err(not_callable(f, "map"));
         }
         let mut results = Vec::with_capacity(storage.len());
-        for x in elements(py, &storage, false)? {
+        for x in elements(py, &storage, schema, false)? {
             results.push(f.call1((x,))?.unbind());
         }
         return collect(py, results, None);
@@ -563,7 +564,7 @@ pub fn map_storage(
         Some(Err(error)) => return Err(expr_error(py, error)),
     }
     let mut results = Vec::with_capacity(storage.len());
-    for x in elements(py, &storage, true)? {
+    for x in elements(py, &storage, schema, true)? {
         results.push(call(&expr, &x)?.unbind());
     }
     if results.is_empty() {
@@ -587,13 +588,13 @@ pub fn filter_storage(
             match native(py, &expr, &storage, schema) {
                 Some(Ok(column)) => engine::into_truthy(column),
                 Some(Err(error @ ExprError::Raise { .. })) => return Err(expr_error(py, error)),
-                Some(Err(ExprError::Overflow)) | None => elements(py, &storage, true)?
+                Some(Err(ExprError::Overflow)) | None => elements(py, &storage, schema, true)?
                     .iter()
                     .map(|x| call(&expr, x)?.is_truthy())
                     .collect::<PyResult<Vec<bool>>>()?,
             }
         }
-        Err(_) if f.is_callable() => elements(py, &storage, false)?
+        Err(_) if f.is_callable() => elements(py, &storage, schema, false)?
             .into_iter()
             .map(|x| f.call1((x,))?.is_truthy())
             .collect::<PyResult<Vec<bool>>>()?,
