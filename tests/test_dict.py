@@ -750,3 +750,14 @@ def test_finalizers_never_run_under_the_lock():
     assert len(d) == 1 and d[K(d)] == 2
     assert seen
     del d
+
+
+def test_native_equality_with_builtin_dict_follows_python():
+    assert Dict({"a": 1}) == {"a": 1.0} == Dict({"a": True})
+    assert Dict({"a": 1.5}) != {"a": 1}
+    assert Dict({"a": "1"}) != {"a": 1}
+    assert Dict({1: 2**53}) != {1: float(2**53) + 2}
+    assert Dict({1: 1, 2: 2}) != {1: 1, 3: 2}
+    assert Dict({1: [1]}) == {1: [1]}
+    assert Dict({"x": 0.0}) == {"x": -0.0}
+    assert Dict({"k": NAN}) == {"k": float("nan")}  # native floats have no identity

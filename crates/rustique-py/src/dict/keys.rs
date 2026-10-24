@@ -22,6 +22,8 @@ use pyo3::pybacked::PyBackedStr;
 use pyo3::types::{PyBool, PyBytes, PyComplex, PyFloat, PyFrozenSet, PyInt, PyString, PyTuple};
 use rustique_core::index::{HashIndex, KeyIndex, Remap};
 
+use rustique_core::Value;
+
 use crate::schema::{Coerced, Schema};
 
 /// A container lock: readers share, writers exclude, and a contended acquisition waits
@@ -260,6 +262,51 @@ pub(crate) fn native_key(obj: &Bound<'_, PyAny>, schema: &Schema) -> Option<Prep
         return unsafe { exact_str(obj.as_ptr()) }.map(Prepared::Str);
     }
     None
+}
+
+/// The native value of an exact `int` (fitting i64), `float`, `bool` or `str` object, for
+/// comparisons. Pure (safe on borrowed items inside a critical section).
+pub(crate) fn native_value(obj: &Bound<'_, PyAny>) -> Option<Value> {
+    if obj.is_exact_instance_of::<PyInt>() {
+        return int_value(obj).map(Value::I64);
+    }
+    if let Ok(f) = obj.cast_exact::<PyFloat>() {
+        return Some(Value::F64(f.value()));
+    }
+    if let Ok(b) = obj.cast_exact::<PyBool>() {
+        return Some(Value::Bool(b.is_true()));
+    }
+    if obj.is_exact_instance_of::<PyString>() {
+        // SAFETY: `obj` is a live object of exact type `str`.
+        return unsafe { exact_str(obj.as_ptr()) }.map(Value::Str);
+    }
+    None
+}
+
+/// Python `==` between native values (`True == 1 == 1.0`; strings equal only strings). Two
+/// NaNs compare equal, as if they were the same object (native storage has no identity).
+pub(crate) fn values_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Str(x), Value::Str(y)) => x == y,
+        (Value::Str(_), _) | (_, Value::Str(_)) => false,
+        _ => match (a.as_i128(), b.as_i128()) {
+            (Some(x), Some(y)) => x == y,
+            (Some(i), None) => float_equals_int(b.as_f64().unwrap_or(f64::NAN), i),
+            (None, Some(i)) => float_equals_int(a.as_f64().unwrap_or(f64::NAN), i),
+            (None, None) => {
+                let (x, y) = (
+                    a.as_f64().unwrap_or(f64::NAN),
+                    b.as_f64().unwrap_or(f64::NAN),
+                );
+                x == y || (x.is_nan() && y.is_nan())
+            }
+        },
+    }
+}
+
+/// Exact float/int equality (no rounding of the int).
+fn float_equals_int(f: f64, i: i128) -> bool {
+    f.fract() == 0.0 && f.abs() < 1.7e38 && f as i128 == i
 }
 
 /// Copy an exact `str`'s text from its PEP 393 buffer (no UTF-8 cache is created in the
@@ -1503,6 +1550,25 @@ mod tests {
             x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             assert_eq!(unmix(mix(x as isize)), x as isize);
         }
+    }
+
+    #[test]
+    fn native_value_equality_follows_python() {
+        use rustique_core::Value as V;
+        assert!(values_equal(&V::I64(1), &V::F64(1.0)));
+        assert!(values_equal(&V::Bool(true), &V::I64(1)));
+        assert!(values_equal(&V::Bool(true), &V::F64(1.0)));
+        assert!(values_equal(&V::U8(7), &V::I64(7)));
+        assert!(values_equal(&V::F32(0.5), &V::F64(0.5)));
+        assert!(values_equal(&V::F64(f64::NAN), &V::F64(f64::NAN)));
+        assert!(!values_equal(&V::F64(1.5), &V::I64(1)));
+        assert!(!values_equal(
+            &V::F64(9_007_199_254_740_992.0),
+            &V::I64(9_007_199_254_740_993)
+        ));
+        assert!(!values_equal(&V::Str("1".into()), &V::I64(1)));
+        assert!(values_equal(&V::Str("a".into()), &V::Str("a".into())));
+        assert!(!values_equal(&V::F64(f64::INFINITY), &V::I64(i64::MAX)));
     }
 
     #[test]

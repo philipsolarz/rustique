@@ -23,7 +23,9 @@ use rustique_core::index::Remap;
 use crate::schema::{self, Coerced, Schema};
 use crate::storage::{Displaced, Storage};
 
-use keys::{Key, KeyKind, KeyStore, KeyTable, Keyed, Locked, NativeKeys, Prepared, Role, Slot};
+use keys::{
+    Key, KeyKind, KeyStore, KeyTable, Keyed, Locked, NativeKeys, Prepared, Quick, Role, Slot,
+};
 
 /// Keys and the parallel value storage (same positions, tombstones included).
 pub(crate) struct DictInner {
@@ -515,16 +517,9 @@ pub(crate) fn objects_equal(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyRes
     a.eq(b)
 }
 
-/// Values at two positions of native columns, compared like Python (NaN equal to itself,
-/// as if it were the same object). `None` if the dtypes differ.
+/// Values at two positions of native columns, compared like Python.
 fn native_values_equal(a: &Column, i: usize, b: &Column, j: usize) -> Option<bool> {
-    use rustique_core::Value;
-    match (a.get(i)?, b.get(j)?) {
-        (Value::F64(x), Value::F64(y)) => Some(x == y || (x.is_nan() && y.is_nan())),
-        (Value::F32(x), Value::F32(y)) => Some(x == y || (x.is_nan() && y.is_nan())),
-        (x, y) if x.dtype() == y.dtype() => Some(x == y),
-        _ => None,
-    }
+    Some(keys::values_equal(&a.get(i)?, &b.get(j)?))
 }
 
 /// An insertion-ordered mapping with native key and value storage.
@@ -822,7 +817,47 @@ impl Dict {
         Ok(true)
     }
 
+    /// Native comparison with an exact builtin `dict` whose keys are exact `int`/`str` and
+    /// whose values are exact `int`/`float`/`bool`/`str`. `None`: not applicable.
+    fn native_eq_builtin(&self, py: Python<'_>, other: &Bound<'_, PyDict>) -> Option<bool> {
+        let inner = self.inner.read(py);
+        if inner.table.len() != other.len() {
+            return Some(false);
+        }
+        let col = match &inner.values {
+            Storage::Native(col) => col,
+            Storage::Empty => return Some(true),
+            Storage::Object(_) => return None,
+        };
+        // Our read lock is held while we enter the dict's critical section; only pure Rust and
+        // exact-type reads run inside it.
+        with_critical_section(other.as_any(), || {
+            let (mut pos, mut k, mut v) = (0, std::ptr::null_mut(), std::ptr::null_mut());
+            // SAFETY: we hold the dict's critical section and run no Python code, so the
+            // iteration state and the borrowed items stay valid.
+            while unsafe { ffi::PyDict_Next(other.as_ptr(), &mut pos, &mut k, &mut v) } != 0 {
+                // SAFETY: live borrowed key and value (see above).
+                let (k, v) = unsafe { (Borrowed::from_ptr(py, k), Borrowed::from_ptr(py, v)) };
+                let found = match keys::native_key(&k, &Schema::Any)? {
+                    Prepared::Int(i) => inner.table.find_quick(&Quick::Int(i))?,
+                    Prepared::Str(s) => inner.table.find_quick(&Quick::Str(&s))?,
+                    Prepared::Key(_) => return None,
+                };
+                let Some(at) = found else { return Some(false) };
+                if !keys::values_equal(&col.get(at)?, &keys::native_value(&v)?) {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        })
+    }
+
     fn eq_mapping(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        if let Ok(dict) = other.cast_exact::<PyDict>()
+            && let Some(eq) = self.native_eq_builtin(py, dict)
+        {
+            return Ok(eq);
+        }
         let items = self.items_snapshot(py);
         if items.len() != other.len()? {
             return Ok(false);
