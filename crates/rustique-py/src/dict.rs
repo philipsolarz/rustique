@@ -15,11 +15,14 @@ use pyo3::prelude::*;
 use pyo3::pyclass::CompareOp;
 use pyo3::sync::PyOnceLock;
 use pyo3::sync::critical_section::with_critical_section;
-use pyo3::types::{PyDict, PyFloat, PyFrozenSet, PyList, PySet, PyTuple, PyType};
+use pyo3::types::{
+    PyBool, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple, PyType,
+};
 use pyo3::{PyTraverseError, ffi};
 use rustique_core::Column;
 use rustique_core::index::Remap;
 
+use crate::convert;
 use crate::schema::{self, Coerced, Schema};
 use crate::storage::{Displaced, Storage};
 
@@ -261,12 +264,34 @@ fn raw_key<'py>(obj: &Bound<'py, PyAny>, schema: &Schema) -> Raw<'py> {
     }
 }
 
+/// A value read inside a source's critical section, possibly through a borrowed reference.
+/// Only exact `int`/`float`/`bool`/`str` values are converted in place, and only when the
+/// schema is pure: converting anything else — even unsuccessfully — may run Python code (a
+/// subclass's `__str__`/`__repr__` in an error message, …) that could free the borrowed
+/// item, so it gets a strong reference and is converted after the critical section.
 #[inline]
 fn raw_value<'py>(obj: &Bound<'py, PyAny>, schema: &Schema, pure: bool) -> RawValue<'py> {
-    if pure && let Ok(coerced) = schema.coerce(obj) {
+    if schema.is_any() {
+        // Exact-type classification only reads the object (anything else is kept as is).
+        return RawValue::Ready(convert::classify(obj));
+    }
+    if pure
+        && is_plain_scalar(obj)
+        && let Ok(coerced) = schema.coerce(obj)
+    {
         return RawValue::Ready(coerced);
     }
     RawValue::Later(obj.clone())
+}
+
+/// An exact `int`, `float`, `bool` or `str`: values whose conversion by a pure schema runs
+/// no Python code.
+#[inline]
+fn is_plain_scalar(obj: &Bound<'_, PyAny>) -> bool {
+    obj.is_exact_instance_of::<PyInt>()
+        || obj.is_exact_instance_of::<PyFloat>()
+        || obj.is_exact_instance_of::<PyBool>()
+        || obj.is_exact_instance_of::<PyString>()
 }
 
 /// Read what `iter(obj)` yields, classifying exact `int`/`str` items natively while the
@@ -356,8 +381,8 @@ fn read_pairs<'py>(
         let items = with_critical_section(dict.as_any(), || {
             let mut out = Vec::with_capacity(dict.len());
             let (mut pos, mut k, mut v) = (0, std::ptr::null_mut(), std::ptr::null_mut());
-            // SAFETY: we hold the dict's critical section and run no Python code (only pure
-            // classification), so the iteration state and borrowed items stay valid.
+            // SAFETY: we hold the dict's critical section and run no Python code (only exact-type
+            // reads, see `raw_value`), so the iteration state and borrowed items stay valid.
             while unsafe { ffi::PyDict_Next(dict.as_ptr(), &mut pos, &mut k, &mut v) } != 0 {
                 // SAFETY: live borrowed key and value (see above).
                 let (k, v) = unsafe { (Borrowed::from_ptr(py, k), Borrowed::from_ptr(py, v)) };
