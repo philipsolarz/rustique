@@ -608,11 +608,9 @@ def test_extend_heterogeneous(uimpl: ListImpl) -> None:
     assert len(lst) == len(data)
 
 
-def test_extend_with_failing_iterable(uimpl: ListImpl) -> None:
-    """The exception propagates. Builtin `list` keeps the items consumed before the
-    failure; a three-phase implementation may leave the list unchanged. Either way the
-    list stays consistent and usable."""
-    lst = uimpl.new([1, 2])
+def test_extend_with_failing_iterable(impl: ListImpl) -> None:
+    """The exception propagates and, like CPython, the items yielded before it stay."""
+    lst = impl.new([1, 2])
 
     def failing() -> Any:
         yield 3
@@ -621,10 +619,12 @@ def test_extend_with_failing_iterable(uimpl: ListImpl) -> None:
 
     with pytest.raises(RuntimeError, match="boom"):
         lst.extend(failing())
-    got = list(lst)
-    assert got in ([1, 2], [1, 2, 3, 4])
+    impl.check(lst, [1, 2, 3, 4])
+    with pytest.raises(RuntimeError, match="boom"):
+        lst += failing()
+    impl.check(lst, [1, 2, 3, 4, 3, 4])
     lst.append(5)
-    assert list(lst) == got + [5]
+    impl.check(lst, [1, 2, 3, 4, 3, 4, 5])
 
 
 def test_insert(impl: ListImpl) -> None:
@@ -1109,8 +1109,10 @@ def test_sort_incomparable_raises(uimpl: ListImpl) -> None:
     lst = uimpl.new(data)
     with pytest.raises(TypeError):
         lst.sort()
-    # The list is left as some permutation of its items.
-    assert multiset(lst) == multiset(data)
+    if uimpl.is_builtin:
+        assert multiset(lst) == multiset(data)  # CPython: "some permutation"
+    else:
+        uimpl.check(lst, data)  # rustique: a failed sort leaves the list unchanged
 
 
 def test_sort_key_raises_leaves_list_intact(impl: ListImpl) -> None:
@@ -1476,12 +1478,13 @@ def test_nan_same_object(impl: ListImpl) -> None:
 
 
 def test_nan_distinct_objects(impl: ListImpl) -> None:
-    """Builtin lists compare distinct NaN objects as unequal; native float storage treats
-    every NaN as identical (ARCHITECTURE §4.1, "Equality semantics note")."""
+    """Builtin lists compare distinct NaN objects as unequal; rustique Lists treat every
+    NaN as equal to NaN in searches and comparisons (ARCHITECTURE §4.1, documented
+    deviation)."""
     a, b = float("nan"), float("nan")
     assert a is not b
     lst = impl.new([1.0, a])
-    native = not impl.is_builtin and lst.strategy == "f64"
+    native = not impl.is_builtin
     assert (b in lst) is native
     assert lst.count(b) == (1 if native else 0)
     assert (lst == [1.0, b]) is native
@@ -1492,15 +1495,18 @@ def test_nan_distinct_objects(impl: ListImpl) -> None:
             lst.index(b)
 
 
-def test_nan_in_object_storage_uses_identity(uimpl: ListImpl) -> None:
+def test_nan_in_object_storage(uimpl: ListImpl) -> None:
+    """Object storage keeps the NaN object itself; searches follow the List NaN rule
+    (identity for builtin lists, NaN == NaN for rustique Lists)."""
     a, b = float("nan"), float("nan")
     lst = uimpl.new([a, "x"])  # heterogeneous -> object storage keeps the objects
     assert lst[0] is a
     assert a in lst
-    assert b not in lst
-    assert lst.count(b) == 0
+    nan_equal = not uimpl.is_builtin
+    assert (b in lst) is nan_equal
+    assert lst.count(b) == (1 if nan_equal else 0)
     assert lst == [a, "x"]
-    assert lst != [b, "x"]
+    assert (lst == [b, "x"]) is nan_equal
 
 
 def test_nan_values_round_trip(impl: ListImpl) -> None:
@@ -1862,3 +1868,16 @@ def test_result_parity(impl: ListImpl, name: str, op: Any) -> None:
     expected = op([1, 2, 3])
     got = op(impl.new([1, 2, 3]))
     assert same(got, expected), (got, expected)
+
+
+def test_strategy_never_repromotes(rs: Any) -> None:
+    lst = rs.List([1, "a"])
+    assert lst.strategy == "object"
+    del lst[1]
+    assert lst.strategy == "object"
+    lst.clear()
+    assert lst.strategy == "object"
+    lst.append(1)
+    assert lst.strategy == "object"
+    assert rs.List([1, 2]).strategy == "i64"
+    assert rs.List().strategy == "empty"

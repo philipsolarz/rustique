@@ -13,11 +13,11 @@ Subjects (``RUSTIQUE_IMPLS``):
   ``TypeError``; the subject must do the same and stay unchanged.
 
 Documented, deliberate deviations are excluded from comparison (not hidden):
-NaN identity (native float storage treats every NaN as identical, §4.1) -- queries never
-use NaN and ``==`` is only asserted when no NaN is stored; NaN ordering after ``sort``
-(only "no crash, same multiset" is specified); the provenance of equal-but-differently
-typed elements in set intersections (CPython's choice depends on operand sizes); and
-whether a failing ``extend`` leaves the consumed prefix in place.
+NaN identity (List searches and comparisons treat every NaN as equal to NaN, §4.1) --
+queries never use NaN and ``==`` is only asserted when no NaN is stored; NaN ordering after
+``sort`` (only "no crash, same multiset" is specified); the provenance of
+equal-but-differently typed elements in set intersections (CPython's choice depends on
+operand sizes); and whether a typed ``extend`` rejected part-way keeps the valid prefix.
 """
 
 from __future__ import annotations
@@ -432,7 +432,8 @@ def build_list_machine(subject_kind: str, ek: ElemKind) -> type[RuleBasedStateMa
                 m.extend(self.coerce_all(xs))
                 raise RuntimeError("iterator failed")
 
-            self.mutate("extend(failing)", model_op, lambda s: s.extend(failing_iter(xs)), partial_ok=True)
+            # CPython parity: the items yielded before the iterator raised stay appended.
+            self.mutate("extend(failing)", model_op, lambda s: s.extend(failing_iter(xs)))
 
         @precondition(lambda self: len(self.model) <= 24)
         @rule(n=st.integers(-1, 3))
@@ -666,9 +667,9 @@ def build_list_machine(subject_kind: str, ek: ElemKind) -> type[RuleBasedStateMa
             else:
                 if tightest_strategy(self.model) == "object":
                     assert strategy == "object", f"{self.model!r} needs object storage, got {strategy!r}"
-                if self.was_object and self.model:
-                    assert strategy == "object", "strategies must not re-promote automatically"
-                self.was_object = strategy == "object" and bool(self.model)
+                if self.was_object:
+                    assert strategy == "object", "strategies never re-promote (not even after clear())"
+                self.was_object = strategy == "object"
 
     ListMachine.__name__ = f"ListMachine_{subject_kind}_{ek.name}"
     return ListMachine
@@ -1232,7 +1233,10 @@ def build_set_machine(subject_kind: str, kk: KeyKind) -> type[RuleBasedStateMach
                 expected = f(self.model, cx)
                 got = outcome(lambda: f(self.subject, operand))
             assert got[1] is None, f"{op} raised {got[1]!r}"
-            check_set(op, got[0], expected, cross_type_equal(list(self.model) + list(xs)))
+            # A typed Set combined with a builtin operand may yield an untyped result that
+            # keeps the operand's own elements (the List `+` rule): compare by equality.
+            lenient = cross_type_equal(list(self.model) + list(xs)) or (typed and form != "subject")
+            check_set(op, got[0], expected, lenient)
             if subject_kind != "builtin":
                 assert type(got[0]) is type(self.subject), f"{op}: result type {type(got[0])}"
 
@@ -1245,7 +1249,7 @@ def build_set_machine(subject_kind: str, kk: KeyKind) -> type[RuleBasedStateMach
             raw = [xs[: len(xs) // 2], xs[len(xs) // 2 :]][:n_args]
             expected = getattr(self.model, name)(*halves)
             got = getattr(self.subject, name)(*[as_operand(r, form) for r in raw])
-            check_set(name, got, expected, cross_type_equal(list(self.model) + list(xs)))
+            check_set(name, got, expected, cross_type_equal(list(self.model) + list(xs)) or (typed and form != "subject"))
             assert type(got) is type(self.subject)
 
         @rule(xs=st.lists(valid, max_size=5), name=st.sampled_from(SET_PREDICATES), form=st.sampled_from(["set", "list", "subject"]))
