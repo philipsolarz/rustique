@@ -44,6 +44,12 @@ impl Keyed for DictInner {
     fn table_mut(&mut self) -> &mut KeyTable {
         &mut self.table
     }
+
+    fn inserted(&mut self, out: &mut Vec<Py<PyAny>>) {
+        if let Some(remap) = self.table.grow() {
+            out.extend(remap_storage(&mut self.values, &remap));
+        }
+    }
 }
 
 impl DictInner {
@@ -76,12 +82,10 @@ impl DictInner {
     }
 
     /// Remove the live entry at `pos`, returning its value; displaced objects go to `out`.
+    /// Like `dict`, the tombstone stays until the table next grows.
     fn remove_entry(&mut self, py: Python<'_>, pos: usize, out: &mut Displaced) -> Py<PyAny> {
         let value = take_value(py, &mut self.values, pos);
         out.extend(self.table.remove_at(py, pos));
-        if let Some(remap) = self.table.maybe_compact() {
-            out.extend(remap_storage(&mut self.values, &remap));
-        }
         value
     }
 
@@ -985,7 +989,6 @@ impl Dict {
             pos,
             expected: len,
             remaining: len,
-            layout: inner.table.layout(),
             exhausted: false,
         };
         drop(inner);
@@ -1377,12 +1380,16 @@ enum ItemKind {
     Items,
 }
 
+/// CPython's `dictiterobject` state. Positions are entry positions, which move only when
+/// the table grows (as in CPython), so iteration over a dict mutated at constant size
+/// behaves like `dict`'s.
 struct IterState {
     /// Next position to examine (forward), or one past it (reverse).
     pos: usize,
+    /// The size at creation; `usize::MAX` once a size change was reported (sticky).
     expected: usize,
+    /// Keys left to yield; finding more (forward) means the keys changed.
     remaining: usize,
-    layout: u64,
     exhausted: bool,
 }
 
@@ -1414,11 +1421,6 @@ impl DictIterator {
                     "dictionary changed size during iteration",
                 ));
             }
-            if inner.table.layout() != st.layout {
-                return Err(PyRuntimeError::new_err(
-                    "dictionary keys changed during iteration",
-                ));
-            }
             let next = if self.reverse {
                 inner.table.prev_live(st.pos)
             } else {
@@ -1428,13 +1430,14 @@ impl DictIterator {
                 st.exhausted = true;
                 return Ok(None);
             };
-            if st.remaining == 0 {
-                st.expected = usize::MAX;
+            // CPython checks this for forward iteration only.
+            if st.remaining == 0 && !self.reverse {
+                st.exhausted = true;
                 return Err(PyRuntimeError::new_err(
                     "dictionary keys changed during iteration",
                 ));
             }
-            st.remaining -= 1;
+            st.remaining = st.remaining.saturating_sub(1);
             st.pos = if self.reverse { pos } else { pos + 1 };
             let key = (self.kind != ItemKind::Values).then(|| inner.table.key_object(py, pos));
             let value = (self.kind != ItemKind::Keys).then(|| inner.value(py, pos));
@@ -1450,7 +1453,8 @@ impl DictIterator {
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
         let st = self.state.read(py);
-        if st.exhausted { 0 } else { st.remaining }
+        let unchanged = !st.exhausted && self.dict.get().len(py) == st.expected;
+        if unchanged { st.remaining } else { 0 }
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {

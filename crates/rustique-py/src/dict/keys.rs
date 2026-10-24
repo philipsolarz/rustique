@@ -667,8 +667,9 @@ pub(crate) struct KeyTable {
     kind: KeyKind,
     /// Capacity to reserve once an adaptive table picks its strategy.
     reserve_hint: usize,
-    /// Bumped whenever positions move (compaction, clear).
-    layout: u64,
+    /// Entries (tombstones included) a dict may hold before its next growth step; see
+    /// [`KeyTable::grow`].
+    usable: usize,
     /// For `str` keys: an index of their Python hashes (`mix`ed, same positions), built by
     /// the first lookup of an object that may equal a `str` through its own `__eq__`.
     str_hashes: OnceLock<Box<HashIndex>>,
@@ -680,7 +681,7 @@ impl KeyTable {
             store: Self::empty_store(kind),
             kind,
             reserve_hint: 0,
-            layout: 0,
+            usable: MIN_USABLE,
             str_hashes: OnceLock::new(),
         }
     }
@@ -703,7 +704,7 @@ impl KeyTable {
             store,
             kind,
             reserve_hint: 0,
-            layout: 0,
+            usable: MIN_USABLE,
             str_hashes: OnceLock::new(),
         }
     }
@@ -721,10 +722,6 @@ impl KeyTable {
             KeyStore::Str(ki) => Ok(NativeKeys::Str(ki)),
             store => Err(Box::new(KeyTable { store, ..self })),
         }
-    }
-
-    pub(crate) fn layout(&self) -> u64 {
-        self.layout
     }
 
     pub(crate) fn store(&self) -> &KeyStore {
@@ -927,7 +924,7 @@ impl KeyTable {
             store,
             kind: self.kind,
             reserve_hint: 0,
-            layout: 0,
+            usable: self.usable,
             str_hashes: OnceLock::new(),
         }
     }
@@ -1225,23 +1222,40 @@ impl KeyTable {
         }
     }
 
-    /// Compact when tombstones dominate; returns the remap for parallel storage.
+    /// Compact when tombstones dominate (the policy of sets and private tables); returns
+    /// the remap for parallel storage.
     pub(crate) fn maybe_compact(&mut self) -> Option<Remap> {
-        let remap = match &mut self.store {
+        self.compact_if(HashIndex::wants_compaction)
+    }
+
+    /// CPython's dict growth step, run after an insertion: once the entries (tombstones
+    /// included) outgrow the usable part of the notional hash table, tombstones are squeezed
+    /// out and the next table is sized for three times the keys present before the insertion
+    /// (`GROWTH_RATE`). Positions therefore move exactly when a `dict`'s would, which keeps
+    /// iterating over a dict that is mutated meanwhile close to `dict`'s behaviour. Returns
+    /// the remap for parallel storage when entries moved.
+    pub(crate) fn grow(&mut self) -> Option<Remap> {
+        if self.entries() <= self.usable {
+            return None;
+        }
+        self.usable = usable_size(self.len().saturating_sub(1).saturating_mul(3));
+        self.compact_if(|index| index.tombstones() > 0)
+    }
+
+    fn compact_if(&mut self, wanted: impl Fn(&HashIndex) -> bool) -> Option<Remap> {
+        Some(match &mut self.store {
             KeyStore::Empty => return None,
-            KeyStore::Int(ki) if ki.wants_compaction() => ki.compact(),
-            KeyStore::Str(ki) if ki.wants_compaction() => {
+            KeyStore::Int(ki) if wanted(ki.index()) => ki.compact(),
+            KeyStore::Str(ki) if wanted(ki.index()) => {
                 if let Some(index) = self.str_hashes.get_mut() {
                     index.compact();
                 }
                 ki.compact()
             }
             // Tombstoned object slots hold `None`, so dropping them here runs no Python code.
-            KeyStore::Object(ki) if ki.wants_compaction() => ki.compact(),
+            KeyStore::Object(ki) if wanted(ki.index()) => ki.compact(),
             _ => return None,
-        };
-        self.layout += 1;
-        Some(remap)
+        })
     }
 
     /// Drop positions `>= len`; returns displaced key objects.
@@ -1265,7 +1279,7 @@ impl KeyTable {
 
     /// Remove everything (an untyped table becomes adaptive again); returns displaced keys.
     pub(crate) fn clear(&mut self) -> Vec<Py<PyAny>> {
-        self.layout += 1;
+        self.usable = MIN_USABLE;
         self.str_hashes = OnceLock::new();
         match std::mem::replace(&mut self.store, Self::empty_store(self.kind)) {
             KeyStore::Object(ki) => ki.into_parts().0,
@@ -1287,6 +1301,17 @@ impl KeyTable {
             _ => &[],
         }
     }
+}
+
+/// Entries in CPython's smallest dict table (8 slots) before it grows (`USABLE_FRACTION`).
+const MIN_USABLE: usize = 5;
+
+/// `USABLE_FRACTION` of the dict table CPython sizes for `minsize` keys
+/// (`calculate_log2_keysize`: the smallest power of two that is at least `minsize | 8`).
+fn usable_size(minsize: usize) -> usize {
+    (minsize | 8)
+        .checked_next_power_of_two()
+        .map_or(usize::MAX, |size| size / 3 * 2 + (size % 3) * 2 / 3)
 }
 
 /// Python's `hash()` of a `str` (creating and hashing a `str` runs no Python code, and
@@ -1316,6 +1341,12 @@ fn found(pos: Option<usize>) -> Scan {
 pub(crate) trait Keyed: Send + Sync {
     fn table(&self) -> &KeyTable;
     fn table_mut(&mut self) -> &mut KeyTable;
+
+    /// Called after an insertion (a dict grows here, see [`KeyTable::grow`]); objects it
+    /// displaces go to `out`, released after the lock.
+    fn inserted(&mut self, out: &mut Vec<Py<PyAny>>) {
+        let _ = out;
+    }
 }
 
 /// Where an upserted key ended up.
@@ -1433,6 +1464,7 @@ fn batch_mut_locked<'py, T: Keyed, I>(
 struct Spent<'py, V> {
     keys: Vec<Key<'py>>,
     values: Vec<V>,
+    objects: Vec<Py<PyAny>>,
     lookup: Lookup,
 }
 
@@ -1451,6 +1483,7 @@ pub(crate) fn batch_upsert<'py, T: Keyed, V>(
     let mut spent = Spent {
         keys: Vec::new(),
         values: Vec::new(),
+        objects: Vec::new(),
         lookup: Lookup::default(),
     };
     let result = batch_upsert_locked(py, lock, &mut items, commit, &mut spent);
@@ -1480,6 +1513,9 @@ fn batch_upsert_locked<'py, T: Keyed, V>(
             native => match guard.table_mut().upsert(py, native) {
                 Ok(Ok((pos, inserted))) => {
                     commit(&mut guard, value, slot(pos, inserted))?;
+                    if inserted {
+                        guard.inserted(&mut spent.objects);
+                    }
                     continue;
                 }
                 Ok(Err(key)) => key,
@@ -1493,6 +1529,9 @@ fn batch_upsert_locked<'py, T: Keyed, V>(
             let res = commit(&mut guard, value, slot(pos, inserted));
             spent.keys.push(key);
             res?;
+            if inserted {
+                guard.inserted(&mut spent.objects);
+            }
             continue;
         }
         let (relocked, pos) = match locate(py, guard, || lock.write(py), &key, &mut spent.lookup)
@@ -1512,6 +1551,9 @@ fn batch_upsert_locked<'py, T: Keyed, V>(
         );
         spent.keys.push(key);
         res?;
+        if pos.is_none() {
+            guard.inserted(&mut spent.objects);
+        }
     }
     Ok(())
 }

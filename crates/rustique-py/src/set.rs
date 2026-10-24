@@ -832,7 +832,7 @@ impl Set {
         let state = SetIterState {
             pos: 0,
             expected: len,
-            layout: inner.table.layout(),
+            remaining: len,
             exhausted: false,
         };
         drop(inner);
@@ -1113,10 +1113,15 @@ impl<'a, 'py> FromPyObject<'a, 'py> for SetLike<'py> {
     }
 }
 
+/// CPython's `setiterobject` state: only a size change is an error. Positions are insertion
+/// positions, so an element discarded and re-added goes to the end; yielding at most the
+/// size at creation keeps such loops from seeing it again (CPython's table reuses the slot).
 struct SetIterState {
     pos: usize,
+    /// The size at creation; `usize::MAX` once a size change was reported (sticky).
     expected: usize,
-    layout: u64,
+    /// Elements left to yield.
+    remaining: usize,
     exhausted: bool,
 }
 
@@ -1143,15 +1148,13 @@ impl SetIterator {
             st.expected = usize::MAX;
             return Err(PyRuntimeError::new_err("Set changed size during iteration"));
         }
-        if inner.table.layout() != st.layout {
-            return Err(PyRuntimeError::new_err("Set changed during iteration"));
-        }
         match inner.table.next_live(st.pos) {
-            Some(pos) => {
+            Some(pos) if st.remaining > 0 => {
                 st.pos = pos + 1;
+                st.remaining -= 1;
                 Ok(Some(inner.table.key_object(py, pos)))
             }
-            None => {
+            _ => {
                 st.exhausted = true;
                 Ok(None)
             }
@@ -1164,13 +1167,8 @@ impl SetIterator {
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
         let st = self.state.read(py);
-        if st.exhausted {
-            return 0;
-        }
-        let inner = self.set.get().inner.read(py);
-        inner.table.index().map_or(0, |i| {
-            (st.pos..i.entries()).filter(|&p| i.is_live(p)).count()
-        })
+        let unchanged = !st.exhausted && self.set.get().len(py) == st.expected;
+        if unchanged { st.remaining } else { 0 }
     }
 }
 

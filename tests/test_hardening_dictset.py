@@ -455,3 +455,120 @@ def test_str_subclass_with_identity_eq_still_equals_stored_str():
     for c in ({"abc"}, rs.Set(["abc"]), rs.Dict.fromkeys(["abc"])):
         assert Weird("abc") in c
         assert Weird("abd") not in c
+
+
+# --- L5: iteration over a mutated Dict/Set follows CPython's rules -------------------------
+
+
+def drive(container, body, view=iter):
+    out = []
+    try:
+        for k in view(container):
+            out.append(k)
+            body(container, k[0] if isinstance(k, tuple) else k)
+            if len(out) > 60:
+                out.append("runaway")
+                break
+    except RuntimeError as e:
+        out.append(f"RuntimeError: {e}")
+    return out
+
+
+DICT_BODIES = {
+    "insert": lambda d, k: d.__setitem__(100 + k, 0) if k < 100 else None,
+    "delete": lambda d, k: d.pop(k),
+    "del+insert same size": lambda d, k: (d.__delitem__(k), d.__setitem__(k + 10, 0)),
+    "overwrite value": lambda d, k: d.__setitem__(k, 99),
+    "clear+refill": lambda d, k: (d.clear(), [d.__setitem__(i, 0) for i in range(3)]),
+    "pop then reinsert same key": lambda d, k: (d.pop(k), d.__setitem__(k, 1)),
+    "two keys churn": lambda d, k: (d.pop(k), d.__setitem__(k + 10, 0)) if k < 10 else None,
+}
+
+
+@pytest.mark.parametrize("name", sorted(DICT_BODIES))
+@pytest.mark.parametrize("size", [2, 3, 6, 40])
+def test_dict_iteration_under_mutation_matches_dict(name, size):
+    body = DICT_BODIES[name]
+    for view in (iter, reversed, lambda d: d.items(), lambda d: reversed(d.items())):
+        src = {i: i for i in range(size)}
+        want = drive(dict(src), body, view)
+        got = drive(rs.Dict(src), body, view)
+        assert got == want
+
+
+def test_dict_iterator_errors_are_sticky_like_dict():
+    for make in (dict, rs.Dict):
+        d = make({0: 0, 1: 1})
+        it = iter(d)
+        next(it)
+        d[5] = 5
+        with pytest.raises(RuntimeError, match="changed size"):
+            next(it)
+        del d[5]
+        with pytest.raises(RuntimeError, match="changed size"):
+            next(it)
+        d = make({0: 0, 1: 1})
+        it = iter(d)
+        for k in (0, 1):
+            assert next(it) == k
+            del d[k]
+            d[k + 10] = 0
+        with pytest.raises(RuntimeError, match="keys changed"):
+            next(it)
+        with pytest.raises(StopIteration):
+            next(it)
+
+
+def test_iterator_length_hints_match_builtins():
+    import operator
+
+    for make_d, make_s in ((dict, set), (rs.Dict, rs.Set)):
+        d, s = make_d({i: i for i in range(5)}), make_s(range(5))
+        di, si = iter(d), iter(s)
+        next(di), next(si)
+        assert operator.length_hint(di) == 4 and operator.length_hint(si) == 4
+        d[9] = 9
+        s.add(9)
+        assert operator.length_hint(di) == 0 and operator.length_hint(si) == 0
+
+
+SET_BODIES = {
+    "add": lambda s, k: s.add(100 + k) if k < 100 else None,
+    "readd same": lambda s, k: (s.discard(k), s.add(k)),
+    "clear+refill": lambda s, k: (s.clear(), s.update(range(3))),
+}
+
+
+@pytest.mark.parametrize("name", sorted(SET_BODIES))
+def test_set_iteration_under_mutation_matches_set(name):
+    body = SET_BODIES[name]
+    want = drive({0, 1, 2}, body)
+    got = drive(rs.Set([0, 1, 2]), body)
+    assert got == want
+
+
+def test_set_iteration_with_same_size_churn_is_bounded():
+    # CPython yields elements re-added into later hash slots (layout dependent); an
+    # insertion-ordered Set yields at most its size at creation and never raises.
+    for start in (3, 40):
+        s = rs.Set(range(start))
+        out = drive(s, lambda s, k: (s.discard(k), s.add(k + 1000)))
+        assert len(out) <= start and all(isinstance(k, int) for k in out)
+
+
+def test_dict_growth_compaction_keeps_values_aligned():
+    d, ref = rs.Dict(), {}
+    for step in range(3000):
+        k = step % 97
+        for target in (d, ref):
+            if k in target and step % 3:
+                del target[k]
+            else:
+                target[k] = step
+    assert d.to_dict() == ref and list(d) == list(ref) and list(d.values()) == list(ref.values())
+    d = rs.Dict[str, rs.List]()
+    for i in range(200):
+        d[str(i)] = [i]
+        if i % 2:
+            del d[str(i - 1)]
+    assert [list(v) for v in d.values()] == [[i] for i in range(1, 200, 2)]
