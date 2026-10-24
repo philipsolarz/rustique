@@ -50,10 +50,10 @@ cache-keys = [
 [tool.mypy]
 mypy_path = "python"
 strict = true
-files = ["python/rustique/__init__.pyi", "examples"]
+files = ["python/rustique/__init__.pyi", "examples/*.py"]
 
 [tool.pyright]
-include = ["python/rustique/__init__.pyi", "examples"]
+include = ["python/rustique/__init__.pyi", "examples/*.py"]
 typeCheckingMode = "strict"
 extraPaths = ["python"]
 venvPath = "."
