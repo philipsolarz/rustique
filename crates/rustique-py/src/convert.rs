@@ -134,9 +134,26 @@ pub fn python_type_name(dtype: DType) -> &'static str {
 // Python → native (single objects)
 // ---------------------------------------------------------------------------------------
 
-/// `type(obj).__name__`, for error messages.
+/// `type(obj).__name__`, for error messages, read from the type object like CPython's
+/// `type.__name__` getter (a heap type's `ht_name`, else `tp_name` after its last dot)
+/// without running Python code: safe inside a critical section.
 pub fn type_name(obj: &Bound<'_, PyAny>) -> String {
-    obj.get_type().name().map(|n| n.to_string()).unwrap_or_else(|_| "object".to_owned())
+    // SAFETY: the type of a live object is a live type object; `tp_name` is a
+    // NUL-terminated string and a heap type's `ht_name` a `str`, both owned by the type.
+    unsafe {
+        let ty = ffi::Py_TYPE(obj.as_ptr());
+        if ffi::PyType_HasFeature(ty, ffi::Py_TPFLAGS_HEAPTYPE) != 0 {
+            let name = (*ty.cast::<ffi::PyHeapTypeObject>()).ht_name;
+            if !name.is_null()
+                && ffi::PyUnicode_Check(name) != 0
+                && let Some(text) = str_utf8(name)
+            {
+                return text.into();
+            }
+        }
+        let full = std::ffi::CStr::from_ptr((*ty).tp_name).to_string_lossy();
+        full.rsplit('.').next().unwrap_or_default().to_owned()
+    }
 }
 
 #[inline]
@@ -213,15 +230,13 @@ pub fn as_str(obj: &Bound<'_, PyAny>) -> StrValue {
         if ffi::PyUnicode_Check(p) == 0 {
             return StrValue::NotStr;
         }
-        // A `str` subclass: go through the C API, which handles any layout.
-        let mut size: ffi::Py_ssize_t = 0;
-        let data = ffi::PyUnicode_AsUTF8AndSize(p, &mut size);
-        if data.is_null() {
-            PyErr::take(obj.py());
-            return StrValue::Surrogates;
+        // A `str` subclass: read its PEP 393 data too. (`PyUnicode_AsUTF8AndSize` would
+        // cache UTF-8 under the string's own critical section, which may block and so
+        // suspend a critical section held on a source container.)
+        match str_utf8(p) {
+            Some(s) => StrValue::Native(s),
+            None => StrValue::Surrogates,
         }
-        let bytes = std::slice::from_raw_parts(data.cast::<u8>(), size as usize);
-        StrValue::Native(CompactString::from(std::str::from_utf8_unchecked(bytes)))
     }
 }
 
@@ -233,8 +248,19 @@ pub fn as_str(obj: &Bound<'_, PyAny>) -> StrValue {
 /// `p` must point to a live object whose type is exactly `str`.
 #[inline]
 pub unsafe fn exact_str(p: *mut ffi::PyObject) -> Option<CompactString> {
-    // SAFETY: guaranteed by the caller; exact `str` objects are immutable PEP 393 strings
-    // whose data pointer covers `length` code units of `kind` bytes each.
+    // SAFETY: forwarded; an exact `str` is a `str`.
+    unsafe { str_utf8(p) }
+}
+
+/// [`exact_str`] for any `str`, subclasses included (`PyUnicode_DATA` handles both the
+/// compact and the subclass layout).
+///
+/// # Safety
+/// `p` must point to a live `str` (exact or subclass).
+#[inline]
+unsafe fn str_utf8(p: *mut ffi::PyObject) -> Option<CompactString> {
+    // SAFETY: guaranteed by the caller; `str` objects are immutable PEP 393 strings whose
+    // data pointer covers `length` code units of `kind` bytes each.
     unsafe {
         let len = ffi::PyUnicode_GET_LENGTH(p) as usize;
         if len == 0 {
