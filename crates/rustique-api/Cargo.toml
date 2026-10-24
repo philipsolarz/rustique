@@ -1,0 +1,17 @@
+[package]
+name = "rustique-api"
+description = "Safe Rust access to Rustique's C API: build and borrow rustique.List objects from other PyO3 extension modules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+keywords = ["python", "pyo3", "ffi", "interop"]
+categories = ["api-bindings"]
+
+[dependencies]
+# Only PyO3: the API is reached at runtime through the `rustique._rustique._C_API` capsule,
+# so this crate never links rustique itself.
+pyo3.workspace = true
+
+[lints]
+workspace = true
