@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/rustique-core", "crates/rustique-py"]
+members = ["crates/rustique-core", "crates/rustique-py", "crates/rustique-api"]
+# A standalone downstream extension (its own Cargo package), built with maturin.
+exclude = ["examples/rust_extension"]
 # A bare `cargo test` exercises the pure-Rust core; use `--workspace` for everything.
 default-members = ["crates/rustique-core"]
 

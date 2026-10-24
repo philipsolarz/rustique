@@ -1,0 +1,23 @@
+# A downstream extension module that uses rustique through its C API. Not a member of the
+# rustique workspace: it is built exactly like a third-party crate would be.
+[package]
+name = "rustique-demo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "Example PyO3 extension returning and borrowing rustique Lists via rustique-api"
+
+[lib]
+name = "rustique_demo"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = "0.30.1"
+# A real project would use `rustique-api = "0.2"` from crates.io.
+rustique-api = { path = "../../crates/rustique-api" }
+rayon = "1.12.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 16

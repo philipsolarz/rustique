@@ -305,6 +305,96 @@ List::with_column(&self, |col: &Column| ...)                           // borrow
 ```
 `rustique.arange(start, stop=None, step=1, dtype=int)` demonstrates the Rust→Python path.
 
+### 5.1 Rust interop: the C-API capsule
+
+`List::from_column` only helps code compiled *into* `rustique._rustique`: another extension
+that links `rustique-py` as an rlib gets its own, different `List` type object. Like NumPy's
+`_ARRAY_API`, the extension therefore publishes a function table as the capsule
+**`rustique._rustique._C_API`** (`crates/rustique-py/src/capi.rs`), and other extensions
+reach it with `PyCapsule_Import` at run time. Downstream Rust code uses the
+**`rustique-api`** crate (depends on PyO3 only, never links rustique):
+
+```rust
+let list = rustique_api::list_from_slice(py, &primes)?;      // rustique.List[int], one memcpy
+let view = rustique_api::borrow_list::<f64>(&xs)?;           // ListView<f64>: Deref<Target = [f64]>
+let total: f64 = { let s: &[f64] = &view; py.detach(|| s.iter().sum()) };
+drop(view);                                                  // list mutable again
+let words = rustique_api::copy_str_list(&ws)?;               // StrList: one UTF-8 buffer + offsets
+let out = rustique_api::list_from_strs(py, words.iter())?;   // rustique.List[str]
+```
+`examples/rust_extension/` is a complete downstream extension (`rustique_demo`) with tests;
+build it with `maturin develop --uv -m examples/rust_extension/Cargo.toml`.
+
+**Table layout (version 1).** `#[repr(C)]`, offsets in machine words (`W = size_of::<usize>()`):
+
+| Offset | Field | Signature |
+|---|---|---|
+| 0 | `api_version` | `u32` (= 1) |
+| W | `abi_size` | `usize`: size of the provider's table in bytes (= 9W) |
+| 2W | `list_check` | `fn(obj) -> c_int` |
+| 3W | `list_dtype` | `fn(obj) -> c_int` |
+| 4W | `list_from_slice` | `fn(dtype: u8, data: *const u8, len: usize) -> *mut PyObject` |
+| 5W | `list_from_utf8` | `fn(ptrs: *const *const u8, lens: *const usize, count: usize) -> *mut PyObject` |
+| 6W | `list_borrow` | `fn(obj, dtype_out: *mut u8, data_out: *mut *const u8, len_out: *mut usize, token_out: *mut *mut c_void) -> c_int` |
+| 7W | `list_release` | `fn(token: *mut c_void)` |
+| 8W | `list_copy_utf8` | `fn(obj, data: *mut u8, data_cap, offsets: *mut usize, offsets_cap, data_len_out: *mut usize, count_out: *mut usize) -> c_int` |
+
+All functions are `unsafe extern "C"`; both crates assert these offsets at compile time.
+
+**Versioning.** Fields are only ever appended. Each addition bumps `api_version`; version
+*n* contains every field of earlier versions, unchanged in position, type and meaning.
+A consumer requires `api_version >=` the version it was written against and uses a field
+only if it lies entirely within `abi_size` bytes (`rustique-api` checks both on import and
+raises `ImportError` naming both versions if rustique is too old or missing). An
+incompatible change needs a new capsule name; the capsule name and table address never
+change within a process (the table is a `static`, so the pointer is valid for the life of
+the process).
+
+**DType codes** (`u8`, stable; a code is never renumbered or reused, new types get new
+codes): `Bool = 0, I8 = 1, I16 = 2, I32 = 3, I64 = 4, U8 = 5, U16 = 6, U32 = 7, U64 = 8,
+F32 = 9, F64 = 10, Str = 11`. Bool elements are one byte holding 0 or 1.
+
+**Calling convention.** Callers must be attached to the interpreter (hold the GIL on GIL
+builds). Errors return NULL / -1 with a Python exception set; no function unwinds: Rust
+panics become `PanicException`. Returned objects are new (owned) references.
+
+**Semantics.**
+- `list_from_slice` copies `len` elements (one `memcpy` into a fresh `Vec`, then
+  `List::from_column`, so no per-element Python objects). `data` needs no alignment, may be
+  NULL when `len == 0`, and must not be written during the call. Result type by dtype:
+  i64 → `List[int]`, f64 → `List[float]`, bool → `List[bool]`, others → `List[rs.<dtype>]`.
+  Unknown codes and `Str` raise `ValueError`; bool bytes other than 0/1 raise `ValueError`
+  (validated on the private copy, so a racing writer cannot inject an invalid `bool`).
+- `list_from_utf8` copies `count` strings into a `List[str]`; invalid UTF-8 raises
+  `UnicodeDecodeError` (with a note naming the string index).
+- `list_borrow` gives zero-copy, read-only access to *fixed-size* native storage. It takes
+  a buffer export of the list (`PyObject_GetBuffer`), so it shares the export counter of
+  the buffer protocol (§4.1): until the token is passed to `list_release`, the list is
+  frozen — every mutation from any thread raises `BufferError` — the data pointer stays
+  valid (non-NULL, aligned for the element type, possibly dangling when empty) and the list is kept
+  alive by the export's strong reference. Readers may use the data from any thread and
+  with the interpreter detached; `list_release` (exactly once per successful borrow, from
+  an attached thread; NULL is a no-op) ends it. Non-lists and lists whose strategy is
+  `str`, `object` or `empty` raise `TypeError`. The dtype written is that of the storage,
+  so an untyped `List([1.0])` borrows as f64 and `List[int]` holding a big int (object
+  storage) is rejected. `rustique-api`'s `ListView` releases on `Drop`, checks the dtype
+  against `T`, and reads an untyped empty `List()` as an empty slice of any `T` (nothing is
+  frozen in that case).
+- `list_copy_utf8` copies a str list out as one UTF-8 buffer plus `count + 1` Arrow-style
+  offsets, under the list's read lock (no Python runs). It always reports the needed sizes;
+  it returns 1 without copying (and without an exception) when a buffer is too small, so
+  callers measure, allocate and retry (the list may grow in between). An untyped empty list
+  copies as zero strings; other storage raises `TypeError`.
+- `list_check` returns 1 for a `rustique.List`, else 0; `list_dtype` returns the storage's
+  dtype code, or -1 for non-lists, object storage and untyped empty lists. Neither raises.
+
+**Cost** (CPython 3.15.1, optimised builds, `examples/rust_extension/bench_demo.py`):
+returning the 664,579 primes below 10M as a `rustique.List[int]` adds 0.8 ms to the 13.6 ms
+sieve, against 12.6 ms for PyO3's `Vec<i64>` → `list` conversion. Borrowing and summing a
+10M-element `List[float]` takes 7.0 ms, against 119 ms for PyO3 `Vec<f64>` extraction from
+a builtin `list` (309 ms from a rustique `List` through the sequence protocol). The fixed
+cost of a borrow/release pair is about 0.1 µs.
+
 ---
 
 ## 6. Concurrency & safety
