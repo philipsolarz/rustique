@@ -25,7 +25,7 @@ use rustique_core::{Column, DType, with_column};
 use crate::convert::{self, IngestError, Probe, ToPython};
 use crate::schema::{self, Coerced, Schema};
 use crate::storage::Storage;
-use crate::sync::{MutationCounter, PyMutex, PyRwLock, ReadGuard, WriteGuard, read_both};
+use crate::sync::{MutationCounter, MutexGuard, PyMutex, PyRwLock, ReadGuard, WriteGuard, read_both};
 
 /// Elements snapshotted per lock acquisition when comparing with Python `==`.
 const CHUNK: usize = 256;
@@ -154,11 +154,26 @@ impl IndexArg<'_> {
     }
 }
 
+/// `start`/`stop` of `list.index`: omitted (the default applies) or an object that must
+/// support `__index__` (`None` is rejected, like `list.index`).
+enum SliceBound<'py> {
+    Omitted,
+    Given(Bound<'py, PyAny>),
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for SliceBound<'py> {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> Result<Self, Self::Error> {
+        Ok(SliceBound::Given(obj.to_owned()))
+    }
+}
+
 /// `start`/`stop` of `list.index`: `__index__`, clamped, negative values from the end.
-fn clamp_bound(obj: Option<&Bound<'_, PyAny>>, len: usize, default: isize) -> PyResult<usize> {
-    let v = match obj {
-        None => default,
-        Some(obj) => {
+fn clamp_bound(bound: SliceBound<'_>, len: usize, default: isize) -> PyResult<usize> {
+    let v = match bound {
+        SliceBound::Omitted => default,
+        SliceBound::Given(obj) => {
             // SAFETY: protocol check and clamping conversion on a valid object.
             unsafe {
                 if ffi::PyIndex_Check(obj.as_ptr()) == 0 {
@@ -175,6 +190,22 @@ fn clamp_bound(obj: Option<&Bound<'_, PyAny>>, len: usize, default: isize) -> Py
         }
     };
     Ok(if v < 0 { v.saturating_add(len as isize).max(0) as usize } else { v as usize })
+}
+
+/// Whether `obj` is a builtin scalar (`int`, `float`, `bool`, `str`, `bytes`, `None`):
+/// comparing two of them runs no Python code, so it cannot mutate a list.
+fn is_builtin_scalar(obj: &Bound<'_, PyAny>) -> bool {
+    let p = obj.as_ptr();
+    // SAFETY: type pointer reads and comparisons on a valid object.
+    unsafe {
+        let ty = ffi::Py_TYPE(p);
+        ty == &raw mut ffi::PyLong_Type
+            || ty == &raw mut ffi::PyUnicode_Type
+            || ty == &raw mut ffi::PyFloat_Type
+            || ty == &raw mut ffi::PyBool_Type
+            || ty == &raw mut ffi::PyBytes_Type
+            || p == ffi::Py_None()
+    }
 }
 
 /// Element equality for searches and list comparison: identity, then NaN equals NaN
@@ -254,16 +285,32 @@ enum Side<'a> {
 }
 
 impl Side<'_> {
-    fn chunk(&self, py: Python<'_>, start: usize) -> (Vec<Py<PyAny>>, usize) {
+    fn chunk(&self, py: Python<'_>, start: usize) -> Chunk {
         match self {
             Side::List(list) => list.chunk(py, start, usize::MAX),
             Side::Items(items) => {
                 let end = items.len().min(start.saturating_add(CHUNK));
                 let chunk = items.get(start..end).unwrap_or(&[]).iter().map(|o| o.clone_ref(py)).collect();
-                (chunk, items.len())
+                Chunk { items: chunk, len: items.len(), version: 0 }
             }
         }
     }
+
+    /// Whether this side changed since a chunk was read from it at `version`.
+    fn changed(&self, version: u64) -> bool {
+        match self {
+            Side::List(list) => list.version.get() != version,
+            Side::Items(_) => false,
+        }
+    }
+}
+
+/// Elements read under one lock acquisition, with the list's length and mutation counter
+/// at that moment.
+struct Chunk {
+    items: Vec<Py<PyAny>>,
+    len: usize,
+    version: u64,
 }
 
 impl List {
@@ -372,15 +419,13 @@ impl List {
         self.schema.coerce(obj).map_err(|e| e.into_pyerr(&self.container(), None))
     }
 
-    /// Python objects for `self[start..min(start + CHUNK, stop, len)]`, plus the length.
-    fn chunk(&self, py: Python<'_>, start: usize, stop: usize) -> (Vec<Py<PyAny>>, usize) {
+    /// Python objects for `self[start..min(start + CHUNK, stop, len)]`.
+    fn chunk(&self, py: Python<'_>, start: usize, stop: usize) -> Chunk {
         let data = self.read(py);
         let len = data.len();
         let end = stop.min(len).min(start.saturating_add(CHUNK));
-        if start >= end {
-            return (Vec::new(), len);
-        }
-        (data.objects(py, start..end), len)
+        let items = if start < end { data.objects(py, start..end) } else { Vec::new() };
+        Chunk { items, len, version: self.version.get() }
     }
 
     /// First index in `start..stop` whose element equals `value`.
@@ -403,8 +448,14 @@ impl List {
         Ok(self.find_python(py, value, start, stop)?.map(|(i, _)| i))
     }
 
-    /// Python-level search (snapshot chunks, compare outside the lock). Returns the index
-    /// and the element that compared equal.
+    /// Python-level search, comparing outside the lock. Returns the index and the element
+    /// that compared equal.
+    ///
+    /// Like CPython, a comparison that runs Python code (`__eq__`) is followed by the
+    /// *current* list: if the list changed meanwhile, the rest of the chunk read ahead is
+    /// abandoned and the search continues at the next index of the live list. Comparisons
+    /// of builtin scalars run no Python code (in CPython they are atomic with the scan), so
+    /// they keep using the chunk, which is a consistent snapshot.
     fn find_python(
         &self,
         py: Python<'_>,
@@ -412,19 +463,24 @@ impl List {
         start: usize,
         stop: usize,
     ) -> PyResult<Option<(usize, Py<PyAny>)>> {
+        let builtin_value = is_builtin_scalar(value);
         let mut i = start;
         loop {
-            let (chunk, _) = self.chunk(py, i, stop);
-            if chunk.is_empty() {
+            let chunk = self.chunk(py, i, stop);
+            if chunk.items.is_empty() {
                 return Ok(None);
             }
-            let n = chunk.len();
-            for (k, item) in chunk.into_iter().enumerate() {
-                if elements_equal(item.bind(py), value)? {
-                    return Ok(Some((i + k, item)));
+            for item in chunk.items {
+                let item_ref = item.bind(py);
+                let ran_python = !(builtin_value && is_builtin_scalar(item_ref));
+                if elements_equal(item_ref, value)? {
+                    return Ok(Some((i, item)));
+                }
+                i += 1;
+                if ran_python && self.version.get() != chunk.version {
+                    break;
                 }
             }
-            i += n;
         }
     }
 
@@ -444,18 +500,25 @@ impl List {
                 _ => {}
             }
         }
+        // Live semantics as in `find_python`.
+        let builtin_value = is_builtin_scalar(value);
         let (mut i, mut count) = (0, 0);
         loop {
-            let (chunk, _) = self.chunk(py, i, usize::MAX);
-            if chunk.is_empty() {
+            let chunk = self.chunk(py, i, usize::MAX);
+            if chunk.items.is_empty() {
                 return Ok(count);
             }
-            for item in &chunk {
-                if elements_equal(item.bind(py), value)? {
+            for item in &chunk.items {
+                let item = item.bind(py);
+                let ran_python = !(builtin_value && is_builtin_scalar(item));
+                if elements_equal(item, value)? {
                     count += 1;
                 }
+                i += 1;
+                if ran_python && self.version.get() != chunk.version {
+                    break;
+                }
             }
-            i += chunk.len();
         }
     }
 
@@ -495,18 +558,22 @@ impl List {
     }
 
     /// Python-level comparison (CPython's `list_richcompare`): find the first index where
-    /// the elements differ (identity implies equality), comparing outside the locks.
+    /// the elements differ (identity implies equality), comparing outside the locks. Each
+    /// comparison sees the current lists (see `find_python`).
     fn richcompare_python(py: Python<'_>, a: Side<'_>, b: Side<'_>, op: CompareOp) -> PyResult<Py<PyAny>> {
         let mut i = 0;
         loop {
-            let (ca, la) = a.chunk(py, i);
-            let (cb, lb) = b.chunk(py, i);
-            if i == 0 && la != lb && matches!(op, CompareOp::Eq | CompareOp::Ne) {
+            let (ca, cb) = (a.chunk(py, i), b.chunk(py, i));
+            if i == 0 && ca.len != cb.len && matches!(op, CompareOp::Eq | CompareOp::Ne) {
                 return Ok(PyBool::new(py, matches!(op, CompareOp::Ne)).to_owned().into_any().unbind());
             }
-            let m = ca.len().min(cb.len());
-            for k in 0..m {
-                let (x, y) = (ca[k].bind(py), cb[k].bind(py));
+            let m = ca.items.len().min(cb.items.len());
+            if m == 0 {
+                // One side is exhausted: the (current) lengths decide.
+                return Ok(PyBool::new(py, compare_lengths(ca.len, cb.len, op)).to_owned().into_any().unbind());
+            }
+            for (x, y) in ca.items.iter().zip(&cb.items) {
+                let (x, y) = (x.bind(py), y.bind(py));
                 if !elements_equal(x, y)? {
                     return match op {
                         CompareOp::Eq => Ok(PyBool::new(py, false).to_owned().into_any().unbind()),
@@ -514,12 +581,12 @@ impl List {
                         _ => Ok(x.rich_compare(y, op)?.unbind()),
                     };
                 }
+                i += 1;
+                let ran_python = !(is_builtin_scalar(x) && is_builtin_scalar(y));
+                if ran_python && (a.changed(ca.version) || b.changed(cb.version)) {
+                    break;
+                }
             }
-            if m == 0 {
-                // One side is exhausted: the (current) lengths decide.
-                return Ok(PyBool::new(py, compare_lengths(la, lb, op)).to_owned().into_any().unbind());
-            }
-            i += m;
         }
     }
 
@@ -949,10 +1016,17 @@ impl List {
         Ok(copy)
     }
 
-    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyList>,))> {
+    /// Pickle as `List()`/`List[T]()` plus list items: pickle memoizes the empty list
+    /// before saving its items (then restored with `extend`), so self-references and
+    /// shared elements round-trip.
+    #[allow(clippy::type_complexity)]
+    fn __reduce__<'py>(
+        slf: &Bound<'py, Self>,
+    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>, Option<Py<PyAny>>, Bound<'py, PyAny>)> {
         let py = slf.py();
         let this = slf.get();
-        Ok((this.schema_type(py)?, (this.to_pylist(py)?,)))
+        let items = this.to_pylist(py)?.into_any().try_iter()?.into_any();
+        Ok((this.schema_type(py)?, PyTuple::empty(py), None, items))
     }
 
     fn __sizeof__(&self, py: Python<'_>) -> usize {
@@ -1070,14 +1144,11 @@ impl List {
     }
 
     /// Return the first index of `value` in `self[start:stop]` (`ValueError` if absent).
-    #[pyo3(signature = (value, start = None, stop = None, /))]
-    fn index(
-        &self,
-        py: Python<'_>,
-        value: &Bound<'_, PyAny>,
-        start: Option<&Bound<'_, PyAny>>,
-        stop: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<usize> {
+    #[pyo3(
+        signature = (value, start = SliceBound::Omitted, stop = SliceBound::Omitted, /),
+        text_signature = "($self, value, start=0, stop=sys.maxsize, /)"
+    )]
+    fn index(&self, py: Python<'_>, value: &Bound<'_, PyAny>, start: SliceBound<'_>, stop: SliceBound<'_>) -> PyResult<usize> {
         let len = self.len();
         let start = clamp_bound(start, len, 0)?;
         let stop = clamp_bound(stop, len, isize::MAX)?;
@@ -1363,40 +1434,66 @@ impl IterState {
         IterState { next, batch: Vec::new(), version: 0, batch_size: 8 }
     }
 
-    /// Yield the next element; `forward` selects the direction. Elements dropped from a
-    /// stale batch are returned for the caller to drop after unlocking.
-    fn step(&mut self, py: Python<'_>, list: &List, forward: bool) -> (Option<Py<PyAny>>, Vec<Py<PyAny>>) {
-        if self.next == EXHAUSTED {
-            return (None, Vec::new());
+    /// The next element from the read-ahead batch while it is current (the hot path: no
+    /// list access, no allocation).
+    #[inline]
+    fn pop_current(&mut self, list: &List, forward: bool) -> Option<Py<PyAny>> {
+        if self.batch.is_empty() || self.version != list.version.get() {
+            return None;
         }
-        if !self.batch.is_empty() && self.version == list.version.get() {
-            let item = self.batch.pop();
-            self.advance(forward);
-            return (item, Vec::new());
-        }
-        let stale = std::mem::take(&mut self.batch);
-        let data = list.read(py);
-        let len = data.len();
-        if self.next >= len {
-            self.next = EXHAUSTED;
-            return (None, stale);
-        }
-        let mut batch = if forward {
-            let end = len.min(self.next + self.batch_size);
-            let mut batch = data.objects(py, self.next..end);
-            batch.reverse();
-            batch
-        } else {
-            let start = (self.next + 1).saturating_sub(self.batch_size);
-            data.objects(py, start..self.next + 1)
-        };
-        self.version = list.version.get();
-        drop(data);
-        self.batch_size = (self.batch_size * 2).min(MAX_BATCH);
-        let item = batch.pop();
-        self.batch = batch;
+        let item = self.batch.pop();
         self.advance(forward);
-        (item, stale)
+        item
+    }
+
+    /// Re-read the list into the batch (it is used up or stale) and yield the next element.
+    /// Takes the guard so that stale elements are dropped only after unlocking.
+    #[inline(never)]
+    fn refill_and_pop<'py>(
+        py: Python<'py>,
+        mut state: MutexGuard<'_, IterState>,
+        list: &List,
+        forward: bool,
+    ) -> Option<Bound<'py, PyAny>> {
+        let stale = if state.batch.is_empty() { Vec::new() } else { std::mem::take(&mut state.batch) };
+        let mut item = None;
+        if state.next != EXHAUSTED {
+            let data = list.read(py);
+            let len = data.len();
+            if state.next >= len {
+                state.next = EXHAUSTED;
+            } else {
+                let next = state.next;
+                let range = if forward {
+                    next..len.min(next + state.batch_size)
+                } else {
+                    (next + 1).saturating_sub(state.batch_size)..next + 1
+                };
+                // The batch is popped from the end: store forward batches reversed.
+                data.extend_objects(py, range, forward, &mut state.batch);
+                state.version = list.version.get();
+                drop(data);
+                state.batch_size = (state.batch_size * 2).min(MAX_BATCH);
+                item = state.batch.pop();
+                state.advance(forward);
+            }
+        }
+        drop(state);
+        drop(stale);
+        item.map(|o| o.into_bound(py))
+    }
+
+    /// Yield the next element (`forward` selects the direction).
+    #[inline]
+    fn next<'py>(py: Python<'py>, state: &PyMutex<IterState>, list: &List, forward: bool) -> Option<Bound<'py, PyAny>> {
+        let mut guard = state.lock(py);
+        match guard.pop_current(list, forward) {
+            Some(item) => {
+                drop(guard);
+                Some(item.into_bound(py))
+            }
+            None => IterState::refill_and_pop(py, guard, list, forward),
+        }
     }
 
     fn advance(&mut self, forward: bool) {
@@ -1430,9 +1527,7 @@ impl ListIterator {
     }
 
     fn __next__<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyAny>> {
-        let (item, stale) = self.state.lock(py).step(py, self.list.get(), true);
-        drop(stale);
-        item.map(|o| o.into_bound(py))
+        IterState::next(py, &self.state, self.list.get(), true)
     }
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
@@ -1470,9 +1565,7 @@ impl ListReverseIterator {
     }
 
     fn __next__<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyAny>> {
-        let (item, stale) = self.state.lock(py).step(py, self.list.get(), false);
-        drop(stale);
-        item.map(|o| o.into_bound(py))
+        IterState::next(py, &self.state, self.list.get(), false)
     }
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
