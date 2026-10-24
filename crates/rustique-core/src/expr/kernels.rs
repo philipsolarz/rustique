@@ -226,8 +226,8 @@ macro_rules! impl_py_int_common {
         }
         #[inline]
         fn py_shl(self, b: Self) -> (Self, bool) {
-            // Shift amounts are always clamped into range first: rustc 1.99.1 miscompiles
-            // `x >> (if b >= BITS { BITS - 1 } else { b })` at opt-level >= 2.
+            // Clamp the shift amount into range first so the shift itself can never be an
+            // out-of-range (masked) shift; overflow is detected separately.
             let s = b.clamp(0 as Self, Self::BITS as Self - 1) as u32;
             let r = self << s;
             let lost = (r >> s) != self || (b >= Self::BITS as Self && self != 0);
@@ -622,8 +622,8 @@ mod tests {
         assert_eq!((-5i64).py_shr(1), (-3, false));
         assert!(1u8.py_neg().1);
         assert!(i8::MIN.py_abs().1);
-        // Opaque operands: rustc 1.99.1 at opt-level >= 2 miscompiled the original
-        // `if b >= BITS { BITS - 1 } else { b }` shift clamp into `x >> (b & 63)`.
+        // Opaque operands so the out-of-range shift paths are exercised at run time
+        // rather than constant-folded.
         use std::hint::black_box;
         assert_eq!(black_box(1i64 << 40).py_shr(black_box(100)), (0, false));
         assert_eq!(black_box(-(1i64 << 40)).py_shr(black_box(100)), (-1, false));
