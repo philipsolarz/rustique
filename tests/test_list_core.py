@@ -932,3 +932,70 @@ def test_threads_iterate_while_mutating():
         t.join()
     assert not errors
     assert len(lst) == 100
+
+
+# --------------------------------------------------------------------------------------
+# Typed coercion (Schema::coerce and the bulk ingest fast paths)
+# --------------------------------------------------------------------------------------
+
+
+def test_typed_coercion_and_errors():
+    assert List[int]([1, True, -3]).to_list() == [1, 1, -3]
+    assert all(type(x) is int for x in List[int]([True]))
+    big = List[int]([1, 2**70])
+    assert big.strategy == "object" and big.to_list() == [1, 2**70]
+    assert List[float]([1, 2.5, True]).to_list() == [1.0, 2.5, 1.0]
+    assert List[float](range(3)).strategy == "f64"
+    assert List[str](("a", "ü")).strategy == "str"
+    with pytest.raises(TypeError, match=r"List\[int\] expects int, got float at index 1"):
+        List[int]([1, 2.5])
+    with pytest.raises(TypeError, match=r"List\[bool\] expects bool, got int at index 0"):
+        List[bool]([1])
+    with pytest.raises(OverflowError):
+        List[float]([2**2000])
+    with pytest.raises(ValueError):
+        List[str](["\udc80"])
+    typed = List[int]([1])
+    with pytest.raises(TypeError, match=r"List\[int\] expects int, got str$"):
+        typed.append("x")
+    with pytest.raises(TypeError):
+        typed.extend([2, "y"])
+    assert typed.to_list() == [1]
+
+
+def test_typed_optional_union_nested_and_classes():
+    assert List[int | None]([1, None, True]).to_list() == [1, None, 1]
+    with pytest.raises(TypeError, match=r"expects int \| None, got str"):
+        List[int | None](["x"])
+    inner = List[int]([1, 2])
+    nested = List[List[int]]([inner, [3], range(2)])
+    assert nested[0] is inner and nested[1].to_list() == [3]
+    assert nested[2].schema_type is List[int]
+    with pytest.raises(TypeError, match=r"expects List\[int\], got int"):
+        List[List[int]]([5])
+
+    class Animal:
+        pass
+
+    class Dog(Animal):
+        pass
+
+    dog = Dog()
+    assert List[Animal]([dog])[0] is dog
+    with pytest.raises(TypeError, match=r"expects \S*Animal, got int"):
+        List[Animal]([1])
+
+
+def test_typed_conversion_between_lists_and_buffers():
+    assert List[float](List([1, 2])).to_list() == [1.0, 2.0]
+    assert List[int](List([True, False])).to_list() == [1, 0]
+    assert List[float](array.array("i", [1, 2])).to_list() == [1.0, 2.0]
+    with pytest.raises(TypeError):
+        List[int](array.array("d", [1.0]))
+    with pytest.raises(TypeError):
+        List[int](List([1, "x"]))
+    typed = List[int]([3, 1])
+    assert typed[::-1].schema_type is List[int] and typed.copy().schema_type is List[int]
+    assert (typed + [1]).schema_type is List and (typed + typed).schema_type is List[int]
+    assert repr(typed) == "List[int]([3, 1])"
+    assert pickle.loads(pickle.dumps(List[int | None]([1, None]))).schema_type is List[int | None]
