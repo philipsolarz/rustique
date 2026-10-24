@@ -14,6 +14,7 @@
 
 use std::ffi::c_void;
 use std::ops::Deref;
+use std::sync::OnceLock;
 
 use compact_str::CompactString;
 use pyo3::exceptions::{PySystemError, PyTypeError};
@@ -395,12 +396,26 @@ fn hash_or_unhashable(obj: &Bound<'_, PyAny>, role: Role) -> PyResult<isize> {
     })
 }
 
-/// Builtin objects that can never equal an `int` or a `str` (whatever their contents).
+/// Objects that can never equal an `int` or a `str`: some builtins (whatever their contents),
+/// and instances of classes that keep `object`'s identity comparison. (`stored == obj` with
+/// a stored `int`/`str` defers to `obj`'s comparison, unless `obj` is an `int`/`str`
+/// subclass, which the builtin comparison accepts.)
 fn never_equals_native(obj: &Bound<'_, PyAny>) -> bool {
     obj.is_none()
         || obj.is_exact_instance_of::<PyTuple>()
         || obj.is_exact_instance_of::<PyBytes>()
         || obj.is_exact_instance_of::<PyFrozenSet>()
+        || (identity_eq(obj) && !obj.is_instance_of::<PyInt>() && !obj.is_instance_of::<PyString>())
+}
+
+/// Whether `obj`'s type compares with `object`'s default (identity) comparison.
+fn identity_eq(obj: &Bound<'_, PyAny>) -> bool {
+    // SAFETY: both are valid, ready type objects (`obj` keeps its type alive), and
+    // `PyType_GetSlot` accepts static and heap types for this slot id (3.10+).
+    unsafe {
+        ffi::PyType_GetSlot(obj.get_type_ptr(), ffi::Py_tp_richcompare)
+            == ffi::PyType_GetSlot(&raw mut ffi::PyBaseObject_Type, ffi::Py_tp_richcompare)
+    }
 }
 
 /// Which objects `obj` compares with without running Python code (see [`Simple`]).
@@ -425,6 +440,8 @@ pub(crate) fn simplicity(obj: &Bound<'_, PyAny>, depth: u32) -> Simple {
     } else {
         (obj.is_instance_of::<PyInt>() && has_builtin_slots(obj, BuiltinBase::Int))
             || (obj.is_instance_of::<PyString>() && has_builtin_slots(obj, BuiltinBase::Str))
+            // Identity comparison against another simple object runs no Python code either.
+            || identity_eq(obj)
     };
     if simple { Simple::Yes } else { Simple::No }
 }
@@ -652,6 +669,9 @@ pub(crate) struct KeyTable {
     reserve_hint: usize,
     /// Bumped whenever positions move (compaction, clear).
     layout: u64,
+    /// For `str` keys: an index of their Python hashes (`mix`ed, same positions), built by
+    /// the first lookup of an object that may equal a `str` through its own `__eq__`.
+    str_hashes: OnceLock<Box<HashIndex>>,
 }
 
 impl KeyTable {
@@ -661,6 +681,7 @@ impl KeyTable {
             kind,
             reserve_hint: 0,
             layout: 0,
+            str_hashes: OnceLock::new(),
         }
     }
 
@@ -683,6 +704,7 @@ impl KeyTable {
             kind,
             reserve_hint: 0,
             layout: 0,
+            str_hashes: OnceLock::new(),
         }
     }
 
@@ -906,6 +928,7 @@ impl KeyTable {
             kind: self.kind,
             reserve_hint: 0,
             layout: 0,
+            str_hashes: OnceLock::new(),
         }
     }
 
@@ -928,11 +951,20 @@ impl KeyTable {
             KeyStore::Empty => {}
         }
         self.store = store;
+        self.str_hashes = OnceLock::new();
     }
 
-    /// Look up a native probe; `None` when the table stores objects (use [`resolve`]).
+    /// Keep the `str` hash index in step with a key just appended at `pos`.
+    fn appended(&mut self, py: Python<'_>, pos: usize) {
+        if let (KeyStore::Str(ki), Some(index)) = (&self.store, self.str_hashes.get_mut()) {
+            debug_assert_eq!(index.entries(), pos);
+            index.push(mix(str_hash(py, &ki.raw_keys()[pos])));
+        }
+    }
+
+    /// Look up a native probe; `None` when the table stores objects (use [`scan`]).
     ///
-    /// [`resolve`]: Self::resolve
+    /// [`scan`]: Self::scan
     #[inline]
     pub(crate) fn find_quick(&self, probe: &Quick<'_>) -> Option<Option<usize>> {
         match (&self.store, probe) {
@@ -968,6 +1000,9 @@ impl KeyTable {
             (_, Prepared::Int(v)) => return Ok(Err(Key::from_int(py, v))),
             (_, Prepared::Str(s)) => return Ok(Err(Key::from_str(py, &s)?)),
         };
+        if inserted {
+            self.appended(py, pos);
+        }
         Ok(Ok((pos, inserted)))
     }
 
@@ -998,6 +1033,9 @@ impl KeyTable {
             }
             _ => return None,
         };
+        if inserted {
+            self.appended(key.obj.py(), pos);
+        }
         Some((pos, inserted))
     }
 
@@ -1030,10 +1068,11 @@ impl KeyTable {
                     hash, exotic: true, ..
                 },
             ) => {
-                for (pos, s) in ki.iter() {
-                    if PyString::new(py, s).hash()? != *hash {
-                        continue;
-                    }
+                let index = self
+                    .str_hashes
+                    .get_or_init(|| Box::new(str_hash_index(py, ki)));
+                for pos in index.candidates(mix(*hash)) {
+                    let s = &ki.raw_keys()[pos];
                     match state.known(|t| matches!(t, Token::Str(x) if x == s)) {
                         Some(true) => return Ok(Scan::Found(pos)),
                         Some(false) => {}
@@ -1093,7 +1132,7 @@ impl KeyTable {
         Ok(true)
     }
 
-    /// Append `key`, which the caller has resolved as absent. Picks or demotes the strategy.
+    /// Append `key`, which the caller has found absent. Picks or demotes the strategy.
     pub(crate) fn push(&mut self, py: Python<'_>, key: &Key<'_>) -> PyResult<usize> {
         loop {
             match (&mut self.store, &key.class) {
@@ -1111,7 +1150,9 @@ impl KeyTable {
                 }
                 (KeyStore::Str(ki), Class::Str { text, exact: true }) => {
                     let hash = ki.hash_key(&**text);
-                    return Ok(ki.push_hashed(hash, CompactString::from(&**text)));
+                    let pos = ki.push_hashed(hash, CompactString::from(&**text));
+                    self.appended(py, pos);
+                    return Ok(pos);
                 }
                 (KeyStore::Object(ki), _) => {
                     let hash = mix(key.py_hash()?);
@@ -1125,6 +1166,7 @@ impl KeyTable {
     /// Convert native keys to object keys in place (positions are preserved). Creates only
     /// `int`/`str` objects and hashes them, so it is safe under a lock.
     pub(crate) fn demote(&mut self, py: Python<'_>) -> PyResult<()> {
+        self.str_hashes = OnceLock::new();
         let store = std::mem::replace(&mut self.store, KeyStore::Empty);
         let result: PyResult<KeyStore> = match store {
             KeyStore::Int(ki) => {
@@ -1174,6 +1216,9 @@ impl KeyTable {
             }
             KeyStore::Str(ki) => {
                 ki.remove_at(pos, CompactString::default());
+                if let Some(index) = self.str_hashes.get_mut() {
+                    index.remove_at(pos);
+                }
                 None
             }
             KeyStore::Object(ki) => ki.remove_at(pos, py.None()),
@@ -1185,7 +1230,12 @@ impl KeyTable {
         let remap = match &mut self.store {
             KeyStore::Empty => return None,
             KeyStore::Int(ki) if ki.wants_compaction() => ki.compact(),
-            KeyStore::Str(ki) if ki.wants_compaction() => ki.compact(),
+            KeyStore::Str(ki) if ki.wants_compaction() => {
+                if let Some(index) = self.str_hashes.get_mut() {
+                    index.compact();
+                }
+                ki.compact()
+            }
             // Tombstoned object slots hold `None`, so dropping them here runs no Python code.
             KeyStore::Object(ki) if ki.wants_compaction() => ki.compact(),
             _ => return None,
@@ -1204,6 +1254,9 @@ impl KeyTable {
             }
             KeyStore::Str(ki) => {
                 ki.truncate(len);
+                if let Some(index) = self.str_hashes.get_mut() {
+                    index.truncate(len);
+                }
                 Vec::new()
             }
             KeyStore::Object(ki) => ki.truncate(len),
@@ -1213,6 +1266,7 @@ impl KeyTable {
     /// Remove everything (an untyped table becomes adaptive again); returns displaced keys.
     pub(crate) fn clear(&mut self) -> Vec<Py<PyAny>> {
         self.layout += 1;
+        self.str_hashes = OnceLock::new();
         match std::mem::replace(&mut self.store, Self::empty_store(self.kind)) {
             KeyStore::Object(ki) => ki.into_parts().0,
             _ => Vec::new(),
@@ -1233,6 +1287,25 @@ impl KeyTable {
             _ => &[],
         }
     }
+}
+
+/// Python's `hash()` of a `str` (creating and hashing a `str` runs no Python code, and
+/// cannot fail).
+fn str_hash(py: Python<'_>, s: &str) -> isize {
+    PyString::new(py, s).hash().unwrap_or(0)
+}
+
+/// The index of the Python hashes of native `str` keys (see `KeyTable::str_hashes`).
+fn str_hash_index(py: Python<'_>, ki: &KeyIndex<CompactString>) -> HashIndex {
+    let live = |pos| ki.index().is_live(pos);
+    let keys = ki.raw_keys();
+    let mut index = HashIndex::from_hashes(
+        (0..keys.len()).map(|pos| if live(pos) { mix(str_hash(py, &keys[pos])) } else { 0 }),
+    );
+    for pos in (0..keys.len()).filter(|&pos| !live(pos)) {
+        index.remove_at(pos);
+    }
+    index
 }
 
 fn found(pos: Option<usize>) -> Scan {

@@ -387,3 +387,71 @@ def test_intersection_update_keeps_concurrent_insertions_and_element_sources():
     t = rs.Set[int]([1, 2, 3])
     t.intersection_update(rs.Set[int]([2, 3, 4]), [3])
     assert t == {3}
+
+
+# --- M1: probes of str/int tables by arbitrary objects are not O(n) -------------------------
+
+
+def test_identity_compared_probes_never_scan_native_tables():
+    import time
+
+    keys = [f"key{i}" for i in range(200_000)]
+    tables = (rs.Set(keys), rs.Dict.fromkeys(keys), rs.Set(range(200_000)))
+
+    class Plain:
+        pass
+
+    probes = [object(), Plain(), Plain, len]
+    start = time.perf_counter()
+    for _ in range(200):
+        for table in tables:
+            for probe in probes:
+                assert probe not in table
+    # Each lookup used to hash every stored str under the lock (~30 ms for 1M keys).
+    assert time.perf_counter() - start < 5
+
+
+class StrLike:
+    """Equal to one str through its own __eq__."""
+
+    def __init__(self, text):
+        self.text = text
+
+    def __hash__(self):
+        return hash(self.text)
+
+    def __eq__(self, other):
+        return other == self.text if isinstance(other, str) else NotImplemented
+
+
+def typed_str_dict(keys):
+    return rs.Dict[str, int]((k, 0) for k in keys)
+
+
+@pytest.mark.parametrize("make", [set, rs.Set, rs.Set[str], dict.fromkeys, rs.Dict.fromkeys, typed_str_dict])
+def test_custom_eq_probes_of_str_tables(make):
+    c = make(f"k{i}" for i in range(100))
+    assert StrLike("k5") in c and StrLike("nope") not in c
+    remove = c.discard if isinstance(c, (set, rs.Set)) else (lambda k: c.pop(k, None))
+    for i in range(60):  # enough removals to compact
+        remove(f"k{i}")
+    assert StrLike("k5") not in c and StrLike("k77") in c
+    if isinstance(c, (set, rs.Set)):
+        c.add("k5")
+    else:
+        c["k5"] = 0
+    assert StrLike("k5") in c
+    popped = c.pop() if isinstance(c, (set, rs.Set)) else c.popitem()[0]
+    assert StrLike(popped) not in c
+    c.clear()
+    assert StrLike("k77") not in c
+
+
+def test_str_subclass_with_identity_eq_still_equals_stored_str():
+    class Weird(str):
+        __eq__ = object.__eq__
+        __hash__ = str.__hash__
+
+    for c in ({"abc"}, rs.Set(["abc"]), rs.Dict.fromkeys(["abc"])):
+        assert Weird("abc") in c
+        assert Weird("abd") not in c
