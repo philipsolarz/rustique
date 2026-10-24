@@ -5,9 +5,10 @@
 //! OWNER: list agent. Interface items marked `INTERFACE` are used by other modules and
 //! must keep their signatures.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use pyo3::prelude::*;
 use pyo3::types::PyType;
@@ -172,13 +173,22 @@ impl Schema {
 
 /// INTERFACE. The shared `Any` schema.
 pub fn any() -> Arc<Schema> {
-    todo!("list agent")
+    static ANY: OnceLock<Arc<Schema>> = OnceLock::new();
+    ANY.get_or_init(|| intern(Schema::Any)).clone()
 }
 
 /// INTERFACE. Intern a schema: equal schemas share one `Arc` (so `Arc::ptr_eq` is a fast
-/// equality check and aliases can be cached per schema).
+/// equality check and aliases can be cached per schema). Interned schemas live for the
+/// rest of the process, like the classes they describe.
 pub fn intern(schema: Schema) -> Arc<Schema> {
-    let _ = schema;
-    todo!("list agent")
+    static INTERNER: Mutex<Option<HashSet<Arc<Schema>>>> = Mutex::new(None);
+    let mut guard = INTERNER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let set = guard.get_or_insert_with(HashSet::new);
+    if let Some(existing) = set.get(&schema) {
+        return existing.clone();
+    }
+    let interned = Arc::new(schema);
+    set.insert(interned.clone());
+    interned
 }
 
