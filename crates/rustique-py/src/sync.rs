@@ -12,11 +12,12 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use pyo3::prelude::*;
 
 pub type ReadGuard<'a, T> = RwLockReadGuard<'a, T>;
 pub type WriteGuard<'a, T> = RwLockWriteGuard<'a, T>;
+pub use parking_lot::MutexGuard;
 
 /// A reader–writer lock that never blocks while attached to the interpreter.
 #[derive(Debug, Default)]

@@ -16,7 +16,7 @@ use pyo3::prelude::*;
 use rustique_core::slice::{self, SliceError, SliceIndices};
 use rustique_core::{Column, DType, Element, Value, with_column};
 
-use crate::convert::{self, column_item, column_objects};
+use crate::convert::{self, ToPython, column_item, column_objects};
 use crate::schema::{Coerced, Schema};
 
 /// INTERFACE. The physical representation of a sequence of elements.
@@ -314,6 +314,30 @@ impl Storage {
             Storage::Empty => Vec::new(),
             Storage::Native(column) => column_objects(py, column, range),
             Storage::Object(objects) => objects[range].iter().map(|o| o.clone_ref(py)).collect(),
+        }
+    }
+
+    /// Append Python objects for `self[range]` to `out`, in reverse order if `reversed`.
+    pub fn extend_objects(&self, py: Python<'_>, range: std::ops::Range<usize>, reversed: bool, out: &mut Vec<Py<PyAny>>) {
+        match self {
+            Storage::Empty => {}
+            Storage::Native(column) => with_column!(column, v => {
+                let items = &v[range];
+                out.reserve(items.len());
+                if reversed {
+                    out.extend(items.iter().rev().map(|x| x.to_python(py).unbind()));
+                } else {
+                    out.extend(items.iter().map(|x| x.to_python(py).unbind()));
+                }
+            }),
+            Storage::Object(objects) => {
+                let items = &objects[range];
+                if reversed {
+                    out.extend(items.iter().rev().map(|o| o.clone_ref(py)));
+                } else {
+                    out.extend(items.iter().map(|o| o.clone_ref(py)));
+                }
+            }
         }
     }
 

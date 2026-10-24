@@ -25,7 +25,7 @@ use rustique_core::{Column, DType, with_column};
 use crate::convert::{self, IngestError, Probe, ToPython};
 use crate::schema::{self, Coerced, Schema};
 use crate::storage::Storage;
-use crate::sync::{MutationCounter, PyMutex, PyRwLock, ReadGuard, WriteGuard, read_both};
+use crate::sync::{MutationCounter, MutexGuard, PyMutex, PyRwLock, ReadGuard, WriteGuard, read_both};
 
 /// Elements snapshotted per lock acquisition when comparing with Python `==`.
 const CHUNK: usize = 256;
@@ -1363,40 +1363,66 @@ impl IterState {
         IterState { next, batch: Vec::new(), version: 0, batch_size: 8 }
     }
 
-    /// Yield the next element; `forward` selects the direction. Elements dropped from a
-    /// stale batch are returned for the caller to drop after unlocking.
-    fn step(&mut self, py: Python<'_>, list: &List, forward: bool) -> (Option<Py<PyAny>>, Vec<Py<PyAny>>) {
-        if self.next == EXHAUSTED {
-            return (None, Vec::new());
+    /// The next element from the read-ahead batch while it is current (the hot path: no
+    /// list access, no allocation).
+    #[inline]
+    fn pop_current(&mut self, list: &List, forward: bool) -> Option<Py<PyAny>> {
+        if self.batch.is_empty() || self.version != list.version.get() {
+            return None;
         }
-        if !self.batch.is_empty() && self.version == list.version.get() {
-            let item = self.batch.pop();
-            self.advance(forward);
-            return (item, Vec::new());
-        }
-        let stale = std::mem::take(&mut self.batch);
-        let data = list.read(py);
-        let len = data.len();
-        if self.next >= len {
-            self.next = EXHAUSTED;
-            return (None, stale);
-        }
-        let mut batch = if forward {
-            let end = len.min(self.next + self.batch_size);
-            let mut batch = data.objects(py, self.next..end);
-            batch.reverse();
-            batch
-        } else {
-            let start = (self.next + 1).saturating_sub(self.batch_size);
-            data.objects(py, start..self.next + 1)
-        };
-        self.version = list.version.get();
-        drop(data);
-        self.batch_size = (self.batch_size * 2).min(MAX_BATCH);
-        let item = batch.pop();
-        self.batch = batch;
+        let item = self.batch.pop();
         self.advance(forward);
-        (item, stale)
+        item
+    }
+
+    /// Re-read the list into the batch (it is used up or stale) and yield the next element.
+    /// Takes the guard so that stale elements are dropped only after unlocking.
+    #[inline(never)]
+    fn refill_and_pop<'py>(
+        py: Python<'py>,
+        mut state: MutexGuard<'_, IterState>,
+        list: &List,
+        forward: bool,
+    ) -> Option<Bound<'py, PyAny>> {
+        let stale = if state.batch.is_empty() { Vec::new() } else { std::mem::take(&mut state.batch) };
+        let mut item = None;
+        if state.next != EXHAUSTED {
+            let data = list.read(py);
+            let len = data.len();
+            if state.next >= len {
+                state.next = EXHAUSTED;
+            } else {
+                let next = state.next;
+                let range = if forward {
+                    next..len.min(next + state.batch_size)
+                } else {
+                    (next + 1).saturating_sub(state.batch_size)..next + 1
+                };
+                // The batch is popped from the end: store forward batches reversed.
+                data.extend_objects(py, range, forward, &mut state.batch);
+                state.version = list.version.get();
+                drop(data);
+                state.batch_size = (state.batch_size * 2).min(MAX_BATCH);
+                item = state.batch.pop();
+                state.advance(forward);
+            }
+        }
+        drop(state);
+        drop(stale);
+        item.map(|o| o.into_bound(py))
+    }
+
+    /// Yield the next element (`forward` selects the direction).
+    #[inline]
+    fn next<'py>(py: Python<'py>, state: &PyMutex<IterState>, list: &List, forward: bool) -> Option<Bound<'py, PyAny>> {
+        let mut guard = state.lock(py);
+        match guard.pop_current(list, forward) {
+            Some(item) => {
+                drop(guard);
+                Some(item.into_bound(py))
+            }
+            None => IterState::refill_and_pop(py, guard, list, forward),
+        }
     }
 
     fn advance(&mut self, forward: bool) {
@@ -1430,9 +1456,7 @@ impl ListIterator {
     }
 
     fn __next__<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyAny>> {
-        let (item, stale) = self.state.lock(py).step(py, self.list.get(), true);
-        drop(stale);
-        item.map(|o| o.into_bound(py))
+        IterState::next(py, &self.state, self.list.get(), true)
     }
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
@@ -1470,9 +1494,7 @@ impl ListReverseIterator {
     }
 
     fn __next__<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyAny>> {
-        let (item, stale) = self.state.lock(py).step(py, self.list.get(), false);
-        drop(stale);
-        item.map(|o| o.into_bound(py))
+        IterState::next(py, &self.state, self.list.get(), false)
     }
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
