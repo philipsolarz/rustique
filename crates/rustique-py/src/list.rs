@@ -192,6 +192,22 @@ fn clamp_bound(bound: SliceBound<'_>, len: usize, default: isize) -> PyResult<us
     Ok(if v < 0 { v.saturating_add(len as isize).max(0) as usize } else { v as usize })
 }
 
+/// Whether `obj` is a builtin scalar (`int`, `float`, `bool`, `str`, `bytes`, `None`):
+/// comparing two of them runs no Python code, so it cannot mutate a list.
+fn is_builtin_scalar(obj: &Bound<'_, PyAny>) -> bool {
+    let p = obj.as_ptr();
+    // SAFETY: type pointer reads and comparisons on a valid object.
+    unsafe {
+        let ty = ffi::Py_TYPE(p);
+        ty == &raw mut ffi::PyLong_Type
+            || ty == &raw mut ffi::PyUnicode_Type
+            || ty == &raw mut ffi::PyFloat_Type
+            || ty == &raw mut ffi::PyBool_Type
+            || ty == &raw mut ffi::PyBytes_Type
+            || p == ffi::Py_None()
+    }
+}
+
 /// Element equality for searches and list comparison: identity, then NaN equals NaN
 /// (the documented List semantics, identical for every strategy), then Python `==`.
 fn elements_equal(item: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<bool> {
@@ -433,9 +449,13 @@ impl List {
     }
 
     /// Python-level search, comparing outside the lock. Returns the index and the element
-    /// that compared equal. Like CPython, each comparison sees the *current* list: `==` may
-    /// mutate it, so a chunk read ahead is abandoned as soon as the mutation counter moves
-    /// and the search continues at the next index of the live list.
+    /// that compared equal.
+    ///
+    /// Like CPython, a comparison that runs Python code (`__eq__`) is followed by the
+    /// *current* list: if the list changed meanwhile, the rest of the chunk read ahead is
+    /// abandoned and the search continues at the next index of the live list. Comparisons
+    /// of builtin scalars run no Python code (in CPython they are atomic with the scan), so
+    /// they keep using the chunk, which is a consistent snapshot.
     fn find_python(
         &self,
         py: Python<'_>,
@@ -443,6 +463,7 @@ impl List {
         start: usize,
         stop: usize,
     ) -> PyResult<Option<(usize, Py<PyAny>)>> {
+        let builtin_value = is_builtin_scalar(value);
         let mut i = start;
         loop {
             let chunk = self.chunk(py, i, stop);
@@ -450,11 +471,13 @@ impl List {
                 return Ok(None);
             }
             for item in chunk.items {
-                if elements_equal(item.bind(py), value)? {
+                let item_ref = item.bind(py);
+                let ran_python = !(builtin_value && is_builtin_scalar(item_ref));
+                if elements_equal(item_ref, value)? {
                     return Ok(Some((i, item)));
                 }
                 i += 1;
-                if self.version.get() != chunk.version {
+                if ran_python && self.version.get() != chunk.version {
                     break;
                 }
             }
@@ -478,6 +501,7 @@ impl List {
             }
         }
         // Live semantics as in `find_python`.
+        let builtin_value = is_builtin_scalar(value);
         let (mut i, mut count) = (0, 0);
         loop {
             let chunk = self.chunk(py, i, usize::MAX);
@@ -485,11 +509,13 @@ impl List {
                 return Ok(count);
             }
             for item in &chunk.items {
-                if elements_equal(item.bind(py), value)? {
+                let item = item.bind(py);
+                let ran_python = !(builtin_value && is_builtin_scalar(item));
+                if elements_equal(item, value)? {
                     count += 1;
                 }
                 i += 1;
-                if self.version.get() != chunk.version {
+                if ran_python && self.version.get() != chunk.version {
                     break;
                 }
             }
@@ -556,7 +582,8 @@ impl List {
                     };
                 }
                 i += 1;
-                if a.changed(ca.version) || b.changed(cb.version) {
+                let ran_python = !(is_builtin_scalar(x) && is_builtin_scalar(y));
+                if ran_python && (a.changed(ca.version) || b.changed(cb.version)) {
                     break;
                 }
             }
