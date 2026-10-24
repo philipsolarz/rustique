@@ -1,0 +1,20 @@
+[package]
+name = "rustique-core"
+description = "Native typed storage, kernels and expression engine behind Rustique (no Python dependency)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+compact_str.workspace = true
+hashbrown.workspace = true
+foldhash.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

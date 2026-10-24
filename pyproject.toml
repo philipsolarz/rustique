@@ -1,29 +1,38 @@
 [build-system]
-requires = ["maturin>=1.7,<2.0"]
+requires = ["maturin>=1.15,<2.0"]
 build-backend = "maturin"
 
 [project]
 name = "rustique"
-requires-python = ">=3.8"
+description = "Python's data model, Rust's memory: typed native containers and zero-copy Rust/Python interop"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT OR Apache-2.0"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
-    "Programming Language :: Python :: Implementation :: PyPy",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Programming Language :: Python :: Free Threading :: 3 - Stable",
+    "Typing :: Typed",
 ]
 dynamic = ["version"]
-dependencies = [
-    "coverage>=7.6.1",
-    "hypothesis>=6.113.0",
-    "mypy>=1.13.0",
-    "pydantic>=2.10.3",
-    "pyright>=1.1.390",
-    "pytest>=8.3.4",
-    "pytest-mock>=3.14.0",
-]
-[tool.maturin]
-features = ["pyo3/extension-module"]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3.4",
+    "maturin>=1.15.0",
+    "pytest>=9.1.1",
+    "hypothesis>=6.170.9",
 ]
+bench = ["numpy>=2.5.4"]
+
+[tool.maturin]
+manifest-path = "crates/rustique-py/Cargo.toml"
+python-source = "python"
+module-name = "rustique._rustique"
+features = ["extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

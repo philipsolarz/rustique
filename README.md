@@ -1,5 +1,3 @@
-RUSTFLAGS="--cfg Py_3_13" maturin develop --uv --release
+# Rustique
 
-
-1. Add slicing to list
-2. Add nested lists and nested typings
+Python's data model, Rust's memory. See `docs/ARCHITECTURE.md`.
