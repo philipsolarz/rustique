@@ -55,6 +55,11 @@ impl<T: Send + Sync> Locked<T> {
     pub(crate) fn try_read(&self) -> Option<RwLockReadGuard<'_, T>> {
         self.0.try_read()
     }
+
+    /// Non-blocking exclusive access (for `__clear__`, which runs inside the GC).
+    pub(crate) fn try_write(&self) -> Option<RwLockWriteGuard<'_, T>> {
+        self.0.try_write()
+    }
 }
 
 /// What a key is used as, for error messages.
@@ -82,7 +87,11 @@ pub(crate) enum Class {
     Str { text: PyBackedStr, exact: bool },
     /// Anything else, with its Python hash. `exotic` objects may compare equal to native
     /// keys through a custom `__eq__`; `simple` ones compare without running Python code.
-    Other { hash: isize, exotic: bool, simple: bool },
+    Other {
+        hash: isize,
+        exotic: bool,
+        simple: bool,
+    },
 }
 
 /// A key object, classified and hashed (all outside any lock).
@@ -94,32 +103,77 @@ pub(crate) struct Key<'py> {
 impl<'py> Key<'py> {
     /// Classify `obj` for lookup or insertion. Unhashable objects raise `TypeError`.
     pub(crate) fn classify(obj: &Bound<'py, PyAny>, role: Role) -> PyResult<Key<'py>> {
-        let class = if obj.is_exact_instance_of::<PyInt>() {
+        Key::classify_owned(obj.clone(), role)
+    }
+
+    /// [`classify`](Self::classify), taking ownership of the reference.
+    pub(crate) fn classify_owned(obj: Bound<'py, PyAny>, role: Role) -> PyResult<Key<'py>> {
+        let class = Key::class_of(&obj, role, None)?;
+        Ok(Key { obj, class })
+    }
+
+    /// Classify an object whose Python hash is already known (e.g. read back from a table),
+    /// without calling `__hash__` again.
+    pub(crate) fn with_hash(obj: Bound<'py, PyAny>, hash: isize) -> PyResult<Key<'py>> {
+        let class = Key::class_of(&obj, Role::SetElement, Some(hash))?;
+        Ok(Key { obj, class })
+    }
+
+    fn class_of(obj: &Bound<'py, PyAny>, role: Role, known: Option<isize>) -> PyResult<Class> {
+        let hash = || known.map_or_else(|| obj.hash(), Ok);
+        Ok(if obj.is_exact_instance_of::<PyInt>() {
             match int_value(obj) {
                 Some(value) => Class::Int { value, exact: true },
-                None => Class::Other { hash: obj.hash()?, exotic: false, simple: true },
+                None => Class::Other {
+                    hash: hash()?,
+                    exotic: false,
+                    simple: true,
+                },
             }
         } else if obj.is_exact_instance_of::<PyString>() {
-            str_class(obj, true)?
-        } else if obj.is_exact_instance_of::<PyBool>() {
-            Class::Int { value: i64::from(obj.is(PyBool::new(obj.py(), true))), exact: false }
+            str_class(obj, true, hash)?
+        } else if let Ok(b) = obj.cast_exact::<PyBool>() {
+            Class::Int {
+                value: i64::from(b.is_true()),
+                exact: false,
+            }
         } else if let Ok(f) = obj.cast_exact::<PyFloat>() {
             match integral_float(f.value()) {
-                Some(value) => Class::Int { value, exact: false },
-                None => Class::Other { hash: obj.hash()?, exotic: false, simple: true },
+                Some(value) => Class::Int {
+                    value,
+                    exact: false,
+                },
+                None => Class::Other {
+                    hash: hash()?,
+                    exotic: false,
+                    simple: true,
+                },
             }
         } else if obj.is_instance_of::<PyInt>() && has_builtin_slots(obj, BuiltinBase::Int) {
             match int_value(obj) {
-                Some(value) => Class::Int { value, exact: false },
-                None => Class::Other { hash: obj.hash()?, exotic: false, simple: true },
+                Some(value) => Class::Int {
+                    value,
+                    exact: false,
+                },
+                None => Class::Other {
+                    hash: hash()?,
+                    exotic: false,
+                    simple: true,
+                },
             }
         } else if obj.is_instance_of::<PyString>() && has_builtin_slots(obj, BuiltinBase::Str) {
-            str_class(obj, false)?
+            str_class(obj, false, hash)?
         } else {
-            let hash = hash_or_unhashable(obj, role)?;
-            Class::Other { hash, exotic: !never_equals_native(obj), simple: is_simple(obj, 0) }
-        };
-        Ok(Key { obj: obj.clone(), class })
+            let hash = match known {
+                Some(h) => h,
+                None => hash_or_unhashable(obj, role)?,
+            };
+            Class::Other {
+                hash,
+                exotic: !never_equals_native(obj),
+                simple: is_simple(obj, 0),
+            }
+        })
     }
 
     /// Python's `hash()` of the key (no Python code runs for native classes).
@@ -139,13 +193,128 @@ impl<'py> Key<'py> {
     }
 }
 
-fn str_class(obj: &Bound<'_, PyAny>, exact: bool) -> PyResult<Class> {
-    // SAFETY-free cast: callers checked that `obj` is a `str` (or subclass).
+impl<'py> Key<'py> {
+    pub(crate) fn from_int(py: Python<'py>, value: i64) -> Key<'py> {
+        let obj = value
+            .into_pyobject(py)
+            .map(|o| o.into_any())
+            .unwrap_or_else(|e| match e {});
+        Key {
+            obj,
+            class: Class::Int { value, exact: true },
+        }
+    }
+
+    pub(crate) fn from_str(py: Python<'py>, value: &str) -> PyResult<Key<'py>> {
+        let obj = PyString::new(py, value);
+        let text = PyBackedStr::try_from(obj.clone())?;
+        Ok(Key {
+            obj: obj.into_any(),
+            class: Class::Str { text, exact: true },
+        })
+    }
+}
+
+/// A key ready for insertion: native when the object is exactly an `int`/`str` that a
+/// native table stores as is (no Python object kept), otherwise a classified [`Key`].
+pub(crate) enum Prepared<'py> {
+    Int(i64),
+    Str(CompactString),
+    Key(Key<'py>),
+}
+
+/// A lookup probe that needs no Python objects.
+pub(crate) enum Quick<'a> {
+    Int(i64),
+    Str(&'a str),
+}
+
+/// The probe for an exact `int` (fitting i64) or exact `str` object.
+#[inline]
+pub(crate) fn quick<'a>(obj: &'a Bound<'_, PyAny>) -> Option<Quick<'a>> {
+    if obj.is_exact_instance_of::<PyInt>() {
+        return int_value(obj).map(Quick::Int);
+    }
+    if let Ok(s) = obj.cast_exact::<PyString>() {
+        return s.to_str().ok().map(Quick::Str);
+    }
+    None
+}
+
+/// The native form of an exact `int`/`str` key under a key `schema` (`None` when it needs
+/// classification or conversion). Runs no Python code and takes no reference, so it is safe
+/// on borrowed items inside a critical section of their container.
+#[inline]
+pub(crate) fn native_key(obj: &Bound<'_, PyAny>, schema: &Schema) -> Option<Prepared<'static>> {
+    let (ints, strs) = match schema {
+        Schema::Any => (true, true),
+        Schema::Int => (true, false),
+        Schema::Str => (false, true),
+        _ => return None,
+    };
+    if ints && obj.is_exact_instance_of::<PyInt>() {
+        return int_value(obj).map(Prepared::Int);
+    }
+    if strs && obj.is_exact_instance_of::<PyString>() {
+        // SAFETY: `obj` is a live object of exact type `str`.
+        return unsafe { exact_str(obj.as_ptr()) }.map(Prepared::Str);
+    }
+    None
+}
+
+/// Copy an exact `str`'s text from its PEP 393 buffer (no UTF-8 cache is created in the
+/// source, so this is safe inside a critical section). `None` for lone surrogates.
+///
+/// # Safety
+/// `p` must point to a live object whose type is exactly `str`.
+unsafe fn exact_str(p: *mut ffi::PyObject) -> Option<CompactString> {
+    // SAFETY: exact `str` objects are immutable canonical PEP 393 strings whose data pointer
+    // covers `length` code units of `kind` bytes each.
+    unsafe {
+        let len = ffi::PyUnicode_GET_LENGTH(p) as usize;
+        if len == 0 {
+            return Some(CompactString::default());
+        }
+        let data = ffi::PyUnicode_DATA(p);
+        match ffi::PyUnicode_KIND(p) {
+            ffi::PyUnicode_1BYTE_KIND => {
+                let bytes = std::slice::from_raw_parts(data.cast::<u8>(), len);
+                if bytes.is_ascii() {
+                    return Some(CompactString::from(std::str::from_utf8_unchecked(bytes)));
+                }
+                Some(bytes.iter().map(|&b| char::from(b)).collect())
+            }
+            ffi::PyUnicode_2BYTE_KIND => {
+                let units = std::slice::from_raw_parts(data.cast::<u16>(), len);
+                // Canonical 2-byte strings hold no surrogate pairs: a surrogate unit is a lone
+                // surrogate, which `char::from_u32` rejects.
+                units
+                    .iter()
+                    .map(|&u| char::from_u32(u32::from(u)))
+                    .collect()
+            }
+            _ => {
+                let units = std::slice::from_raw_parts(data.cast::<u32>(), len);
+                units.iter().map(|&u| char::from_u32(u)).collect()
+            }
+        }
+    }
+}
+
+fn str_class(
+    obj: &Bound<'_, PyAny>,
+    exact: bool,
+    hash: impl FnOnce() -> PyResult<isize>,
+) -> PyResult<Class> {
     let s = obj.cast::<PyString>().map_err(PyErr::from)?;
     Ok(match PyBackedStr::try_from(s.clone()) {
         Ok(text) => Class::Str { text, exact },
         // Lone surrogates: not representable natively, never equal to a native key.
-        Err(_) => Class::Other { hash: obj.hash()?, exotic: false, simple: true },
+        Err(_) => Class::Other {
+            hash: hash()?,
+            exotic: false,
+            simple: true,
+        },
     })
 }
 
@@ -167,7 +336,8 @@ fn int_value(obj: &Bound<'_, PyAny>) -> Option<i64> {
 /// The i64 equal to `f`, if any.
 pub(crate) fn integral_float(f: f64) -> Option<i64> {
     // 2**63 is exactly representable; every float in [-2**63, 2**63) that is integral fits.
-    if f.fract() == 0.0 && (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&f) {
+    if f.fract() == 0.0 && (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&f)
+    {
         Some(f as i64)
     } else {
         None
@@ -204,10 +374,20 @@ fn hash_or_unhashable(obj: &Bound<'_, PyAny>, role: Role) -> PyResult<isize> {
     obj.hash().map_err(|err| {
         let py = obj.py();
         let unhashable = err.is_instance_of::<PyTypeError>(py)
-            && obj.get_type().getattr("__hash__").is_ok_and(|h| h.is_none());
+            && obj
+                .get_type()
+                .getattr("__hash__")
+                .is_ok_and(|h| h.is_none());
         if unhashable {
-            let name = obj.get_type().name().map(|n| n.to_string()).unwrap_or_else(|_| "?".into());
-            PyTypeError::new_err(format!("cannot use '{name}' as {} (unhashable type: '{name}')", role.noun()))
+            let name = obj
+                .get_type()
+                .name()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|_| "?".into());
+            PyTypeError::new_err(format!(
+                "cannot use '{name}' as {} (unhashable type: '{name}')",
+                role.noun()
+            ))
         } else {
             err
         }
@@ -274,7 +454,7 @@ pub(crate) fn int_hash_preimages(hash: isize) -> Vec<i64> {
         if h == 0 {
             push_progression(-p, -p);
         }
-    } else if h < 0 && -h < p {
+    } else if h < -1 && -h < p {
         push_progression(h, -p);
         if h == -2 {
             push_progression(-1, -p);
@@ -283,15 +463,49 @@ pub(crate) fn int_hash_preimages(hash: isize) -> Vec<i64> {
     out
 }
 
+const MIX_1: u64 = 0xbf58_476d_1ce4_e5b9;
+const MIX_2: u64 = 0x94d0_49bb_1331_11eb;
+
+/// Multiplicative inverse of an odd number modulo 2**64 (Newton's iteration).
+const fn inverse(x: u64) -> u64 {
+    let mut inv = x;
+    let mut i = 0;
+    while i < 6 {
+        inv = inv.wrapping_mul(2u64.wrapping_sub(x.wrapping_mul(inv)));
+        i += 1;
+    }
+    inv
+}
+
+/// Undo `z ^= z >> shift`.
+const fn unshift(z: u64, shift: u32) -> u64 {
+    let mut out = z;
+    let mut s = shift;
+    while s < 64 {
+        out ^= z >> s;
+        s += shift;
+    }
+    out
+}
+
 /// Spread a Python hash over all 64 bits (Python's int hashes are the identity on small
-/// ints; the index needs entropy in both the low and high bits). Shared by all object
-/// tables, so mixed hashes are comparable across them.
+/// ints; the index needs entropy in both the low and high bits). A bijection shared by all
+/// object tables, so stored hashes can be compared across tables and inverted by [`unmix`].
 #[inline]
 pub(crate) fn mix(raw: isize) -> u64 {
     let mut z = raw as u64;
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z = (z ^ (z >> 30)).wrapping_mul(MIX_1);
+    z = (z ^ (z >> 27)).wrapping_mul(MIX_2);
     z ^ (z >> 31)
+}
+
+/// The Python hash a [`mix`]ed hash came from.
+#[inline]
+pub(crate) fn unmix(mixed: u64) -> isize {
+    let mut z = unshift(mixed, 31);
+    z = unshift(z.wrapping_mul(inverse(MIX_2)), 27);
+    z = unshift(z.wrapping_mul(inverse(MIX_1)), 30);
+    z as isize
 }
 
 /// The physical key strategy.
@@ -361,6 +575,8 @@ impl Pending {
 pub(crate) struct KeyTable {
     store: KeyStore,
     kind: KeyKind,
+    /// Capacity to reserve once an adaptive table picks its strategy.
+    reserve_hint: usize,
     /// Bumped by every change to the key set (insert, remove, clear, demotion, compaction).
     version: u64,
     /// Bumped whenever positions move (compaction, clear).
@@ -369,7 +585,13 @@ pub(crate) struct KeyTable {
 
 impl KeyTable {
     pub(crate) fn new(kind: KeyKind) -> KeyTable {
-        KeyTable { store: Self::empty_store(kind), kind, version: 0, layout: 0 }
+        KeyTable {
+            store: Self::empty_store(kind),
+            kind,
+            reserve_hint: 0,
+            version: 0,
+            layout: 0,
+        }
     }
 
     fn empty_store(kind: KeyKind) -> KeyStore {
@@ -386,7 +608,13 @@ impl KeyTable {
             NativeKeys::Int(ki) => KeyStore::Int(ki),
             NativeKeys::Str(ki) => KeyStore::Str(ki),
         };
-        KeyTable { store, kind, version: 0, layout: 0 }
+        KeyTable {
+            store,
+            kind,
+            reserve_hint: 0,
+            version: 0,
+            layout: 0,
+        }
     }
 
     /// The same keys under a different pinned strategy (e.g. an untyped copy of a typed set).
@@ -396,11 +624,11 @@ impl KeyTable {
     }
 
     /// The native keys, or the table back if it does not store native keys.
-    pub(crate) fn into_native(self) -> Result<NativeKeys, KeyTable> {
+    pub(crate) fn into_native(self) -> Result<NativeKeys, Box<KeyTable>> {
         match self.store {
             KeyStore::Int(ki) => Ok(NativeKeys::Int(ki)),
             KeyStore::Str(ki) => Ok(NativeKeys::Str(ki)),
-            store => Err(KeyTable { store, ..self }),
+            store => Err(Box::new(KeyTable { store, ..self })),
         }
     }
 
@@ -441,7 +669,9 @@ impl KeyTable {
     /// Last live position `< before`.
     pub(crate) fn prev_live(&self, before: usize) -> Option<usize> {
         let index = self.index()?;
-        (0..before.min(index.entries())).rev().find(|&p| index.is_live(p))
+        (0..before.min(index.entries()))
+            .rev()
+            .find(|&p| index.is_live(p))
     }
 
     pub(crate) fn last_live(&self) -> Option<usize> {
@@ -467,15 +697,57 @@ impl KeyTable {
     pub(crate) fn key_object(&self, py: Python<'_>, pos: usize) -> Py<PyAny> {
         match &self.store {
             KeyStore::Empty => py.None(),
-            KeyStore::Int(ki) => ki.raw_keys()[pos].into_pyobject(py).map(|o| o.into_any().unbind()).unwrap_or_else(|e| match e {}),
+            KeyStore::Int(ki) => ki.raw_keys()[pos]
+                .into_pyobject(py)
+                .map(|o| o.into_any().unbind())
+                .unwrap_or_else(|e| match e {}),
             KeyStore::Str(ki) => PyString::new(py, &ki.raw_keys()[pos]).into_any().unbind(),
             KeyStore::Object(ki) => ki.raw_keys()[pos].clone_ref(py),
         }
     }
 
+    /// All live keys as classified [`Key`]s, in order, reusing stored hashes (no Python
+    /// `__hash__` calls; only `int`/`str` objects are created, so this is fine under a lock).
+    pub(crate) fn element_keys<'py>(&self, py: Python<'py>) -> PyResult<Vec<Key<'py>>> {
+        match &self.store {
+            KeyStore::Empty => Ok(Vec::new()),
+            KeyStore::Int(ki) => ki
+                .iter()
+                .map(|(_, &value)| {
+                    let obj = value.into_pyobject(py)?.into_any();
+                    Ok(Key {
+                        obj,
+                        class: Class::Int { value, exact: true },
+                    })
+                })
+                .collect(),
+            KeyStore::Str(ki) => ki
+                .iter()
+                .map(|(_, s)| {
+                    let obj = PyString::new(py, s);
+                    let text = PyBackedStr::try_from(obj.clone())?;
+                    Ok(Key {
+                        obj: obj.into_any(),
+                        class: Class::Str { text, exact: true },
+                    })
+                })
+                .collect(),
+            KeyStore::Object(ki) => ki
+                .iter()
+                .map(|(pos, k)| {
+                    let hash = ki.index().hash_at(pos).map_or(0, unmix);
+                    Key::with_hash(k.bind(py).clone(), hash)
+                })
+                .collect(),
+        }
+    }
+
     /// All live keys as Python objects, in order.
     pub(crate) fn key_objects(&self, py: Python<'_>) -> Vec<Py<PyAny>> {
-        self.positions().into_iter().map(|p| self.key_object(py, p)).collect()
+        self.positions()
+            .into_iter()
+            .map(|p| self.key_object(py, p))
+            .collect()
     }
 
     /// A copy of the native keys (`None` for object or empty tables).
@@ -497,7 +769,111 @@ impl KeyTable {
                 KeyStore::Object(KeyIndex::from_parts(keys, ki.index().clone(), ()))
             }
         };
-        KeyTable { store, kind: self.kind, version: 0, layout: 0 }
+        KeyTable {
+            store,
+            kind: self.kind,
+            reserve_hint: 0,
+            version: 0,
+            layout: 0,
+        }
+    }
+
+    /// Make room for `additional` more keys.
+    pub(crate) fn reserve(&mut self, additional: usize) {
+        match &mut self.store {
+            KeyStore::Empty => self.reserve_hint = self.reserve_hint.max(additional),
+            KeyStore::Int(ki) => ki.reserve(additional),
+            KeyStore::Str(ki) => ki.reserve(additional),
+            KeyStore::Object(ki) => ki.reserve(additional),
+        }
+    }
+
+    fn set_store(&mut self, mut store: KeyStore) {
+        let hint = std::mem::take(&mut self.reserve_hint);
+        match &mut store {
+            KeyStore::Int(ki) => ki.reserve(hint),
+            KeyStore::Str(ki) => ki.reserve(hint),
+            KeyStore::Object(ki) => ki.reserve(hint),
+            KeyStore::Empty => {}
+        }
+        self.store = store;
+    }
+
+    /// Look up a native probe; `None` when the table stores objects (use [`resolve`]).
+    ///
+    /// [`resolve`]: Self::resolve
+    #[inline]
+    pub(crate) fn find_quick(&self, probe: &Quick<'_>) -> Option<Option<usize>> {
+        match (&self.store, probe) {
+            (KeyStore::Empty, _) => Some(None),
+            (KeyStore::Int(ki), Quick::Int(v)) => Some(ki.get(v)),
+            (KeyStore::Str(ki), Quick::Str(s)) => Some(ki.get(*s)),
+            // A `str` never equals an `int` and vice versa.
+            (KeyStore::Int(_), Quick::Str(_)) | (KeyStore::Str(_), Quick::Int(_)) => Some(None),
+            (KeyStore::Object(_), _) => None,
+        }
+    }
+
+    /// Insert-or-find a prepared key with a single probe when no Python code or demotion is
+    /// involved; otherwise hand back a classified [`Key`] for the general path.
+    #[inline]
+    pub(crate) fn upsert<'py>(
+        &mut self,
+        py: Python<'py>,
+        key: Prepared<'py>,
+    ) -> PyResult<Result<(usize, bool), Key<'py>>> {
+        let (pos, inserted) = match (&mut self.store, key) {
+            (KeyStore::Int(ki), Prepared::Int(v)) => ki.insert(v),
+            (KeyStore::Str(ki), Prepared::Str(s)) => ki.insert(s),
+            (KeyStore::Empty, key @ Prepared::Int(_)) => {
+                self.set_store(KeyStore::Int(KeyIndex::default()));
+                return self.upsert(py, key);
+            }
+            (KeyStore::Empty, key @ Prepared::Str(_)) => {
+                self.set_store(KeyStore::Str(KeyIndex::default()));
+                return self.upsert(py, key);
+            }
+            (_, Prepared::Key(key)) => return Ok(self.upsert_fast(&key).ok_or(key)),
+            (_, Prepared::Int(v)) => return Ok(Err(Key::from_int(py, v))),
+            (_, Prepared::Str(s)) => return Ok(Err(Key::from_str(py, &s)?)),
+        };
+        if inserted {
+            self.version += 1;
+        }
+        Ok(Ok((pos, inserted)))
+    }
+
+    /// Insert-or-find with a single probe when no Python code or demotion is involved:
+    /// `Some((position, inserted))`, or `None` when the caller must take the general path.
+    #[inline]
+    pub(crate) fn upsert_fast(&mut self, key: &Key<'_>) -> Option<(usize, bool)> {
+        let (pos, inserted) = match (&mut self.store, &key.class) {
+            (KeyStore::Int(ki), Class::Int { value, exact: true }) => ki.insert(*value),
+            (
+                KeyStore::Int(ki),
+                Class::Int {
+                    value,
+                    exact: false,
+                },
+            ) => (ki.get(value)?, false),
+            (KeyStore::Str(ki), Class::Str { text, exact: true }) => {
+                ki.insert_with(&**text, |s: &str| CompactString::from(s))
+            }
+            (KeyStore::Str(ki), Class::Str { text, exact: false }) => (ki.get(&**text)?, false),
+            (KeyStore::Empty, Class::Int { exact: true, .. }) => {
+                self.set_store(KeyStore::Int(KeyIndex::default()));
+                return self.upsert_fast(key);
+            }
+            (KeyStore::Empty, Class::Str { exact: true, .. }) => {
+                self.set_store(KeyStore::Str(KeyIndex::default()));
+                return self.upsert_fast(key);
+            }
+            _ => return None,
+        };
+        if inserted {
+            self.version += 1;
+        }
+        Some((pos, inserted))
     }
 
     /// Find `key` without running Python code; Python comparisons become `Compare`.
@@ -507,14 +883,24 @@ impl KeyTable {
             (KeyStore::Empty, _) => return Ok(Resolve::Absent),
             (KeyStore::Int(ki), Class::Int { value, .. }) => return Ok(found(ki.get(value))),
             (KeyStore::Str(ki), Class::Str { text, .. }) => return Ok(found(ki.get(&**text))),
-            (KeyStore::Int(ki), Class::Other { hash, exotic: true, .. }) => {
+            (
+                KeyStore::Int(ki),
+                Class::Other {
+                    hash, exotic: true, ..
+                },
+            ) => {
                 for v in int_hash_preimages(*hash) {
                     if let Some(pos) = ki.get(&v) {
                         candidates.push((pos, v.into_pyobject(py)?.into_any().unbind()));
                     }
                 }
             }
-            (KeyStore::Str(ki), Class::Other { hash, exotic: true, .. }) => {
+            (
+                KeyStore::Str(ki),
+                Class::Other {
+                    hash, exotic: true, ..
+                },
+            ) => {
                 for (pos, s) in ki.iter() {
                     let obj = PyString::new(py, s);
                     if obj.hash()? == *hash {
@@ -544,7 +930,10 @@ impl KeyTable {
         Ok(if candidates.is_empty() {
             Resolve::Absent
         } else {
-            Resolve::Compare(Pending { candidates, version: self.version })
+            Resolve::Compare(Pending {
+                candidates,
+                version: self.version,
+            })
         })
     }
 
@@ -572,11 +961,12 @@ impl KeyTable {
         loop {
             match (&mut self.store, &key.class) {
                 (KeyStore::Empty, class) => {
-                    self.store = match class {
+                    let store = match class {
                         Class::Int { exact: true, .. } => KeyStore::Int(KeyIndex::default()),
                         Class::Str { exact: true, .. } => KeyStore::Str(KeyIndex::default()),
                         _ => KeyStore::Object(KeyIndex::with_hasher(())),
                     };
+                    self.set_store(store);
                 }
                 (KeyStore::Int(ki), Class::Int { value, exact: true }) => {
                     let hash = ki.hash_key(value);
@@ -611,8 +1001,14 @@ impl KeyTable {
             }
             KeyStore::Str(ki) => {
                 let (keys, mut index, _) = ki.into_parts();
-                let objs: Vec<Py<PyAny>> = keys.iter().map(|k| PyString::new(py, k).into_any().unbind()).collect();
-                let hashes = objs.iter().map(|o| o.bind(py).hash()).collect::<PyResult<Vec<_>>>();
+                let objs: Vec<Py<PyAny>> = keys
+                    .iter()
+                    .map(|k| PyString::new(py, k).into_any().unbind())
+                    .collect();
+                let hashes = objs
+                    .iter()
+                    .map(|o| o.bind(py).hash())
+                    .collect::<PyResult<Vec<_>>>();
                 match hashes {
                     Ok(hashes) => {
                         index.rehash(|pos| mix(hashes[pos]));
@@ -714,6 +1110,18 @@ fn found(pos: Option<usize>) -> Resolve {
 /// State guarded by a container lock that holds a key table.
 pub(crate) trait Keyed: Send + Sync {
     fn table(&self) -> &KeyTable;
+    fn table_mut(&mut self) -> &mut KeyTable;
+}
+
+/// Where an upserted key ended up.
+#[derive(Clone, Copy)]
+pub(crate) enum Slot<'a, 'py> {
+    /// Already present at this position.
+    Existing(usize),
+    /// Just appended at this position (the key is stored; parallel storage is not).
+    Inserted(usize),
+    /// Absent; the commit must append this key itself.
+    Absent(&'a Key<'py>),
 }
 
 /// Locate `key` and run `read` on the entry under a shared lock.
@@ -769,27 +1177,50 @@ pub(crate) fn with_entry_mut<T: Keyed, R>(
 }
 
 /// Apply `commit` to each item's located entry in order, holding the exclusive lock except
-/// while Python comparisons run.
+/// while Python comparisons run. Items are dropped only after the lock is released
+/// (dropping a key object may run `__del__`).
 pub(crate) fn batch_mut<'py, T: Keyed, I>(
     py: Python<'py>,
     lock: &Locked<T>,
     items: impl IntoIterator<Item = I>,
     key_of: impl Fn(&I) -> &Key<'py>,
-    mut commit: impl FnMut(&mut T, I, Option<usize>) -> PyResult<()>,
+    commit: impl FnMut(&mut T, &I, Option<usize>) -> PyResult<()>,
+) -> PyResult<()> {
+    let mut spent = Vec::new();
+    let result = batch_mut_locked(py, lock, items, key_of, commit, &mut spent);
+    drop(spent);
+    result
+}
+
+fn batch_mut_locked<'py, T: Keyed, I>(
+    py: Python<'py>,
+    lock: &Locked<T>,
+    items: impl IntoIterator<Item = I>,
+    key_of: impl Fn(&I) -> &Key<'py>,
+    mut commit: impl FnMut(&mut T, &I, Option<usize>) -> PyResult<()>,
+    spent: &mut Vec<I>,
 ) -> PyResult<()> {
     let mut guard = lock.write(py);
     for item in items {
         loop {
-            let pending = match guard.table().resolve(py, key_of(&item))? {
-                Resolve::Found(pos) => {
-                    commit(&mut guard, item, Some(pos))?;
+            let pending = match guard.table().resolve(py, key_of(&item)) {
+                Ok(Resolve::Found(pos)) => {
+                    let res = commit(&mut guard, &item, Some(pos));
+                    spent.push(item);
+                    res?;
                     break;
                 }
-                Resolve::Absent => {
-                    commit(&mut guard, item, None)?;
+                Ok(Resolve::Absent) => {
+                    let res = commit(&mut guard, &item, None);
+                    spent.push(item);
+                    res?;
                     break;
                 }
-                Resolve::Compare(pending) => pending,
+                Ok(Resolve::Compare(pending)) => pending,
+                Err(e) => {
+                    spent.push(item);
+                    return Err(e);
+                }
             };
             drop(guard);
             let found = pending.compare(&key_of(&item).obj)?;
@@ -797,7 +1228,9 @@ pub(crate) fn batch_mut<'py, T: Keyed, I>(
             drop(pending);
             guard = lock.write(py);
             if guard.table().version == version {
-                commit(&mut guard, item, found)?;
+                let res = commit(&mut guard, &item, found);
+                spent.push(item);
+                res?;
                 break;
             }
         }
@@ -805,9 +1238,136 @@ pub(crate) fn batch_mut<'py, T: Keyed, I>(
     Ok(())
 }
 
+/// Insert-or-update each item's key in order under the exclusive lock (released only while
+/// Python comparisons run), then `commit` its value. Native keys take a single-probe path.
+/// Key objects are dropped only after the lock is released.
+pub(crate) fn batch_upsert<'py, T: Keyed, V>(
+    py: Python<'py>,
+    lock: &Locked<T>,
+    items: impl IntoIterator<Item = (Prepared<'py>, V)>,
+    commit: impl FnMut(&mut T, V, Slot<'_, 'py>) -> PyResult<()>,
+) -> PyResult<()> {
+    let mut spent = Vec::new();
+    let result = batch_upsert_locked(py, lock, items, commit, &mut spent);
+    drop(spent);
+    result
+}
+
+fn batch_upsert_locked<'py, T: Keyed, V>(
+    py: Python<'py>,
+    lock: &Locked<T>,
+    items: impl IntoIterator<Item = (Prepared<'py>, V)>,
+    mut commit: impl FnMut(&mut T, V, Slot<'_, 'py>) -> PyResult<()>,
+    spent: &mut Vec<Key<'py>>,
+) -> PyResult<()> {
+    let slot = |pos, inserted| {
+        if inserted {
+            Slot::Inserted(pos)
+        } else {
+            Slot::Existing(pos)
+        }
+    };
+    let mut guard = lock.write(py);
+    for (prepared, value) in items {
+        let key = match prepared {
+            Prepared::Key(key) => key,
+            native => match guard.table_mut().upsert(py, native)? {
+                Ok((pos, inserted)) => {
+                    commit(&mut guard, value, slot(pos, inserted))?;
+                    continue;
+                }
+                Err(key) => key,
+            },
+        };
+        if let Some((pos, inserted)) = guard.table_mut().upsert_fast(&key) {
+            let res = commit(&mut guard, value, slot(pos, inserted));
+            spent.push(key);
+            res?;
+            continue;
+        }
+        loop {
+            let pending = match guard.table().resolve(py, &key) {
+                Ok(Resolve::Found(pos)) => {
+                    let res = commit(&mut guard, value, Slot::Existing(pos));
+                    spent.push(key);
+                    res?;
+                    break;
+                }
+                Ok(Resolve::Absent) => {
+                    let res = commit(&mut guard, value, Slot::Absent(&key));
+                    spent.push(key);
+                    res?;
+                    break;
+                }
+                Ok(Resolve::Compare(pending)) => pending,
+                Err(e) => {
+                    spent.push(key);
+                    return Err(e);
+                }
+            };
+            drop(guard);
+            let found = pending.compare(&key.obj)?;
+            let version = pending.version;
+            drop(pending);
+            guard = lock.write(py);
+            if guard.table().version == version {
+                let res = commit(
+                    &mut guard,
+                    value,
+                    found.map_or(Slot::Absent(&key), Slot::Existing),
+                );
+                spent.push(key);
+                res?;
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Locate a probe object and run `read` under a shared lock (exact `int`/`str` probes of
+/// native tables need no Python objects).
+pub(crate) fn lookup<'py, T: Keyed, R>(
+    py: Python<'py>,
+    lock: &Locked<T>,
+    obj: &Bound<'py, PyAny>,
+    classify: impl FnOnce(&Bound<'py, PyAny>) -> PyResult<Key<'py>>,
+    read: impl FnOnce(&T, Option<usize>) -> R,
+) -> PyResult<R> {
+    if let Some(probe) = quick(obj) {
+        let guard = lock.read(py);
+        if let Some(pos) = guard.table().find_quick(&probe) {
+            return Ok(read(&guard, pos));
+        }
+    }
+    let key = classify(obj)?;
+    with_entry(py, lock, &key, read)
+}
+
+/// [`lookup`] under the exclusive lock.
+pub(crate) fn lookup_mut<'py, T: Keyed, R>(
+    py: Python<'py>,
+    lock: &Locked<T>,
+    obj: &Bound<'py, PyAny>,
+    classify: impl FnOnce(&Bound<'py, PyAny>) -> PyResult<Key<'py>>,
+    write: impl FnOnce(&mut T, Option<usize>) -> R,
+) -> PyResult<R> {
+    if let Some(probe) = quick(obj) {
+        let mut guard = lock.write(py);
+        if let Some(pos) = guard.table().find_quick(&probe) {
+            return Ok(write(&mut guard, pos));
+        }
+    }
+    let key = classify(obj)?;
+    with_entry_mut(py, lock, &key, write)
+}
+
 /// The Python object for a coerced value, reusing `original` when it already has the
 /// stored type.
-pub(crate) fn materialize<'py>(original: &Bound<'py, PyAny>, coerced: Coerced) -> PyResult<Bound<'py, PyAny>> {
+pub(crate) fn materialize<'py>(
+    original: &Bound<'py, PyAny>,
+    coerced: Coerced,
+) -> PyResult<Bound<'py, PyAny>> {
     use rustique_core::Value;
     let py = original.py();
     let value = match coerced {
@@ -840,26 +1400,38 @@ pub(crate) fn materialize<'py>(original: &Bound<'py, PyAny>, coerced: Coerced) -
     })
 }
 
+/// Validate `obj` against a key/element schema and prepare the stored form.
+pub(crate) fn prepare_owned<'py>(
+    obj: Bound<'py, PyAny>,
+    schema: &Schema,
+    role: Role,
+    container: impl FnOnce() -> String,
+) -> PyResult<Prepared<'py>> {
+    match native_key(&obj, schema) {
+        Some(native) => Ok(native),
+        None => prepare(obj, schema, role, container).map(Prepared::Key),
+    }
+}
+
 /// Validate `obj` against a key/element schema and classify the stored form.
 pub(crate) fn prepare<'py>(
-    obj: &Bound<'py, PyAny>,
+    obj: Bound<'py, PyAny>,
     schema: &Schema,
     role: Role,
     container: impl FnOnce() -> String,
 ) -> PyResult<Key<'py>> {
     let fast = match schema {
         Schema::Any => true,
+        // Huge ints stay objects (the table demotes), like the schema says.
         Schema::Int => obj.is_exact_instance_of::<PyInt>(),
         Schema::Str => obj.is_exact_instance_of::<PyString>(),
         _ => false,
     };
     if fast {
-        let key = Key::classify(obj, role)?;
-        // A typed int table demotes huge ints like the schema says; anything else is native.
-        return Ok(key);
+        return Key::classify_owned(obj, role);
     }
-    match schema.coerce(obj) {
-        Ok(coerced) => Key::classify(&materialize(obj, coerced)?, role),
+    match schema.coerce(&obj) {
+        Ok(coerced) => Key::classify_owned(materialize(&obj, coerced)?, role),
         Err(e) => Err(e.into_pyerr(&container(), None)),
     }
 }
@@ -877,12 +1449,28 @@ mod tests {
         assert_eq!(py_hash_i64((1 << 61) - 1), 0);
         assert_eq!(py_hash_i64(1 << 61), 1);
         assert_eq!(py_hash_i64(i64::MIN), -4);
-        assert_eq!(py_hash_i64(i64::MAX), (i64::MAX as u64 % HASH_MODULUS) as isize);
+        assert_eq!(
+            py_hash_i64(i64::MAX),
+            (i64::MAX as u64 % HASH_MODULUS) as isize
+        );
     }
 
     #[test]
     fn preimages_invert_the_hash() {
-        for v in [0i64, 1, -1, -2, 2, 12345, -12345, i64::MAX, i64::MIN, (1 << 61) - 1, 1 << 62, -(1 << 62)] {
+        for v in [
+            0i64,
+            1,
+            -1,
+            -2,
+            2,
+            12345,
+            -12345,
+            i64::MAX,
+            i64::MIN,
+            (1 << 61) - 1,
+            1 << 62,
+            -(1 << 62),
+        ] {
             let h = py_hash_i64(v);
             let pre = int_hash_preimages(h);
             assert!(pre.contains(&v), "{v} not among preimages of {h}: {pre:?}");
@@ -891,6 +1479,30 @@ mod tests {
         }
         assert!(int_hash_preimages(-1).is_empty());
         assert!(int_hash_preimages(isize::MAX).is_empty());
+    }
+
+    #[test]
+    fn mix_is_invertible() {
+        for raw in [
+            0isize,
+            1,
+            -1,
+            -2,
+            42,
+            isize::MAX,
+            isize::MIN,
+            0x1234_5678_9abc_def0,
+            -987_654_321,
+        ] {
+            assert_eq!(unmix(mix(raw)), raw);
+        }
+        assert_eq!(inverse(MIX_1).wrapping_mul(MIX_1), 1);
+        assert_eq!(inverse(MIX_2).wrapping_mul(MIX_2), 1);
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..1000 {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            assert_eq!(unmix(mix(x as isize)), x as isize);
+        }
     }
 
     #[test]

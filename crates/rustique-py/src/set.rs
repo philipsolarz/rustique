@@ -6,16 +6,18 @@
 use std::hash::Hash;
 use std::sync::Arc;
 
+use pyo3::PyTraverseError;
 use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyTypeError};
 use pyo3::gc::PyVisit;
 use pyo3::prelude::*;
 use pyo3::pyclass::CompareOp;
 use pyo3::types::{PyFrozenSet, PyList, PySet, PyType};
-use pyo3::PyTraverseError;
 use rustique_core::index::KeyIndex;
 
-use crate::dict::keys::{self, Key, KeyKind, KeyTable, Keyed, Locked, NativeKeys, Role};
-use crate::dict::{ReprGuard, collect_iterable};
+use crate::dict::keys::{
+    self, Key, KeyKind, KeyTable, Keyed, Locked, NativeKeys, Prepared, Role, Slot,
+};
+use crate::dict::{Raw, ReprGuard, collect_iterable, read_elements};
 use crate::schema::{self, Schema};
 
 pub(crate) struct SetInner {
@@ -25,6 +27,10 @@ pub(crate) struct SetInner {
 impl Keyed for SetInner {
     fn table(&self) -> &KeyTable {
         &self.table
+    }
+
+    fn table_mut(&mut self) -> &mut KeyTable {
+        &mut self.table
     }
 }
 
@@ -40,10 +46,11 @@ impl SetInner {
 /// What a set operation's other operand is.
 enum Operand<'py> {
     Rustique(Bound<'py, Set>),
-    /// Builtin `set`/`frozenset`: membership via Python `in`.
-    Builtin(Bound<'py, PyAny>),
     /// Elements collected into a private table; `is_set` when they came from a set.
-    Local { table: KeyTable, is_set: bool },
+    Local {
+        table: KeyTable,
+        is_set: bool,
+    },
 }
 
 impl<'py> Operand<'py> {
@@ -51,10 +58,11 @@ impl<'py> Operand<'py> {
         if let Ok(s) = obj.cast::<Set>() {
             return Ok(Operand::Rustique(s.clone()));
         }
-        if obj.is_instance_of::<PySet>() || obj.is_instance_of::<PyFrozenSet>() {
-            return Ok(Operand::Builtin(obj.clone()));
-        }
-        Ok(Operand::Local { table: local_table(obj, KeyKind::Adaptive)?, is_set: false })
+        let is_set = obj.is_instance_of::<PySet>() || obj.is_instance_of::<PyFrozenSet>();
+        Ok(Operand::Local {
+            table: local_table(obj)?,
+            is_set,
+        })
     }
 
     fn is_set(&self) -> bool {
@@ -67,26 +75,22 @@ impl<'py> Operand<'py> {
     fn len(&self) -> PyResult<usize> {
         match self {
             Operand::Rustique(s) => Ok(s.get().len(s.py())),
-            Operand::Builtin(obj) => obj.len(),
             Operand::Local { table, .. } => Ok(table.len()),
         }
     }
 
-    fn contains(&self, elem: &Bound<'py, PyAny>) -> PyResult<bool> {
+    fn contains(&self, key: &Key<'py>) -> PyResult<bool> {
         match self {
-            Operand::Rustique(s) => s.get().contains(elem),
-            Operand::Builtin(obj) => obj.contains(elem),
-            Operand::Local { table, .. } => {
-                Ok(table.find_local(elem.py(), &Key::classify(elem, Role::SetElement)?)?.is_some())
-            }
+            Operand::Rustique(s) => s.get().contains_key(key),
+            Operand::Local { table, .. } => Ok(table.find_local(key.obj.py(), key)?.is_some()),
         }
     }
 
-    fn elements(&self, py: Python<'py>) -> Vec<Bound<'py, PyAny>> {
+    /// The elements, classified with their stored hashes.
+    fn keys(&self, py: Python<'py>) -> PyResult<Vec<Key<'py>>> {
         match self {
-            Operand::Rustique(s) => s.get().element_objects(py).into_iter().map(|o| o.into_bound(py)).collect(),
-            Operand::Builtin(obj) => collect_iterable(obj).0,
-            Operand::Local { table, .. } => table.key_objects(py).into_iter().map(|o| o.into_bound(py)).collect(),
+            Operand::Rustique(s) => s.get().element_keys(py),
+            Operand::Local { table, .. } => table.element_keys(py),
         }
     }
 
@@ -95,7 +99,6 @@ impl<'py> Operand<'py> {
         match self {
             Operand::Rustique(s) => s.get().inner.read(s.py()).table.native_clone(),
             Operand::Local { table, .. } => table.native_clone(),
-            Operand::Builtin(_) => None,
         }
     }
 
@@ -108,16 +111,23 @@ impl<'py> Operand<'py> {
     }
 }
 
-/// Collect `obj`'s elements into a private (unshared) table.
-fn local_table(obj: &Bound<'_, PyAny>, kind: KeyKind) -> PyResult<KeyTable> {
+/// Collect `obj`'s elements into a private (unshared, untyped) table.
+fn local_table(obj: &Bound<'_, PyAny>) -> PyResult<KeyTable> {
     let py = obj.py();
-    let (items, err) = collect_iterable(obj);
+    let (raw, err) = read_elements(obj, &Schema::Any);
     if let Some(err) = err {
         return Err(err);
     }
-    let mut table = KeyTable::new(kind);
-    for item in &items {
-        table.insert_local(py, &Key::classify(item, Role::SetElement)?)?;
+    let mut table = KeyTable::new(KeyKind::Adaptive);
+    table.reserve(raw.len());
+    for item in raw {
+        let prepared = match item {
+            Raw::Ready(native) => native,
+            Raw::Later(obj) => Prepared::Key(Key::classify_owned(obj, Role::SetElement)?),
+        };
+        if let Err(key) = table.upsert(py, prepared)? {
+            table.insert_local(py, &key)?;
+        }
     }
     Ok(table)
 }
@@ -130,7 +140,10 @@ fn union_native<K: Hash + Eq + Clone>(mut a: KeyIndex<K>, b: &KeyIndex<K>) -> Ke
     a
 }
 
-fn intersection_native<K: Hash + Eq + Clone + Default>(a: &KeyIndex<K>, b: &KeyIndex<K>) -> KeyIndex<K> {
+fn intersection_native<K: Hash + Eq + Clone + Default>(
+    a: &KeyIndex<K>,
+    b: &KeyIndex<K>,
+) -> KeyIndex<K> {
     let (small, large) = if b.len() < a.len() { (b, a) } else { (a, b) };
     let mut out = KeyIndex::default();
     for (_, k) in small.iter() {
@@ -141,7 +154,10 @@ fn intersection_native<K: Hash + Eq + Clone + Default>(a: &KeyIndex<K>, b: &KeyI
     out
 }
 
-fn difference_native<K: Hash + Eq + Clone + Default>(a: &KeyIndex<K>, b: &KeyIndex<K>) -> KeyIndex<K> {
+fn difference_native<K: Hash + Eq + Clone + Default>(
+    a: &KeyIndex<K>,
+    b: &KeyIndex<K>,
+) -> KeyIndex<K> {
     let mut out = KeyIndex::default();
     for (_, k) in a.iter() {
         if !b.contains(k) {
@@ -151,7 +167,10 @@ fn difference_native<K: Hash + Eq + Clone + Default>(a: &KeyIndex<K>, b: &KeyInd
     out
 }
 
-fn symmetric_difference_native<K: Hash + Eq + Clone + Default>(a: &KeyIndex<K>, b: &KeyIndex<K>) -> KeyIndex<K> {
+fn symmetric_difference_native<K: Hash + Eq + Clone + Default>(
+    a: &KeyIndex<K>,
+    b: &KeyIndex<K>,
+) -> KeyIndex<K> {
     let mut out = KeyIndex::default();
     for (_, k) in a.iter() {
         if !b.contains(k) {
@@ -224,7 +243,10 @@ impl Set {
     }
 
     fn with_table(schema: Arc<Schema>, table: KeyTable) -> Set {
-        Set { schema, inner: Locked::new(SetInner { table }) }
+        Set {
+            schema,
+            inner: Locked::new(SetInner { table }),
+        }
     }
 
     fn empty(schema: Arc<Schema>) -> Set {
@@ -232,7 +254,11 @@ impl Set {
         Set::with_table(schema, table)
     }
 
-    fn build<'py>(py: Python<'py>, schema: Arc<Schema>, iterable: Option<&Bound<'py, PyAny>>) -> PyResult<Set> {
+    fn build<'py>(
+        py: Python<'py>,
+        schema: Arc<Schema>,
+        iterable: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Set> {
         if let Some(it) = iterable
             && let Ok(other) = it.cast::<Set>()
             && other.get().same_schema(&schema)
@@ -252,19 +278,49 @@ impl Set {
     }
 
     fn type_name(&self) -> String {
-        if self.schema.is_any() { "Set".to_owned() } else { format!("Set[{}]", self.schema) }
+        if self.schema.is_any() {
+            "Set".to_owned()
+        } else {
+            format!("Set[{}]", self.schema)
+        }
     }
 
-    fn prepare<'py>(&self, elem: &Bound<'py, PyAny>) -> PyResult<Key<'py>> {
-        keys::prepare(elem, &self.schema, Role::SetElement, || self.type_name())
+    fn prepare<'py>(&self, elem: Bound<'py, PyAny>) -> PyResult<Prepared<'py>> {
+        keys::prepare_owned(elem, &self.schema, Role::SetElement, || self.type_name())
+    }
+
+    /// Read and validate the elements of `iterable`; stops at the first invalid one.
+    fn prepare_all<'py>(
+        &self,
+        iterable: &Bound<'py, PyAny>,
+    ) -> (Vec<Prepared<'py>>, Option<PyErr>) {
+        let (raw, mut err) = read_elements(iterable, &self.schema);
+        let mut out = Vec::with_capacity(raw.len());
+        for item in raw {
+            let prepared = match item {
+                Raw::Ready(native) => Ok(native),
+                Raw::Later(obj) => self.prepare(obj),
+            };
+            match prepared {
+                Ok(p) => out.push(p),
+                Err(e) => {
+                    err = Some(e);
+                    break;
+                }
+            }
+        }
+        (out, err)
     }
 
     /// Classify a lookup probe; an unhashable builtin `set` is looked up as a `frozenset`
     /// (like CPython).
     fn probe<'py>(elem: &Bound<'py, PyAny>) -> PyResult<Key<'py>> {
         match Key::classify(elem, Role::SetElement) {
-            Err(e) if elem.is_instance_of::<PySet>() && e.is_instance_of::<PyTypeError>(elem.py()) => {
-                let frozen = PyFrozenSet::new(elem.py(), elem.try_iter()?.collect::<PyResult<Vec<_>>>()?)?;
+            Err(e)
+                if elem.is_instance_of::<PySet>() && e.is_instance_of::<PyTypeError>(elem.py()) =>
+            {
+                let frozen =
+                    PyFrozenSet::new(elem.py(), elem.try_iter()?.collect::<PyResult<Vec<_>>>()?)?;
                 Key::classify(frozen.as_any(), Role::SetElement)
             }
             other => other,
@@ -280,30 +336,37 @@ impl Set {
     }
 
     fn contains(&self, elem: &Bound<'_, PyAny>) -> PyResult<bool> {
-        let key = Set::probe(elem)?;
-        keys::with_entry(elem.py(), &self.inner, &key, |_, pos| pos.is_some())
+        keys::lookup(elem.py(), &self.inner, elem, Set::probe, |_, pos| {
+            pos.is_some()
+        })
+    }
+
+    fn contains_key(&self, key: &Key<'_>) -> PyResult<bool> {
+        keys::with_entry(key.obj.py(), &self.inner, key, |_, pos| pos.is_some())
+    }
+
+    fn element_keys<'py>(&self, py: Python<'py>) -> PyResult<Vec<Key<'py>>> {
+        self.inner.read(py).table.element_keys(py)
     }
 
     /// Insert every element of `iterable` (validated) in order; the valid prefix is kept
     /// when an element is rejected.
     fn add_all(&self, py: Python<'_>, iterable: &Bound<'_, PyAny>) -> PyResult<()> {
-        let (items, mut err) = collect_iterable(iterable);
-        let mut prepared = Vec::with_capacity(items.len());
-        for item in &items {
-            match self.prepare(item) {
-                Ok(key) => prepared.push(key),
-                Err(e) => {
-                    err = Some(e);
-                    break;
-                }
-            }
+        let (prepared, err) = self.prepare_all(iterable);
+        if prepared.len() > 1 {
+            self.inner.write(py).table.reserve(prepared.len());
         }
-        keys::batch_mut(py, &self.inner, prepared, |k| k, |inner, key, pos| {
-            if pos.is_none() {
-                inner.table.push(py, &key)?;
-            }
-            Ok(())
-        })?;
+        keys::batch_upsert(
+            py,
+            &self.inner,
+            prepared.into_iter().map(|p| (p, ())),
+            |inner, (), slot| {
+                if let Slot::Absent(key) = slot {
+                    inner.table.push(py, key)?;
+                }
+                Ok(())
+            },
+        )?;
         err.map_or(Ok(()), Err)
     }
 
@@ -315,22 +378,28 @@ impl Set {
         }
         let probes = items.iter().map(Set::probe).collect::<PyResult<Vec<_>>>()?;
         let mut displaced = Vec::new();
-        keys::batch_mut(py, &self.inner, probes, |k| k, |inner, _, pos| {
-            if let Some(pos) = pos {
-                inner.remove_at(py, pos, &mut displaced);
-            }
-            Ok(())
-        })?;
+        keys::batch_mut(
+            py,
+            &self.inner,
+            probes,
+            |k| k,
+            |inner, _, pos| {
+                if let Some(pos) = pos {
+                    inner.remove_at(py, pos, &mut displaced);
+                }
+                Ok(())
+            },
+        )?;
         drop(displaced);
         Ok(())
     }
 
     /// Remove `elem`; returns whether it was present.
     fn discard_elem(&self, py: Python<'_>, elem: &Bound<'_, PyAny>) -> PyResult<bool> {
-        let key = Set::probe(elem)?;
         let mut displaced = Vec::new();
-        let found = keys::with_entry_mut(py, &self.inner, &key, |inner, pos| {
-            pos.map(|p| inner.remove_at(py, p, &mut displaced)).is_some()
+        let found = keys::lookup_mut(py, &self.inner, elem, Set::probe, |inner, pos| {
+            pos.map(|p| inner.remove_at(py, p, &mut displaced))
+                .is_some()
         })?;
         drop(displaced);
         Ok(found)
@@ -344,7 +413,11 @@ impl Set {
     /// Result schema of a binary operation: ours when every operand is a `Set` of the
     /// same schema, otherwise untyped.
     fn result_schema(&self, others: &[Operand<'_>]) -> Arc<Schema> {
-        if !self.schema.is_any() && others.iter().all(|o| o.schema().is_some_and(|s| self.same_schema(s))) {
+        if !self.schema.is_any()
+            && others
+                .iter()
+                .all(|o| o.schema().is_some_and(|s| self.same_schema(s)))
+        {
             self.schema.clone()
         } else {
             schema::any()
@@ -352,7 +425,10 @@ impl Set {
     }
 
     fn compute(&self, py: Python<'_>, op: Algebra, others: &[Bound<'_, PyAny>]) -> PyResult<Set> {
-        let operands = others.iter().map(Operand::new).collect::<PyResult<Vec<_>>>()?;
+        let operands = others
+            .iter()
+            .map(Operand::new)
+            .collect::<PyResult<Vec<_>>>()?;
         let schema = self.result_schema(&operands);
         let kind = KeyKind::for_schema(&schema);
         let mut table = self.snapshot_table(py).0.with_kind(kind);
@@ -363,7 +439,11 @@ impl Set {
     }
 
     /// Replace the contents with `f(snapshot)`, retrying if the set changed meanwhile.
-    fn replace_with(&self, py: Python<'_>, f: impl Fn(KeyTable) -> PyResult<KeyTable>) -> PyResult<()> {
+    fn replace_with(
+        &self,
+        py: Python<'_>,
+        f: impl Fn(KeyTable) -> PyResult<KeyTable>,
+    ) -> PyResult<()> {
         loop {
             let (snapshot, version) = self.snapshot_table(py);
             let table = f(snapshot)?;
@@ -389,12 +469,12 @@ impl Set {
                 _ => {}
             }
         }
-        let elems = self.element_objects(py);
+        let elems = self.element_keys(py)?;
         if elems.len() > other.len()? {
             return Ok(false);
         }
-        for e in elems {
-            if !other.contains(e.bind(py))? {
+        for key in &elems {
+            if !other.contains(key)? {
                 return Ok(false);
             }
         }
@@ -411,8 +491,8 @@ impl Set {
                 _ => {}
             }
         }
-        for e in other.elements(py) {
-            if !self.contains(&e)? {
+        for key in &other.keys(py)? {
+            if !self.contains_key(key)? {
                 return Ok(false);
             }
         }
@@ -430,15 +510,15 @@ impl Set {
             }
         }
         if other.is_set() && other.len()? > self.len(py) {
-            for e in self.element_objects(py) {
-                if other.contains(e.bind(py))? {
+            for key in &self.element_keys(py)? {
+                if other.contains(key)? {
                     return Ok(false);
                 }
             }
             return Ok(true);
         }
-        for e in other.elements(py) {
-            if self.contains(&e)? {
+        for key in &other.keys(py)? {
+            if self.contains_key(key)? {
                 return Ok(false);
             }
         }
@@ -457,57 +537,89 @@ impl Set {
         if !is_set_operand(other) {
             return Ok(py.NotImplemented());
         }
-        Ok(Bound::new(py, self.compute(py, op, std::slice::from_ref(other))?)?.into_any().unbind())
+        Ok(
+            Bound::new(py, self.compute(py, op, std::slice::from_ref(other))?)?
+                .into_any()
+                .unbind(),
+        )
     }
 
     /// `other <op> self` with a builtin set on the left: an untyped result.
-    fn reflected(&self, py: Python<'_>, op: Algebra, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    fn reflected(
+        &self,
+        py: Python<'_>,
+        op: Algebra,
+        other: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
         if !is_set_operand(other) {
             return Ok(py.NotImplemented());
         }
-        let left = local_table(other, KeyKind::Adaptive)?;
-        let me = Operand::Local { table: self.snapshot_table(py).0, is_set: true };
+        let left = local_table(other)?;
+        let me = Operand::Local {
+            table: self.snapshot_table(py).0,
+            is_set: true,
+        };
         let table = table_algebra(py, op, left, &me, KeyKind::Adaptive)?;
-        Ok(Bound::new(py, Set::with_table(schema::any(), table))?.into_any().unbind())
+        Ok(Bound::new(py, Set::with_table(schema::any(), table))?
+            .into_any()
+            .unbind())
     }
 
     fn in_place(&self, py: Python<'_>, op: Algebra, others: &[Bound<'_, PyAny>]) -> PyResult<()> {
         match op {
             Algebra::Union => others.iter().try_for_each(|other| self.add_all(py, other)),
-            Algebra::Difference => others.iter().try_for_each(|other| self.remove_all(py, other)),
+            Algebra::Difference => others
+                .iter()
+                .try_for_each(|other| self.remove_all(py, other)),
             Algebra::Intersection => {
-                let operands = others.iter().map(Operand::new).collect::<PyResult<Vec<_>>>()?;
+                let operands = others
+                    .iter()
+                    .map(Operand::new)
+                    .collect::<PyResult<Vec<_>>>()?;
                 let kind = KeyKind::for_schema(&self.schema);
+                // Untyped sets keep the elements CPython keeps; typed sets keep their own
+                // (already validated) elements.
+                let typed = !self.schema.is_any();
                 self.replace_with(py, |mut table| {
                     for operand in &operands {
-                        table = retain_contained(py, table, operand, kind)?;
+                        table = if typed {
+                            retain_contained(py, table, operand, kind)?
+                        } else {
+                            table_algebra(py, Algebra::Intersection, table, operand, kind)?
+                        };
                     }
                     Ok(table)
                 })
             }
             Algebra::SymmetricDifference => {
-                let mut incoming = KeyTable::new(KeyKind::Adaptive);
-                let (items, err) = collect_iterable(&others[0]);
+                // Validate, then de-duplicate the incoming elements (Python equality) first.
+                let (prepared, err) = self.prepare_all(&others[0]);
                 if let Some(err) = err {
                     return Err(err);
                 }
-                let mut prepared = Vec::with_capacity(items.len());
-                for item in &items {
-                    let key = self.prepare(item)?;
-                    if incoming.insert_local(py, &key)? {
-                        prepared.push(key);
+                let mut incoming = KeyTable::new(KeyKind::Adaptive);
+                for p in prepared {
+                    if let Err(key) = incoming.upsert(py, p)? {
+                        incoming.insert_local(py, &key)?;
                     }
                 }
+                let incoming = incoming.element_keys(py)?;
                 let mut displaced = Vec::new();
-                keys::batch_mut(py, &self.inner, prepared, |k| k, |inner, key, pos| {
-                    match pos {
-                        Some(pos) => inner.remove_at(py, pos, &mut displaced),
-                        None => {
-                            inner.table.push(py, &key)?;
+                keys::batch_mut(
+                    py,
+                    &self.inner,
+                    incoming,
+                    |k| k,
+                    |inner, key, pos| {
+                        match pos {
+                            Some(pos) => inner.remove_at(py, pos, &mut displaced),
+                            None => {
+                                inner.table.push(py, key)?;
+                            }
                         }
-                    }
-                    Ok(())
-                })?;
+                        Ok(())
+                    },
+                )?;
                 drop(displaced);
                 Ok(())
             }
@@ -517,27 +629,37 @@ impl Set {
 
 /// Operator forms accept only `Set`, `set` and `frozenset`.
 fn is_set_operand(obj: &Bound<'_, PyAny>) -> bool {
-    obj.is_instance_of::<Set>() || obj.is_instance_of::<PySet>() || obj.is_instance_of::<PyFrozenSet>()
+    obj.is_instance_of::<Set>()
+        || obj.is_instance_of::<PySet>()
+        || obj.is_instance_of::<PyFrozenSet>()
 }
 
 /// `mine <op> other` on private tables: natively when both store the same native keys,
 /// otherwise with Python equality.
-fn table_algebra(py: Python<'_>, op: Algebra, mine: KeyTable, other: &Operand<'_>, kind: KeyKind) -> PyResult<KeyTable> {
+fn table_algebra(
+    py: Python<'_>,
+    op: Algebra,
+    mine: KeyTable,
+    other: &Operand<'_>,
+    kind: KeyKind,
+) -> PyResult<KeyTable> {
     let mine = match other.native() {
         Some(theirs) => match mine.into_native() {
             Ok(native) => match native_algebra(op, native, &theirs) {
                 Ok(result) => return Ok(KeyTable::from_native(result, kind)),
                 Err(native) => KeyTable::from_native(native, kind),
             },
-            Err(table) => table,
+            Err(table) => *table,
         },
         None => mine,
     };
     match op {
         Algebra::Union => {
             let mut mine = mine;
-            for e in other.elements(py) {
-                mine.insert_local(py, &Key::classify(&e, Role::SetElement)?)?;
+            for key in &other.keys(py)? {
+                if mine.upsert_fast(key).is_none() {
+                    mine.insert_local(py, key)?;
+                }
             }
             Ok(mine)
         }
@@ -547,35 +669,32 @@ fn table_algebra(py: Python<'_>, op: Algebra, mine: KeyTable, other: &Operand<'_
                 return retain_contained(py, mine, other, kind);
             }
             let mut out = KeyTable::new(kind);
-            for e in other.elements(py) {
-                let key = Key::classify(&e, Role::SetElement)?;
-                if mine.find_local(py, &key)?.is_some() {
-                    out.insert_local(py, &key)?;
+            for key in &other.keys(py)? {
+                if mine.find_local(py, key)?.is_some() {
+                    out.push(py, key)?;
                 }
             }
             Ok(out)
         }
         Algebra::Difference => {
             let mut out = KeyTable::new(kind);
-            for e in mine.key_objects(py) {
-                let e = e.into_bound(py);
-                if !other.contains(&e)? {
-                    out.insert_local(py, &Key::classify(&e, Role::SetElement)?)?;
+            for key in &mine.element_keys(py)? {
+                if !other.contains(key)? {
+                    out.push(py, key)?;
                 }
             }
             Ok(out)
         }
         Algebra::SymmetricDifference => {
             let mut mine = mine;
-            for e in other.elements(py) {
-                let key = Key::classify(&e, Role::SetElement)?;
-                match mine.find_local(py, &key)? {
+            for key in &other.keys(py)? {
+                match mine.find_local(py, key)? {
                     Some(pos) => {
                         drop(mine.remove_at(py, pos));
                         let _ = mine.maybe_compact();
                     }
                     None => {
-                        mine.push(py, &key)?;
+                        mine.push(py, key)?;
                     }
                 }
             }
@@ -585,23 +704,33 @@ fn table_algebra(py: Python<'_>, op: Algebra, mine: KeyTable, other: &Operand<'_
 }
 
 /// The elements of `mine` (keeping their objects) that `other` contains.
-fn retain_contained(py: Python<'_>, mine: KeyTable, other: &Operand<'_>, kind: KeyKind) -> PyResult<KeyTable> {
+fn retain_contained(
+    py: Python<'_>,
+    mine: KeyTable,
+    other: &Operand<'_>,
+    kind: KeyKind,
+) -> PyResult<KeyTable> {
     if let Some(theirs) = other.native() {
         match (mine.native_clone(), &theirs) {
             (Some(NativeKeys::Int(a)), NativeKeys::Int(b)) => {
-                return Ok(KeyTable::from_native(NativeKeys::Int(retain_native(&a, b)), kind));
+                return Ok(KeyTable::from_native(
+                    NativeKeys::Int(retain_native(&a, b)),
+                    kind,
+                ));
             }
             (Some(NativeKeys::Str(a)), NativeKeys::Str(b)) => {
-                return Ok(KeyTable::from_native(NativeKeys::Str(retain_native(&a, b)), kind));
+                return Ok(KeyTable::from_native(
+                    NativeKeys::Str(retain_native(&a, b)),
+                    kind,
+                ));
             }
             _ => {}
         }
     }
     let mut out = KeyTable::new(kind);
-    for e in mine.key_objects(py) {
-        let e = e.into_bound(py);
-        if other.contains(&e)? {
-            out.insert_local(py, &Key::classify(&e, Role::SetElement)?)?;
+    for key in &mine.element_keys(py)? {
+        if other.contains(key)? {
+            out.push(py, key)?;
         }
     }
     Ok(out)
@@ -626,7 +755,10 @@ impl Set {
     }
 
     #[classmethod]
-    fn __class_getitem__<'py>(cls: &Bound<'py, PyType>, item: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    fn __class_getitem__<'py>(
+        cls: &Bound<'py, PyType>,
+        item: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         crate::typing::set_alias(cls.py(), item)
     }
 
@@ -645,9 +777,17 @@ impl Set {
         let py = slf.py();
         let inner = slf.get().inner.read(py);
         let len = inner.table.len();
-        let state = SetIterState { pos: 0, expected: len, layout: inner.table.layout(), exhausted: false };
+        let state = SetIterState {
+            pos: 0,
+            expected: len,
+            layout: inner.table.layout(),
+            exhausted: false,
+        };
         drop(inner);
-        SetIterator { set: slf.clone().unbind(), state: Locked::new(state) }
+        SetIterator {
+            set: slf.clone().unbind(),
+            state: Locked::new(state),
+        }
     }
 
     fn __repr__(slf: &Bound<'_, Self>) -> PyResult<String> {
@@ -672,7 +812,11 @@ impl Set {
         Ok(out)
     }
 
-    fn __richcmp__(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<Py<PyAny>> {
+    fn __richcmp__(
+        slf: &Bound<'_, Self>,
+        other: &Bound<'_, PyAny>,
+        op: CompareOp,
+    ) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         if !is_set_operand(other) {
             return Ok(py.NotImplemented());
@@ -694,11 +838,13 @@ impl Set {
     }
 
     fn add(&self, py: Python<'_>, elem: &Bound<'_, PyAny>) -> PyResult<()> {
-        let key = self.prepare(elem)?;
-        keys::with_entry_mut(py, &self.inner, &key, |inner, pos| match pos {
-            Some(_) => Ok(()),
-            None => inner.table.push(py, &key).map(drop),
-        })?
+        let key = self.prepare(elem.clone())?;
+        keys::batch_upsert(py, &self.inner, [(key, ())], |inner, (), slot| {
+            if let Slot::Absent(key) = slot {
+                inner.table.push(py, key)?;
+            }
+            Ok(())
+        })
     }
 
     fn discard(&self, py: Python<'_>, elem: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -706,7 +852,11 @@ impl Set {
     }
 
     fn remove(&self, py: Python<'_>, elem: &Bound<'_, PyAny>) -> PyResult<()> {
-        if self.discard_elem(py, elem)? { Ok(()) } else { Err(PyKeyError::new_err(elem.clone().unbind())) }
+        if self.discard_elem(py, elem)? {
+            Ok(())
+        } else {
+            Err(PyKeyError::new_err((elem.clone().unbind(),)))
+        }
     }
 
     /// Remove and return an element (the most recently inserted one).
@@ -752,7 +902,11 @@ impl Set {
     }
 
     fn symmetric_difference(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Set> {
-        self.compute(py, Algebra::SymmetricDifference, std::slice::from_ref(other))
+        self.compute(
+            py,
+            Algebra::SymmetricDifference,
+            std::slice::from_ref(other),
+        )
     }
 
     #[pyo3(signature = (*others))]
@@ -770,8 +924,16 @@ impl Set {
         self.in_place(py, Algebra::Difference, &others)
     }
 
-    fn symmetric_difference_update(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<()> {
-        self.in_place(py, Algebra::SymmetricDifference, std::slice::from_ref(other))
+    fn symmetric_difference_update(
+        &self,
+        py: Python<'_>,
+        other: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.in_place(
+            py,
+            Algebra::SymmetricDifference,
+            std::slice::from_ref(other),
+        )
     }
 
     fn issubset(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
@@ -831,7 +993,11 @@ impl Set {
     }
 
     fn __ixor__(&self, py: Python<'_>, other: SetLike<'_>) -> PyResult<()> {
-        self.in_place(py, Algebra::SymmetricDifference, std::slice::from_ref(&other.0))
+        self.in_place(
+            py,
+            Algebra::SymmetricDifference,
+            std::slice::from_ref(&other.0),
+        )
     }
 
     /// A builtin `set` with the same elements.
@@ -839,8 +1005,14 @@ impl Set {
         PySet::new(py, self.element_objects(py))
     }
 
-    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyList>,))> {
-        Ok((self.schema_type_of(py)?, (PyList::new(py, self.element_objects(py))?,)))
+    fn __reduce__<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyList>,))> {
+        Ok((
+            self.schema_type_of(py)?,
+            (PyList::new(py, self.element_objects(py))?,),
+        ))
     }
 
     /// The alias describing this set's type (`Set[int]`, or `Set` when untyped).
@@ -864,8 +1036,10 @@ impl Set {
         Ok(())
     }
 
-    fn __clear__(&self, py: Python<'_>) {
-        self.clear(py);
+    fn __clear__(&self) {
+        // Runs inside the GC: never block (a contended set is simply not cleared now).
+        let displaced = self.inner.try_write().map(|mut inner| inner.table.clear());
+        drop(displaced);
     }
 }
 
@@ -876,7 +1050,10 @@ impl<'a, 'py> FromPyObject<'a, 'py> for SetLike<'py> {
     type Error = PyErr;
 
     fn extract(obj: Borrowed<'a, 'py, PyAny>) -> Result<Self, Self::Error> {
-        if obj.is_instance_of::<Set>() || obj.is_instance_of::<PySet>() || obj.is_instance_of::<PyFrozenSet>() {
+        if obj.is_instance_of::<Set>()
+            || obj.is_instance_of::<PySet>()
+            || obj.is_instance_of::<PyFrozenSet>()
+        {
             Ok(SetLike(obj.to_owned()))
         } else {
             Err(PyTypeError::new_err("expected a set"))
@@ -929,13 +1106,19 @@ impl SetIterator {
         }
     }
 
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        visit.call(&self.set)
+    }
+
     fn __length_hint__(&self, py: Python<'_>) -> usize {
         let st = self.state.read(py);
         if st.exhausted {
             return 0;
         }
         let inner = self.set.get().inner.read(py);
-        inner.table.index().map_or(0, |i| (st.pos..i.entries()).filter(|&p| i.is_live(p)).count())
+        inner.table.index().map_or(0, |i| {
+            (st.pos..i.entries()).filter(|&p| i.is_live(p)).count()
+        })
     }
 }
 
