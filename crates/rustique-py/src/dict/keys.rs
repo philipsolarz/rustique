@@ -420,9 +420,6 @@ fn identity_eq(obj: &Bound<'_, PyAny>) -> bool {
 
 /// Which objects `obj` compares with without running Python code (see [`Simple`]).
 pub(crate) fn simplicity(obj: &Bound<'_, PyAny>, depth: u32) -> Simple {
-    if obj.is_exact_instance_of::<PyBytes>() {
-        return Simple::Bytes;
-    }
     let simple = if obj.is_exact_instance_of::<PyInt>()
         || obj.is_exact_instance_of::<PyString>()
         || obj.is_exact_instance_of::<PyFloat>()
@@ -431,11 +428,12 @@ pub(crate) fn simplicity(obj: &Bound<'_, PyAny>, depth: u32) -> Simple {
         || obj.is_none()
     {
         true
+    } else if obj.is_exact_instance_of::<PyBytes>() {
+        return Simple::Bytes;
     } else if let Ok(t) = obj.cast_exact::<PyTuple>() {
         // Tuples compare item by item, so `bytes` items would meet anything.
         depth < 8
-            && t
-                .iter_borrowed()
+            && t.iter_borrowed()
                 .all(|item| simplicity(&item, depth + 1) == Simple::Yes)
     } else {
         (obj.is_instance_of::<PyInt>() && has_builtin_slots(obj, BuiltinBase::Int))
@@ -655,8 +653,11 @@ impl Lookup {
     }
 
     /// Forget what was learned (the next lookup is for another key).
+    #[inline]
     fn reset(&mut self) {
-        self.spent.append(&mut self.unequal);
+        if !self.unequal.is_empty() {
+            self.spent.append(&mut self.unequal);
+        }
         self.spent.extend(self.equal.take());
     }
 }
@@ -951,8 +952,17 @@ impl KeyTable {
         self.str_hashes = OnceLock::new();
     }
 
-    /// Keep the `str` hash index in step with a key just appended at `pos`.
+    /// Keep the `str` hash index (if any) in step with a key just appended at `pos`.
+    #[inline]
     fn appended(&mut self, py: Python<'_>, pos: usize) {
+        if self.str_hashes.get().is_some() {
+            self.index_appended(py, pos);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn index_appended(&mut self, py: Python<'_>, pos: usize) {
         if let (KeyStore::Str(ki), Some(index)) = (&self.store, self.str_hashes.get_mut()) {
             debug_assert_eq!(index.entries(), pos);
             index.push(mix(str_hash(py, &ki.raw_keys()[pos])));
@@ -974,33 +984,44 @@ impl KeyTable {
         }
     }
 
-    /// Insert-or-find a prepared key with a single probe when no Python code or demotion is
-    /// involved; otherwise hand back a classified [`Key`] for the general path.
-    #[inline]
-    pub(crate) fn upsert<'py>(
+    /// Insert-or-find a native key in a native table of its kind with a single probe;
+    /// anything else (object tables, demotion) is handed back.
+    #[inline(always)]
+    fn upsert_native<'py>(
         &mut self,
         py: Python<'py>,
         key: Prepared<'py>,
-    ) -> PyResult<Result<(usize, bool), Key<'py>>> {
-        let (pos, inserted) = match (&mut self.store, key) {
-            (KeyStore::Int(ki), Prepared::Int(v)) => ki.insert(v),
-            (KeyStore::Str(ki), Prepared::Str(s)) => ki.insert(s),
-            (KeyStore::Empty, key @ Prepared::Int(_)) => {
-                self.set_store(KeyStore::Int(KeyIndex::default()));
-                return self.upsert(py, key);
+    ) -> Result<(usize, bool), Prepared<'py>> {
+        match (&mut self.store, key) {
+            (KeyStore::Int(ki), Prepared::Int(v)) => Ok(ki.insert(v)),
+            (KeyStore::Str(ki), Prepared::Str(s)) => {
+                let (pos, inserted) = ki.insert(s);
+                if inserted {
+                    self.appended(py, pos);
+                }
+                Ok((pos, inserted))
             }
-            (KeyStore::Empty, key @ Prepared::Str(_)) => {
-                self.set_store(KeyStore::Str(KeyIndex::default()));
-                return self.upsert(py, key);
-            }
-            (_, Prepared::Key(key)) => return Ok(self.upsert_fast(&key).ok_or(key)),
-            (_, Prepared::Int(v)) => return Ok(Err(Key::from_int(py, v))),
-            (_, Prepared::Str(s)) => return Ok(Err(Key::from_str(py, &s)?)),
-        };
-        if inserted {
-            self.appended(py, pos);
+            (_, key) => self.upsert_native_first(py, key),
         }
-        Ok(Ok((pos, inserted)))
+    }
+
+    /// [`upsert_native`](Self::upsert_native) into an empty adaptive table, or a miss.
+    #[cold]
+    fn upsert_native_first<'py>(
+        &mut self,
+        py: Python<'py>,
+        key: Prepared<'py>,
+    ) -> Result<(usize, bool), Prepared<'py>> {
+        match (&self.store, &key) {
+            (KeyStore::Empty, Prepared::Int(_)) => {
+                self.set_store(KeyStore::Int(KeyIndex::default()))
+            }
+            (KeyStore::Empty, Prepared::Str(_)) => {
+                self.set_store(KeyStore::Str(KeyIndex::default()))
+            }
+            _ => return Err(key),
+        }
+        self.upsert_native(py, key)
     }
 
     /// Insert-or-find with a single probe when no Python code or demotion is involved:
@@ -1017,7 +1038,11 @@ impl KeyTable {
                 },
             ) => (ki.get(value)?, false),
             (KeyStore::Str(ki), Class::Str { text, exact: true }) => {
-                ki.insert_with(&**text, |s: &str| CompactString::from(s))
+                let (pos, inserted) = ki.insert_with(&**text, |s: &str| CompactString::from(s));
+                if inserted {
+                    self.appended(key.obj.py(), pos);
+                }
+                (pos, inserted)
             }
             (KeyStore::Str(ki), Class::Str { text, exact: false }) => (ki.get(&**text)?, false),
             (KeyStore::Empty, Class::Int { exact: true, .. }) => {
@@ -1030,9 +1055,6 @@ impl KeyTable {
             }
             _ => return None,
         };
-        if inserted {
-            self.appended(key.obj.py(), pos);
-        }
         Some((pos, inserted))
     }
 
@@ -1118,6 +1140,20 @@ impl KeyTable {
                 Scan::Compare(tokens) => state.compare(py, &key.obj, tokens)?,
             }
         }
+    }
+
+    /// Insert a prepared key into a table nobody else can reach (no-op when present).
+    pub(crate) fn insert_prepared(&mut self, py: Python<'_>, key: Prepared<'_>) -> PyResult<()> {
+        let key = match self.upsert_native(py, key) {
+            Ok(_) => return Ok(()),
+            Err(Prepared::Int(v)) => Key::from_int(py, v),
+            Err(Prepared::Str(s)) => Key::from_str(py, &s)?,
+            Err(Prepared::Key(key)) => key,
+        };
+        if self.upsert_fast(&key).is_none() {
+            self.insert_local(py, &key)?;
+        }
+        Ok(())
     }
 
     /// Insert `key` into a table nobody else can reach; returns `false` if it was present.
@@ -1234,10 +1270,17 @@ impl KeyTable {
     /// (`GROWTH_RATE`). Positions therefore move exactly when a `dict`'s would, which keeps
     /// iterating over a dict that is mutated meanwhile close to `dict`'s behaviour. Returns
     /// the remap for parallel storage when entries moved.
+    #[inline]
     pub(crate) fn grow(&mut self) -> Option<Remap> {
         if self.entries() <= self.usable {
             return None;
         }
+        self.grow_now()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn grow_now(&mut self) -> Option<Remap> {
         self.usable = usable_size(self.len().saturating_sub(1).saturating_mul(3));
         self.compact_if(|index| index.tombstones() > 0)
     }
@@ -1324,9 +1367,13 @@ fn str_hash(py: Python<'_>, s: &str) -> isize {
 fn str_hash_index(py: Python<'_>, ki: &KeyIndex<CompactString>) -> HashIndex {
     let live = |pos| ki.index().is_live(pos);
     let keys = ki.raw_keys();
-    let mut index = HashIndex::from_hashes(
-        (0..keys.len()).map(|pos| if live(pos) { mix(str_hash(py, &keys[pos])) } else { 0 }),
-    );
+    let mut index = HashIndex::from_hashes((0..keys.len()).map(|pos| {
+        if live(pos) {
+            mix(str_hash(py, &keys[pos]))
+        } else {
+            0
+        }
+    }));
     for pos in (0..keys.len()).filter(|&pos| !live(pos)) {
         index.remove_at(pos);
     }
@@ -1459,6 +1506,79 @@ fn batch_mut_locked<'py, T: Keyed, I>(
     Ok(())
 }
 
+/// [`batch_upsert`] for a single item, with a direct path for native keys of native tables.
+#[inline(always)]
+pub(crate) fn upsert_one<'py, T: Keyed, V>(
+    py: Python<'py>,
+    lock: &Locked<T>,
+    key: Prepared<'py>,
+    value: V,
+    mut commit: impl FnMut(&mut T, V, Slot<'_, 'py>) -> PyResult<()>,
+) -> PyResult<()> {
+    let key = match key {
+        Prepared::Key(key) => Prepared::Key(key),
+        native => {
+            let mut guard = lock.write(py);
+            match guard.table_mut().upsert_native(py, native) {
+                Ok((pos, false)) => return commit(&mut guard, value, Slot::Existing(pos)),
+                Ok((pos, true)) => {
+                    commit(&mut guard, value, Slot::Inserted(pos))?;
+                    let mut displaced = Vec::new();
+                    guard.inserted(&mut displaced);
+                    drop(guard);
+                    drop(displaced);
+                    return Ok(());
+                }
+                Err(native) => native,
+            }
+        }
+    };
+    upsert_one_general(py, lock, key, value, commit)
+}
+
+/// The general path of [`upsert_one`], kept out of line so that the native path stays small.
+#[inline(never)]
+fn upsert_one_general<'py, T: Keyed, V>(
+    py: Python<'py>,
+    lock: &Locked<T>,
+    key: Prepared<'py>,
+    value: V,
+    mut commit: impl FnMut(&mut T, V, Slot<'_, 'py>) -> PyResult<()>,
+) -> PyResult<()> {
+    let key = match key {
+        Prepared::Key(key) => key,
+        Prepared::Int(v) => Key::from_int(py, v),
+        Prepared::Str(s) => Key::from_str(py, &s)?,
+    };
+    // Declared before the guard, so released after it (as is `value`, a parameter, when an
+    // error stops us before `commit` takes it).
+    let mut state = Lookup::default();
+    let mut displaced = Vec::new();
+    let mut guard = lock.write(py);
+    if let Some((pos, inserted)) = guard.table_mut().upsert_fast(&key) {
+        let slot = if inserted {
+            Slot::Inserted(pos)
+        } else {
+            Slot::Existing(pos)
+        };
+        commit(&mut guard, value, slot)?;
+        if inserted {
+            guard.inserted(&mut displaced);
+        }
+        return Ok(());
+    }
+    let (mut guard, pos) = locate(py, guard, || lock.write(py), &key, &mut state)?;
+    commit(
+        &mut guard,
+        value,
+        pos.map_or(Slot::Absent(&key), Slot::Existing),
+    )?;
+    if pos.is_none() {
+        guard.inserted(&mut displaced);
+    }
+    Ok(())
+}
+
 /// What a batch upsert releases after its lock: the keys and values it consumed or did not
 /// get to (an error may stop it mid-way), and what its lookups kept alive.
 struct Spent<'py, V> {
@@ -1510,19 +1630,23 @@ fn batch_upsert_locked<'py, T: Keyed, V>(
     for (prepared, value) in items {
         let key = match prepared {
             Prepared::Key(key) => key,
-            native => match guard.table_mut().upsert(py, native) {
-                Ok(Ok((pos, inserted))) => {
+            native => match guard.table_mut().upsert_native(py, native) {
+                Ok((pos, inserted)) => {
                     commit(&mut guard, value, slot(pos, inserted))?;
                     if inserted {
                         guard.inserted(&mut spent.objects);
                     }
                     continue;
                 }
-                Ok(Err(key)) => key,
-                Err(e) => {
-                    spent.values.push(value);
-                    return Err(e);
-                }
+                Err(Prepared::Int(v)) => Key::from_int(py, v),
+                Err(Prepared::Str(s)) => match Key::from_str(py, &s) {
+                    Ok(key) => key,
+                    Err(e) => {
+                        spent.values.push(value);
+                        return Err(e);
+                    }
+                },
+                Err(Prepared::Key(key)) => key,
             },
         };
         if let Some((pos, inserted)) = guard.table_mut().upsert_fast(&key) {
@@ -1534,8 +1658,7 @@ fn batch_upsert_locked<'py, T: Keyed, V>(
             }
             continue;
         }
-        let (relocked, pos) = match locate(py, guard, || lock.write(py), &key, &mut spent.lookup)
-        {
+        let (relocked, pos) = match locate(py, guard, || lock.write(py), &key, &mut spent.lookup) {
             Ok(found) => found,
             Err(e) => {
                 spent.keys.push(key);

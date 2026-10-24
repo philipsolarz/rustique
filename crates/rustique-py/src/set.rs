@@ -125,9 +125,7 @@ fn local_table(obj: &Bound<'_, PyAny>) -> PyResult<KeyTable> {
             Raw::Ready(native) => native,
             Raw::Later(obj) => Prepared::Key(Key::classify_owned(obj, Role::SetElement)?),
         };
-        if let Err(key) = table.upsert(py, prepared)? {
-            table.insert_local(py, &key)?;
-        }
+        table.insert_prepared(py, prepared)?;
     }
     Ok(table)
 }
@@ -445,7 +443,11 @@ impl Set {
         let typed = !self.schema.is_any();
         // Native keys on every side need no Python code: one step under the write lock, so
         // concurrent writers cannot invalidate it.
-        if let Some(natives) = operands.iter().map(Operand::native).collect::<Option<Vec<_>>>() {
+        if let Some(natives) = operands
+            .iter()
+            .map(Operand::native)
+            .collect::<Option<Vec<_>>>()
+        {
             let mut inner = self.inner.write(py);
             if let Some(table) = native_intersection(&inner.table, &natives, kind, typed) {
                 let displaced = inner.table.replace(table);
@@ -479,7 +481,11 @@ impl Set {
             }
         }
         let mut displaced = Vec::new();
-        let res = self.inner.write(py).table.apply_fates(py, &fates, &mut displaced);
+        let res = self
+            .inner
+            .write(py)
+            .table
+            .apply_fates(py, &fates, &mut displaced);
         drop(displaced);
         drop(fates);
         drop(result);
@@ -613,9 +619,7 @@ impl Set {
                 }
                 let mut incoming = KeyTable::new(KeyKind::Adaptive);
                 for p in prepared {
-                    if let Err(key) = incoming.upsert(py, p)? {
-                        incoming.insert_local(py, &key)?;
-                    }
+                    incoming.insert_prepared(py, p)?;
                 }
                 let incoming = incoming.element_keys(py)?;
                 let mut displaced = Vec::new();
@@ -768,8 +772,12 @@ fn native_intersection(
     };
     for theirs in rest {
         result = match (result, theirs) {
-            (NativeKeys::Int(a), NativeKeys::Int(b)) if typed => NativeKeys::Int(retain_native(&a, b)),
-            (NativeKeys::Str(a), NativeKeys::Str(b)) if typed => NativeKeys::Str(retain_native(&a, b)),
+            (NativeKeys::Int(a), NativeKeys::Int(b)) if typed => {
+                NativeKeys::Int(retain_native(&a, b))
+            }
+            (NativeKeys::Str(a), NativeKeys::Str(b)) if typed => {
+                NativeKeys::Str(retain_native(&a, b))
+            }
             (a, b) => native_algebra(Algebra::Intersection, a, b).ok()?,
         };
     }
@@ -780,10 +788,26 @@ fn native_intersection(
 fn same_key(a: &Key<'_>, b: &Key<'_>) -> bool {
     a.obj.is(&b.obj)
         || match (&a.class, &b.class) {
-            (Class::Int { value: x, exact: true }, Class::Int { value: y, exact: true }) => x == y,
-            (Class::Str { text: x, exact: true }, Class::Str { text: y, exact: true }) => {
-                **x == **y
-            }
+            (
+                Class::Int {
+                    value: x,
+                    exact: true,
+                },
+                Class::Int {
+                    value: y,
+                    exact: true,
+                },
+            ) => x == y,
+            (
+                Class::Str {
+                    text: x,
+                    exact: true,
+                },
+                Class::Str {
+                    text: y,
+                    exact: true,
+                },
+            ) => **x == **y,
             _ => false,
         }
 }
@@ -891,7 +915,7 @@ impl Set {
 
     fn add(&self, py: Python<'_>, elem: &Bound<'_, PyAny>) -> PyResult<()> {
         let key = self.prepare(elem.clone())?;
-        keys::batch_upsert(py, &self.inner, [(key, ())], |inner, (), slot| {
+        keys::upsert_one(py, &self.inner, key, (), |inner, (), slot| {
             if let Slot::Absent(key) = slot {
                 inner.table.push(py, key)?;
             }

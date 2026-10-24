@@ -930,7 +930,10 @@ mod tests {
         assert_eq!(ki.remove_at(0, 0), Some(1));
         assert_eq!(ki.replace_at(0, 1), None);
         assert_eq!(ki.replace_at(5, 1), None);
-        assert_eq!(ki.iter().map(|(p, k)| (p, *k)).collect::<Vec<_>>(), vec![(1, 2)]);
+        assert_eq!(
+            ki.iter().map(|(p, k)| (p, *k)).collect::<Vec<_>>(),
+            vec![(1, 2)]
+        );
     }
 
     #[test]

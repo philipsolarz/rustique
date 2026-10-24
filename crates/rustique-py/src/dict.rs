@@ -45,6 +45,7 @@ impl Keyed for DictInner {
         &mut self.table
     }
 
+    #[inline]
     fn inserted(&mut self, out: &mut Vec<Py<PyAny>>) {
         if let Some(remap) = self.table.grow() {
             out.extend(remap_storage(&mut self.values, &remap));
@@ -759,7 +760,7 @@ impl Dict {
         let mut displaced = Vec::new();
         if self.value_schema.is_any() {
             // Untyped values keep their identity in object storage.
-            keys::batch_upsert(py, &self.inner, [(key, value)], |inner, value, slot| {
+            keys::upsert_one(py, &self.inner, key, value, |inner, value, slot| {
                 match slot {
                     Slot::Existing(pos) => displaced.extend(inner.values.set_any(py, pos, value)),
                     Slot::Inserted(_) => inner.values.push_any(py, value),
@@ -772,7 +773,7 @@ impl Dict {
             })?;
         } else {
             let value = self.prepare_value(value)?;
-            keys::batch_upsert(py, &self.inner, [(key, value)], |inner, value, slot| {
+            keys::upsert_one(py, &self.inner, key, value, |inner, value, slot| {
                 match slot {
                     Slot::Existing(pos) => displaced.extend(inner.values.set(py, pos, value)),
                     Slot::Inserted(_) => inner.values.push(py, value),
