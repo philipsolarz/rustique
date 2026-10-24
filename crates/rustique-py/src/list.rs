@@ -172,6 +172,26 @@ fn clamp_bound(obj: Option<&Bound<'_, PyAny>>, len: usize, default: isize) -> Py
     Ok(if v < 0 { v.saturating_add(len as isize).max(0) as usize } else { v as usize })
 }
 
+/// Element equality for searches and list comparison: identity, then NaN equals NaN
+/// (the documented List semantics, identical for every strategy), then Python `==`.
+fn elements_equal(item: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    if item.is(value) {
+        return Ok(true);
+    }
+    // SAFETY: exact type checks and value reads on valid objects.
+    unsafe {
+        let (a, b) = (item.as_ptr(), value.as_ptr());
+        if ffi::PyFloat_CheckExact(a) != 0
+            && ffi::PyFloat_CheckExact(b) != 0
+            && ffi::PyFloat_AS_DOUBLE(a).is_nan()
+            && ffi::PyFloat_AS_DOUBLE(b).is_nan()
+        {
+            return Ok(true);
+        }
+    }
+    compare_bool(item, value, ffi::Py_EQ)
+}
+
 /// `PyObject_RichCompareBool(a, b, op)`: identity implies equality.
 fn compare_bool(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>, op: c_int) -> PyResult<bool> {
     // SAFETY: valid objects; -1 signals an exception.
@@ -195,10 +215,15 @@ fn cmp_op(op: CompareOp) -> Option<CmpOp> {
     }
 }
 
-fn native_compare(a: &Column, b: &Column, op: CompareOp) -> bool {
+/// Native comparison of two columns, or `None` when Python semantics need the
+/// object path (ordering `str` against numbers raises `TypeError` in Python).
+fn native_compare(a: &Column, b: &Column, op: CompareOp) -> Option<bool> {
     match cmp_op(op) {
-        Some(op) => kernels::lex_compare(a, b, op),
-        None => kernels::equal(a, b) == matches!(op, CompareOp::Eq),
+        Some(cmp) => {
+            let orderable = (a.dtype() == DType::Str) == (b.dtype() == DType::Str);
+            orderable.then(|| kernels::lex_compare(a, b, cmp))
+        }
+        None => Some(kernels::equal(a, b) == matches!(op, CompareOp::Eq)),
     }
 }
 
@@ -314,6 +339,16 @@ impl List {
         Ok(Mutation { guard, version: &self.version })
     }
 
+    /// Convert values about to be added to this list. Untyped lists that already store
+    /// objects keep the incoming objects themselves (identity), since the strategy can
+    /// never become native again.
+    fn ingest_for_update(&self, py: Python<'_>, obj: &Bound<'_, PyAny>) -> Result<Storage, IngestError> {
+        if self.schema.is_any() && matches!(&*self.read(py), Storage::Object(_)) {
+            return convert::ingest_objects_raw(py, obj);
+        }
+        convert::ingest(py, &self.schema, obj)
+    }
+
     fn container(&self) -> String {
         convert::container_name(&self.schema)
     }
@@ -358,7 +393,7 @@ impl List {
                 return Ok(None);
             }
             for (k, item) in chunk.iter().enumerate() {
-                if compare_bool(item.bind(py), value, ffi::Py_EQ)? {
+                if elements_equal(item.bind(py), value)? {
                     return Ok(Some(i + k));
                 }
             }
@@ -383,7 +418,7 @@ impl List {
                 return Ok(count);
             }
             for item in &chunk {
-                if compare_bool(item.bind(py), value, ffi::Py_EQ)? {
+                if elements_equal(item.bind(py), value)? {
                     count += 1;
                 }
             }
@@ -439,7 +474,7 @@ impl List {
             let m = ca.len().min(cb.len());
             for k in 0..m {
                 let (x, y) = (ca[k].bind(py), cb[k].bind(py));
-                if !compare_bool(x, y, ffi::Py_EQ)? {
+                if !elements_equal(x, y)? {
                     return match op {
                         CompareOp::Eq => Ok(PyBool::new(py, false).to_owned().into_any().unbind()),
                         CompareOp::Ne => Ok(PyBool::new(py, true).to_owned().into_any().unbind()),
@@ -672,26 +707,25 @@ impl List {
         let this = slf.get();
         match Index::parse(index)? {
             Index::Int(i) => {
-                let value = this.coerce_one(value)?;
+                let typed = if this.schema.is_any() { None } else { Some(this.coerce_one(value)?) };
                 let displaced = {
                     let mut data = this.mutate(py)?;
                     let Some(k) = normalize_index(i, data.len()) else {
                         return Err(PyIndexError::new_err("list assignment index out of range"));
                     };
-                    data.set_one(py, k, value)
+                    match typed {
+                        Some(coerced) => data.set_one(py, k, coerced),
+                        None => data.set_any(py, k, value),
+                    }
                 };
                 drop(displaced);
                 Ok(())
             }
             Index::Slice(start, stop, step) => {
                 if !convert::is_iterable(value) {
-                    return Err(PyTypeError::new_err(if step == 1 {
-                        "can only assign an iterable"
-                    } else {
-                        "must assign iterable to extended slice"
-                    }));
+                    return Err(PyTypeError::new_err("must assign iterable to extended slice"));
                 }
-                let values = convert::ingest(py, &this.schema, value)?;
+                let values = this.ingest_for_update(py, value)?;
                 let displaced = {
                     let mut data = this.mutate(py)?;
                     let s = adjust(start, stop, step, data.len())?;
@@ -749,8 +783,10 @@ impl List {
                 if a.is_empty() || b.is_empty() {
                     return result(compare_lengths(a.len(), b.len(), op));
                 }
-                if let (Storage::Native(ca), Storage::Native(cb)) = (&*a, &*b) {
-                    return result(native_compare(ca, cb, op));
+                if let (Storage::Native(ca), Storage::Native(cb)) = (&*a, &*b)
+                    && let Some(r) = native_compare(ca, cb, op)
+                {
+                    return result(r);
                 }
             }
             return List::richcompare_python(py, Side::List(this), Side::List(that), op);
@@ -764,7 +800,11 @@ impl List {
         if let Storage::Native(cb) = &theirs {
             let data = this.read(py);
             match &*data {
-                Storage::Native(ca) => return result(native_compare(ca, cb, op)),
+                Storage::Native(ca) => {
+                    if let Some(r) = native_compare(ca, cb, op) {
+                        return result(r);
+                    }
+                }
                 Storage::Empty => return result(compare_lengths(0, cb.len(), op)),
                 Storage::Object(_) => {}
             }
@@ -897,14 +937,18 @@ impl List {
 
     /// Append `object` to the end of the list.
     fn append(&self, py: Python<'_>, object: &Bound<'_, PyAny>) -> PyResult<()> {
-        let value = self.coerce_one(object)?;
-        self.mutate(py)?.push(py, value);
+        if self.schema.is_any() {
+            self.mutate(py)?.push_any(py, object);
+        } else {
+            let value = self.coerce_one(object)?;
+            self.mutate(py)?.push(py, value);
+        }
         Ok(())
     }
 
     /// Extend the list by appending all the items from the iterable.
     fn extend(&self, py: Python<'_>, iterable: &Bound<'_, PyAny>) -> PyResult<()> {
-        let (storage, error) = match convert::ingest(py, &self.schema, iterable) {
+        let (storage, error) = match self.ingest_for_update(py, iterable) {
             Ok(storage) => (storage, None),
             Err(IngestError { error, partial: Some(storage) }) => (storage, Some(error)),
             Err(IngestError { error, partial: None }) => return Err(error),
@@ -917,10 +961,13 @@ impl List {
 
     /// Insert `object` before `index`.
     fn insert(&self, py: Python<'_>, index: isize, object: &Bound<'_, PyAny>) -> PyResult<()> {
-        let value = self.coerce_one(object)?;
+        let typed = if self.schema.is_any() { None } else { Some(self.coerce_one(object)?) };
         let mut data = self.mutate(py)?;
         let k = clamp_insert_index(index, data.len());
-        data.insert(py, k, value);
+        match typed {
+            Some(value) => data.insert(py, k, value),
+            None => data.insert_any(py, k, object),
+        }
         Ok(())
     }
 
@@ -1004,14 +1051,7 @@ impl List {
     fn sort(&self, py: Python<'_>, key: Option<&Bound<'_, PyAny>>, reverse: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
         let reverse = match reverse {
             None => false,
-            // SAFETY: type check on a valid object.
-            Some(r) if unsafe { ffi::PyLong_Check(r.as_ptr()) } != 0 => r.is_truthy()?,
-            Some(r) => {
-                return Err(PyTypeError::new_err(format!(
-                    "'{}' object cannot be interpreted as an integer",
-                    convert::type_name(r)
-                )));
-            }
+            Some(r) => r.is_truthy()?,
         };
         let key = key.filter(|k| !k.is_none());
         if key.is_none() {
@@ -1442,6 +1482,14 @@ fn arange_dtype(py: Python<'_>, dtype: Option<&Bound<'_, PyAny>>) -> PyResult<(A
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<List>()?;
+    // PyO3 names the type `rustique.List` at the C level; CPython messages that use
+    // `tp_name` (e.g. "unhashable type: 'List'") should read like the builtin's. `__module__`
+    // and `__qualname__` (repr, pickling) are unaffected.
+    // SAFETY: the type object was just created during module initialisation, before any
+    // other code can observe it; the new name is a static C string.
+    unsafe {
+        (*m.py().get_type::<List>().as_type_ptr()).tp_name = c"List".as_ptr();
+    }
     m.add_function(wrap_pyfunction!(arange, m)?)?;
     Ok(())
 }

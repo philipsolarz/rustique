@@ -381,8 +381,74 @@ pub fn ingest(py: Python<'_>, schema: &Arc<Schema>, obj: &Bound<'_, PyAny>) -> R
     ingest_iter(py, schema, obj)
 }
 
+/// Items collected before an iterator raised, with the exception.
+type Partial = (Vec<Py<PyAny>>, PyErr);
+
+/// Collect the items of any iterable as strong references. On an exception from the
+/// iterator, returns the items collected so far with the error.
+fn collect(obj: &Bound<'_, PyAny>) -> Result<Vec<Py<PyAny>>, Partial> {
+    let iter = obj.try_iter().map_err(|e| (Vec::new(), e))?;
+    let mut items = Vec::new();
+    for item in iter {
+        match item {
+            Ok(item) => items.push(item.unbind()),
+            Err(e) => return Err((items, e)),
+        }
+    }
+    Ok(items)
+}
+
+/// Untyped storage for owned objects: a native column if they classify homogeneously,
+/// otherwise object storage holding the objects themselves.
+fn any_from_objects(items: Vec<Py<PyAny>>) -> Storage {
+    // SAFETY: `items` holds strong references for the duration of the call.
+    match unsafe { any_column(&items) } {
+        Some(column) => Storage::Native(column),
+        None if items.is_empty() => Storage::Empty,
+        None => Storage::Object(items),
+    }
+}
+
+/// Items for an untyped list that already uses object storage: the objects themselves,
+/// without classification (rustique `List` sources are materialised).
+pub fn ingest_objects_raw(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Result<Storage, IngestError> {
+    let p = obj.as_ptr();
+    // SAFETY: exact type checks on a valid object.
+    if unsafe { ffi::PyList_CheckExact(p) != 0 || ffi::PyTuple_CheckExact(p) != 0 } {
+        let items = with_critical_section(obj, || {
+            // SAFETY: exact list/tuple; for lists we hold the critical section while
+            // taking strong references to the borrowed items.
+            unsafe {
+                let n = ffi::Py_SIZE(p) as usize;
+                let base = if ffi::PyList_CheckExact(p) != 0 {
+                    (*p.cast::<ffi::PyListObject>()).ob_item
+                } else {
+                    (*p.cast::<ffi::PyTupleObject>()).ob_item.as_mut_ptr()
+                };
+                (0..n).map(|i| Bound::from_borrowed_ptr(py, *base.add(i)).unbind()).collect::<Vec<_>>()
+            }
+        });
+        return Ok(Storage::Object(items));
+    }
+    if let Ok(list) = obj.cast::<List>() {
+        return Ok(Storage::Object(list.get().snapshot(py).into_objects(py)));
+    }
+    match collect(obj) {
+        Ok(items) => Ok(Storage::Object(items)),
+        Err((items, error)) => Err(IngestError { error, partial: Some(Storage::Object(items)) }),
+    }
+}
+
 /// Generic path: iterate and coerce element by element.
 fn ingest_iter(py: Python<'_>, schema: &Arc<Schema>, obj: &Bound<'_, PyAny>) -> Result<Storage, IngestError> {
+    if schema.is_any() {
+        // Collect first, then classify in one pass: no per-element demotion, and mixed
+        // contents keep the original objects.
+        return match collect(obj) {
+            Ok(items) => Ok(any_from_objects(items)),
+            Err((items, error)) => Err(IngestError { error, partial: Some(any_from_objects(items)) }),
+        };
+    }
     let iter = obj.try_iter()?;
     let mut storage = Storage::for_schema(schema);
     for (i, item) in iter.enumerate() {
@@ -604,42 +670,68 @@ unsafe fn fixed_items(py: Python<'_>, schema: &Schema, dtype: DType, items: &[*m
 /// # Safety
 /// As [`fast_items`].
 unsafe fn any_items(py: Python<'_>, items: &[*mut ffi::PyObject]) -> Storage {
-    let Some(&first) = items.first() else {
-        return Storage::Empty;
-    };
-    // SAFETY: live borrowed items (caller contract); every read matches the exact type.
+    // SAFETY: forwarded from the caller.
+    match unsafe { any_column(items) } {
+        Some(column) => Storage::Native(column),
+        None if items.is_empty() => Storage::Empty,
+        // SAFETY: live borrowed items (caller contract).
+        None => Storage::Object(items.iter().map(|&p| unsafe { Bound::from_borrowed_ptr(py, p) }.unbind()).collect()),
+    }
+}
+
+/// Something that points at a Python object.
+trait ObjectPtr {
+    fn ptr(&self) -> *mut ffi::PyObject;
+}
+
+impl ObjectPtr for *mut ffi::PyObject {
+    #[inline]
+    fn ptr(&self) -> *mut ffi::PyObject {
+        *self
+    }
+}
+
+impl ObjectPtr for Py<PyAny> {
+    #[inline]
+    fn ptr(&self) -> *mut ffi::PyObject {
+        self.as_ptr()
+    }
+}
+
+/// The native column for items that all have the same exact builtin type (`int` fitting
+/// i64, `float`, `bool`, `str` without lone surrogates); `None` otherwise (or if empty).
+///
+/// # Safety
+/// Every item must be a live object for the duration of the call.
+unsafe fn any_column<T: ObjectPtr>(items: &[T]) -> Option<Column> {
+    let first = items.first()?.ptr();
+    // SAFETY: live items (caller contract); every read matches the checked exact type.
     unsafe {
         let ty = ffi::Py_TYPE(first);
-        let homogeneous = items.iter().all(|&p| ffi::Py_TYPE(p) == ty);
-        if homogeneous {
-            let native = if ty == &raw mut ffi::PyLong_Type {
-                let mut out = Vec::with_capacity(items.len());
-                let mut fits = true;
-                for &p in items {
-                    let mut overflow = 0;
-                    let v = ffi::PyLong_AsLongLongAndOverflow(p, &mut overflow);
-                    if overflow != 0 {
-                        fits = false;
-                        break;
-                    }
-                    out.push(v);
-                }
-                fits.then(|| Column::I64(out))
-            } else if ty == &raw mut ffi::PyFloat_Type {
-                Some(Column::F64(items.iter().map(|&p| ffi::PyFloat_AS_DOUBLE(p)).collect()))
-            } else if ty == &raw mut ffi::PyBool_Type {
-                let t = ffi::Py_True();
-                Some(Column::Bool(items.iter().map(|&p| p == t).collect()))
-            } else if ty == &raw mut ffi::PyUnicode_Type {
-                items.iter().map(|&p| exact_str(p)).collect::<Option<Vec<_>>>().map(Column::Str)
-            } else {
-                None
-            };
-            if let Some(column) = native {
-                return Storage::Native(column);
-            }
+        if !items.iter().all(|p| ffi::Py_TYPE(p.ptr()) == ty) {
+            return None;
         }
-        Storage::Object(items.iter().map(|&p| Bound::from_borrowed_ptr(py, p).unbind()).collect())
+        if ty == &raw mut ffi::PyLong_Type {
+            let mut out = Vec::with_capacity(items.len());
+            for p in items {
+                let mut overflow = 0;
+                let v = ffi::PyLong_AsLongLongAndOverflow(p.ptr(), &mut overflow);
+                if overflow != 0 {
+                    return None;
+                }
+                out.push(v);
+            }
+            Some(Column::I64(out))
+        } else if ty == &raw mut ffi::PyFloat_Type {
+            Some(Column::F64(items.iter().map(|p| ffi::PyFloat_AS_DOUBLE(p.ptr())).collect()))
+        } else if ty == &raw mut ffi::PyBool_Type {
+            let t = ffi::Py_True();
+            Some(Column::Bool(items.iter().map(|p| p.ptr() == t).collect()))
+        } else if ty == &raw mut ffi::PyUnicode_Type {
+            items.iter().map(|p| exact_str(p.ptr())).collect::<Option<Vec<_>>>().map(Column::Str)
+        } else {
+            None
+        }
     }
 }
 

@@ -131,6 +131,47 @@ impl Storage {
         }
     }
 
+    /// Whether a value of this classification is stored without demotion.
+    #[inline]
+    fn fits(&self, value: &Coerced) -> bool {
+        match (self, value) {
+            (Storage::Native(column), Coerced::Native(v)) => column.dtype() == v.dtype(),
+            (Storage::Native(_), Coerced::Object(_)) => false,
+            _ => true,
+        }
+    }
+
+    /// Untyped containers: how `obj` is stored. Object storage keeps the object itself
+    /// (preserving identity); otherwise its exact-type classification. Runs no Python code.
+    #[inline]
+    fn adopt(&self, obj: &Bound<'_, PyAny>) -> Coerced {
+        match self {
+            Storage::Object(_) => Coerced::Object(obj.clone().unbind()),
+            _ => match convert::classify(obj) {
+                value if self.fits(&value) => value,
+                _ => Coerced::Object(obj.clone().unbind()),
+            },
+        }
+    }
+
+    /// `push` for untyped containers; a demoting value is stored as the original object.
+    pub fn push_any(&mut self, py: Python<'_>, obj: &Bound<'_, PyAny>) {
+        let value = self.adopt(obj);
+        self.push(py, value);
+    }
+
+    /// `insert` for untyped containers (see [`Storage::push_any`]).
+    pub fn insert_any(&mut self, py: Python<'_>, index: usize, obj: &Bound<'_, PyAny>) {
+        let value = self.adopt(obj);
+        self.insert(py, index, value);
+    }
+
+    /// `set_one` for untyped containers (see [`Storage::push_any`]).
+    pub fn set_any(&mut self, py: Python<'_>, index: usize, obj: &Bound<'_, PyAny>) -> Option<Py<PyAny>> {
+        let value = self.adopt(obj);
+        self.set_one(py, index, value)
+    }
+
     /// Insert at a position in `0..=len` (callers clamp first).
     pub fn insert(&mut self, py: Python<'_>, index: usize, value: Coerced) {
         match (&mut *self, value) {
