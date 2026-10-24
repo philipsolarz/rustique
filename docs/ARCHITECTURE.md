@@ -312,6 +312,13 @@ List::with_column(&self, |col: &Column| ...)                           // borrow
   Comparisons that need Python (`Object` storage `__eq__`, object-keyed dict lookups)
   snapshot the needed references under the lock, compare outside it, and re-validate with
   a mutation counter (retry / `RuntimeError` like CPython).
+- Bulk reads of *builtin* mutable sources (`list`, `dict`, `set`) happen inside **one**
+  critical section on the source object (`pyo3::sync::with_critical_section`), never
+  element-by-element without a lock — on 3.15t that is a data race. Only exact-type
+  `int`/`float`/`bool`/`str` extraction runs inside it; anything that could call Python
+  code collects strong references first and runs afterwards.
+- GC support (`__traverse__`) never blocks: it uses `try_lock` (GC is stop-the-world on
+  free-threaded builds).
 - Buffer exports freeze the container (see §4.1).
 - No `unsafe` outside small, commented FFI fast paths (e.g. reading `PyListObject` items,
   which must not be used for list subclasses). Every `unsafe` block carries a `// SAFETY:`
