@@ -524,7 +524,7 @@ impl Storage {
                     Storage::Object(convert::column_objects(py, &column, 0..column.len()))
                 }
             }
-            _ => match convert::cast_column(&column, DType::I64) {
+            _ => match convert::cast_column(&column, DType::I64, "int") {
                 Ok(widened) => Storage::Native(widened),
                 Err(_) => Storage::Object(convert::column_objects(py, &column, 0..column.len())),
             },

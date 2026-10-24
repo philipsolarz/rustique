@@ -452,3 +452,200 @@ def test_m4_no_buffer_export_while_sorted() -> None:
     assert errors == ["cannot export a List while it is being sorted"] * 3
     with memoryview(lst) as view:
         assert view.tolist() == [1, 2, 3]
+
+
+# --------------------------------------------------------------------------------------
+# Low-severity findings.
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cls", LIST_TYPES, ids=LIST_IDS)
+def test_low_index_converts_bounds_before_reading_the_length(cls: type) -> None:
+    lst = cls([1, 2, 3, 1])
+
+    class Grow:
+        def __index__(self) -> int:
+            lst.extend([5] * 10)
+            return -2
+
+    assert lst.index(5, Grow()) == 12  # -2 counts from the grown end
+
+
+@pytest.mark.parametrize("cls", LIST_TYPES, ids=LIST_IDS)
+@pytest.mark.parametrize("index", [slice(0, 2), slice(None, None, 1), slice(None, None, 2)], ids=str)
+def test_low_slice_assignment_of_a_non_iterable_message(cls: type, index: slice) -> None:
+    # The review expected "can only assign an iterable" for simple slices, but CPython 3.13+
+    # says "must assign iterable to extended slice" there too: the interpreter is the spec.
+    expected = ""
+    try:
+        [1, 2, 3][index] = 5
+    except TypeError as e:
+        expected = str(e)
+    lst = cls([1, 2, 3])
+    with pytest.raises(TypeError) as got:
+        lst[index] = 5
+    assert str(got.value) == expected
+    assert list(lst) == [1, 2, 3]
+
+
+@pytest.mark.parametrize(
+    ("alias", "source"),
+    [
+        (List[rs.i64], List[rs.u64]([7, 2**64 - 1])),
+        (List[rs.i64], List[str](["a"])),
+        (List[rs.u8], List[int]([1, 256])),
+        (List[rs.f32], List([1.5, 1e300])),
+        (List[rs.f32], List[float]([3.4e38, -1e39])),
+        (List[rs.f64], List[str](["x"])),
+        (List[float], List[str](["x"])),
+        (List[bool], List[int]([1])),
+        (List[str], List[float]([1.0])),
+    ],
+)
+def test_low_column_conversion_errors_match_element_wise(alias: object, source: object) -> None:
+    # Native column-to-column conversion names the target schema (i64, not "int") and
+    # formats floats like repr(), exactly as converting element by element does.
+    with pytest.raises((OverflowError, TypeError)) as fast:
+        alias(source)
+    with pytest.raises((OverflowError, TypeError)) as slow:
+        alias(source.to_list())
+    assert type(fast.value) is type(slow.value)
+    assert str(fast.value) == str(slow.value)
+
+
+def test_low_f32_overflow_messages_use_repr() -> None:
+    with pytest.raises(OverflowError, match=r"^List\[f32\]: 1e\+300 is out of range for f32 at index 0$"):
+        List[rs.f32](List([1e300]))
+    with pytest.raises(OverflowError, match=r"^arange\(\) value 1e\+299 is out of range for f32$"):
+        rs.arange(0.0, 1e300, 1e299, rs.f32)
+    with pytest.raises(OverflowError, match=r"^List\[f32\]: 3\.402823669209385e\+38 is out of range for f32 at index 0$"):
+        List[rs.f32]([2**128])
+
+
+def test_low_fixed_width_errors_run_no_python_code() -> None:
+    calls = []
+
+    class LoudInt(int):
+        def __str__(self) -> str:
+            calls.append("str")
+            return "loud"
+
+        __repr__ = __str__  # type: ignore[assignment]
+
+    class LoudFloat(float):
+        def __repr__(self) -> str:
+            calls.append("repr")
+            return "loud"
+
+        __str__ = __repr__
+
+    with pytest.raises(OverflowError, match=r"^List\[u8\]: 300 is out of range for u8 at index 1$"):
+        List[rs.u8]([1, LoudInt(300)])
+    with pytest.raises(OverflowError, match=rf"^List\[u64\]: {-(2**63)} is out of range for u64 at index 0$"):
+        List[rs.u64]([LoudInt(-(2**63))])
+    with pytest.raises(OverflowError, match=r"^List\[i8\]: int too large to convert to i8 at index 0$"):
+        List[rs.i8]([LoudInt(-(2**100))])
+    with pytest.raises(OverflowError, match=r"^List\[f32\]: 1e\+300 is out of range for f32 at index 0$"):
+        List[rs.f32]([LoudFloat(1e300)])
+    # Dict construction coerces "pure" schemas inside the source dict's critical section.
+    with pytest.raises(OverflowError, match="300 is out of range for u16|65536 is out of range for u16"):
+        rs.Dict[str, rs.u16]({"a": LoudInt(65536)})
+    assert calls == []
+    with pytest.raises(OverflowError, match=r"^List\[u8\]: int too large to convert to u8 at index 0$"):
+        List[rs.u8]([10**5000])  # beyond the int-to-str digit limit
+
+
+def test_low_index_operand_converted_once() -> None:
+    class Idx:
+        calls = 0
+
+        def __index__(self) -> int:
+            Idx.calls += 1
+            return 2**63  # overflows i64: used to trigger a second __index__ call
+
+    assert rs.u64(Idx()) == 2**63
+    assert Idx.calls == 1
+
+
+def test_low_exhausted_iterators_drop_the_list() -> None:
+    import gc
+    import weakref
+
+    class Obj:
+        pass
+
+    for make in (iter, reversed):
+        obj = Obj()
+        ref = weakref.ref(obj)
+        lst = List([obj, 1])
+        it = make(lst)
+        assert any(r is lst for r in gc.get_referents(it))
+        del obj, lst
+        assert len(list(it)) == 2
+        # No list, no read-ahead elements (only the iterator's heap type).
+        assert [r for r in gc.get_referents(it) if not isinstance(r, type)] == []
+        assert ref() is None  # the list (and its element) died with the last reference
+        assert it.__length_hint__() == 0
+        assert next(it, "end") == "end"
+    empty = reversed(List())
+    assert next(empty, "end") == "end"
+    assert [r for r in gc.get_referents(empty) if not isinstance(r, type)] == []
+
+
+@pytest.mark.parametrize("cls", [list, List], ids=["builtin", "List"])
+def test_low_repr_follows_the_live_list(cls: type) -> None:
+    class ClearingRepr:
+        def __init__(self, target: object) -> None:
+            self.target = target
+
+        def __repr__(self) -> str:
+            self.target.clear()
+            return "R"
+
+    lst = cls([1, 2])
+    lst.append(ClearingRepr(lst))
+    lst.append(3)
+    text = repr(lst)
+    assert text.removeprefix("List(").removesuffix(")") == "[1, 2, R]"
+    lst = cls(["a", None, 1.5])
+    assert repr(lst).removeprefix("List(").removesuffix(")") == repr(["a", None, 1.5])
+    lst.append(lst)
+    assert repr(lst).removeprefix("List(").removesuffix(")") == "['a', None, 1.5, [...]]"
+
+
+# --------------------------------------------------------------------------------------
+# Intentional divergences from the builtin under re-entrant mutation (documented here):
+# - remove() removes the element that compared equal (re-located by identity, or by
+#   native equality for native storage), even if the comparison itself moved it; CPython
+#   deletes whatever sits at the index where the comparison succeeded.
+# - extend()/+= from a generic iterable consume it before appending (one atomic append,
+#   as slice assignment does in CPython too); CPython's extend appends item by item, so
+#   a generator that appends to the list itself interleaves.
+# --------------------------------------------------------------------------------------
+
+
+def test_documented_divergence_remove_removes_the_matching_element() -> None:
+    lst = List([0, 1, 2, 3])
+
+    class InsertsFront:
+        def __eq__(self, other: object) -> bool:
+            if other == 2 and len(lst) < 10:
+                lst.insert(0, 99)
+            return other == 2
+
+        __hash__ = None  # type: ignore[assignment]
+
+    lst.remove(InsertsFront())
+    assert lst.to_list() == [99, 0, 1, 3]  # builtin list: [99, 0, 2, 3]
+
+
+def test_documented_divergence_extend_consumes_the_iterable_first() -> None:
+    lst = List([1, 2])
+
+    def gen():  # type: ignore[no-untyped-def]
+        for i in range(3):
+            lst.append(100 + i)
+            yield i
+
+    lst.extend(gen())
+    assert lst.to_list() == [1, 2, 100, 101, 102, 0, 1, 2]  # builtin: [1, 2, 100, 0, 101, 1, 102, 2]

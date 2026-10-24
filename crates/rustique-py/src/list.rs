@@ -189,27 +189,32 @@ impl<'a, 'py> FromPyObject<'a, 'py> for SliceBound<'py> {
     }
 }
 
-/// `start`/`stop` of `list.index`: `__index__`, clamped, negative values from the end.
-fn clamp_bound(bound: SliceBound<'_>, len: usize, default: isize) -> PyResult<usize> {
-    let v = match bound {
-        SliceBound::Omitted => default,
-        SliceBound::Given(obj) => {
-            // SAFETY: protocol check and clamping conversion on a valid object.
-            unsafe {
-                if ffi::PyIndex_Check(obj.as_ptr()) == 0 {
-                    return Err(PyTypeError::new_err("slice indices must be integers or have an __index__ method"));
-                }
-                let v = ffi::PyNumber_AsSsize_t(obj.as_ptr(), std::ptr::null_mut());
-                if v == -1
-                    && let Some(e) = PyErr::take(obj.py())
-                {
-                    return Err(e);
-                }
-                v
+impl SliceBound<'_> {
+    /// The bound via `__index__` (clamped to `isize`), `default` if omitted. May run Python
+    /// code, so callers convert both bounds before looking at the list (as CPython does).
+    fn value(self, default: isize) -> PyResult<isize> {
+        let SliceBound::Given(obj) = self else {
+            return Ok(default);
+        };
+        // SAFETY: protocol check and clamping conversion on a valid object.
+        unsafe {
+            if ffi::PyIndex_Check(obj.as_ptr()) == 0 {
+                return Err(PyTypeError::new_err("slice indices must be integers or have an __index__ method"));
             }
+            let v = ffi::PyNumber_AsSsize_t(obj.as_ptr(), std::ptr::null_mut());
+            if v == -1
+                && let Some(e) = PyErr::take(obj.py())
+            {
+                return Err(e);
+            }
+            Ok(v)
         }
-    };
-    Ok(if v < 0 { v.saturating_add(len as isize).max(0) as usize } else { v as usize })
+    }
+}
+
+/// A `list.index` bound against the current length: negative values count from the end.
+fn clamp_bound(v: isize, len: usize) -> usize {
+    if v < 0 { v.saturating_add(len as isize).max(0) as usize } else { v as usize }
 }
 
 /// Whether `obj` is a builtin scalar (`int`, `float`, `bool`, `str`, `bytes`, `None`):
@@ -578,6 +583,34 @@ impl List {
         }
     }
 
+    /// `repr` of the elements as `[a, b, …]`. Like CPython's `list_repr`, each element is
+    /// taken from the current list: an element's `__repr__` may change the list, and the
+    /// rest of the chunk read ahead is then abandoned (as in `find_python`). Native
+    /// elements' reprs run no Python code.
+    fn repr_items<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyString>> {
+        if !matches!(&*self.read(py), Storage::Object(_)) {
+            return self.to_pylist(py)?.repr();
+        }
+        let mut parts = Vec::new();
+        let mut i = 0;
+        loop {
+            let chunk = self.chunk(py, i, usize::MAX);
+            if chunk.items.is_empty() {
+                break;
+            }
+            for item in chunk.items {
+                let item = item.into_bound(py);
+                parts.push(item.repr()?);
+                i += 1;
+                if !is_builtin_scalar(&item) && self.version.get() != chunk.version {
+                    break;
+                }
+            }
+        }
+        let body = PyString::new(py, ", ").call_method1(intern!(py, "join"), (parts,))?;
+        PyString::new(py, "[").add(body)?.add("]")?.cast_into::<PyString>().map_err(Into::into)
+    }
+
     /// Python-level comparison (CPython's `list_richcompare`): find the first index where
     /// the elements differ (identity implies equality), comparing outside the locks. Each
     /// comparison sees the current lists (see `find_python`).
@@ -886,6 +919,7 @@ impl List {
             }
             Index::Slice(start, stop, step) => {
                 if !convert::is_iterable(value) {
+                    // CPython (3.13+) uses this message for simple slices too.
                     return Err(PyTypeError::new_err("must assign iterable to extended slice"));
                 }
                 let values = this.ingest_for_update(py, value)?;
@@ -943,13 +977,13 @@ impl List {
     }
 
     fn __iter__(slf: &Bound<'_, Self>) -> ListIterator {
-        ListIterator { list: slf.clone().unbind(), state: PyMutex::new(IterState::new(0)) }
+        ListIterator { state: PyMutex::new(IterState::new(slf.clone().unbind(), 0)) }
     }
 
     fn __reversed__(slf: &Bound<'_, Self>) -> ListReverseIterator {
         let len = slf.get().len();
         let next = if len == 0 { EXHAUSTED } else { len - 1 };
-        ListReverseIterator { list: slf.clone().unbind(), state: PyMutex::new(IterState::new(next)) }
+        ListReverseIterator { state: PyMutex::new(IterState::new(slf.clone().unbind(), next)) }
     }
 
     fn __richcmp__(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<Py<PyAny>> {
@@ -1008,7 +1042,7 @@ impl List {
         }
         let this = slf.get();
         let result = (|| {
-            let items = this.to_pylist(py)?.repr()?;
+            let items = this.repr_items(py)?;
             let prefix = if this.schema.is_any() { "List(".to_owned() } else { format!("List[{}](", this.schema) };
             PyString::new(py, &prefix).add(items)?.add(")")
         })();
@@ -1150,6 +1184,10 @@ impl List {
     }
 
     /// Extend the list by appending all the items from the iterable.
+    ///
+    /// The iterable is consumed before anything is appended (one atomic append; items
+    /// before an exception from the iterator are kept). Unlike CPython's item-by-item
+    /// append, an iterable that mutates this list does not interleave with it.
     fn extend(&self, py: Python<'_>, iterable: &Bound<'_, PyAny>) -> PyResult<()> {
         let (storage, error) = match self.ingest_for_update(py, iterable) {
             Ok(storage) => (storage, None),
@@ -1198,6 +1236,8 @@ impl List {
         }
         // Python equality: compare outside the lock, then remove the element that compared
         // equal (re-located if concurrent mutation moved it; searched again if it is gone).
+        // CPython instead deletes whatever is at the matching index by then; removing the
+        // matched element is the deliberate, thread-safe choice.
         for _ in 0..MAX_RETRIES {
             let Some((i, item)) = self.find_python(py, value, 0, usize::MAX)? else {
                 return Err(missing());
@@ -1251,9 +1291,9 @@ impl List {
         text_signature = "($self, value, start=0, stop=sys.maxsize, /)"
     )]
     fn index(&self, py: Python<'_>, value: &Bound<'_, PyAny>, start: SliceBound<'_>, stop: SliceBound<'_>) -> PyResult<usize> {
+        let (start, stop) = (start.value(0)?, stop.value(isize::MAX)?);
         let len = self.len();
-        let start = clamp_bound(start, len, 0)?;
-        let stop = clamp_bound(stop, len, isize::MAX)?;
+        let (start, stop) = (clamp_bound(start, len), clamp_bound(stop, len));
         self.find(py, value, start, stop)?.ok_or_else(|| PyValueError::new_err("list.index(x): x not in list"))
     }
 
@@ -1519,6 +1559,8 @@ const MAX_BATCH: usize = 64;
 /// batch is only used while the list's mutation counter is unchanged, so iteration stays
 /// exactly as live as CPython's (any mutation makes the next step re-read the list).
 struct IterState {
+    /// The list; dropped once the iterator is exhausted (like CPython's `it_seq = NULL`).
+    list: Option<Py<List>>,
     /// Index of the next element to yield, or `EXHAUSTED`.
     next: usize,
     /// Upcoming elements in reverse yield order (popped from the end).
@@ -1530,14 +1572,15 @@ struct IterState {
 }
 
 impl IterState {
-    fn new(next: usize) -> Self {
-        IterState { next, batch: Vec::new(), version: 0, batch_size: 8 }
+    fn new(list: Py<List>, next: usize) -> Self {
+        IterState { list: Some(list), next, batch: Vec::new(), version: 0, batch_size: 8 }
     }
 
     /// The next element from the read-ahead batch while it is current (the hot path: no
     /// list access, no allocation).
     #[inline]
-    fn pop_current(&mut self, list: &List, forward: bool) -> Option<Py<PyAny>> {
+    fn pop_current(&mut self, forward: bool) -> Option<Py<PyAny>> {
+        let list = self.list.as_ref()?.get();
         if self.batch.is_empty() || self.version != list.version.get() {
             return None;
         }
@@ -1547,17 +1590,17 @@ impl IterState {
     }
 
     /// Re-read the list into the batch (it is used up or stale) and yield the next element.
-    /// Takes the guard so that stale elements are dropped only after unlocking.
+    /// Takes the guard so that stale elements, and the list once exhausted, are dropped
+    /// only after unlocking.
     #[inline(never)]
-    fn refill_and_pop<'py>(
-        py: Python<'py>,
-        mut state: MutexGuard<'_, IterState>,
-        list: &List,
-        forward: bool,
-    ) -> Option<Bound<'py, PyAny>> {
-        let stale = if state.batch.is_empty() { Vec::new() } else { std::mem::take(&mut state.batch) };
+    fn refill_and_pop<'py>(py: Python<'py>, mut guard: MutexGuard<'_, IterState>, forward: bool) -> Option<Bound<'py, PyAny>> {
+        let state = &mut *guard;
+        let stale = std::mem::take(&mut state.batch);
         let mut item = None;
-        if state.next != EXHAUSTED {
+        if state.next != EXHAUSTED
+            && let Some(list) = &state.list
+        {
+            let list = list.get();
             let data = list.read(py);
             let len = data.len();
             if state.next >= len {
@@ -1578,21 +1621,23 @@ impl IterState {
                 state.advance(forward);
             }
         }
-        drop(state);
+        let finished = if state.next == EXHAUSTED { state.list.take() } else { None };
+        drop(guard);
         drop(stale);
+        drop(finished);
         item.map(|o| o.into_bound(py))
     }
 
     /// Yield the next element (`forward` selects the direction).
     #[inline]
-    fn next<'py>(py: Python<'py>, state: &PyMutex<IterState>, list: &List, forward: bool) -> Option<Bound<'py, PyAny>> {
+    fn next<'py>(py: Python<'py>, state: &PyMutex<IterState>, forward: bool) -> Option<Bound<'py, PyAny>> {
         let mut guard = state.lock(py);
-        match guard.pop_current(list, forward) {
+        match guard.pop_current(forward) {
             Some(item) => {
                 drop(guard);
                 Some(item.into_bound(py))
             }
-            None => IterState::refill_and_pop(py, guard, list, forward),
+            None => IterState::refill_and_pop(py, guard, forward),
         }
     }
 
@@ -1604,11 +1649,27 @@ impl IterState {
         };
     }
 
+    /// Elements left: `remaining(next, len)` while the iterator is live.
+    fn length_hint(&self, remaining: impl Fn(usize, usize) -> usize) -> usize {
+        match (&self.list, self.next) {
+            (Some(list), next) if next != EXHAUSTED => remaining(next, list.get().len()),
+            _ => 0,
+        }
+    }
+
     fn traverse(&self, visit: &PyVisit<'_>) -> Result<(), PyTraverseError> {
+        if let Some(list) = &self.list {
+            visit.call(list)?;
+        }
         for o in &self.batch {
             visit.call(o)?;
         }
         Ok(())
+    }
+
+    /// `tp_clear`: everything this iterator references, to be dropped unlocked.
+    fn take_references(&mut self) -> (Option<Py<List>>, Vec<Py<PyAny>>) {
+        (self.list.take(), std::mem::take(&mut self.batch))
     }
 }
 
@@ -1616,7 +1677,6 @@ impl IterState {
 /// when the index passes the current length, stays exhausted).
 #[pyclass(module = "rustique", frozen, name = "ListIterator")]
 pub struct ListIterator {
-    list: Py<List>,
     state: PyMutex<IterState>,
 }
 
@@ -1627,18 +1687,14 @@ impl ListIterator {
     }
 
     fn __next__<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyAny>> {
-        IterState::next(py, &self.state, self.list.get(), true)
+        IterState::next(py, &self.state, true)
     }
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
-        match self.state.lock(py).next {
-            EXHAUSTED => 0,
-            i => self.list.get().len().saturating_sub(i),
-        }
+        self.state.lock(py).length_hint(|next, len| len.saturating_sub(next))
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        visit.call(&self.list)?;
         match self.state.try_lock() {
             Some(state) => state.traverse(&visit),
             None => Ok(()),
@@ -1646,15 +1702,14 @@ impl ListIterator {
     }
 
     fn __clear__(&self) {
-        let batch = Python::attach(|py| std::mem::take(&mut self.state.lock(py).batch));
-        drop(batch);
+        let references = Python::attach(|py| self.state.lock(py).take_references());
+        drop(references);
     }
 }
 
 /// Live reverse iterator (CPython `list_reverseiterator` semantics).
 #[pyclass(module = "rustique", frozen, name = "ListReverseIterator")]
 pub struct ListReverseIterator {
-    list: Py<List>,
     state: PyMutex<IterState>,
 }
 
@@ -1665,19 +1720,14 @@ impl ListReverseIterator {
     }
 
     fn __next__<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyAny>> {
-        IterState::next(py, &self.state, self.list.get(), false)
+        IterState::next(py, &self.state, false)
     }
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
-        match self.state.lock(py).next {
-            EXHAUSTED => 0,
-            i if i < self.list.get().len() => i + 1,
-            _ => 0,
-        }
+        self.state.lock(py).length_hint(|next, len| if next < len { next + 1 } else { 0 })
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        visit.call(&self.list)?;
         match self.state.try_lock() {
             Some(state) => state.traverse(&visit),
             None => Ok(()),
@@ -1685,8 +1735,8 @@ impl ListReverseIterator {
     }
 
     fn __clear__(&self) {
-        let batch = Python::attach(|py| std::mem::take(&mut self.state.lock(py).batch));
-        drop(batch);
+        let references = Python::attach(|py| self.state.lock(py).take_references());
+        drop(references);
     }
 }
 
@@ -1725,7 +1775,10 @@ pub fn arange<'py>(
         if target == DType::F32 {
             let mut out = Vec::with_capacity(values.len());
             for x in values {
-                out.push(convert::f64_to_f32(x).ok_or_else(|| pyo3::exceptions::PyOverflowError::new_err(format!("arange() value {x} is out of range for f32")))?);
+                out.push(convert::f64_to_f32(x).ok_or_else(|| {
+                    let x = rustique_core::pyfmt::float_repr(x);
+                    pyo3::exceptions::PyOverflowError::new_err(format!("arange() value {x} is out of range for f32"))
+                })?);
             }
             Column::F32(out)
         } else {

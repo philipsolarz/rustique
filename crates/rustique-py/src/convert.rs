@@ -17,7 +17,7 @@ use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::sync::critical_section::with_critical_section;
 use pyo3::types::{PyBool, PyList, PyTuple};
-use rustique_core::{Column, DType, Element, Value, with_column};
+use rustique_core::{Column, DType, Element, Value, pyfmt, with_column};
 
 use crate::list::List;
 use crate::schema::{CoerceError, Coerced, Schema};
@@ -1015,7 +1015,7 @@ fn cast_native(py: Python<'_>, storage: Storage, to: &Schema) -> Result<Storage,
     if column.dtype() == target {
         return Ok(Storage::Native(column));
     }
-    match cast_column(&column, target) {
+    match cast_column(&column, target, &to.to_string()) {
         Ok(converted) => Ok(Storage::Native(converted)),
         // `int` demotes to object storage instead of overflowing: redo element-wise.
         Err((_, CoerceError::Overflow { .. })) if matches!(to, Schema::Int) => {
@@ -1083,12 +1083,11 @@ impl NumElem for CompactString {
 
 /// Convert a column to `target` with the coercion rules of the typed schemas: ints/bools
 /// into integer dtypes (range-checked), numbers into float dtypes; `bool`/`str` targets
-/// accept only their own dtype. Errors carry the failing index.
-pub fn cast_column(column: &Column, target: DType) -> Result<Column, (usize, CoerceError)> {
+/// accept only their own dtype. Errors carry the failing index; `name` is the target
+/// schema as messages show it (`int`, `i64`, …).
+pub fn cast_column(column: &Column, target: DType, name: &str) -> Result<Column, (usize, CoerceError)> {
     let got = python_type_name(column.dtype());
-    let type_error = |i: usize| {
-        (i, CoerceError::Type { expected: target_name(target).to_owned(), got: got.to_owned() })
-    };
+    let type_error = |i: usize| (i, CoerceError::Type { expected: name.to_owned(), got: got.to_owned() });
     if column.dtype() == target {
         return Ok(column.clone());
     }
@@ -1101,7 +1100,7 @@ pub fn cast_column(column: &Column, target: DType) -> Result<Column, (usize, Coe
                     match <$t>::try_from(w) {
                         Ok(t) => out.push(t),
                         Err(_) => {
-                            let message = format!("{w} is out of range for {}", target_name(target));
+                            let message = format!("{w} is out of range for {name}");
                             return Err((i, CoerceError::Overflow { message }));
                         }
                     }
@@ -1131,7 +1130,7 @@ pub fn cast_column(column: &Column, target: DType) -> Result<Column, (usize, Coe
             for (i, x) in v.iter().enumerate() {
                 let f = x.as_float().ok_or_else(|| type_error(i))?;
                 out.push(f64_to_f32(f).ok_or_else(|| {
-                    (i, CoerceError::Overflow { message: format!("{f} is out of range for f32") })
+                    (i, CoerceError::Overflow { message: format!("{} is out of range for {name}", pyfmt::float_repr(f)) })
                 })?);
             }
             Column::F32(out)
@@ -1144,14 +1143,6 @@ pub fn cast_column(column: &Column, target: DType) -> Result<Column, (usize, Coe
             }
         }
     })
-}
-
-fn target_name(dtype: DType) -> &'static str {
-    match dtype {
-        DType::I64 => "int",
-        DType::F64 => "float",
-        other => other.name(),
-    }
 }
 
 // ---------------------------------------------------------------------------------------

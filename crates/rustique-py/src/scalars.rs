@@ -89,8 +89,18 @@ enum PyIntVal {
 }
 
 impl PyIntVal {
-    /// Classify `obj`, calling `__index__` if it is not an `int` (`TypeError` if it has none).
+    /// Classify `obj`, calling `__index__` once if it is not an `int` (`TypeError` if it
+    /// has none).
     fn of(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let index;
+        // SAFETY: type check on a valid object.
+        let obj = if unsafe { ffi::PyLong_Check(obj.as_ptr()) } != 0 {
+            obj
+        } else {
+            // SAFETY: valid object; returns a new reference to an `int` or NULL with an error.
+            index = unsafe { Bound::from_owned_ptr_or_err(obj.py(), ffi::PyNumber_Index(obj.as_ptr()))? };
+            &index
+        };
         let mut overflow: c_int = 0;
         // SAFETY: `obj` is a valid object and the `Bound` proves we are attached to the
         // interpreter; `overflow` is a valid out-pointer. Unlike `extract::<i64>()`, this
