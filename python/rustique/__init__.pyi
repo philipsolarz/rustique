@@ -513,6 +513,7 @@ class SetType:
 # List (§4.1)
 # ---------------------------------------------------------------------------------------
 
+@final
 class List[T](MutableSequence[T]):
     """A `list` with native storage: `List([1, 2])`, `List[int](...)`, `List[u8](...)`."""
 
@@ -666,6 +667,7 @@ class List[T](MutableSequence[T]):
 # Dict (§4.2)
 # ---------------------------------------------------------------------------------------
 
+@final
 class Dict[K, V](MutableMapping[K, V]):
     """An insertion-ordered `dict` with native key/value storage."""
 
@@ -727,7 +729,6 @@ class Dict[K, V](MutableMapping[K, V]):
     def clear(self) -> None: ...
     def copy(self) -> Dict[K, V]: ...
     def __copy__(self) -> Dict[K, V]: ...
-    def __deepcopy__(self, memo: dict[int, Any], /) -> Dict[K, V]: ...
     @classmethod
     @overload
     def fromkeys[T](cls, iterable: Iterable[T], value: None = None, /) -> Dict[T, Any | None]: ...
@@ -740,6 +741,7 @@ class Dict[K, V](MutableMapping[K, V]):
 # Set (§4.3)
 # ---------------------------------------------------------------------------------------
 
+@final
 class Set[T](MutableSet[T]):
     """A `set` with native element storage."""
 
@@ -774,7 +776,6 @@ class Set[T](MutableSet[T]):
     def clear(self) -> None: ...
     def copy(self) -> Set[T]: ...
     def __copy__(self) -> Set[T]: ...
-    def __deepcopy__(self, memo: dict[int, Any], /) -> Set[T]: ...
     def union[S](self, *others: Iterable[S]) -> Set[T | S]: ...
     def intersection(self, *others: Iterable[object]) -> Set[T]: ...
     def difference(self, *others: Iterable[object]) -> Set[T]: ...
