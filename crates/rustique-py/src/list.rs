@@ -9,6 +9,7 @@
 
 use std::ffi::{CStr, c_int, c_void};
 use std::ops::{Deref, DerefMut};
+use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -977,13 +978,13 @@ impl List {
     }
 
     fn __iter__(slf: &Bound<'_, Self>) -> ListIterator {
-        ListIterator { state: PyMutex::new(IterState::new(slf.clone().unbind(), 0)) }
+        ListIterator { list: ListRef::new(slf), state: PyMutex::new(IterState::new(slf.clone().unbind(), 0)) }
     }
 
     fn __reversed__(slf: &Bound<'_, Self>) -> ListReverseIterator {
         let len = slf.get().len();
         let next = if len == 0 { EXHAUSTED } else { len - 1 };
-        ListReverseIterator { state: PyMutex::new(IterState::new(slf.clone().unbind(), next)) }
+        ListReverseIterator { list: ListRef::new(slf), state: PyMutex::new(IterState::new(slf.clone().unbind(), next)) }
     }
 
     fn __richcmp__(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<Py<PyAny>> {
@@ -1579,9 +1580,15 @@ impl IterState {
     /// The next element from the read-ahead batch while it is current (the hot path: no
     /// list access, no allocation).
     #[inline]
-    fn pop_current(&mut self, forward: bool) -> Option<Py<PyAny>> {
-        let list = self.list.as_ref()?.get();
-        if self.batch.is_empty() || self.version != list.version.get() {
+    fn pop_current(&mut self, list: ListRef, forward: bool) -> Option<Py<PyAny>> {
+        if self.batch.is_empty() {
+            return None;
+        }
+        // SAFETY: a non-empty batch means the iterator is not exhausted, so `self.list`
+        // still holds a strong reference to the list `list` points to; both change only
+        // under the state lock, which the caller holds.
+        let version = unsafe { list.0.as_ref() }.version.get();
+        if self.version != version {
             return None;
         }
         let item = self.batch.pop();
@@ -1630,9 +1637,9 @@ impl IterState {
 
     /// Yield the next element (`forward` selects the direction).
     #[inline]
-    fn next<'py>(py: Python<'py>, state: &PyMutex<IterState>, forward: bool) -> Option<Bound<'py, PyAny>> {
+    fn next<'py>(py: Python<'py>, state: &PyMutex<IterState>, list: ListRef, forward: bool) -> Option<Bound<'py, PyAny>> {
         let mut guard = state.lock(py);
-        match guard.pop_current(forward) {
+        match guard.pop_current(list, forward) {
             Some(item) => {
                 drop(guard);
                 Some(item.into_bound(py))
@@ -1673,10 +1680,29 @@ impl IterState {
     }
 }
 
+/// The iterated list, for reading its mutation counter on the hot path without a second
+/// dependent load after taking the state lock. Never owns a reference: it is dereferenced
+/// only while the iterator state's `list` holds one (see [`IterState::pop_current`]).
+#[derive(Clone, Copy)]
+struct ListRef(NonNull<List>);
+
+// SAFETY: a pointer to a frozen `Sync` pyclass value, dereferenced only under the
+// conditions documented on `ListRef`.
+unsafe impl Send for ListRef {}
+// SAFETY: as above.
+unsafe impl Sync for ListRef {}
+
+impl ListRef {
+    fn new(list: &Bound<'_, List>) -> Self {
+        ListRef(NonNull::from(list.get()))
+    }
+}
+
 /// Live iterator over a `List` (CPython `list_iterator` semantics: sees appends, stops
 /// when the index passes the current length, stays exhausted).
 #[pyclass(module = "rustique", frozen, name = "ListIterator")]
 pub struct ListIterator {
+    list: ListRef,
     state: PyMutex<IterState>,
 }
 
@@ -1687,7 +1713,7 @@ impl ListIterator {
     }
 
     fn __next__<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyAny>> {
-        IterState::next(py, &self.state, true)
+        IterState::next(py, &self.state, self.list, true)
     }
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
@@ -1710,6 +1736,7 @@ impl ListIterator {
 /// Live reverse iterator (CPython `list_reverseiterator` semantics).
 #[pyclass(module = "rustique", frozen, name = "ListReverseIterator")]
 pub struct ListReverseIterator {
+    list: ListRef,
     state: PyMutex<IterState>,
 }
 
@@ -1720,7 +1747,7 @@ impl ListReverseIterator {
     }
 
     fn __next__<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyAny>> {
-        IterState::next(py, &self.state, false)
+        IterState::next(py, &self.state, self.list, false)
     }
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
