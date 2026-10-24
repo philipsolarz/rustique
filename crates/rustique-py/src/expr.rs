@@ -23,6 +23,7 @@ use rustique_core::expr::{
 };
 use rustique_core::{Column, DType, Value};
 
+use crate::convert;
 use crate::schema::{self, Schema};
 use crate::storage::Storage;
 
@@ -256,9 +257,7 @@ impl Expr {
 
     fn __repr__(&self, py: Python<'_>) -> String {
         self.inner.render(&mut |v| {
-            value_object(py, v)
-                .and_then(|o| o.repr().map(|r| r.to_string()))
-                .unwrap_or_else(|_| "?".to_owned())
+            convert::value_to_python(py, v).repr().map_or_else(|_| "?".to_owned(), |r| r.to_string())
         })
     }
 
@@ -291,24 +290,6 @@ fn cast_target(dtype: &Bound<'_, PyAny>) -> PyResult<ExprType> {
         "cast() expects int, float, bool or a rustique scalar type, got {}",
         dtype.repr()?
     )))
-}
-
-/// A native value as the Python object an element read returns.
-fn value_object<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
-    Ok(match value {
-        Value::Bool(b) => PyBool::new(py, *b).to_owned().into_any(),
-        Value::F32(x) => PyFloat::new(py, f64::from(*x)).into_any(),
-        Value::F64(x) => PyFloat::new(py, *x).into_any(),
-        Value::Str(s) => PyString::new(py, s).into_any(),
-        Value::I8(x) => x.into_pyobject(py)?.into_any(),
-        Value::I16(x) => x.into_pyobject(py)?.into_any(),
-        Value::I32(x) => x.into_pyobject(py)?.into_any(),
-        Value::I64(x) => x.into_pyobject(py)?.into_any(),
-        Value::U8(x) => x.into_pyobject(py)?.into_any(),
-        Value::U16(x) => x.into_pyobject(py)?.into_any(),
-        Value::U32(x) => x.into_pyobject(py)?.into_any(),
-        Value::U64(x) => x.into_pyobject(py)?.into_any(),
-    })
 }
 
 /// The rustique scalar class of a fixed-width dtype (`rs.i8`, …).
@@ -362,7 +343,7 @@ fn call<'py>(expr: &engine::Expr, x: &Bound<'py, PyAny>) -> PyResult<Bound<'py, 
     let py = x.py();
     match expr.node() {
         Node::Element => Ok(x.clone()),
-        Node::Const(v) => value_object(py, v),
+        Node::Const(v) => Ok(convert::value_to_python(py, v)),
         Node::Unary(op, a) => {
             let a = call(a, x)?;
             match op {
@@ -475,10 +456,16 @@ fn collect(py: Python<'_>, values: Vec<Py<PyAny>>, preferred: Option<Arc<Schema>
         .filter(|s| values.iter().all(|v| fits_exactly(s, v.bind(py))))
         .unwrap_or_else(schema::any);
     let mut storage = Storage::for_schema(&schema);
-    let container = format!("List[{schema}]");
     for (i, value) in values.iter().enumerate() {
-        let coerced = schema.coerce(value.bind(py)).map_err(|e| e.into_pyerr(&container, Some(i)))?;
-        storage.push(py, coerced);
+        let value = value.bind(py);
+        if schema.is_any() {
+            storage.push_any(py, value);
+        } else {
+            let coerced = schema
+                .coerce(value)
+                .map_err(|e| e.into_pyerr(&convert::container_name(&schema), Some(i)))?;
+            storage.push(py, coerced);
+        }
     }
     Ok((storage, schema))
 }
@@ -499,7 +486,7 @@ fn elements<'py>(py: Python<'py>, storage: &Storage, schema: &Schema, scalars: b
             column
                 .iter()
                 .map(|v| {
-                    let obj = value_object(py, &v)?;
+                    let obj = convert::value_to_python(py, &v);
                     match &class {
                         Some(class) => class.call1((obj,)),
                         None => Ok(obj),
