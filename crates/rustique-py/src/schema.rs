@@ -223,8 +223,13 @@ impl Schema {
         }
     }
 
-    /// True when [`Schema::coerce`] can never run Python code, so it may be applied to
-    /// borrowed items inside a critical section of the source container.
+    /// True when [`Schema::coerce`] provably runs no Python code and never blocks, so it may
+    /// be applied to *borrowed* items inside a critical section of the source container:
+    /// it only reads the internals of `int`/`float`/`bool`/`str` objects (subclasses
+    /// included, without calling any of their methods; no `__index__`), compares types by
+    /// pointer, and formats error messages natively (values from the extracted number,
+    /// type names from the type object). Every other schema may call
+    /// `__instancecheck__`, iterate or build nested containers.
     pub fn is_pure(&self) -> bool {
         matches!(self, Schema::Any | Schema::Int | Schema::Float | Schema::Bool | Schema::Str | Schema::Fixed(_))
     }
@@ -320,19 +325,23 @@ fn coerce_fixed(dtype: DType, obj: &Bound<'_, PyAny>) -> Result<Coerced, CoerceE
     // Builtin types first: they are the common case and need no scalar-class lookup.
     // SAFETY: type checks on a valid object.
     let (is_int, is_float) = unsafe { (ffi::PyLong_Check(p) != 0, ffi::PyFloat_Check(p) != 0) };
+    // Error messages are formatted natively, never with `str()`/`repr()` (an int or float
+    // subclass may override them): see `Schema::is_pure`.
     if is_int && dtype.is_integer() {
         let wide = convert::long_as_i128(obj)?;
         return match wide.and_then(|x| Value::int_of(dtype, x)) {
             Some(v) => Ok(Coerced::Native(v)),
-            None => Err(CoerceError::Overflow { message: format!("{} is out of range for {dtype}", obj.str()?) }),
+            // Values beyond `i64::MIN..=u64::MAX` are not formatted: through Python that
+            // could even import `_pylong`.
+            None => Err(out_of_range(wide.map(|x| x.to_string()), dtype)),
         };
     }
     if (is_int || is_float) && dtype.is_float() {
         let x = coerce_float(obj)?;
         return match dtype {
-            DType::F32 => convert::f64_to_f32(x).map(|v| Coerced::Native(Value::F32(v))).ok_or_else(|| {
-                CoerceError::Overflow { message: format!("{} is out of range for f32", obj.repr().map(|r| r.to_string()).unwrap_or_default()) }
-            }),
+            DType::F32 => convert::f64_to_f32(x)
+                .map(|v| Coerced::Native(Value::F32(v)))
+                .ok_or_else(|| out_of_range(Some(rustique_core::pyfmt::float_repr(x)), dtype)),
             _ => Ok(Coerced::Native(Value::F64(x))),
         };
     }
@@ -344,6 +353,14 @@ fn coerce_fixed(dtype: DType, obj: &Bound<'_, PyAny>) -> Result<Coerced, CoerceE
         return Ok(Coerced::Native(v));
     }
     Err(type_error(dtype.name(), obj))
+}
+
+fn out_of_range(value: Option<String>, dtype: DType) -> CoerceError {
+    let message = match value {
+        Some(value) => format!("{value} is out of range for {dtype}"),
+        None => format!("int too large to convert to {dtype}"),
+    };
+    CoerceError::Overflow { message }
 }
 
 fn coerce_list(item: &Arc<Schema>, obj: &Bound<'_, PyAny>, schema: &Schema) -> Result<Coerced, CoerceError> {

@@ -17,7 +17,7 @@ use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::sync::critical_section::with_critical_section;
 use pyo3::types::{PyBool, PyList, PyTuple};
-use rustique_core::{Column, DType, Element, Value, with_column};
+use rustique_core::{Column, DType, Element, Value, pyfmt, with_column};
 
 use crate::list::List;
 use crate::schema::{CoerceError, Coerced, Schema};
@@ -134,9 +134,26 @@ pub fn python_type_name(dtype: DType) -> &'static str {
 // Python → native (single objects)
 // ---------------------------------------------------------------------------------------
 
-/// `type(obj).__name__`, for error messages.
+/// `type(obj).__name__`, for error messages, read from the type object like CPython's
+/// `type.__name__` getter (a heap type's `ht_name`, else `tp_name` after its last dot)
+/// without running Python code: safe inside a critical section.
 pub fn type_name(obj: &Bound<'_, PyAny>) -> String {
-    obj.get_type().name().map(|n| n.to_string()).unwrap_or_else(|_| "object".to_owned())
+    // SAFETY: the type of a live object is a live type object; `tp_name` is a
+    // NUL-terminated string and a heap type's `ht_name` a `str`, both owned by the type.
+    unsafe {
+        let ty = ffi::Py_TYPE(obj.as_ptr());
+        if ffi::PyType_HasFeature(ty, ffi::Py_TPFLAGS_HEAPTYPE) != 0 {
+            let name = (*ty.cast::<ffi::PyHeapTypeObject>()).ht_name;
+            if !name.is_null()
+                && ffi::PyUnicode_Check(name) != 0
+                && let Some(text) = str_utf8(name)
+            {
+                return text.into();
+            }
+        }
+        let full = std::ffi::CStr::from_ptr((*ty).tp_name).to_string_lossy();
+        full.rsplit('.').next().unwrap_or_default().to_owned()
+    }
 }
 
 #[inline]
@@ -213,15 +230,13 @@ pub fn as_str(obj: &Bound<'_, PyAny>) -> StrValue {
         if ffi::PyUnicode_Check(p) == 0 {
             return StrValue::NotStr;
         }
-        // A `str` subclass: go through the C API, which handles any layout.
-        let mut size: ffi::Py_ssize_t = 0;
-        let data = ffi::PyUnicode_AsUTF8AndSize(p, &mut size);
-        if data.is_null() {
-            PyErr::take(obj.py());
-            return StrValue::Surrogates;
+        // A `str` subclass: read its PEP 393 data too. (`PyUnicode_AsUTF8AndSize` would
+        // cache UTF-8 under the string's own critical section, which may block and so
+        // suspend a critical section held on a source container.)
+        match str_utf8(p) {
+            Some(s) => StrValue::Native(s),
+            None => StrValue::Surrogates,
         }
-        let bytes = std::slice::from_raw_parts(data.cast::<u8>(), size as usize);
-        StrValue::Native(CompactString::from(std::str::from_utf8_unchecked(bytes)))
     }
 }
 
@@ -233,8 +248,19 @@ pub fn as_str(obj: &Bound<'_, PyAny>) -> StrValue {
 /// `p` must point to a live object whose type is exactly `str`.
 #[inline]
 pub unsafe fn exact_str(p: *mut ffi::PyObject) -> Option<CompactString> {
-    // SAFETY: guaranteed by the caller; exact `str` objects are immutable PEP 393 strings
-    // whose data pointer covers `length` code units of `kind` bytes each.
+    // SAFETY: forwarded; an exact `str` is a `str`.
+    unsafe { str_utf8(p) }
+}
+
+/// [`exact_str`] for any `str`, subclasses included (`PyUnicode_DATA` handles both the
+/// compact and the subclass layout).
+///
+/// # Safety
+/// `p` must point to a live `str` (exact or subclass).
+#[inline]
+unsafe fn str_utf8(p: *mut ffi::PyObject) -> Option<CompactString> {
+    // SAFETY: guaranteed by the caller; `str` objects are immutable PEP 393 strings whose
+    // data pointer covers `length` code units of `kind` bytes each.
     unsafe {
         let len = ffi::PyUnicode_GET_LENGTH(p) as usize;
         if len == 0 {
@@ -803,19 +829,33 @@ fn ingest_range(py: Python<'_>, schema: &Arc<Schema>, range: &Bound<'_, PyAny>) 
     if len == 0 {
         return Ok(Some(Storage::for_schema(schema)));
     }
-    let last = i128::from(start) + (len as i128 - 1) * i128::from(step);
-    if let Some((lo, hi)) = target.int_range() {
-        let out_of_range = |x: i128| x < lo || x > hi;
-        if out_of_range(i128::from(start)) || out_of_range(last) {
-            // Ranges are monotonic: find the first offending element.
-            let index = (0..len).find(|&k| out_of_range(i128::from(start) + k as i128 * i128::from(step))).unwrap_or(0);
-            let value = i128::from(start) + index as i128 * i128::from(step);
-            let e = CoerceError::Overflow { message: format!("{value} is out of range for {target}") };
-            return Err(coerce_failure(schema, index, e));
-        }
+    if let Some((lo, hi)) = target.int_range()
+        && let Some(index) = first_out_of_range(start.into(), step.into(), len, lo, hi)
+    {
+        let value = i128::from(start) + index as i128 * i128::from(step);
+        let e = CoerceError::Overflow { message: format!("{value} is out of range for {target}") };
+        return Err(coerce_failure(schema, index, e));
     }
     let column = generate(py, target, len, |k| i128::from(start) + k as i128 * i128::from(step))?;
     Ok(Some(Storage::Native(column)))
+}
+
+/// Index of the first of the `len` elements `start + k * step` outside `lo..=hi`, if any.
+/// The sequence is monotonic, so this is arithmetic rather than a scan.
+pub fn first_out_of_range(start: i128, step: i128, len: usize, lo: i128, hi: i128) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    if start < lo || start > hi {
+        return Some(0);
+    }
+    // Room left towards the bound the sequence moves to, in whole steps.
+    let room = match step.cmp(&0) {
+        std::cmp::Ordering::Greater => hi.abs_diff(start),
+        std::cmp::Ordering::Less => start.abs_diff(lo),
+        std::cmp::Ordering::Equal => return None,
+    };
+    usize::try_from(room / step.unsigned_abs() + 1).ok().filter(|&k| k < len)
 }
 
 /// Number of elements of `range(start, stop, step)` (`step != 0`).
@@ -975,7 +1015,7 @@ fn cast_native(py: Python<'_>, storage: Storage, to: &Schema) -> Result<Storage,
     if column.dtype() == target {
         return Ok(Storage::Native(column));
     }
-    match cast_column(&column, target) {
+    match cast_column(&column, target, &to.to_string()) {
         Ok(converted) => Ok(Storage::Native(converted)),
         // `int` demotes to object storage instead of overflowing: redo element-wise.
         Err((_, CoerceError::Overflow { .. })) if matches!(to, Schema::Int) => {
@@ -1043,12 +1083,11 @@ impl NumElem for CompactString {
 
 /// Convert a column to `target` with the coercion rules of the typed schemas: ints/bools
 /// into integer dtypes (range-checked), numbers into float dtypes; `bool`/`str` targets
-/// accept only their own dtype. Errors carry the failing index.
-pub fn cast_column(column: &Column, target: DType) -> Result<Column, (usize, CoerceError)> {
+/// accept only their own dtype. Errors carry the failing index; `name` is the target
+/// schema as messages show it (`int`, `i64`, …).
+pub fn cast_column(column: &Column, target: DType, name: &str) -> Result<Column, (usize, CoerceError)> {
     let got = python_type_name(column.dtype());
-    let type_error = |i: usize| {
-        (i, CoerceError::Type { expected: target_name(target).to_owned(), got: got.to_owned() })
-    };
+    let type_error = |i: usize| (i, CoerceError::Type { expected: name.to_owned(), got: got.to_owned() });
     if column.dtype() == target {
         return Ok(column.clone());
     }
@@ -1061,7 +1100,7 @@ pub fn cast_column(column: &Column, target: DType) -> Result<Column, (usize, Coe
                     match <$t>::try_from(w) {
                         Ok(t) => out.push(t),
                         Err(_) => {
-                            let message = format!("{w} is out of range for {}", target_name(target));
+                            let message = format!("{w} is out of range for {name}");
                             return Err((i, CoerceError::Overflow { message }));
                         }
                     }
@@ -1091,7 +1130,7 @@ pub fn cast_column(column: &Column, target: DType) -> Result<Column, (usize, Coe
             for (i, x) in v.iter().enumerate() {
                 let f = x.as_float().ok_or_else(|| type_error(i))?;
                 out.push(f64_to_f32(f).ok_or_else(|| {
-                    (i, CoerceError::Overflow { message: format!("{f} is out of range for f32") })
+                    (i, CoerceError::Overflow { message: format!("{} is out of range for {name}", pyfmt::float_repr(f)) })
                 })?);
             }
             Column::F32(out)
@@ -1104,14 +1143,6 @@ pub fn cast_column(column: &Column, target: DType) -> Result<Column, (usize, Coe
             }
         }
     })
-}
-
-fn target_name(dtype: DType) -> &'static str {
-    match dtype {
-        DType::I64 => "int",
-        DType::F64 => "float",
-        other => other.name(),
-    }
 }
 
 // ---------------------------------------------------------------------------------------

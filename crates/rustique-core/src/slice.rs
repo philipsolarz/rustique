@@ -153,8 +153,10 @@ pub fn delete_slice<T>(v: &mut Vec<T>, s: &SliceIndices) -> Vec<T> {
 /// `v[s] = values`; returns the replaced elements.
 ///
 /// Contiguous slices (`step == 1`) may change the length; extended slices require
-/// `values.len() == s.len` (CPython semantics, including for `step == -1`).
-pub fn assign_slice<T>(v: &mut Vec<T>, s: &SliceIndices, values: Vec<T>) -> Result<Vec<T>, SliceError> {
+/// `values.len() == s.len` (CPython semantics, including for `step == -1`). On a length
+/// mismatch `v` is unchanged and the rejected `values` come back with the error: like
+/// removed elements, they must not be dropped while the caller holds its lock.
+pub fn try_assign_slice<T>(v: &mut Vec<T>, s: &SliceIndices, values: Vec<T>) -> Result<Vec<T>, (SliceError, Vec<T>)> {
     if s.step == 1 {
         let lo = s.start as usize;
         // CPython: an empty slice with stop < start inserts at start.
@@ -162,13 +164,19 @@ pub fn assign_slice<T>(v: &mut Vec<T>, s: &SliceIndices, values: Vec<T>) -> Resu
         return Ok(v.splice(lo..hi, values).collect());
     }
     if values.len() != s.len {
-        return Err(SliceError::LengthMismatch { expected: s.len, got: values.len() });
+        return Err((SliceError::LengthMismatch { expected: s.len, got: values.len() }, values));
     }
     let mut removed = Vec::with_capacity(s.len);
     for (pos, value) in s.positions().zip(values) {
         removed.push(std::mem::replace(&mut v[pos], value));
     }
     Ok(removed)
+}
+
+/// [`try_assign_slice`] for elements whose drop has no side effects (native values): a
+/// rejected `values` is dropped here.
+pub fn assign_slice<T>(v: &mut Vec<T>, s: &SliceIndices, values: Vec<T>) -> Result<Vec<T>, SliceError> {
+    try_assign_slice(v, s, values).map_err(|(e, _)| e)
 }
 
 /// `v * n` for lists (`n <= 0` yields an empty list).
@@ -249,6 +257,11 @@ mod tests {
             Err(SliceError::LengthMismatch { expected: 3, got: 2 })
         );
         assign_slice(&mut v, &s, vec![10, 12, 14]).unwrap();
+        assert_eq!(v, vec![10, 1, 12, 3, 14, 5]);
+        // The rejected values are handed back untouched (the binding drops them unlocked).
+        let (e, rejected) = try_assign_slice(&mut v, &s, vec![7, 8, 9, 10]).unwrap_err();
+        assert_eq!(e, SliceError::LengthMismatch { expected: 3, got: 4 });
+        assert_eq!(rejected, vec![7, 8, 9, 10]);
         assert_eq!(v, vec![10, 1, 12, 3, 14, 5]);
         let rev = SliceIndices::new(None, None, Some(-1), v.len()).unwrap();
         assign_slice(&mut v, &rev, vec![1, 2, 3, 4, 5, 6]).unwrap();
