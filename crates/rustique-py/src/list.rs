@@ -10,7 +10,7 @@
 use std::ffi::{CStr, c_int, c_void};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use pyo3::exceptions::{PyBufferError, PyIndexError, PyMemoryError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::gc::PyVisit;
@@ -25,7 +25,7 @@ use rustique_core::{Column, DType, with_column};
 use crate::convert::{self, IngestError, Probe, ToPython};
 use crate::schema::{self, Coerced, Schema};
 use crate::storage::Storage;
-use crate::sync::{MutationCounter, PyRwLock, ReadGuard, WriteGuard, read_both};
+use crate::sync::{MutationCounter, PyMutex, PyRwLock, ReadGuard, WriteGuard, read_both};
 
 /// Elements snapshotted per lock acquisition when comparing with Python `==`.
 const CHUNK: usize = 256;
@@ -40,15 +40,17 @@ pub struct List {
     schema: Arc<Schema>,
     data: PyRwLock<Storage>,
     version: MutationCounter,
+    /// Length as of the last completed mutation (lock-free `len()`).
+    len: AtomicUsize,
     /// Live buffer exports; while non-zero every mutation raises `BufferError`.
     exports: AtomicUsize,
 }
 
-/// Exclusive access for a mutation. Bumps the mutation counter when released (still
-/// under the lock).
+/// Exclusive access for a mutation. On release (still under the lock) it bumps the
+/// mutation counter and publishes the new length.
 struct Mutation<'a> {
     guard: WriteGuard<'a, Storage>,
-    version: &'a MutationCounter,
+    list: &'a List,
 }
 
 impl Deref for Mutation<'_> {
@@ -66,7 +68,8 @@ impl DerefMut for Mutation<'_> {
 
 impl Drop for Mutation<'_> {
     fn drop(&mut self) {
-        self.version.bump();
+        self.list.len.store(self.guard.len(), Ordering::Release);
+        self.list.version.bump_exclusive();
     }
 }
 
@@ -266,7 +269,13 @@ impl Side<'_> {
 
 impl List {
     fn new_with(schema: Arc<Schema>, storage: Storage) -> List {
-        List { schema, data: PyRwLock::new(storage), version: MutationCounter::new(), exports: AtomicUsize::new(0) }
+        List {
+            schema,
+            len: AtomicUsize::new(storage.len()),
+            data: PyRwLock::new(storage),
+            version: MutationCounter::new(),
+            exports: AtomicUsize::new(0),
+        }
     }
 
     /// Wrap storage that is valid for `schema` in a new `List` (no conversion).
@@ -320,9 +329,15 @@ impl List {
         self.read(py).clone_ref(py)
     }
 
-    /// Current number of elements.
-    pub fn len(&self, py: Python<'_>) -> usize {
-        self.read(py).len()
+    /// Current number of elements (no lock needed).
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     #[inline]
@@ -336,7 +351,7 @@ impl List {
         if self.exports.load(Ordering::Acquire) != 0 {
             return Err(PyBufferError::new_err("cannot modify List while a buffer export exists"));
         }
-        Ok(Mutation { guard, version: &self.version })
+        Ok(Mutation { guard, list: self })
     }
 
     /// Convert values about to be added to this list. Untyped lists that already store
@@ -686,12 +701,12 @@ impl List {
         crate::typing::list_alias_for(py, &self.schema)
     }
 
-    fn __len__(&self, py: Python<'_>) -> usize {
-        self.read(py).len()
+    fn __len__(&self) -> usize {
+        self.len()
     }
 
-    fn __bool__(&self, py: Python<'_>) -> bool {
-        !self.read(py).is_empty()
+    fn __bool__(&self) -> bool {
+        !self.is_empty()
     }
 
     fn __getitem__<'py>(slf: &Bound<'py, Self>, index: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
@@ -774,12 +789,13 @@ impl List {
     }
 
     fn __iter__(slf: &Bound<'_, Self>) -> ListIterator {
-        ListIterator { list: slf.clone().unbind(), index: AtomicUsize::new(0) }
+        ListIterator { list: slf.clone().unbind(), state: PyMutex::new(IterState::new(0)) }
     }
 
     fn __reversed__(slf: &Bound<'_, Self>) -> ListReverseIterator {
-        let len = slf.get().len(slf.py());
-        ListReverseIterator { list: slf.clone().unbind(), index: AtomicIsize::new(len as isize - 1) }
+        let len = slf.get().len();
+        let next = if len == 0 { EXHAUSTED } else { len - 1 };
+        ListReverseIterator { list: slf.clone().unbind(), state: PyMutex::new(IterState::new(next)) }
     }
 
     fn __richcmp__(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<Py<PyAny>> {
@@ -823,7 +839,7 @@ impl List {
             }
         }
         if theirs.is_empty() {
-            return result(compare_lengths(this.len(py), 0, op));
+            return result(compare_lengths(this.len(), 0, op));
         }
         List::richcompare_python(py, Side::List(this), Side::Items(theirs.into_objects(py)), op)
     }
@@ -1057,7 +1073,7 @@ impl List {
         start: Option<&Bound<'_, PyAny>>,
         stop: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<usize> {
-        let len = self.len(py);
+        let len = self.len();
         let start = clamp_bound(start, len, 0)?;
         let stop = clamp_bound(stop, len, isize::MAX)?;
         self.find(py, value, start, stop)?.ok_or_else(|| PyValueError::new_err("list.index(x): x not in list"))
@@ -1220,12 +1236,14 @@ impl List {
         Python::attach(|py| {
             let taken = {
                 let mut data = self.data.write(py);
-                match &mut *data {
+                let taken = match &mut *data {
                     Storage::Object(objects) => std::mem::take(objects),
                     _ => Vec::new(),
-                }
+                };
+                self.len.store(data.len(), Ordering::Release);
+                self.version.bump_exclusive();
+                taken
             };
-            self.version.bump();
             drop(taken);
         });
     }
@@ -1316,15 +1334,88 @@ impl List {
     }
 }
 
-/// Marks an exhausted forward iterator.
+/// Marks an exhausted iterator.
 const EXHAUSTED: usize = usize::MAX;
+/// Elements an iterator materialises per visit of the list (grows from 8 to this).
+const MAX_BATCH: usize = 64;
+
+/// Iterator position plus a batch of elements read ahead under one lock acquisition. The
+/// batch is only used while the list's mutation counter is unchanged, so iteration stays
+/// exactly as live as CPython's (any mutation makes the next step re-read the list).
+struct IterState {
+    /// Index of the next element to yield, or `EXHAUSTED`.
+    next: usize,
+    /// Upcoming elements in reverse yield order (popped from the end).
+    batch: Vec<Py<PyAny>>,
+    /// Mutation counter value the batch was read at.
+    version: u64,
+    /// Size of the next batch.
+    batch_size: usize,
+}
+
+impl IterState {
+    fn new(next: usize) -> Self {
+        IterState { next, batch: Vec::new(), version: 0, batch_size: 8 }
+    }
+
+    /// Yield the next element; `forward` selects the direction. Elements dropped from a
+    /// stale batch are returned for the caller to drop after unlocking.
+    fn step(&mut self, py: Python<'_>, list: &List, forward: bool) -> (Option<Py<PyAny>>, Vec<Py<PyAny>>) {
+        if self.next == EXHAUSTED {
+            return (None, Vec::new());
+        }
+        if !self.batch.is_empty() && self.version == list.version.get() {
+            let item = self.batch.pop();
+            self.advance(forward);
+            return (item, Vec::new());
+        }
+        let stale = std::mem::take(&mut self.batch);
+        let data = list.read(py);
+        let len = data.len();
+        if self.next >= len {
+            self.next = EXHAUSTED;
+            return (None, stale);
+        }
+        let mut batch = if forward {
+            let end = len.min(self.next + self.batch_size);
+            let mut batch = data.objects(py, self.next..end);
+            batch.reverse();
+            batch
+        } else {
+            let start = (self.next + 1).saturating_sub(self.batch_size);
+            data.objects(py, start..self.next + 1)
+        };
+        self.version = list.version.get();
+        drop(data);
+        self.batch_size = (self.batch_size * 2).min(MAX_BATCH);
+        let item = batch.pop();
+        self.batch = batch;
+        self.advance(forward);
+        (item, stale)
+    }
+
+    fn advance(&mut self, forward: bool) {
+        self.next = match (forward, self.next) {
+            (true, n) => n + 1,
+            (false, 0) => EXHAUSTED,
+            (false, n) => n - 1,
+        };
+    }
+
+    fn traverse(&self, visit: &PyVisit<'_>) -> Result<(), PyTraverseError> {
+        for o in &self.batch {
+            visit.call(o)?;
+        }
+        Ok(())
+    }
+}
 
 /// Live iterator over a `List` (CPython `list_iterator` semantics: sees appends, stops
 /// when the index passes the current length, stays exhausted).
 #[pyclass(module = "rustique", frozen, name = "ListIterator")]
 pub struct ListIterator {
     list: Py<List>,
-    index: AtomicUsize,
+    state: PyMutex<IterState>,
 }
 
 #[pymethods]
@@ -1334,33 +1425,29 @@ impl ListIterator {
     }
 
     fn __next__<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyAny>> {
-        let list = self.list.get();
-        let mut i = self.index.load(Ordering::Relaxed);
-        loop {
-            if i == EXHAUSTED {
-                return None;
-            }
-            let data = list.read(py);
-            if i >= data.len() {
-                self.index.store(EXHAUSTED, Ordering::Relaxed);
-                return None;
-            }
-            match self.index.compare_exchange_weak(i, i + 1, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => return Some(data.item(py, i)),
-                Err(current) => i = current,
-            }
-        }
+        let (item, stale) = self.state.lock(py).step(py, self.list.get(), true);
+        drop(stale);
+        item.map(|o| o.into_bound(py))
     }
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
-        match self.index.load(Ordering::Relaxed) {
+        match self.state.lock(py).next {
             EXHAUSTED => 0,
-            i => self.list.get().len(py).saturating_sub(i),
+            i => self.list.get().len().saturating_sub(i),
         }
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        visit.call(&self.list)
+        visit.call(&self.list)?;
+        match self.state.try_lock() {
+            Some(state) => state.traverse(&visit),
+            None => Ok(()),
+        }
+    }
+
+    fn __clear__(&self) {
+        let batch = Python::attach(|py| std::mem::take(&mut self.state.lock(py).batch));
+        drop(batch);
     }
 }
 
@@ -1368,8 +1455,7 @@ impl ListIterator {
 #[pyclass(module = "rustique", frozen, name = "ListReverseIterator")]
 pub struct ListReverseIterator {
     list: Py<List>,
-    /// Next index to yield; negative once exhausted.
-    index: AtomicIsize,
+    state: PyMutex<IterState>,
 }
 
 #[pymethods]
@@ -1379,31 +1465,30 @@ impl ListReverseIterator {
     }
 
     fn __next__<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyAny>> {
-        let list = self.list.get();
-        let mut i = self.index.load(Ordering::Relaxed);
-        loop {
-            if i < 0 {
-                return None;
-            }
-            let data = list.read(py);
-            if i as usize >= data.len() {
-                self.index.store(-1, Ordering::Relaxed);
-                return None;
-            }
-            match self.index.compare_exchange_weak(i, i - 1, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => return Some(data.item(py, i as usize)),
-                Err(current) => i = current,
-            }
-        }
+        let (item, stale) = self.state.lock(py).step(py, self.list.get(), false);
+        drop(stale);
+        item.map(|o| o.into_bound(py))
     }
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
-        let i = self.index.load(Ordering::Relaxed);
-        if i < 0 || i as usize >= self.list.get().len(py) { 0 } else { i as usize + 1 }
+        match self.state.lock(py).next {
+            EXHAUSTED => 0,
+            i if i < self.list.get().len() => i + 1,
+            _ => 0,
+        }
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        visit.call(&self.list)
+        visit.call(&self.list)?;
+        match self.state.try_lock() {
+            Some(state) => state.traverse(&visit),
+            None => Ok(()),
+        }
+    }
+
+    fn __clear__(&self) {
+        let batch = Python::attach(|py| std::mem::take(&mut self.state.lock(py).batch));
+        drop(batch);
     }
 }
 

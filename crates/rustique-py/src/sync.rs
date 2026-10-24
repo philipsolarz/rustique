@@ -12,7 +12,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use pyo3::prelude::*;
 
 pub type ReadGuard<'a, T> = RwLockReadGuard<'a, T>;
@@ -94,6 +94,45 @@ impl<T: Send + Sync> PyRwLock<T> {
     }
 }
 
+/// A mutex that never blocks while attached to the interpreter (see [`PyRwLock`]).
+#[derive(Debug, Default)]
+pub struct PyMutex<T> {
+    inner: Mutex<T>,
+}
+
+impl<T> PyMutex<T> {
+    pub const fn new(value: T) -> Self {
+        PyMutex { inner: Mutex::new(value) }
+    }
+
+    /// Non-blocking access (for `__traverse__`).
+    #[inline]
+    pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
+        self.inner.try_lock()
+    }
+}
+
+impl<T: Send> PyMutex<T> {
+    #[inline]
+    pub fn lock(&self, py: Python<'_>) -> MutexGuard<'_, T> {
+        match self.inner.try_lock() {
+            Some(guard) => guard,
+            None => self.lock_contended(py),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn lock_contended(&self, py: Python<'_>) -> MutexGuard<'_, T> {
+        loop {
+            py.detach(|| drop(self.inner.lock()));
+            if let Some(guard) = self.inner.try_lock() {
+                return guard;
+            }
+        }
+    }
+}
+
 /// Shared access to two locks at once without risking lock-order deadlocks: the first lock
 /// is acquired normally, the second only with `try_read`; on failure both are released and
 /// the thread waits (detached) for the second before retrying. `a` and `b` must be
@@ -132,5 +171,12 @@ impl MutationCounter {
     #[inline]
     pub fn bump(&self) {
         self.0.fetch_add(1, Ordering::Release);
+    }
+
+    /// [`MutationCounter::bump`] for callers holding the container's write lock (writers
+    /// are serialised, so no read-modify-write instruction is needed).
+    #[inline]
+    pub fn bump_exclusive(&self) {
+        self.0.store(self.0.load(Ordering::Relaxed).wrapping_add(1), Ordering::Release);
     }
 }

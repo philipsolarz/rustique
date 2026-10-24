@@ -246,30 +246,38 @@ pub unsafe fn exact_str(p: *mut ffi::PyObject) -> Option<CompactString> {
                 if bytes.is_ascii() {
                     return Some(CompactString::from(std::str::from_utf8_unchecked(bytes)));
                 }
-                let mut s = CompactString::with_capacity(len + bytes.iter().filter(|b| !b.is_ascii()).count());
-                s.extend(bytes.iter().map(|&b| char::from(b)));
-                Some(s)
+                encode_utf8(bytes.iter().map(|&b| Some(char::from(b))), len * 2)
             }
-            ffi::PyUnicode_2BYTE_KIND => {
-                let units = std::slice::from_raw_parts(data.cast::<u16>(), len);
-                let mut s = CompactString::with_capacity(len * 2);
-                for &u in units {
-                    // Canonical 2-byte strings never hold surrogate pairs: any surrogate
-                    // code unit is a lone surrogate code point.
-                    s.push(char::from_u32(u32::from(u))?);
-                }
-                Some(s)
-            }
-            _ => {
-                let units = std::slice::from_raw_parts(data.cast::<u32>(), len);
-                let mut s = CompactString::with_capacity(len * 4);
-                for &u in units {
-                    s.push(char::from_u32(u)?);
-                }
-                Some(s)
-            }
+            // Canonical 2-byte strings never hold surrogate pairs: any surrogate code unit
+            // is a lone surrogate code point, rejected by `char::from_u32`.
+            ffi::PyUnicode_2BYTE_KIND => encode_utf8(
+                std::slice::from_raw_parts(data.cast::<u16>(), len).iter().map(|&u| char::from_u32(u32::from(u))),
+                len * 3,
+            ),
+            _ => encode_utf8(std::slice::from_raw_parts(data.cast::<u32>(), len).iter().map(|&u| char::from_u32(u)), len * 4),
         }
     }
+}
+
+/// UTF-8 encode code points (at most `max_bytes` bytes); `None` on an invalid one.
+/// Short results are encoded on the stack (pushing chars into a `CompactString` one by one
+/// is several times slower).
+#[inline]
+fn encode_utf8(chars: impl Iterator<Item = Option<char>>, max_bytes: usize) -> Option<CompactString> {
+    const INLINE: usize = 24;
+    if max_bytes <= INLINE {
+        let mut buf = [0u8; INLINE];
+        let mut n = 0;
+        for c in chars {
+            n += c?.encode_utf8(&mut buf[n..]).len();
+        }
+        return std::str::from_utf8(&buf[..n]).ok().map(CompactString::from);
+    }
+    let mut s = String::with_capacity(max_bytes);
+    for c in chars {
+        s.push(c?);
+    }
+    Some(CompactString::from(s))
 }
 
 /// Exact-type classification for untyped containers (§3.3): exact `int` fitting i64,
@@ -728,7 +736,11 @@ unsafe fn any_column<T: ObjectPtr>(items: &[T]) -> Option<Column> {
             let t = ffi::Py_True();
             Some(Column::Bool(items.iter().map(|p| p.ptr() == t).collect()))
         } else if ty == &raw mut ffi::PyUnicode_Type {
-            items.iter().map(|p| exact_str(p.ptr())).collect::<Option<Vec<_>>>().map(Column::Str)
+            let mut out = Vec::with_capacity(items.len());
+            for p in items {
+                out.push(exact_str(p.ptr())?);
+            }
+            Some(Column::Str(out))
         } else {
             None
         }
