@@ -473,6 +473,12 @@ fn fpow(a: f64, b: f64) -> R {
     })
 }
 
+thread_local! {
+    /// Set when the reference evaluated an operation the engine may legitimately decline
+    /// (returning `Overflow` so the binding falls back to exact per-element evaluation).
+    static MAY_DECLINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn zero_div() -> Event {
     Event::Raise(ErrorKind::ZeroDivisionError, "division by zero".into())
 }
@@ -704,7 +710,12 @@ fn ref_binary(op: BinaryOp, a: V, b: V, rhs_constant: bool) -> R {
         TrueDiv => Ok(V::F(kernels::int_truediv(x as i64, y as i64).0)),
         FloorDiv => int(floor_div(x, y)),
         Mod => int(x - floor_div(x, y) * y),
-        Pow if y < 0 => Err(Event::Fallback),
+        // CPython's long_pow hands negative exponents to float_pow(float(x), float(y)). The
+        // engine may compute that or decline (exact per-element fallback); both are sound.
+        Pow if y < 0 => {
+            MAY_DECLINE.set(true);
+            fpow(x as f64, y as f64)
+        }
         Pow => ipow(x, y).map_or(Err(Event::Fallback), int),
         LShift | RShift if y < 0 => Err(Event::Raise(ErrorKind::ValueError, "negative shift count".into())),
         LShift if x == 0 => int(0),
@@ -757,6 +768,7 @@ fn check(e: &Expr, col: &Column, mode: IntMode) -> Result<(), TestCaseError> {
     let got = exec::evaluate(e, col, mode, &tuning);
     let mut expected = Vec::new();
     let mut event = None;
+    MAY_DECLINE.set(false);
     for i in 0..col.len() {
         match reference(e, &to_v(col, i, mode)) {
             Ok(v) => expected.push(v),
@@ -775,6 +787,7 @@ fn check(e: &Expr, col: &Column, mode: IntMode) -> Result<(), TestCaseError> {
             }
         }
         (Err(ExprError::Overflow), Some(Event::Fallback)) => {}
+        (Err(ExprError::Overflow), _) if MAY_DECLINE.get() => {}
         (Err(ExprError::Raise { kind, message }), Some(Event::Raise(k, m))) => {
             prop_assert_eq!(kind, k, "{} on {:?}: {}", e, col, message);
             if k != ErrorKind::OverflowError {
