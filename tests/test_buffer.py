@@ -302,12 +302,19 @@ def test_ingest_typed_range_checks() -> None:
 )
 def test_ingest_numpy(arr: Any) -> None:
     lst = List(arr)
-    assert_same_items(lst, arr.tolist())
+    if arr.dtype.isnative:
+        # Buffer fast path: native values, read back as Python numbers.
+        assert_same_items(lst, arr.tolist())
+    else:
+        # No matching native format: generic iteration, exactly like list(arr).
+        assert list(lst) == list(arr)
+        assert [type(x) for x in lst] == [type(x) for x in arr]
     if arr.size and arr.dtype.kind in "iub" and arr.dtype.isnative:
         assert lst.strategy != "object" or arr.max() > 2**63 - 1
-    # Round trip back to NumPy.
-    if arr.size and arr.dtype.isnative:
+    # Round trip back to NumPy through the buffer protocol.
+    if arr.size and lst.strategy not in ("object", "empty"):
         back = np.asarray(lst)
+        assert back.dtype.kind == arr.dtype.kind
         assert back.tolist() == arr.tolist()
 
 

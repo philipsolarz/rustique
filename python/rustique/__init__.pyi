@@ -815,20 +815,24 @@ class Set[T](MutableSet[T]):
 # Rust -> Python (§5)
 # ---------------------------------------------------------------------------------------
 
-@overload
-def arange(start: SupportsIndex, stop: SupportsIndex | None = None, step: SupportsIndex = 1, dtype: type[int] = ...) -> List[int]:
-    """`range(start, stop, step)` materialised natively as a `List` (no per-element
-    conversion): `arange(5)`, `arange(0, 10, 2, dtype=rs.u8)`."""
+type _ArangeFloatArg = float | SupportsIndex
 
 @overload
-def arange(start: SupportsIndex, stop: SupportsIndex | None, step: SupportsIndex, dtype: type[float]) -> List[float]: ...
+def arange(start: SupportsIndex, stop: SupportsIndex | None = None, step: SupportsIndex = 1, dtype: type[int] | None = None) -> List[int]:
+    """`range(start, stop, step)` materialised natively as a typed `List` (no per-element
+    conversion): `arange(5)`, `arange(0, 10, 2, dtype=rs.u8)`, `arange(0, 1, 0.25, float)`."""
+
 @overload
-def arange(start: SupportsIndex, stop: SupportsIndex | None = None, step: SupportsIndex = 1, *, dtype: type[float]) -> List[float]: ...
+def arange(start: _ArangeFloatArg, stop: _ArangeFloatArg | None, step: _ArangeFloatArg, dtype: type[float]) -> List[float]: ...
 @overload
-def arange[S: (i8, i16, i32, i64, u8, u16, u32, u64, f32, f64)](
-    start: SupportsIndex, stop: SupportsIndex | None, step: SupportsIndex, dtype: type[S]
-) -> List[S]: ...
+def arange(start: _ArangeFloatArg, stop: _ArangeFloatArg | None = None, step: _ArangeFloatArg = 1, *, dtype: type[float]) -> List[float]: ...
 @overload
-def arange[S: (i8, i16, i32, i64, u8, u16, u32, u64, f32, f64)](
+def arange[S: (f32, f64)](start: _ArangeFloatArg, stop: _ArangeFloatArg | None, step: _ArangeFloatArg, dtype: type[S]) -> List[S]: ...
+@overload
+def arange[S: (f32, f64)](start: _ArangeFloatArg, stop: _ArangeFloatArg | None = None, step: _ArangeFloatArg = 1, *, dtype: type[S]) -> List[S]: ...
+@overload
+def arange[S: (i8, i16, i32, i64, u8, u16, u32, u64)](start: SupportsIndex, stop: SupportsIndex | None, step: SupportsIndex, dtype: type[S]) -> List[S]: ...
+@overload
+def arange[S: (i8, i16, i32, i64, u8, u16, u32, u64)](
     start: SupportsIndex, stop: SupportsIndex | None = None, step: SupportsIndex = 1, *, dtype: type[S]
 ) -> List[S]: ...

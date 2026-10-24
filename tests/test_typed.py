@@ -567,7 +567,9 @@ class TestTypedDict:
         d = Dict[str, int]({"a": 1})
         assert d.copy().schema_type is Dict[str, int]
         assert copy.deepcopy(d).schema_type is Dict[str, int]
-        assert (d | {"b": 2}).schema_type is Dict[str, int]
+        assert (d | Dict[str, int]({"b": 2})).schema_type is Dict[str, int]
+        # Mixing with an untyped operand follows the List `+` rule (result may be untyped).
+        assert d | {"b": 2} == {"a": 1, "b": 2}
 
 
 class TestTypedSet:
