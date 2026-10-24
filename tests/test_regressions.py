@@ -146,3 +146,13 @@ def test_pickle_round_trip():
     clone = pickle.loads(pickle.dumps(lst))
     assert clone == lst
     assert isinstance(clone, List[int])
+
+
+def test_deeply_composed_aliases_raise_instead_of_crashing():
+    # Safety review C2: composing aliases one level at a time bypassed the nesting limit
+    # and overflowed the Rust stack (SIGSEGV) in repr/compile.
+    alias = int
+    with pytest.raises(RecursionError):
+        for _ in range(10_000):
+            alias = List[alias]
+    assert repr(alias).startswith("List[")

@@ -246,6 +246,17 @@ struct Compiler<'py> {
     frames: Vec<Vec<(Bound<'py, PyAny>, Arc<Schema>)>>,
 }
 
+/// Nesting depth of a schema. Every schema built by [`compile`] is at most `MAX_DEPTH` deep,
+/// so this recursion is bounded.
+fn schema_depth(schema: &Schema) -> usize {
+    match schema {
+        Schema::Optional(inner) | Schema::List(inner) | Schema::Set(inner) => 1 + schema_depth(inner),
+        Schema::Dict(key, value) => 1 + schema_depth(key).max(schema_depth(value)),
+        Schema::Union(members) => 1 + members.iter().map(|m| schema_depth(m)).max().unwrap_or(0),
+        _ => 1,
+    }
+}
+
 impl<'py> Compiler<'py> {
     fn compile(&mut self, ty: &Bound<'py, PyAny>) -> PyResult<Arc<Schema>> {
         if let Some(schema) = simple_schema(ty, self.refs)? {
@@ -259,7 +270,16 @@ impl<'py> Compiler<'py> {
         self.depth += 1;
         let result = self.compile_node(ty);
         self.depth -= 1;
-        result
+        let schema = result?;
+        // Aliases carry already-built schemas, so syntactic depth alone does not bound the
+        // result (`T = List[T]` repeated); every schema stays within MAX_DEPTH so the
+        // recursive walks over it (render, hash, display) cannot overflow the stack.
+        if schema_depth(&schema) > MAX_DEPTH {
+            return Err(PyRecursionError::new_err(format!(
+                "type expression nested more than {MAX_DEPTH} levels deep"
+            )));
+        }
+        Ok(schema)
     }
 
     fn compile_node(&mut self, ty: &Bound<'py, PyAny>) -> PyResult<Arc<Schema>> {
