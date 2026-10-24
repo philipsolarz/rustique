@@ -262,3 +262,42 @@ def test_m1_gc_under_contention_never_finalizes_live_elements() -> None:
         timeout=60,
     )
     assert out.strip() == "bad 0"
+
+
+# --------------------------------------------------------------------------------------
+# M2: arange() computed its length and last element with unchecked i128 arithmetic
+# (`b - a - 1`, `-s`, `(n - 1) * s`): PanicException in debug builds, silent wrap-around
+# in release builds.
+# --------------------------------------------------------------------------------------
+
+M = 2**127
+
+
+@pytest.mark.parametrize(
+    "args",
+    [(-M, M - 1), (M - 1, -M, -1), (0, M - 1, 2**126), (-M, 0, M - 1), (-M, M - 1, M - 1), (0, 2**100, 2**99)],
+)
+@pytest.mark.parametrize("dtype", [None, rs.i8, rs.u64])
+def test_m2_arange_extreme_bounds_raise_overflow(args: tuple[int, ...], dtype: object) -> None:
+    with pytest.raises(OverflowError):
+        rs.arange(*args, dtype=dtype)
+
+
+def test_m2_arange_extreme_steps_match_range() -> None:
+    assert rs.arange(0, -1, -M).to_list() == list(range(0, -1, -M))
+    assert rs.arange(0, 1, M - 1).to_list() == [0]
+    assert rs.arange(5, 6, -M).to_list() == []
+    assert rs.arange(2**64 - 3, 2**64, 1, rs.u64).to_list() == list(range(2**64 - 3, 2**64))
+    assert rs.arange(-(2**63), -(2**63) + 2, dtype=rs.i64).to_list() == [-(2**63), -(2**63) + 1]
+    # Float targets take any int bounds; elements whose products overflow i128 stay exact.
+    got = rs.arange(-M, M - 1, M - 1, dtype=float).to_list()
+    assert got == [float(x) for x in range(-M, M - 1, M - 1)]
+
+
+def test_m2_arange_huge_lengths_fail_cleanly() -> None:
+    with pytest.raises(OverflowError):
+        rs.arange(2**64)  # more items than fit an index (like list(range(2**64)))
+    with pytest.raises(MemoryError):
+        rs.arange(2**62)
+    with pytest.raises(MemoryError):
+        rs.arange(0.0, 1e300, 1e-3, float)

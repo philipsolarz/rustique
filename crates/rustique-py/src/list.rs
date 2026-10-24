@@ -1643,18 +1643,25 @@ pub fn arange<'py>(
         if s == 0 {
             return Err(PyValueError::new_err("arange() arg 3 must not be zero"));
         }
-        let n = if s > 0 && a < b {
-            (b - a - 1) / s + 1
+        // Distances between i128 values fit u128; every generated value lies in
+        // `[a, b)` (or `(b, a]`), so it fits i128 even where intermediate products do not.
+        let span = if s > 0 && a < b {
+            b.abs_diff(a)
         } else if s < 0 && a > b {
-            (a - b - 1) / (-s) + 1
+            a.abs_diff(b)
         } else {
             0
         };
-        let len = usize::try_from(n).map_err(|_| PyMemoryError::new_err(()))?;
+        let n = if span == 0 { 0 } else { (span - 1) / s.unsigned_abs() + 1 };
+        let len = isize::try_from(n)
+            .map_err(|_| pyo3::exceptions::PyOverflowError::new_err("arange() result has too many items"))?
+            as usize;
         if len > 0
             && let Some((lo, hi)) = target.int_range()
         {
-            let last = a + (n - 1) * s;
+            let offset = (n - 1) * s.unsigned_abs();
+            let last = if s > 0 { a.checked_add_unsigned(offset) } else { a.checked_sub_unsigned(offset) };
+            let last = last.ok_or_else(|| pyo3::exceptions::PyOverflowError::new_err("arange() bounds overflow"))?;
             for x in [a, last] {
                 if x < lo || x > hi {
                     return Err(pyo3::exceptions::PyOverflowError::new_err(format!(
@@ -1664,7 +1671,8 @@ pub fn arange<'py>(
                 }
             }
         }
-        convert::generate(py, target, len, |k| a + k as i128 * s)?
+        // Wrapping arithmetic is exact here: the true value of every element fits i128.
+        convert::generate(py, target, len, |k| a.wrapping_add((k as i128).wrapping_mul(s)))?
     };
     List::from_storage(py, schema, Storage::Native(column))
 }
