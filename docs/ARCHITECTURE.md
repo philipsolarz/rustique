@@ -263,6 +263,16 @@ Numeric key equivalence follows Python: `1`, `1.0`, `True` are the same key.
   `__repr__` → `i8(5)` / `f32(0.1)`, `__str__` → `5` / `0.1` (shortest round-trip digits
   in CPython repr style).
 - Scalars are immutable and hashable; they double as element-type markers (`List[rs.u8]`).
+- Decided details: `<<`/`>>` drop shifted-out bits like Rust (`u8(255) << 1 == u8(254)`);
+  negative shift → `ValueError`, shift ≥ `BITS` → `OverflowError`. `~` is the bit
+  complement within the width (`~u8(5) == u8(250)`). `int_scalar ** negative` returns a
+  Python `float`; `pow(x, e, m)` is modular. Float `**` follows CPython (`ValueError` for a
+  negative base with a fractional exponent, `OverflowError` on overflow) while `+ - *`
+  overflow to `inf` per IEEE. Floats/ints out of `f32` range raise `OverflowError`.
+  Different scalar classes never compare equal (`i8(1) != i16(1)`), although each equals
+  `1`. Where Rust would panic, named methods raise `OverflowError` (`MIN.div_euclid(-1)`)
+  or return `None` (`checked_*`). `round`/`math.floor`/… of an int scalar keep its type;
+  of a float scalar return `int`.
 
 ### 4.5 Expressions: `X`
 `X` is the placeholder for "the element". Expressions are immutable trees evaluated
