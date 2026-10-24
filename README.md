@@ -69,24 +69,26 @@ rewrite stores data natively and pays per *operation* instead of per *element*.
 
 ## Performance
 
-Indicative ratios versus builtins (rustique time ÷ builtin time, lower is better;
-1M elements, CPython 3.15.1, see `benches/` to reproduce):
+Measured on CPython 3.15.1, release build, 1M elements; ratio = rustique time ÷ builtin
+time (lower is faster), every result verified against the builtin. Full report:
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
-| Operation | Ratio |
-|---|---|
-| `List(range(n))` | 0.03 |
-| `x in lst` (miss) | 0.08 |
-| `lst.sum()` vs `sum(list)` | 0.14 |
-| `lst.sort()` (ints) | 0.02 |
-| `lst.sort()` (strs) | 0.09 |
-| `lst.map(X * 2 + 1)` vs list comprehension | ~0.04 |
-| `lst[::2]` | 0.21 |
-| `lst[i]` in a Python loop | ~1.6 |
-| `for v in lst` | ~1.8 |
+| Bulk operations (one Rust call) | Ratio | | Per-element access from Python | Ratio |
+|---|---|---|---|---|
+| `lst.sort()` ints / floats / strs | 0.02 / 0.03 / 0.07 | | `List(list_of_ints)` | 0.93 |
+| `x in lst` | 0.04 | | `List(list_of_floats)` | 0.75 |
+| `lst.min()` / `lst.max()` | 0.05 | | `lst[i]`, random, 1M | 0.59 |
+| `List(range(n))` | 0.05 | | `lst[i]`, random, 100k | 1.05 |
+| `lst.map(X * 2 + 1)` vs comprehension | 0.06 | | `for v in lst` | 1.52 |
+| `lst.filter(X % 3 == 0)` vs comprehension | 0.10 | | `List(list_of_strs)` | 1.97 |
+| `lst.sum()` ints / floats (bit-exact) | 0.12 / 0.26 | | `lst.append(v)` loop | 3.60 (`array.array`: 3.56) |
+| `lst[::3]` | 0.25 | | `Dict` lookup, int / str keys | 1.34 / 1.75 |
+| `Set` union | 0.84 | | `Dict` build | ~2.0 |
 
-Bulk work is dramatically faster; per-element access from Python is slower than a builtin
-list (each read must create a Python object). Use Rustique where data stays in Rust
-between operations.
+Bulk work runs at NumPy speed with Python semantics (`map` ≈ NumPy's 0.04, `sort` beats
+`numpy.sort`). Element-at-a-time code from Python pays a Python object per read and a lock
+per call, in line with `array.array`. Use Rustique where data stays in Rust between
+operations.
 
 ## Install & develop
 
