@@ -166,3 +166,57 @@ def test_failed_eq_mid_batch_keeps_prefix_and_releases_rest():
         d.update([("a", Value(1)), (BadEq(), Value(2)), ("b", Value(3))])
     assert list(d) == ["x", "a"]
     assert sorted(released) == [(2, 2), (3, 2)]
+
+
+# --- L1: bytes are never compared with str/int under a lock ---------------------------------
+
+
+def test_bytes_str_comparison_warns_outside_the_lock():
+    out = run_isolated(
+        """
+        import warnings
+        import rustique as rs
+
+        s = rs.Set([b"a"])
+        d = rs.Dict({b"a": 1})
+        t = rs.Set([(b"a", 1)])
+
+        def hook(message, category, filename, lineno, file=None, line=None):
+            print(category.__name__, len(s), len(d), len(t), flush=True)  # needs the locks
+
+        warnings.showwarning = hook
+        warnings.simplefilter("always")
+        print("a" in s, flush=True)
+        s.add("a")
+        d["a"] = 2
+        t.add(("a", 1))
+        print(sorted(map(repr, s)), d.to_dict() == {b"a": 1, "a": 2}, len(t), flush=True)
+        print(b"a" in s, 97 in rs.Set([b"a"]), flush=True)
+        """,
+        "-b",
+        timeout=30,
+    )
+    lines = out.splitlines()
+    assert lines[0] == "BytesWarning 1 1 1"
+    assert lines[1] == "False"
+    assert "[\"'a'\", \"b'a'\"] True 2" in lines
+    assert lines[-1] == "True False"
+    assert sum(line.startswith("BytesWarning") for line in lines) >= 4
+
+
+def test_bytes_str_comparison_raises_under_bb_like_builtins():
+    out = run_isolated(
+        """
+        import rustique as rs
+
+        for container in (set, rs.Set):
+            s = container([b"a"])
+            try:
+                "a" in s
+            except BytesWarning:
+                print(container.__name__, "raised")
+        """,
+        "-bb",
+        timeout=30,
+    )
+    assert out.split() == ["set", "raised", "Set", "raised"]

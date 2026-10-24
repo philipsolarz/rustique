@@ -54,12 +54,37 @@ pub(crate) enum Class {
     /// Equal to the Python str `text` (hash and equality are `str`'s).
     Str { text: PyBackedStr, exact: bool },
     /// Anything else, with its Python hash. `exotic` objects may compare equal to native
-    /// keys through a custom `__eq__`; `simple` ones compare without running Python code.
+    /// keys through a custom `__eq__`; `simple` says when comparisons run no Python code.
     Other {
         hash: isize,
         exotic: bool,
-        simple: bool,
+        simple: Simple,
     },
+}
+
+/// Whether comparing a key with another runs Python code (and so must not happen under a
+/// container lock).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Simple {
+    /// May run Python code (a custom `__eq__`, …).
+    No,
+    /// `bytes`: compares without Python code only with `bytes` (`bytes == str` and
+    /// `bytes == int` emit a `BytesWarning` under `python -b`, running the warnings
+    /// machinery).
+    Bytes,
+    /// Builtin scalars and tuples of them.
+    Yes,
+}
+
+impl Simple {
+    /// Whether two keys of these kinds compare without running Python code.
+    #[inline]
+    fn inline_with(self, other: Simple) -> bool {
+        matches!(
+            (self, other),
+            (Simple::Yes, Simple::Yes) | (Simple::Bytes, Simple::Bytes)
+        )
+    }
 }
 
 /// A key object, classified and hashed (all outside any lock).
@@ -95,7 +120,7 @@ impl<'py> Key<'py> {
                 None => Class::Other {
                     hash: hash()?,
                     exotic: false,
-                    simple: true,
+                    simple: Simple::Yes,
                 },
             }
         } else if obj.is_exact_instance_of::<PyString>() {
@@ -114,7 +139,7 @@ impl<'py> Key<'py> {
                 None => Class::Other {
                     hash: hash()?,
                     exotic: false,
-                    simple: true,
+                    simple: Simple::Yes,
                 },
             }
         } else if obj.is_instance_of::<PyInt>() && has_builtin_slots(obj, BuiltinBase::Int) {
@@ -126,7 +151,7 @@ impl<'py> Key<'py> {
                 None => Class::Other {
                     hash: hash()?,
                     exotic: false,
-                    simple: true,
+                    simple: Simple::Yes,
                 },
             }
         } else if obj.is_instance_of::<PyString>() && has_builtin_slots(obj, BuiltinBase::Str) {
@@ -139,7 +164,7 @@ impl<'py> Key<'py> {
             Class::Other {
                 hash,
                 exotic: !never_equals_native(obj),
-                simple: is_simple(obj, 0),
+                simple: simplicity(obj, 0),
             }
         })
     }
@@ -153,9 +178,9 @@ impl<'py> Key<'py> {
         }
     }
 
-    fn is_simple(&self) -> bool {
+    fn simplicity(&self) -> Simple {
         match self.class {
-            Class::Int { .. } | Class::Str { .. } => true,
+            Class::Int { .. } | Class::Str { .. } => Simple::Yes,
             Class::Other { simple, .. } => simple,
         }
     }
@@ -287,7 +312,7 @@ fn str_class(
         Err(_) => Class::Other {
             hash: hash()?,
             exotic: false,
-            simple: true,
+            simple: Simple::Yes,
         },
     })
 }
@@ -376,24 +401,30 @@ fn never_equals_native(obj: &Bound<'_, PyAny>) -> bool {
         || obj.is_exact_instance_of::<PyFrozenSet>()
 }
 
-/// Objects whose equality with other simple objects runs no Python code (so it may be
-/// evaluated under a container lock).
-pub(crate) fn is_simple(obj: &Bound<'_, PyAny>, depth: u32) -> bool {
-    if obj.is_exact_instance_of::<PyInt>()
+/// Which objects `obj` compares with without running Python code (see [`Simple`]).
+pub(crate) fn simplicity(obj: &Bound<'_, PyAny>, depth: u32) -> Simple {
+    if obj.is_exact_instance_of::<PyBytes>() {
+        return Simple::Bytes;
+    }
+    let simple = if obj.is_exact_instance_of::<PyInt>()
         || obj.is_exact_instance_of::<PyString>()
         || obj.is_exact_instance_of::<PyFloat>()
         || obj.is_exact_instance_of::<PyBool>()
-        || obj.is_exact_instance_of::<PyBytes>()
         || obj.is_exact_instance_of::<PyComplex>()
         || obj.is_none()
     {
-        return true;
-    }
-    if let Ok(t) = obj.cast_exact::<PyTuple>() {
-        return depth < 8 && t.iter_borrowed().all(|item| is_simple(&item, depth + 1));
-    }
-    (obj.is_instance_of::<PyInt>() && has_builtin_slots(obj, BuiltinBase::Int))
-        || (obj.is_instance_of::<PyString>() && has_builtin_slots(obj, BuiltinBase::Str))
+        true
+    } else if let Ok(t) = obj.cast_exact::<PyTuple>() {
+        // Tuples compare item by item, so `bytes` items would meet anything.
+        depth < 8
+            && t
+                .iter_borrowed()
+                .all(|item| simplicity(&item, depth + 1) == Simple::Yes)
+    } else {
+        (obj.is_instance_of::<PyInt>() && has_builtin_slots(obj, BuiltinBase::Int))
+            || (obj.is_instance_of::<PyString>() && has_builtin_slots(obj, BuiltinBase::Str))
+    };
+    if simple { Simple::Yes } else { Simple::No }
 }
 
 const HASH_MODULUS: u64 = (1 << 61) - 1;
@@ -885,13 +916,13 @@ impl KeyTable {
             (KeyStore::Int(_) | KeyStore::Str(_), _) => return Ok(Resolve::Absent),
             (KeyStore::Object(ki), _) => {
                 let hash = mix(key.py_hash()?);
-                let simple = key.is_simple();
+                let simple = key.simplicity();
                 for pos in ki.index().candidates(hash) {
                     let stored = ki.raw_keys()[pos].bind(py);
                     if stored.is(&key.obj) {
                         return Ok(Resolve::Found(pos));
                     }
-                    if simple && is_simple(stored, 0) {
+                    if simple.inline_with(simplicity(stored, 0)) {
                         if stored.eq(&key.obj)? {
                             return Ok(Resolve::Found(pos));
                         }
