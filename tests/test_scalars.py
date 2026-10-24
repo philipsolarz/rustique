@@ -742,8 +742,9 @@ def float_ref_binop(op, a, b):
         if op == "/":
             return a / b
         if op == "**":
-            r = a**b
-            return ValueError if isinstance(r, complex) else r
+            if a < 0 and math.isfinite(a) and math.isfinite(b) and b != math.floor(b):
+                return ValueError  # a complex number in Python
+            return a**b
         return BINOPS[op](a, b) if op != "divmod" else divmod(a, b)
     except ZeroDivisionError:
         return ZeroDivisionError

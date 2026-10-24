@@ -171,8 +171,9 @@ fn bool_obj(py: Python<'_>, b: bool) -> PyResult<Py<PyAny>> {
 /// A `u32` count argument of a named method (shift amount, exponent, rotation).
 fn count_arg(obj: &Bound<'_, PyAny>, what: &str) -> PyResult<u32> {
     match PyIntVal::of(obj)? {
-        PyIntVal::Small(v) if v < 0 => Err(PyValueError::new_err(format!("negative {what}"))),
-        PyIntVal::Below => Err(PyValueError::new_err(format!("negative {what}"))),
+        PyIntVal::Small(i128::MIN..0) | PyIntVal::Below => {
+            Err(PyValueError::new_err(format!("negative {what}")))
+        }
         PyIntVal::Small(v) => u32::try_from(v)
             .map_err(|_| PyOverflowError::new_err(format!("{what} {v} does not fit in u32"))),
         PyIntVal::Above => Err(PyOverflowError::new_err(format!(
@@ -483,8 +484,9 @@ fn int_truediv<C: IntScalar>(
 /// The shift amount of an operator: negative → `ValueError`, `>= BITS` → `OverflowError`.
 fn shift_amount<T: IntPrim>(count: PyIntVal) -> PyResult<u32> {
     match count {
-        PyIntVal::Small(n) if n < 0 => Err(PyValueError::new_err("negative shift count")),
-        PyIntVal::Below => Err(PyValueError::new_err("negative shift count")),
+        PyIntVal::Small(i128::MIN..0) | PyIntVal::Below => {
+            Err(PyValueError::new_err("negative shift count"))
+        }
         PyIntVal::Small(n) if n < T::BITS as i128 => Ok(n as u32),
         _ => Err(PyOverflowError::new_err(format!(
             "shift count out of range for {} (must be < {})",
@@ -1895,10 +1897,7 @@ macro_rules! float_scalar {
             }
             #[classmethod]
             #[pyo3(signature = (bytes, /))]
-            fn from_be_bytes(
-                _cls: &Bound<'_, PyType>,
-                bytes: &Bound<'_, PyAny>,
-            ) -> PyResult<Self> {
+            fn from_be_bytes(_cls: &Bound<'_, PyType>, bytes: &Bound<'_, PyAny>) -> PyResult<Self> {
                 Ok(Self($t::from_be_bytes(fixed_bytes(
                     stringify!($t),
                     "from_be_bytes",
@@ -1907,10 +1906,7 @@ macro_rules! float_scalar {
             }
             #[classmethod]
             #[pyo3(signature = (bytes, /))]
-            fn from_le_bytes(
-                _cls: &Bound<'_, PyType>,
-                bytes: &Bound<'_, PyAny>,
-            ) -> PyResult<Self> {
+            fn from_le_bytes(_cls: &Bound<'_, PyType>, bytes: &Bound<'_, PyAny>) -> PyResult<Self> {
                 Ok(Self($t::from_le_bytes(fixed_bytes(
                     stringify!($t),
                     "from_le_bytes",
@@ -1919,10 +1915,7 @@ macro_rules! float_scalar {
             }
             #[classmethod]
             #[pyo3(signature = (bytes, /))]
-            fn from_ne_bytes(
-                _cls: &Bound<'_, PyType>,
-                bytes: &Bound<'_, PyAny>,
-            ) -> PyResult<Self> {
+            fn from_ne_bytes(_cls: &Bound<'_, PyType>, bytes: &Bound<'_, PyAny>) -> PyResult<Self> {
                 Ok(Self($t::from_ne_bytes(fixed_bytes(
                     stringify!($t),
                     "from_ne_bytes",
