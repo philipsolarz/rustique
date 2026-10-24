@@ -549,7 +549,8 @@ def markdown(results: list[Measurement], cases: list[Case]) -> str:
     for m in results:
         by_case.setdefault((m.case, m.n), []).append(m)
     notes = {c.name: c.note for c in cases if c.note}
-    for (case, n), ms in by_case.items():
+    for (case_name, n), ms in by_case.items():
+        case = case_name.replace("|", "\\|")  # e.g. "set |" must not split the table cell
         base = ms[0].best
         for m in ms:
             if m.error:
