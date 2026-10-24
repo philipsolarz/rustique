@@ -594,6 +594,10 @@ pub fn filter_storage(
     };
     let kept = match storage {
         Storage::Empty => Storage::Empty,
+        // Large selections run on the rayon pool: never with the interpreter attached.
+        Storage::Native(column) if column.len() >= DETACH_MIN => {
+            Storage::Native(py.detach(|| engine::select(&column, &mask)))
+        }
         Storage::Native(column) => Storage::Native(engine::select(&column, &mask)),
         Storage::Object(objects) => {
             Storage::Object(objects.into_iter().zip(&mask).filter(|(_, keep)| **keep).map(|(o, _)| o).collect())

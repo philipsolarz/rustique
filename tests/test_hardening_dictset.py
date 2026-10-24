@@ -686,3 +686,15 @@ def test_python_int_shifts_keep_exact_semantics():
         ints.map(rs.X << -1)
     assert list(rs.List[rs.i8]([127]).map(rs.X << 1)) == [-2]
     assert (rs.X << 1)(rs.i8(127)) == rs.i8(-2)
+
+
+# --- L4: large native filters ------------------------------------------------------------------
+
+
+def test_large_native_filter():
+    n = 300_000
+    lst = rs.List[int](range(n))
+    kept = lst.filter(rs.X % 3 == 0)
+    assert len(kept) == n // 3 and kept[0] == 0 and kept[-1] == n - 3
+    strs = rs.List([str(i) for i in range(140_000)])
+    assert len(strs.filter(rs.X < "2")) == sum(1 for i in range(140_000) if str(i) < "2")
