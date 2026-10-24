@@ -225,7 +225,9 @@ impl Storage {
                 self.demote(py);
                 self.set_one(py, index, value)
             }
-            (Storage::Empty, _) => None,
+            // Unreachable (no index is in range); never drop an object under the lock.
+            (Storage::Empty, Coerced::Object(o)) => Some(o),
+            (Storage::Empty, Coerced::Native(_)) => None,
         }
     }
 
@@ -396,11 +398,14 @@ impl Storage {
         }
     }
 
-    /// `self[s] = values` with list semantics; demotes when the strategies differ.
-    pub fn assign_slice(&mut self, py: Python<'_>, s: &SliceIndices, values: Storage) -> Result<Displaced, SliceError> {
+    /// `self[s] = values` with list semantics; demotes when the strategies differ. On a
+    /// length mismatch nothing changes and the rejected `values` are handed back with the
+    /// error: they may hold Python objects, which the caller drops after unlocking.
+    pub fn assign_slice(&mut self, py: Python<'_>, s: &SliceIndices, values: Storage) -> Result<Displaced, (SliceError, Storage)> {
         if s.step != 1 && values.len() != s.len {
-            return Err(SliceError::LengthMismatch { expected: s.len, got: values.len() });
+            return Err((SliceError::LengthMismatch { expected: s.len, got: values.len() }, values));
         }
+        // From here on the assignment cannot fail: the length matches and `s` is adjusted.
         match (&mut *self, values) {
             (Storage::Empty, values) => {
                 // An empty untyped list: the assigned values decide the strategy.
@@ -410,18 +415,20 @@ impl Storage {
                 Ok(Vec::new())
             }
             (Storage::Native(column), Storage::Native(new)) if new.dtype() == column.dtype() => {
+                // Native values: dropping a (never expected) rejected column runs no code.
                 column.assign_slice(s, new).map(drop).map_err(|e| match e {
-                    rustique_core::ColumnError::Slice(e) => e,
-                    _ => SliceError::ZeroStep,
+                    rustique_core::ColumnError::Slice(e) => (e, Storage::Empty),
+                    _ => (SliceError::ZeroStep, Storage::Empty),
                 })?;
                 Ok(Vec::new())
             }
             (Storage::Native(column), values) if values.is_empty() => {
                 let empty = Column::new(column.dtype());
-                column.assign_slice(s, empty).map(drop).map_err(|_| SliceError::ZeroStep)?;
+                column.assign_slice(s, empty).map(drop).map_err(|_| (SliceError::ZeroStep, values))?;
                 Ok(Vec::new())
             }
-            (Storage::Object(objects), values) => slice::assign_slice(objects, s, values.into_objects(py)),
+            (Storage::Object(objects), values) => slice::try_assign_slice(objects, s, values.into_objects(py))
+                .map_err(|(e, rejected)| (e, Storage::Object(rejected))),
             (Storage::Native(_), values) => {
                 self.demote(py);
                 self.assign_slice(py, s, values)
@@ -482,8 +489,12 @@ impl Storage {
             return Ok(Vec::new());
         }
         let repeated = self.repeat(py, n)?;
-        *self = repeated;
-        Ok(Vec::new())
+        // The old references are handed back like any displaced objects (the repetition
+        // holds its own references to the same objects).
+        Ok(match mem::replace(self, repeated) {
+            Storage::Object(objects) => objects,
+            _ => Vec::new(),
+        })
     }
 
     fn item_size(&self) -> usize {

@@ -826,12 +826,19 @@ impl List {
                     return Err(PyTypeError::new_err("must assign iterable to extended slice"));
                 }
                 let values = this.ingest_for_update(py, value)?;
-                let displaced = {
+                let result = {
                     let mut data = this.mutate(py)?;
                     let s = adjust(start, stop, step, data.len())?;
-                    data.assign_slice(py, &s, values).map_err(|e| PyValueError::new_err(e.to_string()))?
+                    data.assign_slice(py, &s, values)
                 };
-                drop(displaced);
+                // Displaced or rejected objects are dropped only now, unlocked.
+                match result {
+                    Ok(displaced) => drop(displaced),
+                    Err((e, rejected)) => {
+                        drop(rejected);
+                        return Err(PyValueError::new_err(e.to_string()));
+                    }
+                }
                 Ok(())
             }
         }

@@ -90,3 +90,76 @@ def test_critical_pure_schema_coercion_runs_no_python_code(mode: str) -> None:
     value = "1e+300 is out of range for f32" if "f32" in mode else "1000 is out of range for i8"
     assert "OverflowError: " in out and value in out, out
     assert out.endswith("survived 1\n"), out
+
+
+# --------------------------------------------------------------------------------------
+# C1: objects rejected by a failed operation were dropped under the write lock, so a
+# `__del__` touching the list deadlocked on its own thread.
+# --------------------------------------------------------------------------------------
+
+
+def test_c1_extended_slice_mismatch_drops_rejected_values_unlocked() -> None:
+    out = run_isolated(
+        """
+        l = List([1, 2, 3, 4])
+        seen = []
+        class D:
+            def __del__(self):
+                seen.append((len(l), l[0], l.to_list()))
+        try:
+            l[::2] = (D() for _ in range(3))
+        except ValueError as e:
+            print("ValueError:", e)
+        assert seen == [(4, 1, [1, 2, 3, 4])] * 3, seen
+        print("ok")
+        """
+    )
+    assert "attempt to assign sequence of size 3 to extended slice of size 2" in out
+    assert out.endswith("ok\n")
+
+
+def test_c1_typed_nested_lists_rejected_by_slice_assignment() -> None:
+    out = run_isolated(
+        """
+        import gc
+        active = True
+        class Foo:
+            def __del__(self):
+                if active:
+                    print("del", len(L), type(L[0]).__name__, flush=True)
+        L = List[List[Foo]]([[Foo()]])
+        gc.collect()
+        try:
+            L[10] = (Foo() for _ in range(1))          # IndexError after building List[Foo]
+        except IndexError as e:
+            print("IndexError", e)
+        try:
+            L[::2] = [(Foo() for _ in range(1)), (Foo() for _ in range(1))]
+        except ValueError as e:
+            print("ValueError", e)
+        L[::-1] = [[Foo()]]                            # displaced nested list dies unlocked
+        active = False
+        print("done")
+        """
+    )
+    lines = out.splitlines()
+    assert lines[-1] == "done"
+    assert "IndexError list assignment index out of range" in lines
+    assert any(line.startswith("ValueError attempt to assign sequence of size 2") for line in lines)
+    assert lines.count("del 1 List") == 4
+
+
+def test_c1_rejected_values_are_not_leaked_or_stored() -> None:
+    import weakref
+
+    class Obj:
+        pass
+
+    lst = List([1, 2, 3, 4])
+    objs = [Obj() for _ in range(3)]
+    refs = [weakref.ref(o) for o in objs]
+    with pytest.raises(ValueError, match="extended slice of size 2"):
+        lst[::2] = objs
+    assert lst.to_list() == [1, 2, 3, 4]
+    del objs
+    assert all(r() is None for r in refs)
