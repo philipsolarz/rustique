@@ -269,16 +269,32 @@ enum Side<'a> {
 }
 
 impl Side<'_> {
-    fn chunk(&self, py: Python<'_>, start: usize) -> (Vec<Py<PyAny>>, usize) {
+    fn chunk(&self, py: Python<'_>, start: usize) -> Chunk {
         match self {
             Side::List(list) => list.chunk(py, start, usize::MAX),
             Side::Items(items) => {
                 let end = items.len().min(start.saturating_add(CHUNK));
                 let chunk = items.get(start..end).unwrap_or(&[]).iter().map(|o| o.clone_ref(py)).collect();
-                (chunk, items.len())
+                Chunk { items: chunk, len: items.len(), version: 0 }
             }
         }
     }
+
+    /// Whether this side changed since a chunk was read from it at `version`.
+    fn changed(&self, version: u64) -> bool {
+        match self {
+            Side::List(list) => list.version.get() != version,
+            Side::Items(_) => false,
+        }
+    }
+}
+
+/// Elements read under one lock acquisition, with the list's length and mutation counter
+/// at that moment.
+struct Chunk {
+    items: Vec<Py<PyAny>>,
+    len: usize,
+    version: u64,
 }
 
 impl List {
@@ -387,15 +403,13 @@ impl List {
         self.schema.coerce(obj).map_err(|e| e.into_pyerr(&self.container(), None))
     }
 
-    /// Python objects for `self[start..min(start + CHUNK, stop, len)]`, plus the length.
-    fn chunk(&self, py: Python<'_>, start: usize, stop: usize) -> (Vec<Py<PyAny>>, usize) {
+    /// Python objects for `self[start..min(start + CHUNK, stop, len)]`.
+    fn chunk(&self, py: Python<'_>, start: usize, stop: usize) -> Chunk {
         let data = self.read(py);
         let len = data.len();
         let end = stop.min(len).min(start.saturating_add(CHUNK));
-        if start >= end {
-            return (Vec::new(), len);
-        }
-        (data.objects(py, start..end), len)
+        let items = if start < end { data.objects(py, start..end) } else { Vec::new() };
+        Chunk { items, len, version: self.version.get() }
     }
 
     /// First index in `start..stop` whose element equals `value`.
@@ -418,8 +432,10 @@ impl List {
         Ok(self.find_python(py, value, start, stop)?.map(|(i, _)| i))
     }
 
-    /// Python-level search (snapshot chunks, compare outside the lock). Returns the index
-    /// and the element that compared equal.
+    /// Python-level search, comparing outside the lock. Returns the index and the element
+    /// that compared equal. Like CPython, each comparison sees the *current* list: `==` may
+    /// mutate it, so a chunk read ahead is abandoned as soon as the mutation counter moves
+    /// and the search continues at the next index of the live list.
     fn find_python(
         &self,
         py: Python<'_>,
@@ -429,17 +445,19 @@ impl List {
     ) -> PyResult<Option<(usize, Py<PyAny>)>> {
         let mut i = start;
         loop {
-            let (chunk, _) = self.chunk(py, i, stop);
-            if chunk.is_empty() {
+            let chunk = self.chunk(py, i, stop);
+            if chunk.items.is_empty() {
                 return Ok(None);
             }
-            let n = chunk.len();
-            for (k, item) in chunk.into_iter().enumerate() {
+            for item in chunk.items {
                 if elements_equal(item.bind(py), value)? {
-                    return Ok(Some((i + k, item)));
+                    return Ok(Some((i, item)));
+                }
+                i += 1;
+                if self.version.get() != chunk.version {
+                    break;
                 }
             }
-            i += n;
         }
     }
 
@@ -459,18 +477,22 @@ impl List {
                 _ => {}
             }
         }
+        // Live semantics as in `find_python`.
         let (mut i, mut count) = (0, 0);
         loop {
-            let (chunk, _) = self.chunk(py, i, usize::MAX);
-            if chunk.is_empty() {
+            let chunk = self.chunk(py, i, usize::MAX);
+            if chunk.items.is_empty() {
                 return Ok(count);
             }
-            for item in &chunk {
+            for item in &chunk.items {
                 if elements_equal(item.bind(py), value)? {
                     count += 1;
                 }
+                i += 1;
+                if self.version.get() != chunk.version {
+                    break;
+                }
             }
-            i += chunk.len();
         }
     }
 
@@ -510,18 +532,22 @@ impl List {
     }
 
     /// Python-level comparison (CPython's `list_richcompare`): find the first index where
-    /// the elements differ (identity implies equality), comparing outside the locks.
+    /// the elements differ (identity implies equality), comparing outside the locks. Each
+    /// comparison sees the current lists (see `find_python`).
     fn richcompare_python(py: Python<'_>, a: Side<'_>, b: Side<'_>, op: CompareOp) -> PyResult<Py<PyAny>> {
         let mut i = 0;
         loop {
-            let (ca, la) = a.chunk(py, i);
-            let (cb, lb) = b.chunk(py, i);
-            if i == 0 && la != lb && matches!(op, CompareOp::Eq | CompareOp::Ne) {
+            let (ca, cb) = (a.chunk(py, i), b.chunk(py, i));
+            if i == 0 && ca.len != cb.len && matches!(op, CompareOp::Eq | CompareOp::Ne) {
                 return Ok(PyBool::new(py, matches!(op, CompareOp::Ne)).to_owned().into_any().unbind());
             }
-            let m = ca.len().min(cb.len());
-            for k in 0..m {
-                let (x, y) = (ca[k].bind(py), cb[k].bind(py));
+            let m = ca.items.len().min(cb.items.len());
+            if m == 0 {
+                // One side is exhausted: the (current) lengths decide.
+                return Ok(PyBool::new(py, compare_lengths(ca.len, cb.len, op)).to_owned().into_any().unbind());
+            }
+            for (x, y) in ca.items.iter().zip(&cb.items) {
+                let (x, y) = (x.bind(py), y.bind(py));
                 if !elements_equal(x, y)? {
                     return match op {
                         CompareOp::Eq => Ok(PyBool::new(py, false).to_owned().into_any().unbind()),
@@ -529,12 +555,11 @@ impl List {
                         _ => Ok(x.rich_compare(y, op)?.unbind()),
                     };
                 }
+                i += 1;
+                if a.changed(ca.version) || b.changed(cb.version) {
+                    break;
+                }
             }
-            if m == 0 {
-                // One side is exhausted: the (current) lengths decide.
-                return Ok(PyBool::new(py, compare_lengths(la, lb, op)).to_owned().into_any().unbind());
-            }
-            i += m;
         }
     }
 
