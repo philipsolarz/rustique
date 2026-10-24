@@ -16,6 +16,8 @@ pub(super) enum Fault {
     /// `0 ** negative`
     ZeroToNegative,
     NegativeShift,
+    /// A fixed-width shift by at least the type's width.
+    ShiftRange,
     /// `int ** negative` (a Python `float`, or an error for fixed-width integers).
     NegativeExponent,
     /// `negative ** fractional` (a Python `complex`).
@@ -159,6 +161,8 @@ pub(super) trait PyInt: Num + Ord + Eq + fmt::Display {
     const ONE: Self;
     const MIN: Self;
     const MAX: Self;
+    /// The width in bits.
+    const WIDTH: u32;
     fn wrapping_add(self, b: Self) -> Self;
     fn wrapping_sub(self, b: Self) -> Self;
     fn wrapping_mul(self, b: Self) -> Self;
@@ -176,6 +180,10 @@ pub(super) trait PyInt: Num + Ord + Eq + fmt::Display {
     fn py_shl(self, b: Self) -> (Self, bool);
     /// `a >> b` (floor); fails for `b < 0`.
     fn py_shr(self, b: Self) -> (Self, bool);
+    /// `a << n` dropping the bits shifted out, for `n < WIDTH`.
+    fn shl_bits(self, n: u32) -> Self;
+    /// `a >> n` (arithmetic for signed types), for `n < WIDTH`.
+    fn shr_bits(self, n: u32) -> Self;
     /// `-a`; fails when the negation does not fit (unsigned: unless zero).
     fn py_neg(self) -> (Self, bool);
     /// `abs(a)`.
@@ -195,6 +203,11 @@ macro_rules! impl_py_int_common {
         const ONE: Self = 1;
         const MIN: Self = <$t>::MIN;
         const MAX: Self = <$t>::MAX;
+        const WIDTH: u32 = <$t>::BITS;
+        #[inline(always)]
+        fn shl_bits(self, n: u32) -> Self { self.wrapping_shl(n) }
+        #[inline(always)]
+        fn shr_bits(self, n: u32) -> Self { self.wrapping_shr(n) }
         #[inline(always)]
         fn wrapping_add(self, b: Self) -> Self { self.wrapping_add(b) }
         #[inline(always)]

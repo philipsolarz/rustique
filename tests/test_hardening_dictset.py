@@ -642,3 +642,47 @@ def test_python_fallback_evaluation_is_interruptible():
         timeout=120,
     )
     assert out.split() == ["interrupted", "True"]
+
+
+# --- L3: fixed-width shifts in the engine match the rustique scalars --------------------------
+
+FIXED = ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"]
+
+
+def outcome(f):
+    try:
+        return ("ok", f())
+    except (ValueError, OverflowError, TypeError, ZeroDivisionError) as e:
+        return ("err", type(e).__name__, str(e))
+
+
+@pytest.mark.parametrize("name", FIXED)
+def test_fixed_shifts_engine_matches_scalars(name):
+    cls = getattr(rs, name)
+    bits = cls.BITS
+    values = sorted({int(cls.MIN), -1 if int(cls.MIN) < 0 else 0, 0, 1, 5, int(cls.MAX)})
+    lst = rs.List[cls](values)
+    for n in range(-2, bits + 3):
+        for op, expr in (("<<", rs.X << n), (">>", rs.X >> n)):
+
+            def scalar():
+                return [int(cls(v) << n) if op == "<<" else int(cls(v) >> n) for v in values]
+
+            assert outcome(lambda: [int(x) for x in lst.map(expr)]) == outcome(scalar), (name, op, n)
+            assert outcome(lambda: [int(expr(cls(v))) for v in values]) == outcome(scalar), (name, op, n)
+        if 0 <= n <= int(cls.MAX):
+            # Reflected: the shifted value is converted to the type, the count is the element.
+            counts = rs.List[cls]([c for c in (0, 1, bits - 1, bits) if c <= int(cls.MAX)])
+            assert outcome(lambda: [int(x) for x in counts.map(n << rs.X)]) == outcome(
+                lambda: [int(n << cls(c)) for c in counts]
+            ), (name, n)
+
+
+def test_python_int_shifts_keep_exact_semantics():
+    ints = rs.List([1, -5, 2**62])
+    assert list(ints.map(rs.X >> 100)) == [0, -1, 0]
+    assert list(ints.map(rs.X << 70)) == [x << 70 for x in (1, -5, 2**62)]
+    with pytest.raises(ValueError, match="negative shift count"):
+        ints.map(rs.X << -1)
+    assert list(rs.List[rs.i8]([127]).map(rs.X << 1)) == [-2]
+    assert (rs.X << 1)(rs.i8(127)) == rs.i8(-2)

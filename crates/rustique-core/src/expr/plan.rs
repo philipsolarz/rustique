@@ -104,8 +104,9 @@ pub(super) enum Kind {
     Cast(usize),
     /// Operand and result share a dtype, except `IsNan` (float → bool).
     Unary(UnaryOp, usize),
-    /// Operands share a dtype, which is also the result's, except `/` of integers (→ f64).
-    /// On `bool` only `& | ^` (logical).
+    /// Operands share a dtype, which is also the result's, except `/` of integers (→ f64)
+    /// and the count of a fixed-width shift (i64 for an `int` count). On `bool` only
+    /// `& | ^` (logical).
     Arith(BinaryOp, usize, usize),
     /// Operands share a dtype, or are (i64 | u64, f64) or (u64, i64).
     Compare(Cmp, usize, usize),
@@ -414,7 +415,10 @@ impl Planner {
             return Err(unsupported(op, lt, rt, order));
         }
         let lhs = self.convert(lhs, fixed, order)?;
-        let rhs = self.convert(rhs, fixed, order)?;
+        // A shift count is a number of bits, not a value of the type: an `int` count is kept
+        // as such and checked against the width when the shift is applied.
+        let shift = matches!(op, BinaryOp::LShift | BinaryOp::RShift);
+        let rhs = self.convert(rhs, if shift && rt != fixed { ExprType::Int } else { fixed }, order)?;
         let ty = if op == BinaryOp::TrueDiv && dtype.is_integer() { ExprType::Float } else { fixed };
         self.node(Kind::Arith(op, lhs, rhs), ty, order)
     }

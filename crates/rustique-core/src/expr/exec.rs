@@ -296,6 +296,9 @@ fn kernel(node: &PNode, opds: &[Opd<'_>], out: ArrMut<'_>) -> Run {
         Kind::Convert(_) => convert(opd(0)?, out),
         Kind::Cast(_) => cast(node.ty, opd(0)?, out),
         Kind::Unary(op, _) => unary(*op, opd(0)?, out),
+        Kind::Arith(op @ (BinaryOp::LShift | BinaryOp::RShift), ..) if matches!(node.ty, ExprType::Fixed(_)) => {
+            fixed_shift(*op == BinaryOp::LShift, opd(0)?, opd(1)?, out)
+        }
         Kind::Arith(op, ..) => arith(*op, opd(0)?, opd(1)?, out),
         Kind::Compare(cmp, ..) => compare(*cmp, opd(0)?, opd(1)?, out).map(|()| None),
         Kind::Concat(..) => concat(opd(0)?, opd(1)?, out).map(|()| None),
@@ -450,6 +453,34 @@ fn int_arith<T: PyInt + Elem>(op: BinaryOp, a: Opd<'_>, b: Opd<'_>, out: ArrMut<
     })
 }
 
+/// `a << n` / `a >> n` on a fixed-width type, like the rustique scalars: bits shifted out are
+/// dropped (`>>` is arithmetic for signed types); a negative count raises `ValueError` and a
+/// count of at least the width `OverflowError`. The count is an `int` (i64) or of `a`'s type.
+fn fixed_shift(left: bool, a: Opd<'_>, b: Opd<'_>, out: ArrMut<'_>) -> Run {
+    let count = b.arr.dtype();
+    with_int!(a.arr.dtype(), T => {
+        let a = a.side::<T>()?;
+        let out = T::arr_mut(out).ok_or(Bug)?;
+        Ok(if count == DType::I64 {
+            shift_loop(left, a, b.side::<i64>()?, out)
+        } else {
+            shift_loop(left, a, b.side::<T>()?, out)
+        })
+    }, _ => Err(Bug))
+}
+
+fn shift_loop<T: PyInt, C: Num>(left: bool, a: Side<'_, T>, b: Side<'_, C>, out: &mut [T]) -> Option<(usize, Fault)> {
+    let width = i128::from(T::WIDTH);
+    let shift = |x: T, n: C| {
+        let n = n.to_i128();
+        let ok = (0..width).contains(&n);
+        let n = if ok { n as u32 } else { 0 };
+        (if left { x.shl_bits(n) } else { x.shr_bits(n) }, !ok)
+    };
+    map2(a, b, out, shift)
+        .map(|i| (i, if b.at(i).to_i128() < 0 { Fault::NegativeShift } else { Fault::ShiftRange }))
+}
+
 /// `x + c` with a constant checks precomputed bounds instead of per-element overflow flags,
 /// which keeps the loop vectorisable.
 fn add<T: PyInt>(a: Side<'_, T>, b: Side<'_, T>, out: &mut [T]) -> Option<usize> {
@@ -594,6 +625,10 @@ fn fault_error(fault: Fault, node: &PNode, opds: &[Opd<'_>], i: usize) -> ExprEr
         Fault::ZeroDivision => ExprError::raise(ZeroDivisionError, "division by zero"),
         Fault::ZeroToNegative => ExprError::raise(ZeroDivisionError, "zero to a negative power"),
         Fault::NegativeShift => ExprError::raise(ValueError, "negative shift count"),
+        Fault::ShiftRange => ExprError::raise(
+            OverflowError,
+            format!("shift count out of range for {} (must be < {})", node.ty, node.ty.dtype().bits().unwrap_or(64)),
+        ),
         Fault::NegativeExponent if fixed => {
             ExprError::raise(ValueError, "Integers to negative integer powers are not allowed.")
         }
