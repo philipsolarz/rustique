@@ -253,14 +253,6 @@ enum RawPair<'py> {
     Item(Bound<'py, PyAny>, usize),
 }
 
-/// Schemas whose `coerce` never runs Python code (safe on borrowed items).
-fn is_pure(schema: &Schema) -> bool {
-    matches!(
-        schema,
-        Schema::Any | Schema::Int | Schema::Float | Schema::Bool | Schema::Str | Schema::Fixed(_)
-    )
-}
-
 #[inline]
 fn raw_key<'py>(obj: &Bound<'py, PyAny>, schema: &Schema) -> Raw<'py> {
     match keys::native_key(obj, schema) {
@@ -342,7 +334,7 @@ fn read_pairs<'py>(
     value_schema: &Schema,
 ) -> (Vec<RawPair<'py>>, Option<PyErr>) {
     let py = arg.py();
-    let pure = is_pure(value_schema);
+    let pure = value_schema.is_pure();
     let pair = |k: &Bound<'py, PyAny>, v: &Bound<'py, PyAny>| {
         RawPair::Pair(raw_key(k, key_schema), raw_value(v, value_schema, pure))
     };
@@ -716,16 +708,31 @@ impl Dict {
         value: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         let key = self.prepare_key(key.clone())?;
-        let value = self.prepare_value(value)?;
         let mut displaced = Vec::new();
-        keys::batch_upsert(py, &self.inner, [(key, value)], |inner, value, slot| {
-            match slot {
-                Slot::Existing(pos) => displaced = inner.values.set(py, pos, value),
-                Slot::Inserted(_) => inner.values.push(py, value),
-                Slot::Absent(key) => inner.push_entry(py, key, value)?,
-            }
-            Ok(())
-        })?;
+        if self.value_schema.is_any() {
+            // Untyped values keep their identity in object storage.
+            keys::batch_upsert(py, &self.inner, [(key, value)], |inner, value, slot| {
+                match slot {
+                    Slot::Existing(pos) => displaced.extend(inner.values.set_any(py, pos, value)),
+                    Slot::Inserted(_) => inner.values.push_any(py, value),
+                    Slot::Absent(key) => {
+                        inner.table.push(py, key)?;
+                        inner.values.push_any(py, value);
+                    }
+                }
+                Ok(())
+            })?;
+        } else {
+            let value = self.prepare_value(value)?;
+            keys::batch_upsert(py, &self.inner, [(key, value)], |inner, value, slot| {
+                match slot {
+                    Slot::Existing(pos) => displaced = inner.values.set(py, pos, value),
+                    Slot::Inserted(_) => inner.values.push(py, value),
+                    Slot::Absent(key) => inner.push_entry(py, key, value)?,
+                }
+                Ok(())
+            })?;
+        }
         drop(displaced);
         Ok(())
     }

@@ -14,7 +14,6 @@
 use std::ffi::c_void;
 
 use compact_str::CompactString;
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use pyo3::exceptions::PyTypeError;
 use pyo3::ffi;
 use pyo3::prelude::*;
@@ -24,45 +23,12 @@ use rustique_core::index::{HashIndex, KeyIndex, Remap};
 
 use rustique_core::Value;
 
+use crate::convert;
 use crate::schema::{Coerced, Schema};
 
-/// A container lock: readers share, writers exclude, and a contended acquisition waits
-/// detached from the interpreter (so it never deadlocks with the GIL or a stop-the-world).
-pub(crate) struct Locked<T>(RwLock<T>);
-
-impl<T: Send + Sync> Locked<T> {
-    pub(crate) fn new(value: T) -> Self {
-        Locked(RwLock::new(value))
-    }
-
-    pub(crate) fn read(&self, py: Python<'_>) -> RwLockReadGuard<'_, T> {
-        loop {
-            if let Some(guard) = self.0.try_read() {
-                return guard;
-            }
-            py.detach(|| drop(self.0.read()));
-        }
-    }
-
-    pub(crate) fn write(&self, py: Python<'_>) -> RwLockWriteGuard<'_, T> {
-        loop {
-            if let Some(guard) = self.0.try_write() {
-                return guard;
-            }
-            py.detach(|| drop(self.0.write()));
-        }
-    }
-
-    /// Non-blocking shared access (for `__traverse__`, which must never block).
-    pub(crate) fn try_read(&self) -> Option<RwLockReadGuard<'_, T>> {
-        self.0.try_read()
-    }
-
-    /// Non-blocking exclusive access (for `__clear__`, which runs inside the GC).
-    pub(crate) fn try_write(&self) -> Option<RwLockWriteGuard<'_, T>> {
-        self.0.try_write()
-    }
-}
+/// The container lock (ARCHITECTURE §6): readers share, writers exclude, and contended
+/// acquisition waits detached from the interpreter.
+pub(crate) type Locked<T> = crate::sync::PyRwLock<T>;
 
 /// What a key is used as, for error messages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -259,7 +225,7 @@ pub(crate) fn native_key(obj: &Bound<'_, PyAny>, schema: &Schema) -> Option<Prep
     }
     if strs && obj.is_exact_instance_of::<PyString>() {
         // SAFETY: `obj` is a live object of exact type `str`.
-        return unsafe { exact_str(obj.as_ptr()) }.map(Prepared::Str);
+        return unsafe { convert::exact_str(obj.as_ptr()) }.map(Prepared::Str);
     }
     None
 }
@@ -278,7 +244,7 @@ pub(crate) fn native_value(obj: &Bound<'_, PyAny>) -> Option<Value> {
     }
     if obj.is_exact_instance_of::<PyString>() {
         // SAFETY: `obj` is a live object of exact type `str`.
-        return unsafe { exact_str(obj.as_ptr()) }.map(Value::Str);
+        return unsafe { convert::exact_str(obj.as_ptr()) }.map(Value::Str);
     }
     None
 }
@@ -307,45 +273,6 @@ pub(crate) fn values_equal(a: &Value, b: &Value) -> bool {
 /// Exact float/int equality (no rounding of the int).
 fn float_equals_int(f: f64, i: i128) -> bool {
     f.fract() == 0.0 && f.abs() < 1.7e38 && f as i128 == i
-}
-
-/// Copy an exact `str`'s text from its PEP 393 buffer (no UTF-8 cache is created in the
-/// source, so this is safe inside a critical section). `None` for lone surrogates.
-///
-/// # Safety
-/// `p` must point to a live object whose type is exactly `str`.
-unsafe fn exact_str(p: *mut ffi::PyObject) -> Option<CompactString> {
-    // SAFETY: exact `str` objects are immutable canonical PEP 393 strings whose data pointer
-    // covers `length` code units of `kind` bytes each.
-    unsafe {
-        let len = ffi::PyUnicode_GET_LENGTH(p) as usize;
-        if len == 0 {
-            return Some(CompactString::default());
-        }
-        let data = ffi::PyUnicode_DATA(p);
-        match ffi::PyUnicode_KIND(p) {
-            ffi::PyUnicode_1BYTE_KIND => {
-                let bytes = std::slice::from_raw_parts(data.cast::<u8>(), len);
-                if bytes.is_ascii() {
-                    return Some(CompactString::from(std::str::from_utf8_unchecked(bytes)));
-                }
-                Some(bytes.iter().map(|&b| char::from(b)).collect())
-            }
-            ffi::PyUnicode_2BYTE_KIND => {
-                let units = std::slice::from_raw_parts(data.cast::<u16>(), len);
-                // Canonical 2-byte strings hold no surrogate pairs: a surrogate unit is a lone
-                // surrogate, which `char::from_u32` rejects.
-                units
-                    .iter()
-                    .map(|&u| char::from_u32(u32::from(u)))
-                    .collect()
-            }
-            _ => {
-                let units = std::slice::from_raw_parts(data.cast::<u32>(), len);
-                units.iter().map(|&u| char::from_u32(u)).collect()
-            }
-        }
-    }
 }
 
 fn str_class(

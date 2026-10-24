@@ -761,3 +761,14 @@ def test_native_equality_with_builtin_dict_follows_python():
     assert Dict({1: [1]}) == {1: [1]}
     assert Dict({"x": 0.0}) == {"x": -0.0}
     assert Dict({"k": NAN}) == {"k": float("nan")}  # native floats have no identity
+
+
+def test_untyped_values_keep_identity_in_object_storage():
+    marker = "text-value"
+    d = Dict({"a": 1})
+    d["b"] = [1]
+    d["c"] = marker
+    assert d._value_strategy == "object"
+    assert d["c"] is marker
+    d["c"] = marker
+    assert d["c"] is marker
