@@ -154,11 +154,26 @@ impl IndexArg<'_> {
     }
 }
 
+/// `start`/`stop` of `list.index`: omitted (the default applies) or an object that must
+/// support `__index__` (`None` is rejected, like `list.index`).
+enum SliceBound<'py> {
+    Omitted,
+    Given(Bound<'py, PyAny>),
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for SliceBound<'py> {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> Result<Self, Self::Error> {
+        Ok(SliceBound::Given(obj.to_owned()))
+    }
+}
+
 /// `start`/`stop` of `list.index`: `__index__`, clamped, negative values from the end.
-fn clamp_bound(obj: Option<&Bound<'_, PyAny>>, len: usize, default: isize) -> PyResult<usize> {
-    let v = match obj {
-        None => default,
-        Some(obj) => {
+fn clamp_bound(bound: SliceBound<'_>, len: usize, default: isize) -> PyResult<usize> {
+    let v = match bound {
+        SliceBound::Omitted => default,
+        SliceBound::Given(obj) => {
             // SAFETY: protocol check and clamping conversion on a valid object.
             unsafe {
                 if ffi::PyIndex_Check(obj.as_ptr()) == 0 {
@@ -1077,14 +1092,11 @@ impl List {
     }
 
     /// Return the first index of `value` in `self[start:stop]` (`ValueError` if absent).
-    #[pyo3(signature = (value, start = None, stop = None, /))]
-    fn index(
-        &self,
-        py: Python<'_>,
-        value: &Bound<'_, PyAny>,
-        start: Option<&Bound<'_, PyAny>>,
-        stop: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<usize> {
+    #[pyo3(
+        signature = (value, start = SliceBound::Omitted, stop = SliceBound::Omitted, /),
+        text_signature = "($self, value, start=0, stop=sys.maxsize, /)"
+    )]
+    fn index(&self, py: Python<'_>, value: &Bound<'_, PyAny>, start: SliceBound<'_>, stop: SliceBound<'_>) -> PyResult<usize> {
         let len = self.len();
         let start = clamp_bound(start, len, 0)?;
         let stop = clamp_bound(stop, len, isize::MAX)?;
