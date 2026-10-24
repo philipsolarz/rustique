@@ -17,9 +17,10 @@
 //!   treated as garbage (weakrefs cleared, finalizers run).
 //!
 //! Fairness without queueing on the lock: a waiter that has waited a while counts as
-//! *starving* ([`Starvation`]); while any thread starves for a lock, nobody else tries it
-//! (and starving readers let starving writers go first), so neither a thread that releases
-//! and immediately re-acquires nor a stream of readers can keep a waiter out.
+//! *starving* ([`Starvation`]); while any thread starves for a lock, nobody else keeps it
+//! (a newcomer's fast path releases it at once and waits) and starving readers let
+//! starving writers go first, so neither a thread that releases and immediately
+//! re-acquires nor a stream of readers can keep a waiter out.
 //!
 //! Rules for code holding a guard: no Python code (no `__eq__`/`__hash__`/iteration, no
 //! decref of arbitrary objects, no allocation of GC-tracked objects). Creating `int`,
@@ -115,8 +116,8 @@ enum Access {
 }
 
 /// Waiters starving for a lock: readers in the low half, writers in the high half. While
-/// any thread starves, only starving threads try the lock, and starving readers let
-/// starving writers go first (so readers cannot keep a starving writer out).
+/// any thread starves, only starving threads keep the lock (newcomers let go at once), and
+/// starving readers let starving writers go first (so readers cannot keep a starving writer out).
 #[derive(Debug, Default)]
 struct Starvation(AtomicU64);
 
@@ -167,22 +168,26 @@ impl Drop for Starving<'_> {
 #[inline(never)]
 fn acquire_contended<G>(
     py: Python<'_>,
-    starvation: &Starvation,
+    starvation: Option<&Starvation>,
     access: Access,
     try_lock: impl Fn() -> Option<G>,
     free: impl Fn() -> bool + Sync,
 ) -> G {
     let mut backoff = Backoff::new();
     let mut me: Option<Starving<'_>> = None;
+    let may_try = |starving: bool| starvation.is_none_or(|s| s.may_try(access, starving));
     loop {
         let starving = me.is_some();
-        backoff.wait(py, starving, || free() && starvation.may_try(access, starving));
-        if starvation.may_try(access, starving)
+        backoff.wait(py, starving, || free() && may_try(starving));
+        if may_try(starving)
             && let Some(guard) = try_lock()
         {
             return guard;
         }
-        if me.is_none() && backoff.impatient() {
+        if me.is_none()
+            && let Some(starvation) = starvation
+            && backoff.impatient()
+        {
             me = Some(Starving::new(starvation, access));
         }
     }
@@ -193,7 +198,7 @@ fn acquire_contended<G>(
 #[derive(Debug, Default)]
 #[repr(C)]
 pub struct PyRwLock<T> {
-    /// Threads starving for this lock (only they may try it). Next to the lock word, so
+    /// Threads starving for this lock (only they may keep it). Next to the lock word, so
     /// the fast paths touch one cache line.
     starving: Starvation,
     inner: RwLock<T>,
@@ -239,38 +244,50 @@ impl<T: Send + Sync> PyRwLock<T> {
     /// Shared access; waits detached from the interpreter when contended.
     #[inline]
     pub fn read(&self, py: Python<'_>) -> ReadGuard<'_, T> {
-        if self.uncontested()
-            && let Some(guard) = self.inner.try_read()
-        {
-            return guard;
+        // The fairness check follows the acquisition: its load then costs nothing extra
+        // (the lock word's cache line is already owned), and while threads starve the
+        // newcomer holds the lock only for an instant.
+        match self.inner.try_read() {
+            Some(guard) if self.uncontested() => guard,
+            held => self.read_contended(py, held),
         }
-        acquire_contended(py, &self.starving, Access::Shared, || self.inner.try_read(), || !self.inner.is_locked_exclusive())
     }
 
     /// Exclusive access; waits detached from the interpreter when contended.
     #[inline]
     pub fn write(&self, py: Python<'_>) -> WriteGuard<'_, T> {
-        if self.uncontested()
-            && let Some(guard) = self.inner.try_write()
-        {
-            return guard;
+        match self.inner.try_write() {
+            Some(guard) if self.uncontested() => guard,
+            held => self.write_contended(py, held),
         }
-        acquire_contended(py, &self.starving, Access::Exclusive, || self.inner.try_write(), || !self.inner.is_locked())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn read_contended(&self, py: Python<'_>, held: Option<ReadGuard<'_, T>>) -> ReadGuard<'_, T> {
+        drop(held);
+        acquire_contended(py, Some(&self.starving), Access::Shared, || self.inner.try_read(), || !self.inner.is_locked_exclusive())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn write_contended(&self, py: Python<'_>, held: Option<WriteGuard<'_, T>>) -> WriteGuard<'_, T> {
+        drop(held);
+        acquire_contended(py, Some(&self.starving), Access::Exclusive, || self.inner.try_write(), || !self.inner.is_locked())
     }
 }
 
 /// A mutex that never blocks while attached to the interpreter and is never acquired or
-/// queued on while detached (see [`PyRwLock`]).
+/// queued on while detached (see [`PyRwLock`]). It guards short per-object state (an
+/// iterator's position), so it skips the starvation bookkeeping.
 #[derive(Debug, Default)]
-#[repr(C)]
 pub struct PyMutex<T> {
-    starving: Starvation,
     inner: Mutex<T>,
 }
 
 impl<T> PyMutex<T> {
     pub const fn new(value: T) -> Self {
-        PyMutex { starving: Starvation::new(), inner: Mutex::new(value) }
+        PyMutex { inner: Mutex::new(value) }
     }
 
     /// Non-blocking access (for `__traverse__`).
@@ -283,12 +300,16 @@ impl<T> PyMutex<T> {
 impl<T: Send> PyMutex<T> {
     #[inline]
     pub fn lock(&self, py: Python<'_>) -> MutexGuard<'_, T> {
-        if self.starving.is_empty()
-            && let Some(guard) = self.inner.try_lock()
-        {
-            return guard;
+        match self.inner.try_lock() {
+            Some(guard) => guard,
+            None => self.lock_contended(py),
         }
-        acquire_contended(py, &self.starving, Access::Exclusive, || self.inner.try_lock(), || !self.inner.is_locked())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn lock_contended(&self, py: Python<'_>) -> MutexGuard<'_, T> {
+        acquire_contended(py, None, Access::Exclusive, || self.inner.try_lock(), || !self.inner.is_locked())
     }
 }
 
