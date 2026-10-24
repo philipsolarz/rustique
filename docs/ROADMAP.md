@@ -7,14 +7,16 @@ contract and `ARCHAEOLOGY.md` for the history that motivated it.
 
 | Area | State |
 |---|---|
-| Toolchain | Rust 1.99.1 / edition 2024 / PyO3 0.30.1 / maturin 1.15 / CPython 3.15.1 + 3.15.1t |
+| Toolchain | Rust 1.99.1 / edition 2024 / PyO3 0.30.1 / maturin 1.15 / CPython 3.14–3.15.1, incl. free-threaded 3.14t and 3.15.1t |
 | `rustique-core` | `Column` typed storage, Python slice semantics, CPython-exact kernels (sum bit-exact incl. Neumaier, min/max, stable sort, search, lexicographic compare), vectorised expression engine (block-wise, multi-threaded), compact hash index, CPython-compatible numeric hashing and float repr |
 | `List` | full `list` parity, adaptive storage strategies, typed schemas, live iterators, buffer protocol with freeze-on-export, pickling, GC support, `map`/`filter` with `X` expressions, `sum`/`min`/`max`, native `sort` |
-| `Dict` / `Set` | full `dict`/`set` parity, native int/str key strategies with Python numeric key equivalence, object keys with optimistic re-validation, views, set algebra |
+| `Dict` / `Set` | full `dict`/`set` parity, native int/str key strategies with Python numeric key equivalence, object keys with per-candidate re-validation (no livelock), CPython iteration and growth-compaction rules, views, set algebra |
 | Typing | schemas compiled from `int`, `float`, `bool`, `str`, unions/optionals, nested containers, `Annotated`, PEP 695 aliases, `NewType`, classes; cached identity-stable aliases (`List[int] is List[int]`, ~70 ns) |
 | Scalars | `i8 … u64`, `f32`, `f64` with type-preserving checked operators and Rust-named overflow families |
-| Concurrency | frozen pyclasses with interior locks, detached waiting, no Python code under locks, critical sections for bulk reads of builtin sources; tested on 3.15t with the GIL disabled |
-| Validation | Rust unit/property tests incl. CPython-recorded oracles; ~3100 pytest cases incl. the historical parity suite, Hypothesis state machines vs builtins, thread stress; mypy/pyright strict stubs; honest benchmark harness |
+| Concurrency | frozen pyclasses with interior locks, detached waiting that never holds or queues on a lock (GC-consistent), writer-starvation-free, no Python code under locks (including rejected inputs on error paths), critical sections for bulk reads of builtin sources; tested on 3.14t and 3.15t with the GIL disabled |
+| Rust interop | versioned C-API capsule (`rustique._rustique._C_API`) + `rustique-api` crate: other PyO3 extensions build real `rustique.List`s from slices with one memcpy and borrow list data zero-copy; demo extension with tests |
+| Hardening | two independent safety reviews (≈30 findings incl. a use-after-free, deadlocks, a stack overflow, livelocks) — all fixed with regression tests (`tests/test_hardening*.py`) |
+| Validation | 107 Rust unit/property tests incl. CPython-recorded oracles; ~3400 pytest cases on 3.14, 3.14t, 3.15.1, 3.15.1t incl. the historical parity suite, Hypothesis state machines vs builtins, thread stress, crash/deadlock regressions in subprocesses; mypy/pyright strict stubs; honest benchmark harness |
 
 ## Known trade-offs
 
@@ -27,6 +29,14 @@ contract and `ARCHAEOLOGY.md` for the history that motivated it.
 - **Typed containers normalise values** (`List[int]` stores `True` as `1`; `List[float]`
   stores `1` as `1.0`), like `array.array` and NumPy. Untyped containers never do.
 - **NaNs sort last**; CPython's order with NaNs is ill-defined.
+- **Lock fairness over raw throughput**: on 3.15t a lone writer among many readers gets
+  ~11k ops/s (it is never starved); read-heavy scaling is ~2.5× better than before the
+  fairness work.
+- **`remove()`/`extend()` re-entrancy**: `remove()` deletes the element that compared equal
+  (CPython deletes whatever sits at that index afterwards) and `extend()` consumes a generic
+  iterable before appending; both pinned by tests.
+- **Big-endian buffers** are ingested by iteration (like `list(arr)`), so typed lists reject
+  NumPy scalar elements from byte-swapped arrays.
 - **Buffer exports freeze the container**: safer than `bytearray`'s resize-only rule,
   stricter for writers.
 - **`match lst: case [a, b]`** does not work: PyO3 types are immutable, so the sequence
@@ -51,5 +61,7 @@ contract and `ARCHAEOLOGY.md` for the history that motivated it.
 7. **Subinterpreters** — per-interpreter module state (PEP 734 / PEP 793) so Rustique loads
    in `concurrent.interpreters`.
 8. **Rust interop** — extend the C-API capsule (owned-buffer hand-off without memcpy via a
-   drop callback, `Dict`/`Set` construction) and publish `rustique-api` for downstream
-   PyO3 crates.
+   drop callback, `Dict`/`Set` construction and borrowing, `List[str]` borrowing without
+   copies) and publish `rustique-api` to crates.io for downstream PyO3 crates.
+9. **Allocator** — evaluate mimalloc for Rust allocations to remove the first-touch page
+   fault cost of large fresh buffers on free-threaded builds.
