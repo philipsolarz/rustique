@@ -7,7 +7,6 @@ name = "rustique"
 description = "Python's data model, Rust's memory: typed native containers and zero-copy Rust/Python interop"
 readme = "README.md"
 requires-python = ">=3.13"
-license = "MIT OR Apache-2.0"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
@@ -31,7 +30,21 @@ bench = ["numpy>=2.5.4"]
 manifest-path = "crates/rustique-py/Cargo.toml"
 python-source = "python"
 module-name = "rustique._rustique"
-features = ["extension-module"]
+profile = "release"
+editable-profile = "dev"
+exclude = ["**/__pycache__", "**/*.pyc", "**/*.pyo"]
+# uv/pip build wheels from the sdist; ship the toolchain pin so they use Rust 1.99.1.
+include = [{ path = "rust-toolchain.toml", format = "sdist" }]
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" },
+    { file = "rust-toolchain.toml" },
+    { file = "crates/**/*.rs" },
+    { file = "crates/**/Cargo.toml" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
