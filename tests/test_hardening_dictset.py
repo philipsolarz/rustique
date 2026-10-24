@@ -220,3 +220,170 @@ def test_bytes_str_comparison_raises_under_bb_like_builtins():
         timeout=30,
     )
     assert out.split() == ["set", "raised", "Set", "raised"]
+
+
+# --- H2: lookups and intersection_update make progress under concurrent writers ------------
+
+LOOKUP_UNDER_CHURN = """
+import sys, threading, time
+import rustique as rs
+
+kind, eq_work = sys.argv[1], sys.argv[2]
+
+class Key:
+    def __init__(self, v):
+        self.v = v
+    def __hash__(self):
+        return hash(self.v)
+    def __eq__(self, other):
+        if eq_work == "sleep":
+            time.sleep(0.0005)
+        else:
+            sum(range(2000))
+        return isinstance(other, Key) and self.v == other.v
+
+stored = Key(1)
+c = rs.Dict({stored: "x"}) if kind == "dict" else rs.Set([stored])
+add = (lambda k: c.__setitem__(k, 1)) if kind == "dict" else c.add
+rem = (lambda k: c.__delitem__(k)) if kind == "dict" else c.discard
+stop = False
+
+def mutator():
+    i = 2
+    while not stop:
+        add(i)  # unrelated keys
+        rem(i)
+        i += 1
+
+threading.Thread(target=mutator, daemon=True).start()
+probe, done, deadline = Key(1), 0, time.monotonic() + 1.5
+while time.monotonic() < deadline:
+    assert probe in c
+    done += 1
+stop = True
+print(done)
+"""
+
+
+@pytest.mark.parametrize("kind", ["dict", "set"])
+@pytest.mark.parametrize("eq_work", ["sleep", "cpu"])
+def test_object_key_lookups_progress_under_unrelated_writes(kind, eq_work):
+    out = run_isolated(f"import sys; sys.argv[1:] = [{kind!r}, {eq_work!r}]\n" + LOOKUP_UNDER_CHURN, timeout=60)
+    # Every comparison used to be restarted by the writer: zero lookups completed.
+    assert int(out) >= 20
+
+
+def test_intersection_update_finishes_under_concurrent_writes():
+    out = run_isolated(
+        """
+        import threading, time
+        import rustique as rs
+
+        for n, make in ((200_000, lambda xs: xs), (20_000, lambda xs: [(x,) for x in xs])):
+            s = rs.Set(make(range(n)))
+            keep = rs.Set(make(range(0, n, 2)))
+            stop = False
+
+            def mutator():
+                i = -1
+                while not stop:
+                    s.add(make([i])[0])
+                    s.discard(make([i])[0])
+                    i -= 1
+
+            t = threading.Thread(target=mutator, daemon=True)
+            t.start()
+            time.sleep(0.05)
+            s.intersection_update(keep)
+            stop = True
+            t.join()
+            assert all(x in keep for x in s), "kept an element outside the intersection"
+            assert len([x for x in s if x in keep]) == n // 2
+            print("ok", n)
+        """,
+        timeout=120,
+    )
+    assert out.split() == ["ok", "200000", "ok", "20000"]
+
+
+class SelfRemoving:
+    """Equal to everything; comparing it removes the stored key it is compared with."""
+
+    def __init__(self, container, victim):
+        self.container, self.victim = container, victim
+
+    def __hash__(self):
+        return hash(self.victim)
+
+    def __eq__(self, other):
+        if isinstance(self.container, dict) or isinstance(self.container, rs.Dict):
+            self.container.pop(self.victim, None)
+        else:
+            self.container.discard(self.victim)
+        return True
+
+
+class Tag:
+    def __init__(self, name):
+        self.name = name
+
+    def __hash__(self):
+        return 7
+
+    def __eq__(self, other):
+        return self.name == other.name if isinstance(other, Tag) else NotImplemented
+
+
+@pytest.mark.parametrize("make", [dict.fromkeys, rs.Dict.fromkeys, set, rs.Set])
+def test_matched_key_removed_during_comparison_is_not_found(make):
+    victim = Tag("v")
+    c = make([victim, 1])
+    assert (SelfRemoving(c, victim) in c) is False
+    assert list(c) == [1]
+
+
+@pytest.mark.parametrize("make", [set, rs.Set])
+def test_key_added_during_comparison_is_compared_too(make):
+    first, second = Tag("a"), Tag("b")
+    c = make([first])
+
+    class Probe:
+        def __hash__(self):
+            return 7
+
+        def __eq__(self, other):
+            if other is first:
+                c.add(second)
+                return False
+            return other is second
+
+    assert Probe() in c
+    assert len(c) == 2
+
+
+def test_intersection_update_keeps_concurrent_insertions_and_element_sources():
+    s = rs.Set([1.0, 2, "a", (1,)])
+    ref = {1.0, 2, "a", (1,)}
+    s.intersection_update([1, "a", (1,)])
+    ref.intersection_update([1, "a", (1,)])
+    assert sorted(map(repr, s)) == sorted(map(repr, ref))
+
+    class Sneaky:
+        def __init__(self, v):
+            self.v = v
+
+        def __hash__(self):
+            return hash(self.v)
+
+        def __eq__(self, other):
+            if self.v == 3:
+                s.add("late")  # an insertion while the intersection is being computed
+            return isinstance(other, Sneaky) and self.v == other.v
+
+    items = [Sneaky(i) for i in range(5)]
+    s = rs.Set(items)
+    s.intersection_update([Sneaky(1), Sneaky(3)])
+    assert "late" in s and items[1] in s and items[3] in s and len(s) == 3
+    t = rs.Set[int]([1, 2, 3])
+    t.intersection_update(rs.Set[int]([2, 3, 4]), [3])
+    assert t == {3}

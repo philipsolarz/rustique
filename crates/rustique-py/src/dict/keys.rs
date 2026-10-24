@@ -7,14 +7,16 @@
 //! (a `bool`, a `float`, a `str` subclass, a big int, …).
 //!
 //! Locking: hashes are computed before taking a container lock. Lookups that need Python
-//! `__eq__` snapshot the candidate keys under the lock, compare outside it and re-validate
-//! with the table's mutation counter, retrying like CPython does when a comparison mutates
-//! the container.
+//! `__eq__` take references to the candidate keys under the lock, compare outside it, and
+//! re-scan under the lock: like CPython's dict, a result is validated per candidate (the key
+//! found equal must still be stored; keys not compared yet are compared in another round),
+//! so changes to unrelated keys never restart a lookup.
 
 use std::ffi::c_void;
+use std::ops::Deref;
 
 use compact_str::CompactString;
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::{PySystemError, PyTypeError};
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
@@ -550,29 +552,95 @@ impl KeyKind {
     }
 }
 
-/// Outcome of resolving a key under the lock.
-pub(crate) enum Resolve {
+/// A stored key held across a comparison that runs unlocked: the key object itself (kept
+/// alive, so its identity cannot be reused meanwhile) or a native key's value.
+pub(crate) enum Token {
+    Object(Py<PyAny>),
+    Int(i64),
+    Str(CompactString),
+}
+
+impl Token {
+    /// The stored key as a Python object, for `==`.
+    fn object<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
+        match self {
+            Token::Object(obj) => obj.bind(py).clone(),
+            Token::Int(v) => v
+                .into_pyobject(py)
+                .map(|o| o.into_any())
+                .unwrap_or_else(|e| match e {}),
+            Token::Str(s) => PyString::new(py, s).into_any(),
+        }
+    }
+}
+
+/// Outcome of scanning for a key under the lock.
+pub(crate) enum Scan {
     Found(usize),
     Absent,
-    /// Python comparisons are needed; run them outside the lock.
-    Compare(Pending),
+    /// These stored keys must first be compared with the probe by Python `==`, which runs
+    /// outside the lock ([`Lookup::compare`]).
+    Compare(Vec<Token>),
 }
 
-/// Candidate keys to compare with Python `==` outside the lock.
-pub(crate) struct Pending {
-    candidates: Vec<(usize, Py<PyAny>)>,
-    version: u64,
+/// What earlier rounds of one lookup learned by comparing stored keys with the probe outside
+/// the lock. Validation is per candidate, like CPython's dict: each round re-scans the
+/// current candidates under the lock and compares only keys it has not compared yet, so
+/// concurrent changes to other keys never restart a lookup. Objects it holds are released
+/// with it: drop it only after the lock.
+#[derive(Default)]
+pub(crate) struct Lookup {
+    /// Stored keys known to differ from the probe.
+    unequal: Vec<Token>,
+    /// A stored key known to equal the probe.
+    equal: Option<Token>,
+    /// Tokens of finished rounds and lookups, kept for release after the lock.
+    spent: Vec<Token>,
 }
 
-impl Pending {
-    /// The position of the first candidate equal to `key` (`stored == key`, like CPython).
-    pub(crate) fn compare(&self, key: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
-        for (pos, cand) in &self.candidates {
-            if cand.bind(key.py()).eq(key)? {
-                return Ok(Some(*pos));
+impl Lookup {
+    /// Compare `stored == probe` (CPython's operand order) for each token in turn, up to the
+    /// first equal one. Runs Python code: never call it while holding a lock.
+    fn compare(
+        &mut self,
+        py: Python<'_>,
+        probe: &Bound<'_, PyAny>,
+        tokens: Vec<Token>,
+    ) -> PyResult<()> {
+        let mut tokens = tokens.into_iter();
+        while let Some(token) = tokens.next() {
+            match token.object(py).eq(probe) {
+                Ok(false) => self.unequal.push(token),
+                Ok(true) => {
+                    self.equal = Some(token);
+                    self.spent.extend(tokens);
+                    return Ok(());
+                }
+                Err(e) => {
+                    self.spent.push(token);
+                    self.spent.extend(tokens);
+                    return Err(e);
+                }
             }
         }
-        Ok(None)
+        Ok(())
+    }
+
+    /// The outcome of an earlier comparison with the stored key `same` identifies.
+    fn known(&self, same: impl Fn(&Token) -> bool) -> Option<bool> {
+        if self.equal.as_ref().is_some_and(&same) {
+            Some(true)
+        } else if self.unequal.iter().any(same) {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    /// Forget what was learned (the next lookup is for another key).
+    fn reset(&mut self) {
+        self.spent.append(&mut self.unequal);
+        self.spent.extend(self.equal.take());
     }
 }
 
@@ -582,8 +650,6 @@ pub(crate) struct KeyTable {
     kind: KeyKind,
     /// Capacity to reserve once an adaptive table picks its strategy.
     reserve_hint: usize,
-    /// Bumped by every change to the key set (insert, remove, clear, demotion, compaction).
-    version: u64,
     /// Bumped whenever positions move (compaction, clear).
     layout: u64,
 }
@@ -594,7 +660,6 @@ impl KeyTable {
             store: Self::empty_store(kind),
             kind,
             reserve_hint: 0,
-            version: 0,
             layout: 0,
         }
     }
@@ -617,7 +682,6 @@ impl KeyTable {
             store,
             kind,
             reserve_hint: 0,
-            version: 0,
             layout: 0,
         }
     }
@@ -635,10 +699,6 @@ impl KeyTable {
             KeyStore::Str(ki) => Ok(NativeKeys::Str(ki)),
             store => Err(Box::new(KeyTable { store, ..self })),
         }
-    }
-
-    pub(crate) fn version(&self) -> u64 {
-        self.version
     }
 
     pub(crate) fn layout(&self) -> u64 {
@@ -714,37 +774,104 @@ impl KeyTable {
     /// All live keys as classified [`Key`]s, in order, reusing stored hashes (no Python
     /// `__hash__` calls; only `int`/`str` objects are created, so this is fine under a lock).
     pub(crate) fn element_keys<'py>(&self, py: Python<'py>) -> PyResult<Vec<Key<'py>>> {
+        self.positions()
+            .into_iter()
+            .map(|pos| self.element_key(py, pos))
+            .collect()
+    }
+
+    /// The live key at `pos` as a classified [`Key`] (see [`element_keys`]).
+    ///
+    /// [`element_keys`]: Self::element_keys
+    pub(crate) fn element_key<'py>(&self, py: Python<'py>, pos: usize) -> PyResult<Key<'py>> {
         match &self.store {
-            KeyStore::Empty => Ok(Vec::new()),
-            KeyStore::Int(ki) => ki
-                .iter()
-                .map(|(_, &value)| {
-                    let obj = value.into_pyobject(py)?.into_any();
-                    Ok(Key {
-                        obj,
-                        class: Class::Int { value, exact: true },
-                    })
-                })
-                .collect(),
-            KeyStore::Str(ki) => ki
-                .iter()
-                .map(|(_, s)| {
-                    let obj = PyString::new(py, s);
-                    let text = PyBackedStr::try_from(obj.clone())?;
-                    Ok(Key {
-                        obj: obj.into_any(),
-                        class: Class::Str { text, exact: true },
-                    })
-                })
-                .collect(),
-            KeyStore::Object(ki) => ki
-                .iter()
-                .map(|(pos, k)| {
-                    let hash = ki.index().hash_at(pos).map_or(0, unmix);
-                    Key::with_hash(k.bind(py).clone(), hash)
-                })
-                .collect(),
+            KeyStore::Int(ki) => Ok(Key::from_int(py, ki.raw_keys()[pos])),
+            KeyStore::Str(ki) => Key::from_str(py, &ki.raw_keys()[pos]),
+            KeyStore::Object(ki) => {
+                let hash = ki.index().hash_at(pos).map_or(0, unmix);
+                Key::with_hash(ki.raw_keys()[pos].bind(py).clone(), hash)
+            }
+            KeyStore::Empty => Err(PySystemError::new_err("rustique: no key at this position")),
         }
+    }
+
+    /// Where the very key `key` is stored: the same object, or the same native `int`/`str`
+    /// (also after the table demoted it to an object).
+    fn position_of(&self, py: Python<'_>, key: &Key<'_>) -> PyResult<Option<usize>> {
+        Ok(match (&self.store, &key.class) {
+            (KeyStore::Int(ki), Class::Int { value, exact: true }) => ki.get(value),
+            (KeyStore::Str(ki), Class::Str { text, exact: true }) => ki.get(&**text),
+            (KeyStore::Object(ki), class) => {
+                let hash = mix(key.py_hash()?);
+                ki.index().candidates(hash).find(|&pos| {
+                    let stored = ki.raw_keys()[pos].bind(py);
+                    stored.is(&key.obj)
+                        || match class {
+                            Class::Int { value, exact: true } => {
+                                stored.is_exact_instance_of::<PyInt>()
+                                    && int_value(stored) == Some(*value)
+                            }
+                            Class::Str { text, exact: true } => {
+                                stored.is_exact_instance_of::<PyString>()
+                                    && stored
+                                        .cast::<PyString>()
+                                        .is_ok_and(|s| s.to_str().is_ok_and(|s| s == &**text))
+                            }
+                            _ => false,
+                        }
+                })
+            }
+            _ => None,
+        })
+    }
+
+    /// Store `key`, which equals the live key at `pos`, in its place (demoting native keys);
+    /// the replaced object goes to `out`.
+    fn replace_at(
+        &mut self,
+        py: Python<'_>,
+        pos: usize,
+        key: &Key<'_>,
+        out: &mut Vec<Py<PyAny>>,
+    ) -> PyResult<()> {
+        if !matches!(self.store, KeyStore::Object(_)) {
+            self.demote(py)?;
+        }
+        let hash = mix(key.py_hash()?);
+        let KeyStore::Object(ki) = &mut self.store else {
+            return Ok(());
+        };
+        if ki.index().hash_at(pos) == Some(hash) {
+            out.extend(ki.replace_at(pos, key.obj.clone().unbind()));
+        } else {
+            // Equal keys with different hashes (a broken `__hash__`): keep the index sound.
+            out.extend(ki.remove_at(pos, py.None()));
+            ki.push_hashed(hash, key.obj.clone().unbind());
+        }
+        Ok(())
+    }
+
+    /// Apply the outcome of set algebra computed on a snapshot to the keys still present
+    /// (by identity; keys added meanwhile are left alone): `None` removes a key, `Some(k)`
+    /// replaces it with the equal key `k`. Runs no Python code; displaced objects go to `out`.
+    pub(crate) fn apply_fates(
+        &mut self,
+        py: Python<'_>,
+        fates: &[(Key<'_>, Option<Key<'_>>)],
+        out: &mut Vec<Py<PyAny>>,
+    ) -> PyResult<()> {
+        for (key, fate) in fates {
+            let Some(pos) = self.position_of(py, key)? else {
+                continue;
+            };
+            match fate {
+                None => out.extend(self.remove_at(py, pos)),
+                Some(new) => self.replace_at(py, pos, new, out)?,
+            }
+        }
+        // Positions are looked up per key, so compacting once at the end is enough.
+        let _ = self.maybe_compact();
+        Ok(())
     }
 
     /// All live keys as Python objects, in order.
@@ -778,7 +905,6 @@ impl KeyTable {
             store,
             kind: self.kind,
             reserve_hint: 0,
-            version: 0,
             layout: 0,
         }
     }
@@ -842,9 +968,6 @@ impl KeyTable {
             (_, Prepared::Int(v)) => return Ok(Err(Key::from_int(py, v))),
             (_, Prepared::Str(s)) => return Ok(Err(Key::from_str(py, &s)?)),
         };
-        if inserted {
-            self.version += 1;
-        }
         Ok(Ok((pos, inserted)))
     }
 
@@ -875,17 +998,15 @@ impl KeyTable {
             }
             _ => return None,
         };
-        if inserted {
-            self.version += 1;
-        }
         Some((pos, inserted))
     }
 
-    /// Find `key` without running Python code; Python comparisons become `Compare`.
-    pub(crate) fn resolve(&self, py: Python<'_>, key: &Key<'_>) -> PyResult<Resolve> {
-        let mut candidates = Vec::new();
+    /// Find `key` without running Python code; stored keys that need a Python comparison
+    /// (and were not compared in an earlier round of `state`) become `Compare`.
+    pub(crate) fn scan(&self, py: Python<'_>, key: &Key<'_>, state: &mut Lookup) -> PyResult<Scan> {
+        let mut compare = Vec::new();
         match (&self.store, &key.class) {
-            (KeyStore::Empty, _) => return Ok(Resolve::Absent),
+            (KeyStore::Empty, _) => return Ok(Scan::Absent),
             (KeyStore::Int(ki), Class::Int { value, .. }) => return Ok(found(ki.get(value))),
             (KeyStore::Str(ki), Class::Str { text, .. }) => return Ok(found(ki.get(&**text))),
             (
@@ -895,8 +1016,11 @@ impl KeyTable {
                 },
             ) => {
                 for v in int_hash_preimages(*hash) {
-                    if let Some(pos) = ki.get(&v) {
-                        candidates.push((pos, v.into_pyobject(py)?.into_any().unbind()));
+                    let Some(pos) = ki.get(&v) else { continue };
+                    match state.known(|t| matches!(t, Token::Int(x) if *x == v)) {
+                        Some(true) => return Ok(Scan::Found(pos)),
+                        Some(false) => {}
+                        None => compare.push(Token::Int(v)),
                     }
                 }
             }
@@ -907,47 +1031,56 @@ impl KeyTable {
                 },
             ) => {
                 for (pos, s) in ki.iter() {
-                    let obj = PyString::new(py, s);
-                    if obj.hash()? == *hash {
-                        candidates.push((pos, obj.into_any().unbind()));
+                    if PyString::new(py, s).hash()? != *hash {
+                        continue;
+                    }
+                    match state.known(|t| matches!(t, Token::Str(x) if x == s)) {
+                        Some(true) => return Ok(Scan::Found(pos)),
+                        Some(false) => {}
+                        None => compare.push(Token::Str(s.clone())),
                     }
                 }
             }
-            (KeyStore::Int(_) | KeyStore::Str(_), _) => return Ok(Resolve::Absent),
+            (KeyStore::Int(_) | KeyStore::Str(_), _) => return Ok(Scan::Absent),
             (KeyStore::Object(ki), _) => {
                 let hash = mix(key.py_hash()?);
                 let simple = key.simplicity();
                 for pos in ki.index().candidates(hash) {
                     let stored = ki.raw_keys()[pos].bind(py);
                     if stored.is(&key.obj) {
-                        return Ok(Resolve::Found(pos));
+                        return Ok(Scan::Found(pos));
                     }
-                    if simple.inline_with(simplicity(stored, 0)) {
-                        if stored.eq(&key.obj)? {
-                            return Ok(Resolve::Found(pos));
+                    match state.known(|t| matches!(t, Token::Object(o) if o.is(stored))) {
+                        Some(true) => return Ok(Scan::Found(pos)),
+                        Some(false) => {}
+                        None if simple.inline_with(simplicity(stored, 0)) => {
+                            if stored.eq(&key.obj)? {
+                                return Ok(Scan::Found(pos));
+                            }
                         }
-                    } else {
-                        candidates.push((pos, stored.clone().unbind()));
+                        None => compare.push(Token::Object(stored.clone().unbind())),
                     }
                 }
             }
         }
-        Ok(if candidates.is_empty() {
-            Resolve::Absent
+        // A key found equal in an earlier round has been removed since.
+        state.spent.extend(state.equal.take());
+        Ok(if compare.is_empty() {
+            Scan::Absent
         } else {
-            Resolve::Compare(Pending {
-                candidates,
-                version: self.version,
-            })
+            Scan::Compare(compare)
         })
     }
 
     /// Find `key` in a table nobody else can reach, comparing inline.
     pub(crate) fn find_local(&self, py: Python<'_>, key: &Key<'_>) -> PyResult<Option<usize>> {
-        match self.resolve(py, key)? {
-            Resolve::Found(pos) => Ok(Some(pos)),
-            Resolve::Absent => Ok(None),
-            Resolve::Compare(pending) => pending.compare(&key.obj),
+        let mut state = Lookup::default();
+        loop {
+            match self.scan(py, key, &mut state)? {
+                Scan::Found(pos) => return Ok(Some(pos)),
+                Scan::Absent => return Ok(None),
+                Scan::Compare(tokens) => state.compare(py, &key.obj, tokens)?,
+            }
         }
     }
 
@@ -962,7 +1095,6 @@ impl KeyTable {
 
     /// Append `key`, which the caller has resolved as absent. Picks or demotes the strategy.
     pub(crate) fn push(&mut self, py: Python<'_>, key: &Key<'_>) -> PyResult<usize> {
-        self.version += 1;
         loop {
             match (&mut self.store, &key.class) {
                 (KeyStore::Empty, class) => {
@@ -1029,13 +1161,11 @@ impl KeyTable {
             other => Ok(other),
         };
         self.store = result?;
-        self.version += 1;
         Ok(())
     }
 
     /// Tombstone the live entry at `pos`; returns the displaced key object, if any.
     pub(crate) fn remove_at(&mut self, py: Python<'_>, pos: usize) -> Option<Py<PyAny>> {
-        self.version += 1;
         match &mut self.store {
             KeyStore::Empty => None,
             KeyStore::Int(ki) => {
@@ -1060,14 +1190,12 @@ impl KeyTable {
             KeyStore::Object(ki) if ki.wants_compaction() => ki.compact(),
             _ => return None,
         };
-        self.version += 1;
         self.layout += 1;
         Some(remap)
     }
 
     /// Drop positions `>= len`; returns displaced key objects.
     pub(crate) fn truncate(&mut self, len: usize) -> Vec<Py<PyAny>> {
-        self.version += 1;
         match &mut self.store {
             KeyStore::Empty => Vec::new(),
             KeyStore::Int(ki) => {
@@ -1084,7 +1212,6 @@ impl KeyTable {
 
     /// Remove everything (an untyped table becomes adaptive again); returns displaced keys.
     pub(crate) fn clear(&mut self) -> Vec<Py<PyAny>> {
-        self.version += 1;
         self.layout += 1;
         match std::mem::replace(&mut self.store, Self::empty_store(self.kind)) {
             KeyStore::Object(ki) => ki.into_parts().0,
@@ -1108,8 +1235,8 @@ impl KeyTable {
     }
 }
 
-fn found(pos: Option<usize>) -> Resolve {
-    pos.map_or(Resolve::Absent, Resolve::Found)
+fn found(pos: Option<usize>) -> Scan {
+    pos.map_or(Scan::Absent, Scan::Found)
 }
 
 /// State guarded by a container lock that holds a key table.
@@ -1129,6 +1256,34 @@ pub(crate) enum Slot<'a, 'py> {
     Absent(&'a Key<'py>),
 }
 
+/// Find `key` holding `guard`, which is released while Python comparisons run and then
+/// re-acquired with `relock`. Objects the lookup keeps alive stay in `state`, which the
+/// caller drops after the guard.
+fn locate<'py, T: Keyed, G: Deref<Target = T>>(
+    py: Python<'py>,
+    mut guard: G,
+    relock: impl Fn() -> G,
+    key: &Key<'py>,
+    state: &mut Lookup,
+) -> PyResult<(G, Option<usize>)> {
+    loop {
+        let tokens = match guard.table().scan(py, key, state)? {
+            Scan::Found(pos) => {
+                state.reset();
+                return Ok((guard, Some(pos)));
+            }
+            Scan::Absent => {
+                state.reset();
+                return Ok((guard, None));
+            }
+            Scan::Compare(tokens) => tokens,
+        };
+        drop(guard);
+        state.compare(py, &key.obj, tokens)?;
+        guard = relock();
+    }
+}
+
 /// Locate `key` and run `read` on the entry under a shared lock.
 pub(crate) fn with_entry<T: Keyed, R>(
     py: Python<'_>,
@@ -1136,23 +1291,9 @@ pub(crate) fn with_entry<T: Keyed, R>(
     key: &Key<'_>,
     read: impl FnOnce(&T, Option<usize>) -> R,
 ) -> PyResult<R> {
-    loop {
-        let pending = {
-            let guard = lock.read(py);
-            match guard.table().resolve(py, key)? {
-                Resolve::Found(pos) => return Ok(read(&guard, Some(pos))),
-                Resolve::Absent => return Ok(read(&guard, None)),
-                Resolve::Compare(pending) => pending,
-            }
-        };
-        let found = pending.compare(&key.obj)?;
-        let version = pending.version;
-        drop(pending);
-        let guard = lock.read(py);
-        if guard.table().version == version {
-            return Ok(read(&guard, found));
-        }
-    }
+    let mut state = Lookup::default();
+    let (guard, pos) = locate(py, lock.read(py), || lock.read(py), key, &mut state)?;
+    Ok(read(&guard, pos))
 }
 
 /// Locate `key` and run `write` on the entry under the exclusive lock.
@@ -1162,23 +1303,9 @@ pub(crate) fn with_entry_mut<T: Keyed, R>(
     key: &Key<'_>,
     write: impl FnOnce(&mut T, Option<usize>) -> R,
 ) -> PyResult<R> {
-    loop {
-        let pending = {
-            let mut guard = lock.write(py);
-            match guard.table().resolve(py, key)? {
-                Resolve::Found(pos) => return Ok(write(&mut guard, Some(pos))),
-                Resolve::Absent => return Ok(write(&mut guard, None)),
-                Resolve::Compare(pending) => pending,
-            }
-        };
-        let found = pending.compare(&key.obj)?;
-        let version = pending.version;
-        drop(pending);
-        let mut guard = lock.write(py);
-        if guard.table().version == version {
-            return Ok(write(&mut guard, found));
-        }
-    }
+    let mut state = Lookup::default();
+    let (mut guard, pos) = locate(py, lock.write(py), || lock.write(py), key, &mut state)?;
+    Ok(write(&mut guard, pos))
 }
 
 /// Apply `commit` to each item's located entry in order, holding the exclusive lock except
@@ -1194,7 +1321,9 @@ pub(crate) fn batch_mut<'py, T: Keyed, I>(
 ) -> PyResult<()> {
     let mut items = items.into_iter();
     let mut spent = Vec::new();
-    let result = batch_mut_locked(py, lock, &mut items, key_of, commit, &mut spent);
+    let mut state = Lookup::default();
+    let result = batch_mut_locked(py, lock, &mut items, key_of, commit, &mut spent, &mut state);
+    drop(state);
     drop(spent);
     drop(items);
     result
@@ -1207,57 +1336,31 @@ fn batch_mut_locked<'py, T: Keyed, I>(
     key_of: impl Fn(&I) -> &Key<'py>,
     mut commit: impl FnMut(&mut T, &I, Option<usize>) -> PyResult<()>,
     spent: &mut Vec<I>,
+    state: &mut Lookup,
 ) -> PyResult<()> {
     let mut guard = lock.write(py);
     for item in items {
-        loop {
-            let pending = match guard.table().resolve(py, key_of(&item)) {
-                Ok(Resolve::Found(pos)) => {
-                    let res = commit(&mut guard, &item, Some(pos));
-                    spent.push(item);
-                    res?;
-                    break;
-                }
-                Ok(Resolve::Absent) => {
-                    let res = commit(&mut guard, &item, None);
-                    spent.push(item);
-                    res?;
-                    break;
-                }
-                Ok(Resolve::Compare(pending)) => pending,
-                Err(e) => {
-                    spent.push(item);
-                    return Err(e);
-                }
-            };
-            drop(guard);
-            let found = pending.compare(&key_of(&item).obj);
-            let version = pending.version;
-            drop(pending);
-            let found = match found {
-                Ok(found) => found,
-                Err(e) => {
-                    spent.push(item);
-                    return Err(e);
-                }
-            };
-            guard = lock.write(py);
-            if guard.table().version == version {
-                let res = commit(&mut guard, &item, found);
+        let (relocked, pos) = match locate(py, guard, || lock.write(py), key_of(&item), state) {
+            Ok(found) => found,
+            Err(e) => {
                 spent.push(item);
-                res?;
-                break;
+                return Err(e);
             }
-        }
+        };
+        guard = relocked;
+        let res = commit(&mut guard, &item, pos);
+        spent.push(item);
+        res?;
     }
     Ok(())
 }
 
 /// What a batch upsert releases after its lock: the keys and values it consumed or did not
-/// get to (an error may stop it mid-way).
+/// get to (an error may stop it mid-way), and what its lookups kept alive.
 struct Spent<'py, V> {
     keys: Vec<Key<'py>>,
     values: Vec<V>,
+    lookup: Lookup,
 }
 
 /// Insert-or-update each item's key in order under the exclusive lock (released only while
@@ -1275,6 +1378,7 @@ pub(crate) fn batch_upsert<'py, T: Keyed, V>(
     let mut spent = Spent {
         keys: Vec::new(),
         values: Vec::new(),
+        lookup: Lookup::default(),
     };
     let result = batch_upsert_locked(py, lock, &mut items, commit, &mut spent);
     drop(spent);
@@ -1318,51 +1422,23 @@ fn batch_upsert_locked<'py, T: Keyed, V>(
             res?;
             continue;
         }
-        loop {
-            let pending = match guard.table().resolve(py, &key) {
-                Ok(Resolve::Found(pos)) => {
-                    let res = commit(&mut guard, value, Slot::Existing(pos));
-                    spent.keys.push(key);
-                    res?;
-                    break;
-                }
-                Ok(Resolve::Absent) => {
-                    let res = commit(&mut guard, value, Slot::Absent(&key));
-                    spent.keys.push(key);
-                    res?;
-                    break;
-                }
-                Ok(Resolve::Compare(pending)) => pending,
-                Err(e) => {
-                    spent.keys.push(key);
-                    spent.values.push(value);
-                    return Err(e);
-                }
-            };
-            drop(guard);
-            let found = pending.compare(&key.obj);
-            let version = pending.version;
-            drop(pending);
-            let found = match found {
-                Ok(found) => found,
-                Err(e) => {
-                    spent.keys.push(key);
-                    spent.values.push(value);
-                    return Err(e);
-                }
-            };
-            guard = lock.write(py);
-            if guard.table().version == version {
-                let res = commit(
-                    &mut guard,
-                    value,
-                    found.map_or(Slot::Absent(&key), Slot::Existing),
-                );
+        let (relocked, pos) = match locate(py, guard, || lock.write(py), &key, &mut spent.lookup)
+        {
+            Ok(found) => found,
+            Err(e) => {
                 spent.keys.push(key);
-                res?;
-                break;
+                spent.values.push(value);
+                return Err(e);
             }
-        }
+        };
+        guard = relocked;
+        let res = commit(
+            &mut guard,
+            value,
+            pos.map_or(Slot::Absent(&key), Slot::Existing),
+        );
+        spent.keys.push(key);
+        res?;
     }
     Ok(())
 }
