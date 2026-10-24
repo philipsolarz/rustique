@@ -19,7 +19,7 @@ use pyo3::pyclass::CompareOp;
 use pyo3::types::{PyBool, PyList, PyString, PyTuple, PyType};
 use pyo3::{PyTraverseError, ffi, intern};
 use rustique_core::kernels::{self, CmpOp, KernelError, Sum};
-use rustique_core::slice::{SliceIndices, clamp_insert_index, normalize_index};
+use rustique_core::slice::{SliceError, SliceIndices, clamp_insert_index, normalize_index};
 use rustique_core::{Column, DType, with_column};
 
 use crate::convert::{self, IngestError, Probe, ToPython};
@@ -46,13 +46,33 @@ pub struct List {
     len: AtomicUsize,
     /// Live buffer exports; while non-zero every mutation raises `BufferError`.
     exports: AtomicUsize,
+    /// Python-level sorts in progress (their elements are out of the list): no exports.
+    sorting: AtomicUsize,
 }
 
-/// Exclusive access for a mutation. On release (still under the lock) it bumps the
-/// mutation counter and publishes the new length.
+/// Exclusive access for a mutation. Mutable access marks the storage as changed; on
+/// release (still under the lock) a change bumps the mutation counter and publishes the
+/// new length. Failed and no-op operations only read, so they leave the counter alone.
 struct Mutation<'a> {
     guard: WriteGuard<'a, Storage>,
     list: &'a List,
+    changed: bool,
+}
+
+impl Mutation<'_> {
+    /// Publish the change (if any) now and return the resulting mutation counter.
+    fn finish(mut self) -> u64 {
+        self.publish();
+        self.list.version.get()
+    }
+
+    fn publish(&mut self) {
+        if self.changed {
+            self.changed = false;
+            self.list.len.store(self.guard.len(), Ordering::Release);
+            self.list.version.bump_exclusive();
+        }
+    }
 }
 
 impl Deref for Mutation<'_> {
@@ -64,14 +84,14 @@ impl Deref for Mutation<'_> {
 
 impl DerefMut for Mutation<'_> {
     fn deref_mut(&mut self) -> &mut Storage {
+        self.changed = true;
         &mut self.guard
     }
 }
 
 impl Drop for Mutation<'_> {
     fn drop(&mut self) {
-        self.list.len.store(self.guard.len(), Ordering::Release);
-        self.list.version.bump_exclusive();
+        self.publish();
     }
 }
 
@@ -321,6 +341,7 @@ impl List {
             data: PyRwLock::new(storage),
             version: MutationCounter::new(),
             exports: AtomicUsize::new(0),
+            sorting: AtomicUsize::new(0),
         }
     }
 
@@ -397,7 +418,7 @@ impl List {
         if self.exports.load(Ordering::Acquire) != 0 {
             return Err(PyBufferError::new_err("cannot modify List while a buffer export exists"));
         }
-        Ok(Mutation { guard, list: self })
+        Ok(Mutation { guard, list: self, changed: false })
     }
 
     /// Convert values about to be added to this list. Untyped lists that already store
@@ -736,6 +757,48 @@ fn merge_sort(v: &mut [usize], mut lt: impl FnMut(usize, usize) -> PyResult<bool
     Ok(())
 }
 
+/// Sort taken-out list elements with Python semantics (`key` calls, Python `<` unless the
+/// keys compare natively). Returns the sorted storage, or the elements in their original
+/// order together with the exception that stopped the sort.
+fn sort_storage(
+    py: Python<'_>,
+    elements: Storage,
+    key: Option<&Bound<'_, PyAny>>,
+    reverse: bool,
+) -> (Storage, PyResult<()>) {
+    let perm = {
+        let materialised = match &elements {
+            Storage::Native(column) => Some(convert::column_objects(py, column, 0..column.len())),
+            _ => None,
+        };
+        let objects: &[Py<PyAny>] = match (&materialised, &elements) {
+            (Some(objects), _) | (None, Storage::Object(objects)) => objects,
+            _ => &[],
+        };
+        let perm = match key {
+            Some(f) => objects
+                .iter()
+                .map(|e| f.call1((e,)).map(Bound::unbind))
+                .collect::<PyResult<Vec<_>>>()
+                .and_then(|keys| List::sort_permutation(py, &keys, reverse)),
+            None => List::sort_permutation(py, objects, reverse),
+        };
+        match perm {
+            Ok(perm) => perm,
+            Err(e) => return (elements, Err(e)),
+        }
+    };
+    let sorted = match elements {
+        Storage::Native(column) => Storage::Native(column.take(&perm)),
+        Storage::Object(objects) => {
+            let mut slots: Vec<Option<Py<PyAny>>> = objects.into_iter().map(Some).collect();
+            Storage::Object(perm.iter().filter_map(|&i| slots[i].take()).collect())
+        }
+        Storage::Empty => Storage::Empty,
+    };
+    (sorted, Ok(()))
+}
+
 #[pymethods]
 impl List {
     #[new]
@@ -829,6 +892,15 @@ impl List {
                 let result = {
                     let mut data = this.mutate(py)?;
                     let s = adjust(start, stop, step, data.len())?;
+                    // Rejections and no-ops leave the list (and its mutation counter) alone;
+                    // `values` is dropped after the guard.
+                    if s.step != 1 && values.len() != s.len {
+                        let e = SliceError::LengthMismatch { expected: s.len, got: values.len() };
+                        return Err(PyValueError::new_err(e.to_string()));
+                    }
+                    if s.len == 0 && values.is_empty() {
+                        return Ok(());
+                    }
                     data.assign_slice(py, &s, values)
                 };
                 // Displaced or rejected objects are dropped only now, unlocked.
@@ -856,6 +928,9 @@ impl List {
             Index::Slice(start, stop, step) => {
                 let mut data = self.mutate(py)?;
                 let s = adjust(start, stop, step, data.len())?;
+                if s.len == 0 {
+                    return Ok(());
+                }
                 data.delete_slice(&s)
             }
         };
@@ -993,7 +1068,20 @@ impl List {
 
     fn __imul__(&self, py: Python<'_>, n: IndexArg<'_>) -> PyResult<()> {
         let n = n.value()?;
-        let displaced = self.mutate(py)?.repeat_in_place(py, n)?;
+        let displaced = {
+            let mut data = self.mutate(py)?;
+            if n == 1 || data.is_empty() {
+                return Ok(());
+            }
+            if n <= 0 {
+                data.clear()
+            } else {
+                let repeated = data.repeat(py, n)?;
+                // The old references are dropped unlocked, like any displaced objects (the
+                // repetition holds its own references to the same objects).
+                std::mem::replace(&mut *data, repeated).into_displaced()
+            }
+        };
         drop(displaced);
         Ok(())
     }
@@ -1100,7 +1188,8 @@ impl List {
             };
             match found {
                 Some(Some(i)) => {
-                    data.delete(i);
+                    // Native storage: nothing is displaced.
+                    let _ = data.delete(i);
                     return Ok(());
                 }
                 Some(None) => return Err(missing()),
@@ -1145,7 +1234,13 @@ impl List {
 
     /// Remove all items.
     fn clear(&self, py: Python<'_>) -> PyResult<()> {
-        let displaced = self.mutate(py)?.clear();
+        let displaced = {
+            let mut data = self.mutate(py)?;
+            if data.is_empty() {
+                return Ok(());
+            }
+            data.clear()
+        };
         drop(displaced);
         Ok(())
     }
@@ -1169,7 +1264,10 @@ impl List {
 
     /// Reverse the list in place.
     fn reverse(&self, py: Python<'_>) -> PyResult<()> {
-        self.mutate(py)?.reverse();
+        let mut data = self.mutate(py)?;
+        if data.len() > 1 {
+            data.reverse();
+        }
         Ok(())
     }
 
@@ -1179,6 +1277,10 @@ impl List {
     }
 
     /// Sort the list in place (stable). Native storage without `key` sorts in Rust.
+    ///
+    /// Sorts that run Python code (a `key`, or `<` on objects) behave like CPython's: the
+    /// list appears empty meanwhile, the sorted elements are put back at the end, and if
+    /// the list was changed in between, that content is discarded and `ValueError` raised.
     #[pyo3(signature = (*, key = None, reverse = None))]
     fn sort(&self, py: Python<'_>, key: Option<&Bound<'_, PyAny>>, reverse: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
         let reverse = match reverse {
@@ -1188,60 +1290,48 @@ impl List {
         let key = key.filter(|k| !k.is_none());
         if key.is_none() {
             let mut data = self.mutate(py)?;
-            match &mut *data {
+            match &*data {
                 Storage::Empty => return Ok(()),
-                Storage::Native(column) => {
-                    if column.len() >= SORT_DETACH_THRESHOLD {
-                        py.detach(|| kernels::sort(column, reverse));
-                    } else {
-                        kernels::sort(column, reverse);
+                Storage::Native(column) if column.len() < 2 => return Ok(()),
+                Storage::Native(_) => {
+                    if let Storage::Native(column) = &mut *data {
+                        if column.len() >= SORT_DETACH_THRESHOLD {
+                            py.detach(|| kernels::sort(column, reverse));
+                        } else {
+                            kernels::sort(column, reverse);
+                        }
                     }
                     return Ok(());
                 }
                 Storage::Object(_) => {}
             }
         }
-        // General path: snapshot, compute keys and order outside the lock, then commit if
-        // nothing changed meanwhile.
-        let (version, snapshot) = {
-            let data = self.read(py);
-            (self.version.get(), data.clone_ref(py))
-        };
-        let elements = match &snapshot {
-            Storage::Object(_) => None,
-            Storage::Native(column) => Some(convert::column_objects(py, column, 0..column.len())),
-            Storage::Empty => return Ok(()),
-        };
-        let elements_ref: &[Py<PyAny>] = match (&elements, &snapshot) {
-            (Some(e), _) => e,
-            (None, Storage::Object(objects)) => objects,
-            _ => &[],
-        };
-        let keys;
-        let keys_ref: &[Py<PyAny>] = match key {
-            Some(f) => {
-                keys = elements_ref.iter().map(|e| f.call1((e,)).map(Bound::unbind)).collect::<PyResult<Vec<_>>>()?;
-                &keys
-            }
-            None => elements_ref,
-        };
-        let perm = List::sort_permutation(py, keys_ref, reverse)?;
-        let sorted = match snapshot {
-            Storage::Native(column) => Storage::Native(column.take(&perm)),
-            Storage::Object(objects) => {
-                let mut slots: Vec<Option<Py<PyAny>>> = objects.into_iter().map(Some).collect();
-                Storage::Object(perm.iter().filter_map(|&i| slots[i].take()).collect())
-            }
-            Storage::Empty => Storage::Empty,
-        };
-        let previous = {
+        // Take the elements out, leaving an empty list of the same strategy.
+        let (elements, version) = {
             let mut data = self.mutate(py)?;
-            if self.version.get() != version {
-                return Err(PyValueError::new_err("list modified during sort"));
+            if data.is_empty() {
+                return Ok(());
             }
-            std::mem::replace(&mut *data, sorted)
+            let placeholder = data.empty_like();
+            let elements = std::mem::replace(&mut *data, placeholder);
+            // Under the write lock, like `__getbuffer__`'s check: no export of the
+            // placeholder can exist when the elements are put back.
+            self.sorting.fetch_add(1, Ordering::Relaxed);
+            (elements, data.finish())
         };
-        drop(previous);
+        let (elements, result) = sort_storage(py, elements, key, reverse);
+        let (discarded, modified) = {
+            // Not `mutate`: the elements must go back, and no export can exist (see above).
+            let mut data = Mutation { guard: self.data.write(py), list: self, changed: false };
+            let modified = self.version.get() != version;
+            self.sorting.fetch_sub(1, Ordering::Relaxed);
+            (std::mem::replace(&mut *data, elements), modified)
+        };
+        drop(discarded);
+        result?;
+        if modified {
+            return Err(PyValueError::new_err("list modified during sort"));
+        }
         Ok(())
     }
 
@@ -1353,6 +1443,9 @@ impl List {
                     data.strategy()
                 )));
             };
+            if this.sorting.load(Ordering::Relaxed) != 0 {
+                return Err(PyBufferError::new_err("cannot export a List while it is being sorted"));
+            }
             // Under the lock: no writer can be mid-mutation, and every later writer sees it.
             this.exports.fetch_add(1, Ordering::AcqRel);
             parts

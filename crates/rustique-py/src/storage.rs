@@ -482,21 +482,22 @@ impl Storage {
         })
     }
 
-    /// `self *= n` in place.
-    pub fn repeat_in_place(&mut self, py: Python<'_>, n: isize) -> PyResult<Displaced> {
-        if n <= 0 {
-            return Ok(self.clear());
-        }
-        if n == 1 || self.is_empty() {
-            return Ok(Vec::new());
-        }
-        let repeated = self.repeat(py, n)?;
-        // The old references are handed back like any displaced objects (the repetition
-        // holds its own references to the same objects).
-        Ok(match mem::replace(self, repeated) {
+    /// The Python objects this storage holds (none for native storage), to be dropped by
+    /// the caller after unlocking.
+    pub fn into_displaced(self) -> Displaced {
+        match self {
             Storage::Object(objects) => objects,
             _ => Vec::new(),
-        })
+        }
+    }
+
+    /// Empty storage with the same strategy.
+    pub fn empty_like(&self) -> Storage {
+        match self {
+            Storage::Empty => Storage::Empty,
+            Storage::Native(column) => Storage::Native(Column::new(column.dtype())),
+            Storage::Object(_) => Storage::Object(Vec::new()),
+        }
     }
 
     fn item_size(&self) -> usize {

@@ -348,3 +348,107 @@ def test_m3_range_errors_match_element_wise_conversion(alias: str, rng: range) -
     with pytest.raises(OverflowError) as slow:
         typed(list(rng))
     assert str(fast.value) == str(slow.value)
+
+
+# --------------------------------------------------------------------------------------
+# M4: every operation bumped the mutation counter, even failed or no-op ones (pop from an
+# empty list, an out-of-range assignment, sorting an empty list), so a key function that
+# called `l.sort()` made the outer sort raise "list modified during sort". Python-level
+# sorts now also behave like CPython's: the list appears empty while keys are computed
+# and elements compared, changes made meanwhile are discarded and reported.
+# --------------------------------------------------------------------------------------
+
+LIST_TYPES = [list, List, List[int]]
+LIST_IDS = ["builtin", "List", "List[int]"]
+
+
+@pytest.mark.parametrize("cls", LIST_TYPES, ids=LIST_IDS)
+def test_m4_key_function_sorting_the_list_itself(cls: type) -> None:
+    lst = cls([3, 1, 2])
+    lst.sort(key=lambda x: (lst.sort(), x)[1])
+    assert list(lst) == [1, 2, 3]
+
+
+NO_OPS = {
+    "pop": lambda l: l.pop(),
+    "pop0": lambda l: l.pop(0),
+    "setitem": lambda l: l.__setitem__(0, 1),
+    "delitem": lambda l: l.__delitem__(0),
+    "remove": lambda l: l.remove(1),
+    "index": lambda l: l.index(1),
+    "clear": lambda l: l.clear(),
+    "reverse": lambda l: l.reverse(),
+    "sort": lambda l: l.sort(),
+    "sort-key": lambda l: l.sort(key=lambda x: -x),
+    "extend-empty": lambda l: l.extend([]),
+    "iadd-empty": lambda l: l.__iadd__(()),
+    "slice-assign-empty": lambda l: l.__setitem__(slice(None), []),
+    "del-slice": lambda l: l.__delitem__(slice(None)),
+    "imul-1": lambda l: l.__imul__(1),
+    "imul-0": lambda l: l.__imul__(0),
+    "ext-slice-mismatch": lambda l: l.__setitem__(slice(None, None, 2), [1]),
+}
+
+
+@pytest.mark.parametrize("op", sorted(NO_OPS))
+@pytest.mark.parametrize("cls", LIST_TYPES, ids=LIST_IDS)
+def test_m4_failed_or_no_op_mutations_during_sort_are_not_modifications(cls: type, op: str) -> None:
+    lst = cls([3, 1, 2])
+    seen = []
+
+    def key(x: int) -> int:
+        seen.append(len(lst))  # the list appears empty while it is sorted
+        try:
+            NO_OPS[op](lst)
+        except (IndexError, ValueError):
+            pass
+        return x
+
+    lst.sort(key=key)
+    assert list(lst) == [1, 2, 3]
+    assert seen == [0, 0, 0]
+
+
+@pytest.mark.parametrize("cls", LIST_TYPES, ids=LIST_IDS)
+def test_m4_changes_during_sort_are_discarded_and_reported(cls: type) -> None:
+    lst = cls([3, 1, 2])
+    with pytest.raises(ValueError, match="list modified during sort"):
+        lst.sort(key=lambda x: (lst.append(0), x)[1])
+    assert list(lst) == [1, 2, 3]  # CPython keeps the sorted elements, drops the appends
+    lst = cls([3, 1, 2])
+    with pytest.raises(ZeroDivisionError):
+        lst.sort(key=lambda x: (lst.append(0), 1 // (x - 1))[1])  # the key error wins
+    assert sorted(lst) == [1, 2, 3]
+
+
+@pytest.mark.parametrize("cls", LIST_TYPES, ids=LIST_IDS)
+def test_m4_list_is_empty_while_sorted(cls: type) -> None:
+    lst = cls([5, 4, 3])
+    views = []
+
+    def key(x: int) -> int:
+        views.append((len(lst), list(lst), bool(lst), 4 in lst, lst == cls()))
+        with pytest.raises(IndexError):
+            lst[0]
+        return x
+
+    lst.sort(key=key, reverse=True)
+    assert views == [(0, [], False, False, True)] * 3
+    assert list(lst) == [5, 4, 3]
+
+
+def test_m4_no_buffer_export_while_sorted() -> None:
+    lst = List[int]([3, 1, 2])
+    errors = []
+
+    def key(x: int) -> int:
+        try:
+            memoryview(lst)
+        except BufferError as e:
+            errors.append(str(e))
+        return x
+
+    lst.sort(key=key)
+    assert errors == ["cannot export a List while it is being sorted"] * 3
+    with memoryview(lst) as view:
+        assert view.tolist() == [1, 2, 3]
