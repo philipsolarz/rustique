@@ -216,3 +216,49 @@ def test_h1_remove_python_path_on_every_native_dtype() -> None:
             lst.remove(EqAll(target) if target == target else target)
             expected.remove(target) if target == target else expected.pop(0)
             assert repr(lst.to_list()) == repr(expected), (alias, target)
+
+
+# --------------------------------------------------------------------------------------
+# M1: contended waiters acquired (or queued on) the lock while detached from the
+# interpreter: a waiting writer set the writer bit, so `__traverse__`'s `try_read` could
+# succeed in one stop-the-world GC phase and fail in another (live objects treated as
+# garbage). The deterministic regression tests are Rust unit tests in `sync.rs`
+# (`waiting_writer_leaves_the_lock_alone`, starvation tests); this is the end-to-end smoke
+# test: GC under contention never finalizes an element that is still in the list.
+# --------------------------------------------------------------------------------------
+
+FREE_THREADED = not getattr(sys, "_is_gil_enabled", lambda: True)()
+
+
+@pytest.mark.skipif(not FREE_THREADED, reason="needs a free-threaded build with the GIL disabled")
+def test_m1_gc_under_contention_never_finalizes_live_elements() -> None:
+    out = run_isolated(
+        """
+        import gc, threading, time
+        class E:
+            __slots__ = ("finalized", "__weakref__")
+            def __init__(self): self.finalized = False
+            def __del__(self): self.finalized = True
+        lst = List([E() for _ in range(2000)])
+        stop = time.time() + 2.0
+        bad = []
+        def writer():
+            while time.time() < stop:
+                lst.append(E())
+                try: lst.pop(0)
+                except IndexError: pass
+        def reader():
+            while time.time() < stop:
+                for x in lst:
+                    if x.finalized: bad.append(1)
+        def collector():
+            while time.time() < stop:
+                gc.collect(0)
+        ts = [threading.Thread(target=f) for f in [writer] * 3 + [reader] * 3 + [collector]]
+        for t in ts: t.start()
+        for t in ts: t.join()
+        print("bad", len(bad))
+        """,
+        timeout=60,
+    )
+    assert out.strip() == "bad 0"
