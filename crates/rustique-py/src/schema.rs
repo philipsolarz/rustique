@@ -303,9 +303,9 @@ fn coerce_float(obj: &Bound<'_, PyAny>) -> Result<f64, CoerceError> {
 fn coerce_str(obj: &Bound<'_, PyAny>) -> Result<Coerced, CoerceError> {
     match convert::as_str(obj) {
         convert::StrValue::Native(s) => Ok(Coerced::Native(Value::Str(s))),
-        convert::StrValue::Surrogates => Err(CoerceError::Python(PyValueError::new_err(
-            "str elements with lone surrogates cannot be stored in a str-typed container",
-        ))),
+        // Lone surrogates have no UTF-8 form: keep the original object, which demotes the
+        // container to object storage (still validated as `str`), like `Int` on overflow.
+        convert::StrValue::Surrogates => Ok(Coerced::Object(obj.clone().unbind())),
         convert::StrValue::NotStr => Err(type_error("str", obj)),
     }
 }

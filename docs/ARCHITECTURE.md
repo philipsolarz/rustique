@@ -147,7 +147,7 @@ expression and cached:
 | `int`                                          | `Int`           | `I64`, demotes to `Object` on i64 overflow (still validated) | `int` incl. `bool` (stored as int) |
 | `float`                                        | `Float`         | `F64`   | `float`, `int` (converted, must be exactly representable or OverflowError for huge) |
 | `bool`                                         | `Bool`          | `Bool`  | `bool` only |
-| `str`                                          | `Str`           | `Str`   | `str` only |
+| `str`                                          | `Str`           | `Str`, demotes to `Object` for strings with lone surrogates (no UTF-8 form) | `str` only |
 | `rs.i8 … rs.u64`, `rs.f32`, `rs.f64`           | `Fixed(DType)`  | that dtype | ints in range (`OverflowError` otherwise), the matching scalar type; floats for f32/f64 |
 | `T \| None`, `Optional[T]`                     | `Optional(T)`   | `Object` | `None` or `T` |
 | `A \| B`, `Union[A, B]`                        | `Union([..])`   | `Object` | any member (first match converts) |

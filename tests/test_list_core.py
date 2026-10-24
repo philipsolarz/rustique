@@ -953,8 +953,8 @@ def test_typed_coercion_and_errors():
         List[bool]([1])
     with pytest.raises(OverflowError):
         List[float]([2**2000])
-    with pytest.raises(ValueError):
-        List[str](["\udc80"])
+    lone = List[str](["a", "\udc80"])  # no UTF-8 form: demotes to validated object storage
+    assert lone.strategy == "object" and lone.to_list() == ["a", "\udc80"]
     typed = List[int]([1])
     with pytest.raises(TypeError, match=r"List\[int\] expects int, got str$"):
         typed.append("x")

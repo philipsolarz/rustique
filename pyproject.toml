@@ -23,6 +23,8 @@ dev = [
     "maturin>=1.15.0",
     "pytest>=9.1.1",
     "hypothesis>=6.170.9",
+    "mypy",
+    "pyright",
 ]
 bench = ["numpy>=2.5.4"]
 
@@ -45,6 +47,18 @@ cache-keys = [
     { file = "crates/**/*.rs" },
     { file = "crates/**/Cargo.toml" },
 ]
+
+[tool.mypy]
+mypy_path = "python"
+strict = true
+files = ["python/rustique/__init__.pyi", "examples"]
+
+[tool.pyright]
+include = ["python/rustique/__init__.pyi", "examples"]
+typeCheckingMode = "strict"
+extraPaths = ["python"]
+venvPath = "."
+venv = ".venv"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
