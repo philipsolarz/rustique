@@ -1,7 +1,8 @@
-//! Element schemas: compiled descriptions of Python type expressions (ARCHITECTURE §3.4),
-//! their cache, and the `List[int]`-style alias objects (§3.5).
+//! Element schemas (ARCHITECTURE §3.4): the compiled `Schema` type and per-element
+//! validation/conversion (`coerce`). Compiling Python type expressions and the alias
+//! objects live in `typing.rs`.
 //!
-//! OWNER: schema agent. Interface items marked `INTERFACE` are used by other modules and
+//! OWNER: list agent. Interface items marked `INTERFACE` are used by other modules and
 //! must keep their signatures.
 
 use std::fmt;
@@ -151,7 +152,7 @@ impl CoerceError {
     /// INTERFACE. Convert to a Python exception. `container` is e.g. `"List[int]"`.
     pub fn into_pyerr(self, container: &str, index: Option<usize>) -> PyErr {
         let _ = (container, index);
-        todo!("schema agent")
+        todo!("list agent")
     }
 }
 
@@ -165,57 +166,19 @@ impl Schema {
     /// INTERFACE. Validate and convert one element.
     pub fn coerce(&self, obj: &Bound<'_, PyAny>) -> Result<Coerced, CoerceError> {
         let _ = obj;
-        todo!("schema agent")
+        todo!("list agent")
     }
-}
-
-/// INTERFACE. Compile a Python type expression into an interned schema
-/// (equal schemas share one `Arc`).
-pub fn compile(ty: &Bound<'_, PyAny>) -> PyResult<Arc<Schema>> {
-    let _ = ty;
-    todo!("schema agent")
 }
 
 /// INTERFACE. The shared `Any` schema.
 pub fn any() -> Arc<Schema> {
-    todo!("schema agent")
+    todo!("list agent")
 }
 
-/// INTERFACE. `List[item]`: the cached alias object for the element type expression `item`.
-pub fn list_alias<'py>(py: Python<'py>, item: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    let _ = (py, item);
-    todo!("schema agent")
+/// INTERFACE. Intern a schema: equal schemas share one `Arc` (so `Arc::ptr_eq` is a fast
+/// equality check and aliases can be cached per schema).
+pub fn intern(schema: Schema) -> Arc<Schema> {
+    let _ = schema;
+    todo!("list agent")
 }
 
-/// INTERFACE. `Dict[key, value]` alias (`params` is the subscript, normally a 2-tuple).
-pub fn dict_alias<'py>(py: Python<'py>, params: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    let _ = (py, params);
-    todo!("schema agent")
-}
-
-/// INTERFACE. `Set[item]` alias.
-pub fn set_alias<'py>(py: Python<'py>, item: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    let _ = (py, item);
-    todo!("schema agent")
-}
-
-/// INTERFACE. The alias object describing an existing schema (used by `schema_type`).
-/// For `Any` returns the bare class (`List`, `Dict`, `Set`).
-pub fn list_alias_for<'py>(py: Python<'py>, schema: &Arc<Schema>) -> PyResult<Bound<'py, PyAny>> {
-    let _ = (py, schema);
-    todo!("schema agent")
-}
-
-pub fn dict_alias_for<'py>(py: Python<'py>, key: &Arc<Schema>, value: &Arc<Schema>) -> PyResult<Bound<'py, PyAny>> {
-    let _ = (py, key, value);
-    todo!("schema agent")
-}
-
-pub fn set_alias_for<'py>(py: Python<'py>, schema: &Arc<Schema>) -> PyResult<Bound<'py, PyAny>> {
-    let _ = (py, schema);
-    todo!("schema agent")
-}
-
-pub fn register(_m: &Bound<'_, PyModule>) -> PyResult<()> {
-    Ok(())
-}

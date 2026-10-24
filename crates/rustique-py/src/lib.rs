@@ -13,12 +13,13 @@ pub mod schema;
 pub mod set;
 pub mod storage;
 pub mod sync;
+pub mod typing;
 
 #[pymodule]
 fn _rustique(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     scalars::register(m)?;
-    schema::register(m)?;
+    typing::register(m)?;
     list::register(m)?;
     dict::register(m)?;
     set::register(m)?;
