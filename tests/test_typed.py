@@ -523,7 +523,7 @@ class TestTypedDict:
         assert len(d) == 0
 
     def test_coercion(self) -> None:
-        d = Dict[int, float]({1: 2, True: 3})
+        d = Dict[int, float]({1: 2, True: 3})  # noqa: F601 -- deliberate key collision
         assert list(d.items()) == [(1, 3.0)]
         assert type(next(iter(d))) is int
         assert type(d[1]) is float
