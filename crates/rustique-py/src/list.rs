@@ -386,18 +386,31 @@ impl List {
                 _ => {}
             }
         }
+        Ok(self.find_python(py, value, start, stop)?.map(|(i, _)| i))
+    }
+
+    /// Python-level search (snapshot chunks, compare outside the lock). Returns the index
+    /// and the element that compared equal.
+    fn find_python(
+        &self,
+        py: Python<'_>,
+        value: &Bound<'_, PyAny>,
+        start: usize,
+        stop: usize,
+    ) -> PyResult<Option<(usize, Py<PyAny>)>> {
         let mut i = start;
         loop {
             let (chunk, _) = self.chunk(py, i, stop);
             if chunk.is_empty() {
                 return Ok(None);
             }
-            for (k, item) in chunk.iter().enumerate() {
+            let n = chunk.len();
+            for (k, item) in chunk.into_iter().enumerate() {
                 if elements_equal(item.bind(py), value)? {
-                    return Ok(Some(i + k));
+                    return Ok(Some((i + k, item)));
                 }
             }
-            i += chunk.len();
+            i += n;
         }
     }
 
@@ -973,17 +986,37 @@ impl List {
 
     /// Remove the first occurrence of `value` (`ValueError` if absent).
     fn remove(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let missing = || PyValueError::new_err("list.remove(x): x not in list");
+        let probe = convert::probe(value);
+        if !matches!(probe, Probe::Python) {
+            // Native search and removal under one write lock.
+            let mut data = self.mutate(py)?;
+            let found = match (&*data, &probe) {
+                (Storage::Native(column), Probe::Native(needle)) => Some(kernels::find(column, needle, 0, column.len())),
+                (Storage::Native(_), _) | (Storage::Empty, _) => Some(None),
+                (Storage::Object(_), _) => None,
+            };
+            match found {
+                Some(Some(i)) => {
+                    data.delete(i);
+                    return Ok(());
+                }
+                Some(None) => return Err(missing()),
+                None => {}
+            }
+        }
+        // Python equality: compare outside the lock, then remove the element that compared
+        // equal (re-located if concurrent mutation moved it; searched again if it is gone).
         for _ in 0..MAX_RETRIES {
-            let version = self.version.get();
-            let Some(i) = self.find(py, value, 0, usize::MAX)? else {
-                return Err(PyValueError::new_err("list.remove(x): x not in list"));
+            let Some((i, item)) = self.find_python(py, value, 0, usize::MAX)? else {
+                return Err(missing());
             };
             let displaced = {
                 let mut data = self.mutate(py)?;
-                if self.version.get() != version || i >= data.len() {
+                let Some(k) = data.locate(i, item.bind(py)) else {
                     continue;
-                }
-                data.delete(i)
+                };
+                data.delete(k)
             };
             drop(displaced);
             return Ok(());

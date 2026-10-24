@@ -296,7 +296,7 @@ def test_construction_from_buffers():
     assert List(array.array("Q", [2**64 - 1])).to_list() == [2**64 - 1]
     assert List(memoryview(b"\x00\x02").cast("?")).to_list() == [False, True]
     assert List(memoryview(array.array("q", [5, 6]))[::-1]).to_list() == [6, 5]
-    assert same(List(array.array("u", "ab")).to_list(), ["a", "b"])
+    assert same(List(array.array("w", "ab")).to_list(), ["a", "b"])
 
 
 def test_construction_from_numpy():

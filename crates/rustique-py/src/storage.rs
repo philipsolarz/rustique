@@ -255,6 +255,29 @@ impl Storage {
         }
     }
 
+    /// Position of an element previously read from this storage: the identical object for
+    /// object storage, an equal native value otherwise; `hint` is checked first.
+    pub fn locate(&self, hint: usize, item: &Bound<'_, PyAny>) -> Option<usize> {
+        match self {
+            Storage::Empty => None,
+            Storage::Object(objects) => {
+                if objects.get(hint).is_some_and(|o| o.is(item)) {
+                    return Some(hint);
+                }
+                objects.iter().position(|o| o.is(item))
+            }
+            Storage::Native(column) => {
+                let Coerced::Native(value) = convert::classify(item) else {
+                    return None;
+                };
+                if hint < column.len() && rustique_core::kernels::find(column, &value, hint, hint + 1).is_some() {
+                    return Some(hint);
+                }
+                rustique_core::kernels::find(column, &value, 0, column.len())
+            }
+        }
+    }
+
     /// INTERFACE. Convert to object storage in place (no-op if already object storage).
     pub fn demote(&mut self, py: Python<'_>) {
         match self {
