@@ -10,9 +10,16 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyType;
+use pyo3::{ffi, intern};
 use rustique_core::{DType, Value};
+
+use crate::convert;
+use crate::dict::Dict;
+use crate::list::List;
+use crate::set::Set;
 
 /// INTERFACE. A compiled element type.
 #[derive(Debug)]
@@ -152,8 +159,17 @@ pub enum CoerceError {
 impl CoerceError {
     /// INTERFACE. Convert to a Python exception. `container` is e.g. `"List[int]"`.
     pub fn into_pyerr(self, container: &str, index: Option<usize>) -> PyErr {
-        let _ = (container, index);
-        todo!("list agent")
+        let at = match index {
+            Some(i) => format!(" at index {i}"),
+            None => String::new(),
+        };
+        match self {
+            CoerceError::Type { expected, got } => {
+                PyTypeError::new_err(format!("{container} expects {expected}, got {got}{at}"))
+            }
+            CoerceError::Overflow { message } => PyOverflowError::new_err(format!("{container}: {message}{at}")),
+            CoerceError::Python(e) => e,
+        }
     }
 }
 
@@ -165,11 +181,213 @@ impl From<PyErr> for CoerceError {
 
 impl Schema {
     /// INTERFACE. Validate and convert one element.
+    ///
+    /// Typed schemas never run user code for scalar elements; nested containers
+    /// (`List[T]`, `Dict[K, V]`, `Set[T]`) and `Class` checks may (iteration,
+    /// `__instancecheck__`), so callers must not hold a Rustique lock.
     pub fn coerce(&self, obj: &Bound<'_, PyAny>) -> Result<Coerced, CoerceError> {
-        let _ = obj;
-        todo!("list agent")
+        match self {
+            Schema::Any => Ok(convert::classify(obj)),
+            Schema::Int => coerce_int(obj),
+            Schema::Float => coerce_float(obj).map(|x| Coerced::Native(Value::F64(x))),
+            Schema::Bool => match convert::as_bool(obj) {
+                Some(b) => Ok(Coerced::Native(Value::Bool(b))),
+                None => Err(type_error("bool", obj)),
+            },
+            Schema::Str => coerce_str(obj),
+            Schema::Fixed(dtype) => coerce_fixed(*dtype, obj),
+            Schema::Optional(inner) => {
+                if obj.is_none() {
+                    return Ok(Coerced::Object(obj.clone().unbind()));
+                }
+                inner.coerce(obj).map_err(|e| match e {
+                    CoerceError::Type { got, .. } => CoerceError::Type { expected: self.to_string(), got },
+                    other => other,
+                })
+            }
+            Schema::Union(members) => self.coerce_union(members, obj),
+            Schema::List(item) => coerce_list(item, obj, self),
+            Schema::Dict(key, value) => coerce_dict(key, value, obj, self),
+            Schema::Set(item) => coerce_set(item, obj, self),
+            Schema::Class(cls) => {
+                if obj.is_instance(cls.bind(obj.py()))? {
+                    Ok(Coerced::Object(obj.clone().unbind()))
+                } else {
+                    Err(type_error(&self.to_string(), obj))
+                }
+            }
+        }
+    }
+
+    /// True when [`Schema::coerce`] can never run Python code, so it may be applied to
+    /// borrowed items inside a critical section of the source container.
+    pub fn is_pure(&self) -> bool {
+        matches!(self, Schema::Any | Schema::Int | Schema::Float | Schema::Bool | Schema::Str | Schema::Fixed(_))
+    }
+
+    fn coerce_union(&self, members: &[Arc<Schema>], obj: &Bound<'_, PyAny>) -> Result<Coerced, CoerceError> {
+        let mut first_failure: Option<CoerceError> = None;
+        for member in members {
+            match member.coerce(obj) {
+                Ok(c) => return Ok(c),
+                Err(CoerceError::Type { .. }) => {}
+                Err(CoerceError::Python(e))
+                    if !(e.is_instance_of::<PyTypeError>(obj.py())
+                        || e.is_instance_of::<PyValueError>(obj.py())
+                        || e.is_instance_of::<PyOverflowError>(obj.py())) =>
+                {
+                    return Err(CoerceError::Python(e));
+                }
+                Err(other) => {
+                    first_failure.get_or_insert(other);
+                }
+            }
+        }
+        Err(first_failure.unwrap_or_else(|| type_error(&self.to_string(), obj)))
     }
 }
+
+fn type_error(expected: &str, obj: &Bound<'_, PyAny>) -> CoerceError {
+    CoerceError::Type { expected: expected.to_owned(), got: convert::type_name(obj) }
+}
+
+fn coerce_int(obj: &Bound<'_, PyAny>) -> Result<Coerced, CoerceError> {
+    // SAFETY: `obj` is a valid object; the checks only read its type.
+    if unsafe { ffi::PyLong_Check(obj.as_ptr()) } == 0 {
+        return Err(type_error("int", obj));
+    }
+    Ok(match convert::long_as_i64(obj)? {
+        Some(v) => Coerced::Native(Value::I64(v)),
+        None => Coerced::Object(obj.clone().unbind()),
+    })
+}
+
+/// `float` (incl. subclasses) or `int` converted like `float(x)`.
+fn coerce_float(obj: &Bound<'_, PyAny>) -> Result<f64, CoerceError> {
+    let p = obj.as_ptr();
+    // SAFETY: type checks and value reads on a valid object of the checked type.
+    unsafe {
+        if ffi::PyFloat_CheckExact(p) != 0 {
+            return Ok(ffi::PyFloat_AS_DOUBLE(p));
+        }
+        if ffi::PyFloat_Check(p) != 0 {
+            let x = ffi::PyFloat_AsDouble(p);
+            if x == -1.0
+                && let Some(e) = PyErr::take(obj.py())
+            {
+                return Err(CoerceError::Python(e));
+            }
+            return Ok(x);
+        }
+        if ffi::PyLong_Check(p) != 0 {
+            let x = ffi::PyLong_AsDouble(p);
+            if x == -1.0
+                && let Some(e) = PyErr::take(obj.py())
+            {
+                return Err(if e.is_instance_of::<PyOverflowError>(obj.py()) {
+                    CoerceError::Overflow { message: "int too large to convert to float".to_owned() }
+                } else {
+                    CoerceError::Python(e)
+                });
+            }
+            return Ok(x);
+        }
+    }
+    Err(type_error("float", obj))
+}
+
+fn coerce_str(obj: &Bound<'_, PyAny>) -> Result<Coerced, CoerceError> {
+    match convert::as_str(obj) {
+        convert::StrValue::Native(s) => Ok(Coerced::Native(Value::Str(s))),
+        convert::StrValue::Surrogates => Err(CoerceError::Python(PyValueError::new_err(
+            "str elements with lone surrogates cannot be stored in a str-typed container",
+        ))),
+        convert::StrValue::NotStr => Err(type_error("str", obj)),
+    }
+}
+
+fn coerce_fixed(dtype: DType, obj: &Bound<'_, PyAny>) -> Result<Coerced, CoerceError> {
+    match dtype {
+        DType::Bool => return Schema::Bool.coerce(obj),
+        DType::Str => return coerce_str(obj),
+        _ => {}
+    }
+    let p = obj.as_ptr();
+    // Builtin types first: they are the common case and need no scalar-class lookup.
+    // SAFETY: type checks on a valid object.
+    let (is_int, is_float) = unsafe { (ffi::PyLong_Check(p) != 0, ffi::PyFloat_Check(p) != 0) };
+    if is_int && dtype.is_integer() {
+        let wide = convert::long_as_i128(obj)?;
+        return match wide.and_then(|x| Value::int_of(dtype, x)) {
+            Some(v) => Ok(Coerced::Native(v)),
+            None => Err(CoerceError::Overflow { message: format!("{} is out of range for {dtype}", obj.str()?) }),
+        };
+    }
+    if (is_int || is_float) && dtype.is_float() {
+        let x = coerce_float(obj)?;
+        return match dtype {
+            DType::F32 => convert::f64_to_f32(x).map(|v| Coerced::Native(Value::F32(v))).ok_or_else(|| {
+                CoerceError::Overflow { message: format!("{} is out of range for f32", obj.repr().map(|r| r.to_string()).unwrap_or_default()) }
+            }),
+            _ => Ok(Coerced::Native(Value::F64(x))),
+        };
+    }
+    if !is_int
+        && !is_float
+        && let Some(v) = crate::scalars::scalar_value(obj)
+        && v.dtype() == dtype
+    {
+        return Ok(Coerced::Native(v));
+    }
+    Err(type_error(dtype.name(), obj))
+}
+
+fn coerce_list(item: &Arc<Schema>, obj: &Bound<'_, PyAny>, schema: &Schema) -> Result<Coerced, CoerceError> {
+    if let Ok(list) = obj.cast::<List>()
+        && Arc::ptr_eq(list.get().schema(), item)
+    {
+        return Ok(Coerced::Object(obj.clone().unbind()));
+    }
+    if !convert::is_iterable(obj) {
+        return Err(type_error(&schema.to_string(), obj));
+    }
+    let list = List::from_iterable(obj.py(), item.clone(), Some(obj))?;
+    Ok(Coerced::Object(list.into_any().unbind()))
+}
+
+fn coerce_dict(
+    key: &Arc<Schema>,
+    value: &Arc<Schema>,
+    obj: &Bound<'_, PyAny>,
+    schema: &Schema,
+) -> Result<Coerced, CoerceError> {
+    if let Ok(dict) = obj.cast::<Dict>() {
+        let d = dict.get();
+        if Arc::ptr_eq(d.key_schema(), key) && Arc::ptr_eq(d.value_schema(), value) {
+            return Ok(Coerced::Object(obj.clone().unbind()));
+        }
+    }
+    // A mapping (anything with `keys`) or an iterable of pairs, like `dict(x)`.
+    if !convert::is_iterable(obj) && !obj.hasattr(intern!(obj.py(), "keys"))? {
+        return Err(type_error(&schema.to_string(), obj));
+    }
+    let dict = Dict::from_args(obj.py(), key.clone(), value.clone(), Some(obj), None)?;
+    Ok(Coerced::Object(dict.into_any().unbind()))
+}
+
+fn coerce_set(item: &Arc<Schema>, obj: &Bound<'_, PyAny>, schema: &Schema) -> Result<Coerced, CoerceError> {
+    if let Ok(set) = obj.cast::<Set>()
+        && Arc::ptr_eq(set.get().schema(), item)
+    {
+        return Ok(Coerced::Object(obj.clone().unbind()));
+    }
+    if !convert::is_iterable(obj) {
+        return Err(type_error(&schema.to_string(), obj));
+    }
+    let set = Set::from_iterable(obj.py(), item.clone(), Some(obj))?;
+    Ok(Coerced::Object(set.into_any().unbind()))
+}
+
 
 /// INTERFACE. The shared `Any` schema.
 pub fn any() -> Arc<Schema> {
