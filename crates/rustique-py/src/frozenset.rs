@@ -449,6 +449,52 @@ impl FrozenSetIterator {
     }
 }
 
+/// `FrozenSet`'s varargs algebra methods as fastcall functions (see `set::install_fastcall`).
+mod fastcall {
+    use super::*;
+
+    unsafe fn call(
+        py: Python<'_>,
+        name: &str,
+        (slf, args, nargs, kwnames): (
+            *mut ffi::PyObject,
+            *const *mut ffi::PyObject,
+            ffi::Py_ssize_t,
+            *mut ffi::PyObject,
+        ),
+        op: Algebra,
+    ) -> PyResult<*mut ffi::PyObject> {
+        // SAFETY: called by pyo3's fastcall trampoline with a live `FrozenSet` (checked by the
+        // method descriptor) and valid fastcall arguments.
+        let (this, others) = unsafe {
+            (
+                Borrowed::from_ptr(py, slf).cast_unchecked::<FrozenSet>().to_owned(),
+                set::fastcall_args(py, name, args, nargs, kwnames)?,
+            )
+        };
+        Ok(Bound::new(py, FrozenSet::compute(&this, op, &others)?)?.into_any().into_ptr())
+    }
+
+    macro_rules! method {
+        ($name:ident, $op:expr) => {
+            pub(super) unsafe fn $name(
+                py: Python<'_>,
+                slf: *mut ffi::PyObject,
+                args: *const *mut ffi::PyObject,
+                nargs: ffi::Py_ssize_t,
+                kwnames: *mut ffi::PyObject,
+            ) -> PyResult<*mut ffi::PyObject> {
+                // SAFETY: forwarded from the trampoline.
+                unsafe { call(py, stringify!($name), (slf, args, nargs, kwnames), $op) }
+            }
+        };
+    }
+
+    method!(union, Algebra::Union);
+    method!(intersection, Algebra::Intersection);
+    method!(difference, Algebra::Difference);
+}
+
 /// `FrozenSet`'s `METH_O` predicates (see `set::install_meth_o`).
 mod meth_o {
     use super::*;
@@ -542,11 +588,51 @@ unsafe extern "C" fn frozenset_vectorcall(
     nargsf: usize,
     kwnames: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
-    // SAFETY: forwarded from CPython's vectorcall.
+    // SAFETY: forwarded from CPython's vectorcall; `args[0]` is valid when `nargs == 1`.
     unsafe {
+        if ffi::PyVectorcall_NARGS(nargsf) == 1
+            && kwnames.is_null()
+            && let Some(same) = untyped_exact(*args)
+        {
+            return same;
+        }
         set::vectorcall_ctor("FrozenSet", args, nargsf, kwnames, |py, arg| {
             Ok(FrozenSet::from_iterable(py, schema::any(), arg)?.into_any())
         })
+    }
+}
+
+/// `obj` with a new reference when it is an exact, untyped `FrozenSet` (which constructing or
+/// copying returns as it is).
+///
+/// # Safety
+/// `obj` must be a live object and the thread attached.
+unsafe fn untyped_exact(obj: *mut ffi::PyObject) -> Option<*mut ffi::PyObject> {
+    // SAFETY: guaranteed by the caller; a type with the `FrozenSet` type object is a `FrozenSet`.
+    unsafe {
+        if ffi::Py_TYPE(obj) != FROZENSET_TYPE.load(Ordering::Relaxed) {
+            return None;
+        }
+        let py = Python::assume_attached();
+        if !Borrowed::from_ptr(py, obj).cast_unchecked::<FrozenSet>().get().schema.is_any() {
+            return None;
+        }
+        ffi::Py_IncRef(obj);
+        Some(obj)
+    }
+}
+
+/// `copy()`/`__copy__()` as `METH_NOARGS` (the set itself for an exact `FrozenSet`).
+unsafe fn copy_noargs(py: Python<'_>, slf: *mut ffi::PyObject) -> PyResult<*mut ffi::PyObject> {
+    // SAFETY: called by pyo3's `noargs` trampoline with a live `FrozenSet` (or subclass
+    // instance): the method descriptor checks the type.
+    unsafe {
+        if ffi::Py_TYPE(slf) == FROZENSET_TYPE.load(Ordering::Relaxed) {
+            ffi::Py_IncRef(slf);
+            return Ok(slf);
+        }
+        let this = Borrowed::from_ptr(py, slf).cast_unchecked::<FrozenSet>();
+        Ok(copy_of(&this)?.into_ptr())
     }
 }
 
@@ -579,6 +665,16 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let ty = m.py().get_type::<FrozenSet>();
     set::install_vectorcall(&ty, frozenset_vectorcall);
     set::install_len_contains(&ty, frozenset_len_slot, frozenset_contains_slot);
+    for (name, doc, f) in [
+        (c"union", c"union($self, /, *others)\n--\n\nReturn a new set with elements from the set and all others.", pyo3::get_trampoline_function!(fastcall_cfunction_with_keywords, fastcall::union) as ffi::PyCFunctionFastWithKeywords),
+        (c"intersection", c"intersection($self, /, *others)\n--\n\nReturn a new set with elements common to the set and all others.", pyo3::get_trampoline_function!(fastcall_cfunction_with_keywords, fastcall::intersection)),
+        (c"difference", c"difference($self, /, *others)\n--\n\nReturn a new set with elements in the set that are not in the others.", pyo3::get_trampoline_function!(fastcall_cfunction_with_keywords, fastcall::difference)),
+    ] {
+        set::install_fastcall(&ty, name, doc, f)?;
+    }
+    let copy = pyo3::get_trampoline_function!(noargs, copy_noargs);
+    set::install_noargs(&ty, c"copy", c"copy($self, /)\n--\n\nReturn a shallow copy of a set.", copy)?;
+    set::install_noargs(&ty, c"__copy__", c"__copy__($self, /)\n--\n\nReturn a shallow copy of a set.", copy)?;
     set::install_meth_o(
         &ty,
         c"isdisjoint",

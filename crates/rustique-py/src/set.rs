@@ -1576,6 +1576,37 @@ impl Set {
     /// Remove `elem`; returns whether it was present.
     fn discard_elem(&self, py: Python<'_>, elem: &Bound<'_, PyAny>) -> PyResult<bool> {
         let mut displaced = Vec::new();
+        if keys::quick(elem).is_none()
+            && let Ok(hash) = elem.hash()
+        {
+            // Identity hits and clean misses in an object table: one hash, no classification.
+            let mut inner = self.inner.write(py);
+            let fast = match inner.table.store() {
+                KeyStore::Object(ki) => {
+                    let mut candidates = ki.index().candidates(keys::mix(hash)).peekable();
+                    match candidates.peek() {
+                        None => Some(None),
+                        Some(_) => candidates.find(|&pos| ki.raw_keys()[pos].is(elem)).map(Some),
+                    }
+                }
+                _ => None,
+            };
+            if let Some(found) = fast {
+                if let Some(pos) = found {
+                    inner.remove_at(py, pos, &mut displaced);
+                }
+                drop(inner);
+                drop(displaced);
+                return Ok(found.is_some());
+            }
+            drop(inner);
+            let key = Key::with_hash(elem.clone(), hash)?;
+            let found = keys::with_entry_mut(py, &self.inner, &key, |inner, pos| {
+                pos.map(|p| inner.remove_at(py, p, &mut displaced)).is_some()
+            })?;
+            drop(displaced);
+            return Ok(found);
+        }
         let found = keys::lookup_mut(py, &self.inner, elem, probe, |inner, pos| {
             pos.map(|p| inner.remove_at(py, p, &mut displaced)).is_some()
         })?;
@@ -2228,6 +2259,16 @@ pub(crate) fn install_meth_o(
     install_method(ty, name, doc, f, ffi::METH_O)
 }
 
+/// Install a `METH_NOARGS` method descriptor (see [`install_meth_o`]).
+pub(crate) fn install_noargs(
+    ty: &Bound<'_, PyType>,
+    name: &'static CStr,
+    doc: &'static CStr,
+    f: ffi::PyCFunction,
+) -> PyResult<()> {
+    install_method(ty, name, doc, f, ffi::METH_NOARGS)
+}
+
 fn install_method(
     ty: &Bound<'_, PyType>,
     name: &'static CStr,
@@ -2253,6 +2294,98 @@ fn install_method(
     // SAFETY: the dict was changed directly; invalidate the type's attribute caches.
     unsafe { ffi::PyType_Modified(ty.as_type_ptr()) };
     Ok(())
+}
+
+/// Install a `METH_FASTCALL | METH_KEYWORDS` method descriptor whose positional arguments are
+/// read in place (no argument tuple, unlike pyo3's `*args`); see [`install_meth_o`].
+pub(crate) fn install_fastcall(
+    ty: &Bound<'_, PyType>,
+    name: &'static CStr,
+    doc: &'static CStr,
+    f: ffi::PyCFunctionFastWithKeywords,
+) -> PyResult<()> {
+    // SAFETY: a `METH_FASTCALL | METH_KEYWORDS` entry is called with this signature; the
+    // union stores the pointer under the `PyCFunction` variant like CPython's `_PyCFunction_CAST`.
+    let f = unsafe { std::mem::transmute::<ffi::PyCFunctionFastWithKeywords, ffi::PyCFunction>(f) };
+    install_method(ty, name, doc, f, ffi::METH_FASTCALL | ffi::METH_KEYWORDS)
+}
+
+/// The positional arguments of a fastcall method (`*others`), rejecting keywords like
+/// `set.update`.
+///
+/// # Safety
+/// `args` holds `nargs` live references for the duration of the call; `kwnames` is NULL or a
+/// tuple.
+pub(crate) unsafe fn fastcall_args<'py>(
+    py: Python<'py>,
+    name: &str,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> PyResult<Vec<Bound<'py, PyAny>>> {
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        if !kwnames.is_null() && ffi::PyTuple_GET_SIZE(kwnames) > 0 {
+            return Err(PyTypeError::new_err(format!("{name}() takes no keyword arguments")));
+        }
+        let n = ffi::PyVectorcall_NARGS(nargs as usize).max(0) as usize;
+        Ok((0..n).map(|i| Borrowed::from_ptr(py, *args.add(i)).to_owned()).collect())
+    }
+}
+
+/// `Set`'s varargs methods as fastcall functions (bodies for pyo3's fastcall trampoline).
+mod fastcall {
+    use super::*;
+
+    type Args = (*mut ffi::PyObject, *const *mut ffi::PyObject, ffi::Py_ssize_t, *mut ffi::PyObject);
+
+    /// # Safety
+    /// Called by the trampoline with a live `Set` (checked by the method descriptor) and
+    /// valid fastcall arguments.
+    unsafe fn call<'py, R: IntoPyObject<'py>>(
+        py: Python<'py>,
+        name: &str,
+        (slf, args, nargs, kwnames): Args,
+        f: impl FnOnce(&Bound<'py, Set>, &[Bound<'py, PyAny>]) -> PyResult<R>,
+    ) -> PyResult<*mut ffi::PyObject> {
+        use pyo3::IntoPyObjectExt;
+        // SAFETY: guaranteed by the caller.
+        let (this, others) = unsafe {
+            (
+                Borrowed::from_ptr(py, slf).cast_unchecked::<Set>().to_owned(),
+                fastcall_args(py, name, args, nargs, kwnames)?,
+            )
+        };
+        Ok(f(&this, &others)?.into_bound_py_any(py)?.into_ptr())
+    }
+
+    macro_rules! method {
+        ($name:ident, |$this:ident, $others:ident| $body:expr) => {
+            pub(super) unsafe fn $name(
+                py: Python<'_>,
+                slf: *mut ffi::PyObject,
+                args: *const *mut ffi::PyObject,
+                nargs: ffi::Py_ssize_t,
+                kwnames: *mut ffi::PyObject,
+            ) -> PyResult<*mut ffi::PyObject> {
+                // SAFETY: forwarded from the trampoline.
+                unsafe { call(py, stringify!($name), (slf, args, nargs, kwnames), |$this, $others| $body) }
+            }
+        };
+    }
+
+    method!(union, |this, others| Set::compute(this, Algebra::Union, others));
+    method!(intersection, |this, others| Set::compute(this, Algebra::Intersection, others));
+    method!(difference, |this, others| Set::compute(this, Algebra::Difference, others));
+    method!(update, |this, others| this.get().in_place(this.py(), Algebra::Union, others).map(|()| this.py().None()));
+    method!(intersection_update, |this, others| this
+        .get()
+        .in_place(this.py(), Algebra::Intersection, others)
+        .map(|()| this.py().None()));
+    method!(difference_update, |this, others| this
+        .get()
+        .in_place(this.py(), Algebra::Difference, others)
+        .map(|()| this.py().None()));
 }
 
 /// The bodies of `Set`'s `METH_O` methods: `self` and the argument as borrowed references.
@@ -2500,6 +2633,16 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     install_iternext(&m.py().get_type::<SetIterator>(), set_iter_next);
     let ty = m.py().get_type::<Set>();
     install_len_contains(&ty, set_len_slot, set_contains_slot);
+    for (name, doc, f) in [
+        (c"union", c"union($self, /, *others)\n--\n\nReturn a new set with elements from the set and all others.", pyo3::get_trampoline_function!(fastcall_cfunction_with_keywords, fastcall::union) as ffi::PyCFunctionFastWithKeywords),
+        (c"intersection", c"intersection($self, /, *others)\n--\n\nReturn a new set with elements common to the set and all others.", pyo3::get_trampoline_function!(fastcall_cfunction_with_keywords, fastcall::intersection)),
+        (c"difference", c"difference($self, /, *others)\n--\n\nReturn a new set with elements in the set that are not in the others.", pyo3::get_trampoline_function!(fastcall_cfunction_with_keywords, fastcall::difference)),
+        (c"update", c"update($self, /, *others)\n--\n\nUpdate the set, adding elements from all others.", pyo3::get_trampoline_function!(fastcall_cfunction_with_keywords, fastcall::update)),
+        (c"intersection_update", c"intersection_update($self, /, *others)\n--\n\nUpdate the set, keeping only elements found in it and all others.", pyo3::get_trampoline_function!(fastcall_cfunction_with_keywords, fastcall::intersection_update)),
+        (c"difference_update", c"difference_update($self, /, *others)\n--\n\nUpdate the set, removing elements found in others.", pyo3::get_trampoline_function!(fastcall_cfunction_with_keywords, fastcall::difference_update)),
+    ] {
+        install_fastcall(&ty, name, doc, f)?;
+    }
     install_meth_o(
         &ty,
         c"add",

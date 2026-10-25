@@ -724,3 +724,42 @@ def test_concurrent_algebra_between_mutating_sets(make):
     for t in mutators:
         t.join()
     assert not errors, errors
+
+
+def test_fast_method_descriptors_behave_like_set_methods():
+    import inspect
+
+    from rustique import FrozenSet
+
+    s = Set([1, 2])
+    for name in ("update", "union", "intersection", "difference", "intersection_update", "difference_update"):
+        with pytest.raises(TypeError):
+            getattr(s, name)([1], x=1)
+    assert Set.update(s, [3], (4,)) is None and s == {1, 2, 3, 4}
+    assert Set.union(s) == s and Set.union(s) is not s
+    assert s.intersection_update() is None and s == {1, 2, 3, 4}
+    assert s.difference_update([4], [3]) is None and s == {1, 2}
+    assert s.add(5) is None and s.discard(9) is None and s.remove(5) is None
+    with pytest.raises(TypeError):
+        s.add()
+    with pytest.raises(TypeError):
+        s.add(1, 2)
+    with pytest.raises(TypeError):
+        Set.add(FrozenSet(), 1)
+    with pytest.raises(TypeError):
+        Set.update(set(), [1])
+    assert str(inspect.signature(Set.add)) == "(self, object, /)"
+    assert str(inspect.signature(Set.update)) == "(self, /, *others)"
+    fs = FrozenSet([1])
+    assert fs.copy() is fs and FrozenSet.copy(fs) is fs
+    assert fs.union([2], {3}) == {1, 2, 3} and type(fs.union()) is FrozenSet
+    with pytest.raises(TypeError):
+        fs.union([2], x=1)
+
+    class Sub(Set):
+        pass
+
+    sub = Sub([1])
+    sub.add(2)
+    sub.update([3])
+    assert sub == {1, 2, 3} and type(sub.union([4])) is Set
