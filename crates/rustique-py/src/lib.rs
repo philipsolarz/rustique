@@ -9,6 +9,7 @@ pub mod convert;
 pub mod dict;
 pub mod expr;
 pub mod list;
+pub mod objsort;
 pub mod scalars;
 pub mod schema;
 pub mod set;
