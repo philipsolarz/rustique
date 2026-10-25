@@ -1437,6 +1437,42 @@ pub(crate) fn reduce<'py>(
     PyTuple::new(py, [ty.into_any(), PyTuple::new(py, [list])?.into_any(), state])
 }
 
+/// INTERFACE (builtins.rs). A borrowed view of a set's live elements, in insertion order:
+/// native `int`/`str` keys without boxing, or the element objects.
+#[derive(Clone, Copy)]
+pub enum SetElements<'a> {
+    Empty,
+    Int(&'a KeyIndex<i64>),
+    Str(&'a KeyIndex<compact_str::CompactString>),
+    /// Element objects (iterate the live ones with `.iter()`).
+    Object(&'a KeyIndex<Py<PyAny>, ()>),
+}
+
+impl<'a> SetElements<'a> {
+    pub(crate) fn of(table: &'a KeyTable) -> SetElements<'a> {
+        match table.store() {
+            KeyStore::Empty => SetElements::Empty,
+            KeyStore::Int(ki) => SetElements::Int(ki),
+            KeyStore::Str(ki) => SetElements::Str(ki),
+            KeyStore::Object(ki) => SetElements::Object(ki),
+        }
+    }
+
+    /// Number of live elements.
+    pub fn len(&self) -> usize {
+        match self {
+            SetElements::Empty => 0,
+            SetElements::Int(ki) => ki.len(),
+            SetElements::Str(ki) => ki.len(),
+            SetElements::Object(ki) => ki.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 // --- Set ---------------------------------------------------------------------------------
 
 /// An insertion-ordered set with native element storage.
@@ -1459,6 +1495,13 @@ impl Set {
     /// INTERFACE.
     pub fn schema(&self) -> &Arc<Schema> {
         &self.schema
+    }
+
+    /// INTERFACE. Run `f` on a borrowed view of the elements, under the set's read lock: `f`
+    /// must not run Python code (copy what it needs, e.g. `clone_ref` the objects, and work
+    /// on the copy after returning).
+    pub fn with_elements<R>(&self, py: Python<'_>, f: impl FnOnce(SetElements<'_>) -> R) -> R {
+        f(SetElements::of(&self.inner.read(py).table))
     }
 
     pub(crate) fn with_table(schema: Arc<Schema>, table: KeyTable) -> Set {

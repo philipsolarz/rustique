@@ -799,6 +799,18 @@ fn sort_storage(
     key: Option<&Bound<'_, PyAny>>,
     reverse: bool,
 ) -> (Storage, PyResult<()>) {
+    // --- WS5 (objsort) wiring: minimal change, list owner (WS2) to integrate. ---
+    // Object storage sorts with CPython's own `list.sort` (type-specialised timsort) on a
+    // temporary builtin list, unless no key is given and the elements compare natively
+    // (`NativeKeys`, below). Like CPython, a failed sort leaves a permutation.
+    let elements = match elements {
+        Storage::Object(mut objects) if key.is_some() || NativeKeys::classify(py, &objects).is_none() => {
+            let result = crate::objsort::sort_objects(py, &mut objects, key, reverse);
+            return (Storage::Object(objects), result);
+        }
+        elements => elements,
+    };
+    // --- end WS5 wiring ---
     let perm = {
         let materialised = match &elements {
             Storage::Native(column) => Some(convert::column_objects(py, column, 0..column.len())),

@@ -75,6 +75,11 @@ impl FrozenSet {
         &self.table
     }
 
+    /// INTERFACE. A borrowed view of the elements (no lock: the set never changes).
+    pub fn elements(&self) -> set::SetElements<'_> {
+        set::SetElements::of(&self.table)
+    }
+
     /// The hash, if it was computed already.
     pub(crate) fn cached_hash(&self) -> Option<isize> {
         let h = self.hash.load(Ordering::Relaxed);
