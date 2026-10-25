@@ -279,16 +279,7 @@ impl FastKey {
     unsafe fn object(key: *mut ffi::PyObject) -> Option<FastKey> {
         // SAFETY: `key` is live; hashing objects that pass `pure_hash` runs no Python code.
         unsafe {
-            let ty = ffi::Py_TYPE(key);
-            let accepted = ty == &raw mut ffi::PyFloat_Type
-                || ty == &raw mut ffi::PyBool_Type
-                || key == ffi::Py_None()
-                || ty == &raw mut ffi::PyTuple_Type
-                || ty == &raw mut ffi::PyFrozenSet_Type
-                || ((*ty).tp_richcompare.map(|f| f as usize)
-                    == ffi::PyBaseObject_Type.tp_richcompare.map(|f| f as usize)
-                    && (*ty).tp_hash.map(|f| f as usize) == ffi::PyBaseObject_Type.tp_hash.map(|f| f as usize));
-            if !accepted || !pure_hash(key, 0) {
+            if !FastKey::accepts(key) || !pure_hash(key, 0) {
                 return None;
             }
             let hash = ffi::PyObject_Hash(key);
@@ -297,6 +288,39 @@ impl FastKey {
                 return None;
             }
             Some(FastKey::Obj(key, hash))
+        }
+    }
+
+    /// Whether `key`'s type qualifies for an `Obj` probe (see [`FastKey::object`]).
+    ///
+    /// # Safety
+    /// `key` must be a live object.
+    #[inline]
+    unsafe fn accepts(key: *mut ffi::PyObject) -> bool {
+        // SAFETY: `key` and its type are live.
+        unsafe {
+            let ty = ffi::Py_TYPE(key);
+            ty == &raw mut ffi::PyFloat_Type
+                || ty == &raw mut ffi::PyBool_Type
+                || key == ffi::Py_None()
+                || ty == &raw mut ffi::PyTuple_Type
+                || ty == &raw mut ffi::PyFrozenSet_Type
+                || ((*ty).tp_richcompare.map(|f| f as usize)
+                    == ffi::PyBaseObject_Type.tp_richcompare.map(|f| f as usize)
+                    && (*ty).tp_hash.map(|f| f as usize) == ffi::PyBaseObject_Type.tp_hash.map(|f| f as usize))
+        }
+    }
+
+    /// The probe for a classified key whose Python hash is known (no rehashing).
+    fn for_key(key: &Key<'_>) -> Option<FastKey> {
+        let p = key.obj.as_ptr();
+        match key.class {
+            Class::Int { value, exact: true } => Some(FastKey::Int(value, p)),
+            // SAFETY: `p` is a live exact `str` (cached hash).
+            Class::Str { exact: true, .. } => Some(FastKey::Str(p, unsafe { exact_str_hash(p) })),
+            // SAFETY: `p` is live.
+            Class::Other { hash, .. } if unsafe { FastKey::accepts(p) } => Some(FastKey::Obj(p, hash)),
+            _ => None,
         }
     }
 
@@ -1464,9 +1488,7 @@ impl KeyTable {
             }
             (KeyStore::Int(_) | KeyStore::Str(_), _) => return Ok(Scan::Absent),
             (KeyStore::Object(ki), _) => {
-                if let Class::Int { exact: true, .. } | Class::Str { exact: true, .. } = key.class
-                    // SAFETY: `key.obj` is live.
-                    && let Some(probe) = unsafe { FastKey::of(key.obj.as_ptr()) }
+                if let Some(probe) = FastKey::for_key(key)
                     && let Some(pos) = object_find(ki, &probe)
                 {
                     return Ok(found(pos));
@@ -1662,19 +1684,28 @@ impl KeyTable {
     /// Drop positions `>= len`; returns displaced key objects.
     pub(crate) fn truncate(&mut self, len: usize) -> Vec<Py<PyAny>> {
         match &mut self.store {
-            KeyStore::Empty => Vec::new(),
-            KeyStore::Int(ki) => {
-                ki.truncate(len);
+            KeyStore::Object(ki) => ki.truncate(len),
+            _ => {
+                self.truncate_in_place(len);
                 Vec::new()
             }
+        }
+    }
+
+    /// [`truncate`](Self::truncate) dropping the removed key slots in place. For object
+    /// keys the caller guarantees that dropping them runs no Python code (every removed live
+    /// key is still referenced elsewhere; tombstones hold `None`).
+    pub(crate) fn truncate_in_place(&mut self, len: usize) {
+        match &mut self.store {
+            KeyStore::Empty => {}
+            KeyStore::Int(ki) => ki.truncate_in_place(len),
             KeyStore::Str(ki) => {
-                ki.truncate(len);
+                ki.truncate_in_place(len);
                 if let Some(index) = self.str_hashes.get_mut() {
                     index.truncate(len);
                 }
-                Vec::new()
             }
-            KeyStore::Object(ki) => ki.truncate(len),
+            KeyStore::Object(ki) => ki.truncate_in_place(len),
         }
     }
 
@@ -1687,6 +1718,11 @@ impl KeyTable {
             KeyStore::Object(ki) => ki.into_parts().0,
             _ => Vec::new(),
         }
+    }
+
+    /// An empty table of the same kind and mode (what `clear` leaves behind).
+    pub(crate) fn empty_like(&self) -> KeyTable {
+        if self.str_objects { KeyTable::for_dict(self.kind) } else { KeyTable::new(self.kind) }
     }
 
     /// Replace the contents, returning displaced keys.

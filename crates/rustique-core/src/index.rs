@@ -402,7 +402,7 @@ impl HashIndex {
             probe: Probe::new(hash, size.wrapping_sub(1)),
             hash,
             done: size == 0,
-            seen: Vec::new(),
+            seen: Seen::default(),
         }
     }
 
@@ -662,7 +662,33 @@ pub struct Candidates<'a> {
     hash: u64,
     done: bool,
     /// Positions already yielded: CPython's probe sequence may revisit a slot.
-    seen: Vec<usize>,
+    seen: Seen,
+}
+
+/// A small set of positions (inline up to four, the usual case, without allocating).
+#[derive(Default)]
+struct Seen {
+    inline: [usize; 4],
+    len: usize,
+    more: Vec<usize>,
+}
+
+impl Seen {
+    /// Record `pos`; false if it was already recorded.
+    #[inline]
+    fn insert(&mut self, pos: usize) -> bool {
+        let n = self.len.min(4);
+        if self.inline[..n].contains(&pos) || self.more.contains(&pos) {
+            return false;
+        }
+        if self.len < 4 {
+            self.inline[self.len] = pos;
+        } else {
+            self.more.push(pos);
+        }
+        self.len += 1;
+        true
+    }
 }
 
 impl Iterator for Candidates<'_> {
@@ -684,10 +710,7 @@ impl Iterator for Candidates<'_> {
             self.probe.advance();
             match at {
                 None => self.done = true,
-                Some(Some(pos)) if self.index.hashes[pos] == self.hash && !self.seen.contains(&pos) => {
-                    self.seen.push(pos);
-                    return Some(pos);
-                }
+                Some(Some(pos)) if self.index.hashes[pos] == self.hash && self.seen.insert(pos) => return Some(pos),
                 Some(_) => {}
             }
         }
@@ -852,9 +875,47 @@ impl Default for PyHashState {
 impl BuildHasher for PyHashState {
     type Hasher = PyHasher;
 
-    #[inline]
+    #[inline(always)]
     fn build_hasher(&self) -> PyHasher {
-        PyHasher { inner: self.0.build_hasher(), first: None, writes: 0 }
+        PyHasher { inner: self.0.build_hasher(), first: 0, state: 0 }
+    }
+
+    /// Same result as hashing through [`PyHasher`], but non-`i64` keys take foldhash's own
+    /// (faster) one-shot path: a first pass that only records whether the key hashes as a
+    /// lone `i64` costs nothing once inlined for a concrete key type.
+    #[inline(always)]
+    fn hash_one<T: Hash>(&self, x: T) -> u64 {
+        let mut probe = IntProbe { first: 0, state: 0 };
+        x.hash(&mut probe);
+        if probe.state == 1 { py_hash_i64(probe.first) } else { self.0.hash_one(x) }
+    }
+}
+
+/// Records whether a key hashes as a single `i64` (see [`PyHashState::hash_one`]).
+struct IntProbe {
+    first: i64,
+    /// 0: nothing written, 1: one `i64`, 2: anything else.
+    state: u8,
+}
+
+impl Hasher for IntProbe {
+    #[inline(always)]
+    fn write(&mut self, _: &[u8]) {
+        self.state = 2;
+    }
+
+    #[inline(always)]
+    fn write_i64(&mut self, i: i64) {
+        if self.state == 0 {
+            (self.first, self.state) = (i, 1);
+        } else {
+            self.state = 2;
+        }
+    }
+
+    #[inline(always)]
+    fn finish(&self) -> u64 {
+        0
     }
 }
 
@@ -863,70 +924,64 @@ impl BuildHasher for PyHashState {
 /// any other input is hashed with seeded foldhash.
 pub struct PyHasher {
     inner: foldhash::fast::FoldHasher<'static>,
-    /// The first write, if it was an `i64` (not yet fed to `inner`).
-    first: Option<i64>,
-    writes: u32,
+    /// The first write, while it is a lone `i64` (`state == 1`).
+    first: i64,
+    /// 0: nothing written, 1: one `i64` held in `first`, 2: everything went to `inner`.
+    state: u8,
 }
 
 impl PyHasher {
-    #[inline]
-    fn flush(&mut self) {
-        if let Some(v) = self.first.take() {
-            self.inner.write_i64(v);
+    /// Hand any held `i64` to `inner` (another write follows it).
+    #[inline(always)]
+    fn spill(&mut self) {
+        if self.state == 1 {
+            self.inner.write_i64(self.first);
         }
+        self.state = 2;
     }
 }
 
 impl Hasher for PyHasher {
-    #[inline]
+    #[inline(always)]
     fn write(&mut self, bytes: &[u8]) {
-        self.flush();
+        self.spill();
         self.inner.write(bytes);
-        self.writes += 1;
     }
 
-    #[inline]
+    #[inline(always)]
     fn write_u8(&mut self, i: u8) {
-        self.flush();
+        self.spill();
         self.inner.write_u8(i);
-        self.writes += 1;
     }
 
-    #[inline]
+    #[inline(always)]
     fn write_u64(&mut self, i: u64) {
-        self.flush();
+        self.spill();
         self.inner.write_u64(i);
-        self.writes += 1;
     }
 
-    #[inline]
+    #[inline(always)]
     fn write_usize(&mut self, i: usize) {
-        self.flush();
+        self.spill();
         self.inner.write_usize(i);
-        self.writes += 1;
     }
 
-    #[inline]
+    #[inline(always)]
     fn write_i64(&mut self, i: i64) {
-        if self.writes == 0 {
-            self.first = Some(i);
+        if self.state == 0 {
+            self.first = i;
+            self.state = 1;
         } else {
-            self.flush();
+            self.spill();
             self.inner.write_i64(i);
         }
-        self.writes += 1;
     }
 
-    #[inline]
+    #[inline(always)]
     fn finish(&self) -> u64 {
-        // `first` is only kept while it is the sole write (any later write flushes it).
-        match self.first {
-            Some(v) => py_hash_i64(v),
-            None => self.inner.finish(),
-        }
+        if self.state == 1 { py_hash_i64(self.first) } else { self.inner.finish() }
     }
 }
-
 
 /// An insertion-ordered key set: an owned key vector plus its [`HashIndex`].
 ///
@@ -1035,6 +1090,12 @@ impl<K, S> KeyIndex<K, S> {
     pub fn truncate(&mut self, len: usize) -> Vec<K> {
         self.index.truncate(len);
         if len < self.keys.len() { self.keys.split_off(len) } else { Vec::new() }
+    }
+
+    /// Drop positions `>= len` in place (no allocation; the removed key slots are dropped).
+    pub fn truncate_in_place(&mut self, len: usize) {
+        self.index.truncate(len);
+        self.keys.truncate(len);
     }
 
     /// Remove everything, returning the key slots.

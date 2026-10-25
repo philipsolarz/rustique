@@ -26,7 +26,7 @@ use crate::convert;
 use crate::schema::{self, Coerced, Schema};
 use crate::storage::{Displaced, Storage};
 
-use keys::{FastKey, Key, KeyKind, KeyStore, KeyTable, Keyed, Locked, NativeKeys, Prepared, Role, Slot};
+use keys::{FastKey, Key, KeyKind, KeyStore, KeyTable, Keyed, Locked, Prepared, Role, Slot};
 
 /// Keys and the parallel value storage (same positions, tombstones included).
 pub(crate) struct DictInner {
@@ -98,17 +98,23 @@ impl DictInner {
         let pos = self.table.last_live()?;
         let key = self.table.key_object(py, pos);
         let value = take_value(py, &mut self.values, pos);
-        out.extend(self.table.truncate(pos));
-        out.extend(truncate_storage(&mut self.values, pos));
+        // Dropping the removed slots in place runs no Python code: we hold a reference to
+        // the popped key, its value slot now holds `None`, and so do the tombstones after it.
+        self.table.truncate_in_place(pos);
+        match &mut self.values {
+            Storage::Object(objs) => objs.truncate(pos),
+            values => out.extend(truncate_storage(values, pos)),
+        }
         Some((key, value))
     }
 
-    fn clear(&mut self, value_schema: &Schema, out: &mut Displaced) {
-        out.extend(self.table.clear());
-        let old = std::mem::replace(&mut self.values, value_storage(value_schema));
-        if let Storage::Object(objs) = old {
-            out.extend(objs);
-        }
+    /// Empty the dict, handing back the old contents (drop them after unlocking: dropping
+    /// releases keys and values).
+    fn clear(&mut self, value_schema: &Schema) -> DictInner {
+        let empty = self.table.empty_like();
+        let table = std::mem::replace(&mut self.table, empty);
+        let values = std::mem::replace(&mut self.values, value_storage(value_schema));
+        DictInner { table, values }
     }
 
     /// The contents of an untyped dict built from an exact builtin `dict`, read in one pass
@@ -1039,37 +1045,26 @@ impl Dict {
         self.inner.read(py).table.key_objects(py)
     }
 
-    fn native_view(&self, py: Python<'_>) -> Option<(NativeKeys, Column)> {
-        let inner = self.inner.read(py);
-        match (&inner.values, inner.table.native_clone()) {
-            (Storage::Native(col), Some(keys)) => Some((keys, col.clone())),
-            _ => None,
-        }
-    }
-
-    /// Native comparison when both sides store native keys and values. `None`: not applicable.
+    /// Native comparison when both sides store native keys and values (typed dicts), in
+    /// place under both read locks. `None`: not applicable.
     fn native_eq(&self, py: Python<'_>, other: &Dict) -> Option<bool> {
-        let (keys, col) = other.native_view(py)?;
-        let inner = self.inner.read(py);
-        let Storage::Native(mine) = &inner.values else {
+        let (a, b) = crate::sync::read_both(py, &self.inner, &other.inner);
+        let (Storage::Native(mine), Storage::Native(theirs)) = (&a.values, &b.values) else {
             return None;
         };
-        if inner.table.len() != keys_len(&keys) {
+        if a.table.len() != b.table.len() {
             return Some(false);
         }
-        for pos in inner.table.positions() {
-            let theirs = match (inner.table.store(), &keys) {
-                (KeyStore::Int(a), NativeKeys::Int(b)) => b.get(&a.raw_keys()[pos]),
-                (KeyStore::Str(a), NativeKeys::Str(b)) => b.get(a.raw_keys()[pos].as_str()),
+        for pos in a.table.index()?.iter() {
+            let found = match (a.table.store(), b.table.store()) {
+                (KeyStore::Int(x), KeyStore::Int(y)) => y.get(&x.raw_keys()[pos]),
+                (KeyStore::Str(x), KeyStore::Str(y)) => y.get(x.raw_keys()[pos].as_str()),
                 _ => return None,
             };
-            match theirs {
+            match found {
                 None => return Some(false),
-                Some(j) => {
-                    if !native_values_equal(mine, pos, &col, j)? {
-                        return Some(false);
-                    }
-                }
+                Some(j) if !native_values_equal(mine, pos, theirs, j)? => return Some(false),
+                Some(_) => {}
             }
         }
         Some(true)
@@ -1618,12 +1613,6 @@ enum MergeKey {
 /// Values paired by key, and whether either side stores values natively.
 type Paired = (Vec<(Py<PyAny>, Py<PyAny>)>, bool);
 
-fn keys_len(keys: &NativeKeys) -> usize {
-    match keys {
-        NativeKeys::Int(k) => k.len(),
-        NativeKeys::Str(k) => k.len(),
-    }
-}
 
 /// The optional single positional argument of `Dict(...)` / `Dict.__init__`.
 fn single_arg<'py>(args: &Bound<'py, PyTuple>) -> PyResult<Option<Bound<'py, PyAny>>> {
@@ -1924,13 +1913,13 @@ impl Dict {
     }
 
     fn clear(&self, py: Python<'_>) {
-        let mut displaced = Vec::new();
-        {
+        let old = {
             let mut inner = self.inner.write(py);
-            inner.clear(&self.value_schema, &mut displaced);
+            let old = inner.clear(&self.value_schema);
             self.publish_len(&inner);
-        }
-        drop(displaced);
+            old
+        };
+        drop(old);
     }
 
     fn copy(&self, py: Python<'_>) -> PyResult<Dict> {
@@ -2017,13 +2006,12 @@ impl Dict {
 
     fn __clear__(&self) {
         // Runs inside the GC: never block (a contended dict is simply not cleared now).
-        let displaced = self.inner.try_write().map(|mut inner| {
-            let mut out = Vec::new();
-            inner.clear(&self.value_schema, &mut out);
+        let old = self.inner.try_write().map(|mut inner| {
+            let old = inner.clear(&self.value_schema);
             self.publish_len(&inner);
-            out
+            old
         });
-        drop(displaced);
+        drop(old);
     }
 }
 
