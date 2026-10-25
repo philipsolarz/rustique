@@ -1305,15 +1305,25 @@ impl List {
 
     /// Pickle as `List()`/`List[T]()` plus list items: pickle memoizes the empty list
     /// before saving its items (then restored with `extend`), so self-references and
-    /// shared elements round-trip.
-    #[allow(clippy::type_complexity)]
-    fn __reduce__<'py>(
-        slf: &Bound<'py, Self>,
-    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>, Option<Py<PyAny>>, Bound<'py, PyAny>)> {
+    /// shared elements round-trip. Native storage (which cannot refer to anything) pickles
+    /// as `List[T](items)` with the items as one builtin list, which pickle and the
+    /// constructor both handle in bulk. Instances of Python subclasses are rebuilt with
+    /// `copyreg.__newobj__` and keep their instance dict.
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyTuple>> {
         let py = slf.py();
         let this = slf.get();
-        let items = this.to_pylist(py)?.into_any().try_iter()?.into_any();
-        Ok((this.schema_type(py)?, PyTuple::empty(py), None, items))
+        let items = this.to_pylist(py)?;
+        // SAFETY: a type pointer read.
+        let exact = unsafe { ffi::Py_TYPE(slf.as_ptr()) } == LIST_TYPE.load(Ordering::Relaxed);
+        if !exact {
+            let newobj = py.import(intern!(py, "copyreg"))?.getattr(intern!(py, "__newobj__"))?;
+            let state = slf.getattr(intern!(py, "__dict__")).ok();
+            return (newobj, (slf.get_type(),), state, items.into_any().try_iter()?).into_pyobject(py);
+        }
+        if matches!(&*this.read(py), Storage::Native(_)) {
+            return (this.schema_type(py)?, (items,)).into_pyobject(py);
+        }
+        (this.schema_type(py)?, PyTuple::empty(py), py.None(), items.into_any().try_iter()?).into_pyobject(py)
     }
 
     fn __sizeof__(&self, py: Python<'_>) -> usize {

@@ -578,3 +578,23 @@ def test_object_sort_detects_modification() -> None:
     with pytest.raises(ValueError, match="list modified during sort"):
         x.sort(key=key)
     assert sorted(x) == [(1,), (2,), (3,)]
+
+
+class PickledList(List):
+    pass
+
+
+@pytest.mark.parametrize("proto", range(pickle.HIGHEST_PROTOCOL + 1))
+def test_list_pickling_paths(proto: int) -> None:
+    for x in (List([1, 2, 3]), List(["a", "b"]), List[int]([1, 2]), List([(1,), "x"]), List()):
+        y = pickle.loads(pickle.dumps(x, proto))
+        assert type(y) is List and y == x and y.strategy == x.strategy
+        assert y.schema_type is x.schema_type
+    cyc = List([1, "a"])
+    cyc.append(cyc)
+    z = pickle.loads(pickle.dumps(cyc, proto))
+    assert z[2] is z and z[0] == 1
+    s = PickledList([1, 2])
+    s.tag = "t"
+    w = pickle.loads(pickle.dumps(s, proto))
+    assert type(w) is PickledList and list(w) == [1, 2] and w.tag == "t"
