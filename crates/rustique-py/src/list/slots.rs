@@ -861,6 +861,32 @@ unsafe extern "C" fn append(slf: Obj, value: Obj) -> Obj {
             }
             return none();
         }
+        if list.schema.is_pure() {
+            // Pure schemas validate without running Python code (`Schema::is_pure`).
+            let coerced = match list.coerce_one(&object) {
+                Ok(coerced) => coerced,
+                Err(e) => {
+                    restore(e);
+                    return ptr::null_mut();
+                }
+            };
+            if let Some(mut data) = list.write_fast(py) {
+                let was_native = matches!(*data, Storage::Native(_));
+                data.push(py, coerced);
+                // SAFETY: exclusive access (the write guard).
+                unsafe {
+                    if was_native && matches!(*data, Storage::Native(_)) {
+                        list.cache.push();
+                    } else {
+                        list.cache.clear();
+                    }
+                }
+                list.publish_len(data.len());
+                return none();
+            }
+            // A buffer export: the general path raises (the value is dropped attached).
+            Python::attach(|_| drop(coerced));
+        }
         fallback(ptr::null_mut(), |py| {
             list.append(py, &object)?;
             Ok(none())
