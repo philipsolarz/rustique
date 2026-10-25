@@ -283,11 +283,25 @@ comparisons run on the borrowed tables — read locks for a `Set`, nothing for a
 `FrozenSet` — reusing stored hashes and creating no Python objects. Otherwise elements are
 compared with Python `==` on private snapshots, outside every lock.
 
-Documented deviations: `repr` is `Set({...})`/`FrozenSet({...})` (public API); `Set`
-instances have no `__dict__` (like `set`; subclass instances do); building from a `dict`
-calls `__hash__` again for keys whose hash is user-defined (CPython reuses the dict's stored
-hashes through a private API); `s.intersection(it)`/`issuperset(it)` consume the whole
-iterable (CPython may stop early); iteration order is insertion order.
+Documented deviations: `repr` is `Set({...})`/`FrozenSet({...})` (public API); `Set` and
+`FrozenSet` instances have no `__dict__`, exactly like `set`/`frozenset` (subclass instances
+do; CPython's `test_pickling` assumes any non-builtin set type has one — measured cost of a
+`#[pyclass(dict)]`: +47 instructions per construction (+4%), +4 per method call, +8 bytes
+per object, and it would let `rs.Set` accept attributes `set` rejects, so it is declined);
+building from a `dict` calls `__hash__` again for keys whose hash is user-defined (CPython
+reuses the dict's stored hashes through `_PyDict_Next`, which is not exported);
+`s.intersection(it)`/`issuperset(it)` consume the whole iterable (CPython may stop early);
+iteration order is insertion order (so which shared element `isdisjoint` meets first
+differs from `set`'s hash order).
+
+Call overhead: the hottest entry points bypass pyo3's generic wrappers. `in`, `len()`/
+`bool()` and `next()` are raw type slots that answer the common cases (native probes,
+identity hits, clean misses) without pyo3's trampoline and run the general path attached
+through pyo3; `add`/`discard`/`remove`/`issubset`/`issuperset`/`isdisjoint` are `METH_O`
+method descriptors (the interpreter specialises them to `CALL_METHOD_DESCRIPTOR_O`, like
+`set.add`); both types are immutable types with a `tp_vectorcall` constructor
+(`CALL_BUILTIN_CLASS`). The `__contains__`/`__len__`/`__next__` methods keep pyo3's
+implementations and behave identically.
 
 ### 4.3a `FrozenSet`
 `FrozenSet(iterable=(), /)`, `FrozenSet[T](...)`: the immutable, hashable counterpart of
