@@ -716,11 +716,18 @@ unsafe fn ft_prelude(list: *mut ffi::PyObject, needle: *mut ffi::PyObject, mode:
     // SAFETY: lock-free reads as in `ft_first_is`; the first element is examined through a
     // strong reference.
     unsafe {
-        if ffi::PyList_GET_SIZE(list) <= 0 {
+        let n = ffi::PyList_GET_SIZE(list);
+        if n <= 0 {
             return Some(Outcome::Done(Ok(if mode == Scan::First { None } else { Some(0) })));
         }
-        if mode == Scan::First && ft_first_is(list, needle) {
-            return Some(Outcome::Done(Ok(Some(0))));
+        let first = ft_item0(list);
+        if first == needle {
+            if mode == Scan::First {
+                return Some(Outcome::Done(Ok(Some(0))));
+            }
+            if n == 1 {
+                return Some(Outcome::Done(Ok(Some(1))));
+            }
         }
         if !maybe_scalar(needle) {
             return Some(Outcome::Delegate);
@@ -730,7 +737,6 @@ unsafe fn ft_prelude(list: *mut ffi::PyObject, needle: *mut ffi::PyObject, mode:
         // The read itself is safe for the reason CPython's lock-free `list_get_item_ref`
         // is: QSBR keeps item arrays and object memory mapped while we are attached. The
         // type pointer is only compared, never dereferenced.
-        let first = ft_first(list);
         if first.is_null() || first == needle {
             return None;
         }
@@ -740,20 +746,18 @@ unsafe fn ft_prelude(list: *mut ffi::PyObject, needle: *mut ffi::PyObject, mode:
     }
 }
 
-/// Free-threaded lists: the first element pointer, read lock-free (NULL when empty).
+/// Free-threaded lists: the first element pointer of a list seen non-empty, lock-free
+/// (NULL if the item array is gone). The result may be stale: it is compared, and at most
+/// its header is read (see [`ft_prelude`]).
 ///
 /// # Safety
-/// `list` is a list; attached thread. The result may be stale and must not be
-/// dereferenced beyond its header (see [`ft_prelude`]).
+/// `list` is a list; attached thread.
 #[inline(always)]
-unsafe fn ft_first(list: *mut ffi::PyObject) -> *mut ffi::PyObject {
-    // SAFETY: relaxed/acquire atomic loads like `list_get_item_ref`; a non-NULL item array
+unsafe fn ft_item0(list: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    // SAFETY: acquire/relaxed atomic loads like `list_get_item_ref`; a non-NULL item array
     // has room for at least one item.
     unsafe {
         use std::sync::atomic::{AtomicPtr, Ordering};
-        if ffi::PyList_GET_SIZE(list) <= 0 {
-            return std::ptr::null_mut();
-        }
         let slot = &raw mut (*list.cast::<ffi::PyListObject>()).ob_item;
         let items = (*slot.cast::<AtomicPtr<*mut ffi::PyObject>>()).load(Ordering::Acquire);
         if items.is_null() {
@@ -761,17 +765,6 @@ unsafe fn ft_first(list: *mut ffi::PyObject) -> *mut ffi::PyObject {
         }
         (*items.cast::<AtomicPtr<ffi::PyObject>>()).load(Ordering::Relaxed)
     }
-}
-
-/// Free-threaded lists: is `needle` the first element? Lock-free; the element pointer is
-/// only compared (see [`ft_first`]).
-///
-/// # Safety
-/// `list` is a list; attached thread.
-#[inline(always)]
-unsafe fn ft_first_is(list: *mut ffi::PyObject, needle: *mut ffi::PyObject) -> bool {
-    // SAFETY: forwarded.
-    unsafe { ft_first(list) == needle }
 }
 
 // ---------------------------------------------------------------------------------------
