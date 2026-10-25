@@ -484,15 +484,6 @@ fn is_plain_scalar(obj: &Bound<'_, PyAny>) -> bool {
 /// source is held: a builtin `list` or `dict` inside one critical section, a `tuple`
 /// directly. Returns the error that stopped iteration, if any.
 pub(crate) fn read_elements<'py>(obj: &Bound<'py, PyAny>, schema: &Schema) -> (Vec<Raw<'py>>, Option<PyErr>) {
-    read_elements_with(obj, schema, raw_key)
-}
-
-#[inline(always)]
-fn read_elements_with<'py>(
-    obj: &Bound<'py, PyAny>,
-    schema: &Schema,
-    raw_key: impl Fn(&Bound<'py, PyAny>, &Schema) -> Raw<'py>,
-) -> (Vec<Raw<'py>>, Option<PyErr>) {
     let py = obj.py();
     if let Ok(list) = obj.cast_exact::<PyList>() {
         let items = with_critical_section(list.as_any(), || {

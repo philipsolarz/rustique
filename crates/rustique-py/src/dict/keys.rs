@@ -536,7 +536,8 @@ pub(crate) fn native_key(obj: &Bound<'_, PyAny>, schema: &Schema) -> Option<Prep
         _ => return None,
     };
     if ints && obj.is_exact_instance_of::<PyInt>() {
-        return int_value(obj).map(Prepared::Int);
+        // SAFETY: `obj` is a live object of exact type `int`.
+        return unsafe { exact_int_value(obj.as_ptr()) }.map(Prepared::Int);
     }
     if strs && obj.is_exact_instance_of::<PyString>() {
         // SAFETY: `obj` is a live object of exact type `str`.
