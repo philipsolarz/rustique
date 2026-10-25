@@ -568,6 +568,10 @@ def test_large_inputs() -> None:
             check("all", c)
         check("sorted", rs.List(values), identity=False)
         check("sorted", rs.List(values), reverse=True, identity=False)
+    mixed = [0, 0.0, "", None, (), *range(1, 100), "x", (1,)]
+    for c in (rs.List(mixed), rs.List(mixed[::-1]), rs.Set(range(100)), rs.Set(range(1, 100)), rs.Set(["", *"abc" * 20])):
+        for name in ("any", "all"):
+            check(name, c)
     big = ints + [2**100]
     check("sum", big)
     check("max", big)

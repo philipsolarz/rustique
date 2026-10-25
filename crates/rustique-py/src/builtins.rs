@@ -83,6 +83,9 @@ use crate::storage::Storage;
 const DETACH_THRESHOLD: usize = 1 << 16;
 /// Native sorts of at least this many elements run detached (they use the rayon pool).
 const SORT_DETACH_THRESHOLD: usize = 1 << 14;
+/// `any`/`all` snapshot a Rustique container's elements (no lazy element access exists
+/// yet) only up to this size; larger ones are iterated lazily by the original builtin.
+const SNAPSHOT_TRUTH_MAX: usize = 32;
 
 // =======================================================================================
 // Raw object access (exact builtin types only)
@@ -676,6 +679,60 @@ impl<'py> SumState<'py> {
         Scan::Done(())
     }
 
+    /// [`scan`](Self::scan) for a slice, with tight loops over runs of exact ints (while
+    /// the C-long accumulator does not overflow) and exact floats.
+    ///
+    /// # Safety
+    /// As [`scan`](Self::scan).
+    #[inline]
+    unsafe fn scan_slice(&mut self, py: Python<'py>, items: &[*mut ffi::PyObject]) -> Scan<()> {
+        let n = items.len();
+        let mut i = 0;
+        while i < n {
+            // SAFETY: live items; exact-type reads.
+            unsafe {
+                match self {
+                    SumState::Int(acc) => {
+                        let mut a = *acc;
+                        while i < n {
+                            let p = *items.get_unchecked(i);
+                            let t = type_of(p);
+                            if t != long_type() && t != bool_type() {
+                                break;
+                            }
+                            let Some(s) = int_value(p).and_then(|v| a.checked_add(v)) else {
+                                break;
+                            };
+                            a = s;
+                            i += 1;
+                        }
+                        *acc = a;
+                    }
+                    SumState::Float(cs) => {
+                        while i < n {
+                            let p = *items.get_unchecked(i);
+                            if type_of(p) != float_type() {
+                                break;
+                            }
+                            cs.add(float_value(p));
+                            i += 1;
+                        }
+                    }
+                    _ => {}
+                }
+                if i == n {
+                    break;
+                }
+                match self.step(py, *items.get_unchecked(i), false) {
+                    Step::Ok => i += 1,
+                    Step::Impure => return Scan::Bail(i),
+                    Step::Error => return Scan::Error,
+                }
+            }
+        }
+        Scan::Done(())
+    }
+
     /// The result object (NULL with an exception set on failure).
     fn finish(self) -> *mut ffi::PyObject {
         // SAFETY: creating result objects; NULL propagates the exception.
@@ -700,7 +757,7 @@ unsafe fn sum_seq(py: Python<'_>, seq: Seq, start: *mut ffi::PyObject) -> Out {
         let Some(mut state) = SumState::new(py, start) else {
             return Out::Fallback;
         };
-        match seq.with_items(py, |items| state.scan(py, items.iter().copied())) {
+        match seq.with_items(py, |items| state.scan_slice(py, items)) {
             Scan::Done(()) => Out::Obj(state.finish()),
             Scan::Error => Out::Obj(ptr::null_mut()),
             Scan::Bail(mut i) => {
@@ -750,7 +807,7 @@ unsafe fn sum_items(
     // SAFETY: forwarded.
     unsafe {
         let mut state = SumState::new(py, start)?;
-        match state.scan(py, items.iter().copied()) {
+        match state.scan_slice(py, items) {
             Scan::Done(()) => Some(state.finish()),
             Scan::Error => Some(ptr::null_mut()),
             Scan::Bail(_) => None,
@@ -958,19 +1015,126 @@ unsafe fn minmax_scan(items: impl Iterator<Item = *mut ffi::PyObject>, op: c_int
             }
         }
         // SAFETY: forwarded.
-        let Some(ik) = (unsafe { mkey(item) }) else {
-            return Scan::Bail(k);
-        };
-        match best {
-            None => *best = Some(Best { obj: item, key: ik }),
-            // `item <op> best`, as `min_max` asks.
+        match unsafe { minmax_step(item, op, best) } {
+            Cmp::True | Cmp::False => {}
+            Cmp::Error => return Scan::Error,
+            Cmp::Impure => return Scan::Bail(k),
+        }
+    }
+    Scan::Done(())
+}
+
+/// One item of a `min`/`max` scan, through the general path (`Impure`: not consumed).
+///
+/// # Safety
+/// As [`minmax_scan`].
+#[inline]
+unsafe fn minmax_step(item: *mut ffi::PyObject, op: c_int, best: &mut Option<Best>) -> Cmp {
+    // SAFETY: forwarded.
+    let Some(ik) = (unsafe { mkey(item) }) else {
+        return Cmp::Impure;
+    };
+    match best {
+        None => {
+            *best = Some(Best { obj: item, key: ik });
+            Cmp::True
+        }
+        // `item <op> best`, as `min_max` asks.
+        Some(b) => {
             // SAFETY: forwarded.
-            Some(b) => match unsafe { pure_compare(item, ik, b.obj, b.key, op, 0) } {
-                Cmp::True => *b = Best { obj: item, key: ik },
-                Cmp::False => {}
+            let r = unsafe { pure_compare(item, ik, b.obj, b.key, op, 0) };
+            if r == Cmp::True {
+                *b = Best { obj: item, key: ik };
+            }
+            r
+        }
+    }
+}
+
+/// [`minmax_scan`] for a slice, with tight loops over runs of exact ints (fitting i64) and
+/// exact floats once the current extreme is of that kind.
+///
+/// # Safety
+/// As [`minmax_scan`].
+#[inline]
+unsafe fn minmax_scan_slice(items: &[*mut ffi::PyObject], op: c_int, best: &mut Option<Best>) -> Scan<()> {
+    if op == ffi::Py_GT {
+        // SAFETY: forwarded.
+        unsafe { minmax_runs::<true>(items, best) }
+    } else {
+        // SAFETY: forwarded.
+        unsafe { minmax_runs::<false>(items, best) }
+    }
+}
+
+/// # Safety
+/// As [`minmax_scan`].
+#[inline(always)]
+unsafe fn minmax_runs<const MAX: bool>(items: &[*mut ffi::PyObject], best: &mut Option<Best>) -> Scan<()> {
+    let op = if MAX { ffi::Py_GT } else { ffi::Py_LT };
+    let n = items.len();
+    let mut i = 0;
+    while i < n {
+        // SAFETY: in-bounds reads of live items; exact-type reads.
+        unsafe {
+            match *best {
+                Some(Best { obj, key: MKey::Int(bv) }) => {
+                    let (mut bo, mut bv) = (obj, bv);
+                    while i < n {
+                        let p = *items.get_unchecked(i);
+                        let t = type_of(p);
+                        if t != long_type() && t != bool_type() {
+                            break;
+                        }
+                        let Some(v) = int_value(p) else { break };
+                        if if MAX { v > bv } else { v < bv } {
+                            (bo, bv) = (p, v);
+                        }
+                        i += 1;
+                    }
+                    *best = Some(Best { obj: bo, key: MKey::Int(bv) });
+                }
+                Some(Best { obj, key: MKey::Float(bv) }) => {
+                    let (mut bo, mut bv) = (obj, bv);
+                    while i < n {
+                        let p = *items.get_unchecked(i);
+                        if type_of(p) != float_type() {
+                            break;
+                        }
+                        let v = float_value(p);
+                        if if MAX { v > bv } else { v < bv } {
+                            (bo, bv) = (p, v);
+                        }
+                        i += 1;
+                    }
+                    *best = Some(Best { obj: bo, key: MKey::Float(bv) });
+                }
+                Some(Best { obj, key: MKey::Str }) => {
+                    let want = if MAX { Ordering::Greater } else { Ordering::Less };
+                    let mut bo = obj;
+                    while i < n {
+                        let p = *items.get_unchecked(i);
+                        if type_of(p) != str_type() {
+                            break;
+                        }
+                        if str_cmp(p, bo) == want {
+                            bo = p;
+                        }
+                        i += 1;
+                    }
+                    *best = Some(Best { obj: bo, key: MKey::Str });
+                }
+                _ => {}
+            }
+            if i == n {
+                break;
+            }
+            // One item of another kind, through the general path.
+            match minmax_step(*items.get_unchecked(i), op, best) {
+                Cmp::True | Cmp::False => i += 1,
+                Cmp::Impure => return Scan::Bail(i),
                 Cmp::Error => return Scan::Error,
-                Cmp::Impure => return Scan::Bail(k),
-            },
+            }
         }
     }
     Scan::Done(())
@@ -1043,7 +1207,7 @@ unsafe fn minmax_seq(py: Python<'_>, seq: Seq, default: *mut ffi::PyObject, op: 
     unsafe {
         let (scan, best) = seq.with_items(py, |items| {
             let mut best = None;
-            let scan = minmax_scan(items.iter().copied(), op, &mut best);
+            let scan = minmax_scan_slice(items, op, &mut best);
             (scan, best.map(|b| Bound::from_borrowed_ptr(py, b.obj)))
         });
         match scan {
@@ -1107,7 +1271,7 @@ unsafe fn minmax_items(
     // SAFETY: forwarded.
     unsafe {
         let mut best = None;
-        match minmax_scan(items.iter().copied(), op, &mut best) {
+        match minmax_scan_slice(items, op, &mut best) {
             Scan::Done(()) => Some(minmax_result(best.map(|b| b.obj), default, op)),
             Scan::Error => Some(ptr::null_mut()),
             Scan::Bail(_) => None,
@@ -1979,17 +2143,26 @@ unsafe fn rs_truth(py: Python<'_>, it: *mut ffi::PyObject, which: Which) -> PyRe
     // SAFETY: live object; kernels on owned snapshots.
     unsafe {
         let obj = Borrowed::from_ptr(py, it);
+        // `any`/`all` usually stop early, but a snapshot costs every element: above
+        // `SNAPSHOT_TRUTH_MAX` elements, iterate lazily with the original instead.
         let objects = if let Ok(list) = obj.cast::<List>() {
             let list = list.get();
             if let Some(found) = list.with_column(py, |c| column_truth(c, stop)) {
                 return Ok(bool_result(found, stop));
+            }
+            if list.len() > SNAPSHOT_TRUTH_MAX {
+                return Ok(original_o(which, it));
             }
             match list.snapshot(py) {
                 Storage::Native(column) => return Ok(bool_result(column_truth(&column, stop), stop)),
                 storage => storage.into_objects(py),
             }
         } else {
-            obj.cast::<Set>()?.get().element_objects(py)
+            let set = obj.cast::<Set>()?.get();
+            if set.len(py) > SNAPSHOT_TRUTH_MAX {
+                return Ok(original_o(which, it));
+            }
+            set.element_objects(py)
         };
         match truth_scan(raw(&objects).iter().copied(), stop) {
             Scan::Done(found) => Ok(bool_result(found, stop)),
