@@ -928,7 +928,7 @@ pub(crate) fn fold(
             Ok(table) => table,
             Err(table) => match other.with_table(py, |b| table_op(py, op, &table, (b, other.is_set()), kind)) {
                 Some(result) => result,
-                None => table_algebra(py, op, table, other, kind)?,
+                None => table_algebra(py, op, *table, other, kind)?,
             },
         };
     }
@@ -937,9 +937,9 @@ pub(crate) fn fold(
 
 /// `acc <op> other` in `acc`'s own storage, for a union or difference of native keys of one
 /// kind; `acc` back otherwise.
-fn native_into(op: Algebra, acc: KeyTable, other: &KeyTable, kind: KeyKind) -> Result<KeyTable, KeyTable> {
+fn native_into(op: Algebra, acc: KeyTable, other: &KeyTable, kind: KeyKind) -> Result<KeyTable, Box<KeyTable>> {
     if !matches!(op, Algebra::Union | Algebra::Difference) {
-        return Err(acc);
+        return Err(Box::new(acc));
     }
     match (acc.into_native(), other.store()) {
         (Ok(NativeKeys::Int(mut ki)), KeyStore::Int(theirs)) => {
@@ -950,8 +950,8 @@ fn native_into(op: Algebra, acc: KeyTable, other: &KeyTable, kind: KeyKind) -> R
             native_update(op, &mut ki, theirs);
             Ok(KeyTable::from_native(NativeKeys::Str(ki), kind))
         }
-        (Ok(native), _) => Err(KeyTable::from_native(native, kind)),
-        (Err(table), _) => Err(*table),
+        (Ok(native), _) => Err(Box::new(KeyTable::from_native(native, kind))),
+        (Err(table), _) => Err(table),
     }
 }
 
@@ -2538,4 +2538,50 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     install_vectorcall(&ty, set_vectorcall);
     install_init(&ty, "_rustique_init")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Recorded from CPython 3.15 (`hash(frozenset(...))`; int hashes are process-independent).
+    #[test]
+    fn frozenset_hash_matches_cpython() {
+        let h = |xs: &[i64]| frozenset_hash_of(xs.iter().map(|&v| keys::py_hash_i64(v)));
+        assert_eq!(h(&[]), 133_146_708_735_736);
+        assert_eq!(h(&[1]), -558_064_481_276_695_278);
+        assert_eq!(h(&[1, 2, -1]), 3_528_648_450_907_520_039);
+        assert_eq!(h(&[2, -1, 1]), h(&[1, 2, -1]));
+        // 2**61 hashes like 1.
+        assert_eq!(h(&[1 << 61]), h(&[1]));
+    }
+
+    #[test]
+    fn native_kernels_follow_set_semantics() {
+        let ki = |xs: &[i64]| {
+            let mut k: KeyIndex<i64> = KeyIndex::default();
+            for &x in xs {
+                k.insert(x);
+            }
+            k
+        };
+        let keys = |k: &KeyIndex<i64>| k.iter().map(|(_, &v)| v).collect::<Vec<_>>();
+        let (a, b) = (ki(&[1, 2, 3, 4]), ki(&[3, 4, 5]));
+        assert_eq!(keys(&native_op(Algebra::Union, &a, &b, true)), [1, 2, 3, 4, 5]);
+        // The smaller set is iterated (its order kept); an iterable is always iterated.
+        assert_eq!(keys(&native_op(Algebra::Intersection, &a, &b, true)), [3, 4]);
+        assert_eq!(keys(&native_op(Algebra::Intersection, &ki(&[4, 3]), &ki(&[3, 4, 9]), true)), [4, 3]);
+        assert_eq!(keys(&native_op(Algebra::Intersection, &ki(&[4, 3]), &ki(&[3, 4, 9]), false)), [3, 4]);
+        assert_eq!(keys(&native_op(Algebra::Difference, &a, &b, true)), [1, 2]);
+        assert_eq!(keys(&native_op(Algebra::SymmetricDifference, &a, &b, true)), [1, 2, 5]);
+        // Copy-and-remove difference (most of `a` survives).
+        let big = ki(&(0..100).collect::<Vec<_>>());
+        let d = native_op(Algebra::Difference, &big, &ki(&[5, 50]), true);
+        assert_eq!(d.len(), 98);
+        assert!(!d.contains(&5) && !d.contains(&50) && d.contains(&99));
+        let mut acc = ki(&[1]);
+        native_update(Algebra::Union, &mut acc, &ki(&[2, 1]));
+        native_update(Algebra::Difference, &mut acc, &ki(&[1]));
+        assert_eq!(keys(&acc), [2]);
+    }
 }

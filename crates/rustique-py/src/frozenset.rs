@@ -472,7 +472,7 @@ mod meth_o {
         arg: *mut ffi::PyObject,
     ) -> PyResult<*mut ffi::PyObject> {
         // SAFETY: forwarded.
-        unsafe { call(py, slf, arg, |a, b| FrozenSet::isdisjoint(a, b)) }
+        unsafe { call(py, slf, arg, FrozenSet::isdisjoint) }
     }
 
     pub(super) unsafe fn issubset(
@@ -481,7 +481,7 @@ mod meth_o {
         arg: *mut ffi::PyObject,
     ) -> PyResult<*mut ffi::PyObject> {
         // SAFETY: forwarded.
-        unsafe { call(py, slf, arg, |a, b| FrozenSet::issubset(a, b)) }
+        unsafe { call(py, slf, arg, FrozenSet::issubset) }
     }
 
     pub(super) unsafe fn issuperset(
@@ -490,7 +490,7 @@ mod meth_o {
         arg: *mut ffi::PyObject,
     ) -> PyResult<*mut ffi::PyObject> {
         // SAFETY: forwarded.
-        unsafe { call(py, slf, arg, |a, b| FrozenSet::issuperset(a, b)) }
+        unsafe { call(py, slf, arg, FrozenSet::issuperset) }
     }
 }
 
