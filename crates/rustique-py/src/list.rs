@@ -1964,6 +1964,7 @@ unsafe extern "C" fn list_dealloc(slf: *mut ffi::PyObject) {
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<List>()?;
+    convert::init_fast_unicode(m.py());
     LIST_TYPE.store(m.py().get_type::<List>().as_type_ptr(), Ordering::Release);
     let sample = Bound::new(m.py(), List::new_with(schema::any(), Storage::Empty))?;
     LIST_CLASS.install(&sample, sample.get(), list_dealloc)?;

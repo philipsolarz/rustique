@@ -245,6 +245,14 @@ unsafe fn store_fast(storage: &mut Storage, slot: Option<usize>, value: Obj) -> 
                 }
                 Ok(ptr::null_mut())
             }
+            Storage::Native(Column::Str(v)) if ffi::PyUnicode_CheckExact(value) != 0 => {
+                let Some(x) = convert::exact_str(value) else { return Err(()) };
+                match slot {
+                    Some(k) => v[k] = x,
+                    None => v.push(x),
+                }
+                Ok(ptr::null_mut())
+            }
             Storage::Native(Column::F64(v)) if ffi::PyFloat_CheckExact(value) != 0 => {
                 let x = ffi::PyFloat_AS_DOUBLE(value);
                 match slot {

@@ -82,13 +82,69 @@ impl ToPython for f32 {
 impl ToPython for CompactString {
     #[inline]
     fn to_python<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
+        let bytes = self.as_bytes();
         // SAFETY: the bytes are valid UTF-8 of the given length; returns a new reference.
+        // ASCII text is copied straight into a new compact ASCII string (its data follows
+        // the `PyASCIIObject` header), skipping the UTF-8 decoder.
         unsafe {
-            Bound::from_owned_ptr(
-                py,
-                ffi::PyUnicode_FromStringAndSize(self.as_ptr().cast(), self.len() as ffi::Py_ssize_t),
+            if fast_unicode() && bytes.len() <= 64 && bytes.is_ascii() {
+                let s = ffi::PyUnicode_New(bytes.len() as ffi::Py_ssize_t, 127);
+                if !s.is_null() {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), s.cast::<ffi::PyASCIIObject>().add(1).cast::<u8>(), bytes.len());
+                }
+                return Bound::from_owned_ptr(py, s);
+            }
+            Bound::from_owned_ptr(py, ffi::PyUnicode_FromStringAndSize(bytes.as_ptr().cast(), bytes.len() as ffi::Py_ssize_t))
+        }
+    }
+}
+
+/// Bits of `PyASCIIObject.state` (CPython 3.12+) marking a compact ASCII string: the data
+/// then follows the `PyASCIIObject` header. The bitfield layout differs between GIL and
+/// free-threaded builds; [`init_fast_unicode`] verifies it at start-up.
+#[cfg(not(Py_GIL_DISABLED))]
+const COMPACT_ASCII: u32 = (1 << 5) | (1 << 6);
+#[cfg(Py_GIL_DISABLED)]
+const COMPACT_ASCII: u32 = (1 << 11) | (1 << 12);
+
+static FAST_UNICODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[inline(always)]
+fn fast_unicode() -> bool {
+    FAST_UNICODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether `p` (a live `str`) is a compact ASCII string, read from its state bits.
+///
+/// # Safety
+/// `p` must point to a live `str`, and [`fast_unicode`] must hold.
+#[inline(always)]
+unsafe fn is_compact_ascii(p: *mut ffi::PyObject) -> bool {
+    // SAFETY: see above.
+    unsafe { (*p.cast::<ffi::PyASCIIObject>()).state & COMPACT_ASCII == COMPACT_ASCII }
+}
+
+/// Enable the direct reads of `str` internals if the state bits decode as expected on
+/// this interpreter (checked against `PyUnicode_KIND`/`PyUnicode_DATA` on samples).
+pub fn init_fast_unicode(py: Python<'_>) {
+    let check = || -> Option<bool> {
+        let ascii = pyo3::types::PyString::new(py, "rustique");
+        let latin1 = pyo3::types::PyString::new(py, "caf\u{e9}");
+        let wide = pyo3::types::PyString::new(py, "\u{3b1}\u{3b2}");
+        // SAFETY: live `str` objects; reading their headers and data.
+        unsafe {
+            let data_ok = ffi::PyUnicode_DATA(ascii.as_ptr()) == ascii.as_ptr().cast::<ffi::PyASCIIObject>().add(1).cast();
+            Some(
+                data_ok
+                    && is_compact_ascii(ascii.as_ptr())
+                    && !is_compact_ascii(latin1.as_ptr())
+                    && !is_compact_ascii(wide.as_ptr())
+                    && ffi::PyUnicode_KIND(ascii.as_ptr()) == ffi::PyUnicode_1BYTE_KIND,
             )
         }
+    };
+    if check() == Some(true) {
+        FAST_UNICODE.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -265,6 +321,10 @@ unsafe fn str_utf8(p: *mut ffi::PyObject) -> Option<CompactString> {
         let len = ffi::PyUnicode_GET_LENGTH(p) as usize;
         if len == 0 {
             return Some(CompactString::default());
+        }
+        if fast_unicode() && is_compact_ascii(p) {
+            let bytes = std::slice::from_raw_parts(p.cast::<ffi::PyASCIIObject>().add(1).cast::<u8>(), len);
+            return Some(CompactString::from(std::str::from_utf8_unchecked(bytes)));
         }
         let data = ffi::PyUnicode_DATA(p);
         let kind = ffi::PyUnicode_KIND(p);
