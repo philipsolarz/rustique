@@ -80,7 +80,8 @@ crates/
     src/sync.rs               # locking discipline (see §6)
     src/list.rs               # List pyclass + ListIterator
     src/dict.rs               # Dict pyclass + views/iterators
-    src/set.rs                # Set pyclass + iterator
+    src/set.rs                # Set pyclass + iterator; set algebra shared with FrozenSet
+    src/frozenset.rs          # FrozenSet pyclass (immutable, hashable, lock-free) + iterator
     src/scalars.rs            # i8..u64, f32, f64 scalar pyclasses
     src/expr.rs               # Python-facing expression builder `X`
     src/capi.rs               # versioned C-API capsule `rustique._rustique._C_API` (§5.1)
@@ -158,6 +159,7 @@ expression and cached:
 | `List[T]`, `list[T]`                           | `List(T)`       | `Object` of rustique `List` objects | rustique `List` of identical schema, or any iterable → converted to `List[T]` |
 | `Dict[K, V]`, `dict[K, V]`                     | `Dict(K, V)`    | `Object` of rustique `Dict` | analogous |
 | `Set[T]`, `set[T]`                             | `Set(T)`        | `Object` of rustique `Set` | analogous |
+| `FrozenSet[T]`, `rs.FrozenSet`                 | `FrozenSet(T)`  | `Object` of rustique `FrozenSet` | a `FrozenSet` of identical schema is shared as is, any iterable → `FrozenSet[T]` (builtin `frozenset` stays a class check) |
 | any other class `C`                            | `Class(C)`      | `Object` | `isinstance(x, C)` |
 | `Annotated[T, ...]`                            | schema of `T`   | | |
 | PEP 695 `type Alias = T`                       | schema of `T`   | | |
@@ -247,11 +249,64 @@ Numeric key equivalence follows Python: `1`, `1.0`, `True` are the same key.
 
 ### 4.3 `Set`
 `Set(iterable=(), /)`, `Set[T](...)`. API parity with `set`: `add`, `discard`, `remove`,
-`pop`, `clear`, `copy`, `__contains__`, `__len__`, `__iter__`, `__eq__` (vs `Set`/`set`/
-`frozenset`), `__le__`/`__lt__`/`__ge__`/`__gt__`, `union`/`intersection`/`difference`/
-`symmetric_difference` (+ operators and in-place variants), `update` variants,
+`pop`, `clear`, `copy`, `__contains__`, `__len__`, `__iter__`, `__eq__` (vs `Set`/
+`FrozenSet`/`set`/`frozenset`), `__le__`/`__lt__`/`__ge__`/`__gt__`, `union`/`intersection`/
+`difference`/`symmetric_difference` (+ operators and in-place variants), `update` variants,
 `issubset`/`issuperset`/`isdisjoint`, `to_set()`, `__repr__` (`Set[int]({1, 2})`),
-`__hash__ = None`.
+`__hash__ = None`, `__init__` (re-initialises like `set.__init__`: clear, then update),
+weak references, subclassing (`class S(rs.Set)`: instances start empty in `__new__` and
+are filled by `__init__`, like `set`; `Set` itself is filled by its vectorcall
+constructor, so construction never pays for a second pass), pickling of iterators
+(`(iter, (remaining,))`, like CPython).
+
+Set semantics follow `setobject.c`:
+- A `Set` or `set` used as an element probe (`in`, `discard`, `remove`) is looked up as
+  the equivalent frozenset (hash = CPython's `frozenset_hash` of its elements, compared by
+  `==`), so `Set("ab") in {frozenset("ab")}`-style lookups work.
+- Algebra: an intersection iterates the smaller operand (the right one on ties, always an
+  iterable argument) and keeps its elements; unions and differences keep the left
+  operand's elements; a symmetric difference keeps each side's own. The result type is
+  the left operand's: `Set op x` → `Set`, `FrozenSet op x` → `FrozenSet`; a builtin left
+  operand (reflected operators) gives the rustique counterpart of its type
+  (`set | Set` → `Set`, `frozenset | Set` → `FrozenSet`). Results are typed only when every
+  operand is a rustique set of the same schema.
+- Comparisons and `isdisjoint` stop at the first deciding element; `issubset` exits early on
+  length.
+- Builtin `set`/`frozenset` sources and operands (subclasses included) are read from their
+  table directly, inside one critical section, with stored hashes (CPython's `set_merge`;
+  an overridden `__iter__` is not consulted).
+- Equal elements of different types: the first inserted wins (`Set([1, 1.0])` keeps `1`).
+
+When both operands store native keys of one kind, or objects that compare without Python
+code (builtin scalars, tuples of them, identity-compared instances), algebra and
+comparisons run on the borrowed tables — read locks for a `Set`, nothing for a
+`FrozenSet` — reusing stored hashes and creating no Python objects. Otherwise elements are
+compared with Python `==` on private snapshots, outside every lock.
+
+Documented deviations: `repr` is `Set({...})`/`FrozenSet({...})` (public API); `Set`
+instances have no `__dict__` (like `set`; subclass instances do); building from a `dict`
+calls `__hash__` again for keys whose hash is user-defined (CPython reuses the dict's stored
+hashes through a private API); `s.intersection(it)`/`issuperset(it)` consume the whole
+iterable (CPython may stop early); iteration order is insertion order.
+
+### 4.3a `FrozenSet`
+`FrozenSet(iterable=(), /)`, `FrozenSet[T](...)`: the immutable, hashable counterpart of
+`Set`, with `frozenset`'s API (`copy`, algebra methods and operators, comparisons,
+`issubset`/`issuperset`/`isdisjoint`, `__hash__`, pickling, weak references, subclassing).
+- `hash()` is bit-identical to `hash(frozenset(...))` of equal contents (CPython's
+  `frozenset_hash` with its shuffle bits, over the elements' Python hashes: native `int`s
+  hash like `int`, native `str`s like `str` via `Py_HashBuffer` of their PEP 393 form,
+  objects reuse their stored hash). It is computed on first use and cached; equality
+  short-circuits on two cached hashes that differ.
+- `FrozenSet(fs)` and `FrozenSet[T](fs)` return `fs` itself when it is an exact `FrozenSet`
+  of that schema; `copy()`/`copy.copy` return the set itself.
+- No lock: the table never changes after construction. Lookups compare against it
+  directly (Python `__eq__` running meanwhile cannot change it) and iterators advance an
+  atomic position (each element is yielded once even when threads share an iterator).
+  There is no `__clear__` (like `tuple`, a frozen set cannot form a cycle that some mutable
+  member does not break).
+- Equal frozen sets of any kind (`FrozenSet`, `frozenset`) are interchangeable as dict keys
+  and set elements.
 
 ### 4.4 Fixed-width scalars
 `rs.i8, i16, i32, i64, u8, u16, u32, u64, f32, f64`.
@@ -443,6 +498,15 @@ cost of a borrow/release pair is about 0.1 µs.
   code collects strong references first and runs afterwards.
 - GC support (`__traverse__`) never blocks: it uses `try_lock` (GC is stop-the-world on
   free-threaded builds).
+- Builtin `set`/`frozenset` sources are read with CPython's exported `_PySet_NextEntry`
+  (borrowed keys and stored hashes) inside the set's critical section; only exact
+  `int`/`str` keys are converted there, everything else is collected with a strong
+  reference and its stored hash. `Set` and `FrozenSet` install a `tp_vectorcall` on their
+  type objects (constructor fast path; never inherited by subclasses) and `FrozenSet` wraps
+  pyo3's `tp_new` to return an exact `FrozenSet` argument as is.
+- Set algebra between two rustique sets may hold both read locks (taken with `read_both`,
+  never in a fixed order) while comparing stored objects of builtin scalar types with `==`
+  — the same inline comparisons a lookup makes under its lock, which run no Python code.
 - Buffer exports freeze the container (see §4.1).
 - No `unsafe` outside small, commented FFI fast paths (e.g. reading `PyListObject` items,
   which must not be used for list subclasses). Every `unsafe` block carries a `// SAFETY:`

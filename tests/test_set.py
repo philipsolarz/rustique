@@ -470,3 +470,186 @@ def test_finalizers_never_run_under_the_lock():
     s.update(K(s) for _ in range(3))
     s.symmetric_difference_update([K(s), K(s)])
     assert len(s) == 0 and seen
+
+
+# --- CPython protocol details: subclassing, weakrefs, __init__, iterator pickling -------
+
+
+class SubSet(Set):
+    pass
+
+
+class SubWithInit(Set):
+    def __init__(self, n, *, step=1):
+        super().__init__(range(0, n, step))
+
+
+def test_subclassing():
+    s = SubSet([1, 2])
+    assert type(s) is SubSet and isinstance(s, Set) and s == {1, 2}
+    assert repr(s) == "SubSet({1, 2})"
+    assert type(s.copy()) is Set and type(s | {3}) is Set
+    s.attr = "x"
+    back = pickle.loads(pickle.dumps(s))
+    assert type(back) is SubSet and back == s and back.attr == "x"
+    assert SubWithInit(6, step=2) == {0, 2, 4}
+    with pytest.raises(TypeError):
+        SubSet([1], x=1)
+
+    class Hashable(Set):
+        def __hash__(self):
+            return id(self) & 0xFFFF
+
+    h = Hashable([1])
+    f = {h}
+    assert h in f
+
+
+def test_weakref():
+    import weakref
+
+    s = Set([1])
+    r = weakref.ref(s)
+    assert r() is s
+    del s
+    gc.collect()
+    assert r() is None
+
+
+def test_init_reinitialises_like_set_init():
+    s, ref = Set(), set()
+    for arg in ("abc", [1, 2], ()):
+        s.__init__(arg)
+        ref.__init__(arg)
+        check_same(s, ref)
+    s.__init__()
+    assert s == set()
+    t, tref = Set([1, 2]), {1, 2}
+    t.__init__(t)  # clears first, like CPython: re-initialising from itself empties it
+    tref.__init__(tref)
+    check_same(t, tref)
+    with pytest.raises(TypeError):
+        s.__init__([1], 2)
+    with pytest.raises(TypeError):
+        s.__init__(1)
+    with pytest.raises(TypeError):
+        s.__init__(a=1)
+    # Construction fills the set once: `__init__` is not a `tp_init` slot of `Set`.
+    calls = []
+
+    def gen():
+        calls.append(1)
+        yield 1
+
+    assert Set(gen()) == {1} and calls == [1]
+
+
+def test_iterator_pickling_and_release():
+    s = Set([3, 1, 2])
+    it = iter(s)
+    assert next(it) == 3
+    for proto in range(pickle.HIGHEST_PROTOCOL + 1):
+        assert list(pickle.loads(pickle.dumps(it, proto))) == [1, 2]
+    assert list(it) == [1, 2]
+    assert list(pickle.loads(pickle.dumps(it))) == []
+    s.add(9)  # the exhausted iterator released the set
+    assert list(it) == [] and it.__length_hint__() == 0
+
+
+def test_set_probes_are_looked_up_as_frozensets():
+    s = Set([frozenset("abc"), 1])
+    for probe in (Set("abc"), set("cab"), Set[str]("abc")):
+        assert probe in s
+    assert Set("ab") not in s and set() not in s
+    s.discard(Set("cba"))
+    assert s == {1}
+    s.add(frozenset("xy"))
+    s.remove(set("yx"))
+    with pytest.raises(KeyError):
+        s.remove(Set("xy"))
+    with pytest.raises(TypeError):
+        Set([[1]])
+    with pytest.raises(TypeError):
+        [1] in s
+
+
+def test_builtin_set_subclass_sources_read_their_table():
+    class Weird(set):
+        def __iter__(self):
+            return iter([99])
+
+    w = Weird({1, 2})
+    assert Set(w) == {1, 2} == set(w)
+    assert (Set([1, 5]) & w) == {1}
+    assert Set([1]).union(w) == {1, 2}
+
+
+def test_fast_sources():
+    from rustique import List
+
+    check_same(Set(range(-3, 10, 4)), set(range(-3, 10, 4)))
+    check_same(Set(range(10, 0, -3)), set(range(10, 0, -3)))
+    check_same(Set(range(2**70, 2**70 + 3)), set(range(2**70, 2**70 + 3)))
+    check_same(Set[int](range(3)), {0, 1, 2})
+    check_same(Set[float](range(3)), {0.0, 1.0, 2.0})
+    check_same(Set(List([1, 2, 2])), {1, 2})
+    check_same(Set(List(["a", "a"])), {"a"})
+    check_same(Set(List([1.5, 1.5])), {1.5})
+    check_same(Set[str](List(["a"])), {"a"})
+    with pytest.raises(TypeError):
+        Set[str](List([1]))
+    check_same(Set([1, 2, "a", 1.0, 3]), {1, 2, "a", 1.0, 3})  # native prefix, then objects
+    check_same(Set((1.0, 1, True)), {1.0, 1, True})
+    check_same(Set({1: 0, 1.0: 0, "a": 0}), {1, "a"})
+    check_same(Set({1, 2, (3,)}), {1, 2, (3,)})
+
+
+@pytest.mark.parametrize(
+    "a, b",
+    [
+        ([1.5, 2.5, "x", (1, 2)], [2.5, (1, 2), None]),
+        ([1, 2.0, True], [1.0, 2, 3]),
+        ([(1, "a"), (2, "b")], [(1, "a")]),
+        ([1.0, 2.0], ["1", 2]),
+    ],
+)
+def test_object_tables_algebra_and_comparisons(a, b):
+    x, y = Set(a), Set(b)
+    ref_x, ref_y = set(a), set(b)
+    for op in (operator.or_, operator.and_, operator.sub, operator.xor):
+        check_same(op(x, y), op(ref_x, ref_y))
+        check_same(op(y, x), op(ref_y, ref_x))
+    for op in (operator.eq, operator.ne, operator.le, operator.lt, operator.ge, operator.gt):
+        assert op(x, y) == op(ref_x, ref_y) and op(y, x) == op(ref_y, ref_x)
+    assert x.isdisjoint(y) == ref_x.isdisjoint(ref_y)
+
+
+def test_algebra_with_python_equality_falls_back():
+    calls = []
+
+    class Eq:
+        def __init__(self, v):
+            self.v = v
+
+        def __hash__(self):
+            return hash(self.v)
+
+        def __eq__(self, other):
+            calls.append(1)
+            return isinstance(other, Eq) and other.v == self.v
+
+    a, b = Set([Eq(1), Eq(2)]), Set([Eq(2), Eq(3)])
+    assert {e.v for e in a & b} == {2} and calls
+    assert {e.v for e in a - b} == {1} and {e.v for e in a ^ b} == {1, 3}
+    assert not a <= b and not a.isdisjoint(b) and a != b
+
+
+def test_equality_and_subset_stop_early():
+    import time
+
+    big = Set(range(200_000))
+    other = Set(range(1, 200_001))
+    start = time.perf_counter()
+    for _ in range(2000):
+        assert big != other and not big <= other and not big.isdisjoint(other)
+    assert time.perf_counter() - start < 2, "comparisons copy or scan whole tables"

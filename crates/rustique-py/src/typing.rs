@@ -26,6 +26,7 @@ use rustique_core::DType;
 use crate::dict::Dict;
 use crate::list::List;
 use crate::schema::{Schema, any, intern};
+use crate::frozenset::FrozenSet;
 use crate::set::Set;
 
 /// Nesting limit for type expressions (guards the recursive compiler and schema walks).
@@ -238,7 +239,9 @@ struct Compiler<'py> {
 /// so this recursion is bounded.
 fn schema_depth(schema: &Schema) -> usize {
     match schema {
-        Schema::Optional(inner) | Schema::List(inner) | Schema::Set(inner) => 1 + schema_depth(inner),
+        Schema::Optional(inner) | Schema::List(inner) | Schema::Set(inner) | Schema::FrozenSet(inner) => {
+            1 + schema_depth(inner)
+        }
         Schema::Dict(key, value) => 1 + schema_depth(key).max(schema_depth(value)),
         Schema::Union(members) => 1 + members.iter().map(|m| schema_depth(m)).max().unwrap_or(0),
         _ => 1,
@@ -278,6 +281,9 @@ impl<'py> Compiler<'py> {
         }
         if let Ok(alias) = ty.cast::<SetType>() {
             return Ok(intern(Schema::Set(alias.get().item.clone())));
+        }
+        if let Ok(alias) = ty.cast::<FrozenSetType>() {
+            return Ok(intern(Schema::FrozenSet(alias.get().item.clone())));
         }
         if let Ok(class) = ty.cast::<PyType>() {
             return self.compile_class(class);
@@ -328,6 +334,9 @@ impl<'py> Compiler<'py> {
         }
         if class.is(py.get_type::<PySet>()) || class.is(py.get_type::<Set>()) {
             return Ok(intern(Schema::Set(any())));
+        }
+        if class.is(py.get_type::<FrozenSet>()) {
+            return Ok(intern(Schema::FrozenSet(any())));
         }
         if SCALAR_NAMES.contains(&class.name()?.to_cow()?.as_ref())
             && let Some(dtype) = crate::scalars::dtype_of_type(class)
@@ -578,6 +587,7 @@ fn render(py: Python<'_>, schema: &Schema, out: &mut String) {
         Schema::List(item) => render_container(py, "List", &[item], out),
         Schema::Dict(key, value) => render_container(py, "Dict", &[key, value], out),
         Schema::Set(item) => render_container(py, "Set", &[item], out),
+        Schema::FrozenSet(item) => render_container(py, "FrozenSet", &[item], out),
         Schema::Class(class) => {
             let class = class.bind(py);
             if class.is(py.None().bind(py).get_type()) {
@@ -638,6 +648,7 @@ fn canonical<'py>(py: Python<'py>, schema: &Arc<Schema>) -> PyResult<Bound<'py, 
         Schema::List(item) => list_alias_for(py, item)?,
         Schema::Dict(key, value) => dict_alias_for(py, key, value)?,
         Schema::Set(item) => set_alias_for(py, item)?,
+        Schema::FrozenSet(item) => frozenset_alias_for(py, item)?,
         Schema::Class(class) => class.bind(py).clone().into_any(),
     })
 }
@@ -676,6 +687,13 @@ pub struct SetType {
     args: PyOnceLock<Py<PyTuple>>,
 }
 
+/// `FrozenSet[T]`.
+#[pyclass(module = "rustique", frozen)]
+pub struct FrozenSetType {
+    item: Arc<Schema>,
+    args: PyOnceLock<Py<PyTuple>>,
+}
+
 impl ListType {
     /// The element schema.
     pub fn item_schema(&self) -> &Arc<Schema> {
@@ -702,6 +720,17 @@ impl DictType {
 }
 
 impl SetType {
+    /// The element schema.
+    pub fn item_schema(&self) -> &Arc<Schema> {
+        &self.item
+    }
+
+    fn params(&self) -> [&Arc<Schema>; 1] {
+        [&self.item]
+    }
+}
+
+impl FrozenSetType {
     /// The element schema.
     pub fn item_schema(&self) -> &Arc<Schema> {
         &self.item
@@ -895,6 +924,31 @@ alias_methods!(SetType, Set, "Set", {
     }
 });
 
+alias_methods!(FrozenSetType, FrozenSet, "FrozenSet", {
+    /// `FrozenSet[T](iterable=(), /)`.
+    #[pyo3(signature = (*args, **kwargs))]
+    fn __call__<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        no_keywords(kwargs, || self.repr(py))?;
+        let iterable = single_positional(args, || self.repr(py))?;
+        Ok(FrozenSet::from_iterable(py, self.item.clone(), iterable.as_ref())?.into_any())
+    }
+
+    fn __instancecheck__(&self, obj: &Bound<'_, PyAny>) -> bool {
+        obj.cast::<FrozenSet>().is_ok_and(|set| same_schema(set.get().schema(), &self.item))
+    }
+
+    /// The element schema, e.g. `'str'`.
+    #[getter]
+    fn schema(&self, py: Python<'_>) -> String {
+        render_string(py, &self.item)
+    }
+});
+
 /// `list()`/`set()` take no keyword arguments.
 fn no_keywords(kwargs: Option<&Bound<'_, PyDict>>, repr: impl FnOnce() -> String) -> PyResult<()> {
     match kwargs {
@@ -927,6 +981,7 @@ struct AliasMaps {
     list: HashMap<Arc<Schema>, Py<ListType>>,
     dict: HashMap<(Arc<Schema>, Arc<Schema>), Py<DictType>>,
     set: HashMap<Arc<Schema>, Py<SetType>>,
+    frozenset: HashMap<Arc<Schema>, Py<FrozenSetType>>,
 }
 
 static ALIASES: LazyLock<Mutex<AliasMaps>> = LazyLock::new(Mutex::default);
@@ -1025,6 +1080,18 @@ pub fn set_alias<'py>(py: Python<'py>, item: &Bound<'py, PyAny>) -> PyResult<Bou
     Ok(alias)
 }
 
+/// INTERFACE. `FrozenSet[item]` alias.
+pub fn frozenset_alias<'py>(py: Python<'py>, item: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    static BY_EXPR: PyOnceLock<Py<PyDict>> = PyOnceLock::new();
+    let item = single_param("FrozenSet", item)?;
+    let key = cache_key(&item, refs(py)?).map(|(key, _)| key);
+    let (alias, _) = cached(&expr_cache(py, &BY_EXPR)?, key.as_ref(), || {
+        let (schema, storable) = compile_cached(&item)?;
+        Ok((frozenset_alias_for(py, &schema)?, storable))
+    })?;
+    Ok(alias)
+}
+
 /// INTERFACE. The alias object describing an existing schema (used by `schema_type`).
 /// For `Any` returns the bare class (`List`, `Dict`, `Set`).
 pub fn list_alias_for<'py>(py: Python<'py>, schema: &Arc<Schema>) -> PyResult<Bound<'py, PyAny>> {
@@ -1058,6 +1125,18 @@ pub fn set_alias_for<'py>(py: Python<'py>, schema: &Arc<Schema>) -> PyResult<Bou
     cached_alias(py, schema.clone(), |maps| &mut maps.set, || SetType { item: schema.clone(), args: PyOnceLock::new() })
 }
 
+pub fn frozenset_alias_for<'py>(py: Python<'py>, schema: &Arc<Schema>) -> PyResult<Bound<'py, PyAny>> {
+    if schema.is_any() {
+        return Ok(py.get_type::<FrozenSet>().into_any());
+    }
+    cached_alias(
+        py,
+        schema.clone(),
+        |maps| &mut maps.frozenset,
+        || FrozenSetType { item: schema.clone(), args: PyOnceLock::new() },
+    )
+}
+
 /// `_schema_repr(tp)`: the compiled schema of a type expression, rendered (debug helper).
 #[pyfunction]
 #[pyo3(name = "_schema_repr")]
@@ -1070,6 +1149,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ListType>()?;
     m.add_class::<DictType>()?;
     m.add_class::<SetType>()?;
+    m.add_class::<FrozenSetType>()?;
     m.add_function(wrap_pyfunction!(schema_repr, m)?)?;
     Ok(())
 }
