@@ -164,17 +164,34 @@ pub(crate) fn quick_contains(
         return Err(None);
     }
     let found = read(&|t: &KeyTable| match t.store() {
-        KeyStore::Object(ki) => {
-            let mut candidates = ki.index().candidates(keys::mix(hash)).peekable();
-            if candidates.peek().is_none() {
-                return Some(false);
-            }
-            // Candidates but none identical: compared by `==` in the full lookup.
-            candidates.any(|pos| ki.raw_keys()[pos].is(elem)).then_some(true)
-        }
+        KeyStore::Object(ki) => find_object_inline(elem.py(), ki, elem, hash).map(|pos| pos.is_some()),
         _ => None,
     });
     found.ok_or(Some(hash))
+}
+
+/// Find `elem` (Python hash `hash`) in an object table without running Python code: by
+/// identity, or by `==` between builtin scalars (and tuples of them) like a lookup does
+/// under its lock. `None` when some candidate needs a Python comparison (full lookup).
+fn find_object_inline(py: Python<'_>, ki: &ObjectIndex, elem: &Bound<'_, PyAny>, hash: isize) -> Option<Option<usize>> {
+    let mut mine = None;
+    for pos in ki.index().candidates(keys::mix(hash)) {
+        let stored = ki.raw_keys()[pos].bind(py);
+        if stored.is(elem) {
+            return Some(Some(pos));
+        }
+        let mine = *mine.get_or_insert_with(|| keys::simplicity(elem, 0));
+        match (keys::simplicity(stored, 0), mine) {
+            (Simple::Yes, Simple::Yes) | (Simple::Bytes, Simple::Bytes) => {
+                // CPython's operand order: stored == probe.
+                if stored.eq(elem).ok()? {
+                    return Some(Some(pos));
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(None)
 }
 
 // --- reading builtin sets ----------------------------------------------------------------
@@ -1579,16 +1596,10 @@ impl Set {
         if keys::quick(elem).is_none()
             && let Ok(hash) = elem.hash()
         {
-            // Identity hits and clean misses in an object table: one hash, no classification.
+            // Object tables: decided inline when no Python comparison is needed.
             let mut inner = self.inner.write(py);
             let fast = match inner.table.store() {
-                KeyStore::Object(ki) => {
-                    let mut candidates = ki.index().candidates(keys::mix(hash)).peekable();
-                    match candidates.peek() {
-                        None => Some(None),
-                        Some(_) => candidates.find(|&pos| ki.raw_keys()[pos].is(elem)).map(Some),
-                    }
-                }
+                KeyStore::Object(ki) => find_object_inline(py, ki, elem, hash),
                 _ => None,
             };
             if let Some(found) = fast {
@@ -2537,63 +2548,58 @@ impl SetIterator {
     }
 }
 
-/// The body of a type's vectorcall constructor (`T(iterable=(), /)`): rejects keywords and
-/// extra arguments like the builtins, builds the object with `make`, and turns errors and
-/// panics into Python exceptions.
+/// The optional iterable argument of a vectorcall constructor (`T(iterable=(), /)`),
+/// rejecting keywords and extra arguments like the builtins.
 ///
 /// # Safety
-/// Called by CPython as a `vectorcallfunc`: `args` holds `nargs` valid references, `kwnames`
-/// is NULL or a tuple of keyword names, and the thread is attached.
-pub(crate) unsafe fn vectorcall_ctor(
+/// `args` holds `PyVectorcall_NARGS(nargsf)` valid references for the call and `kwnames` is
+/// NULL or a tuple of keyword names.
+pub(crate) unsafe fn ctor_arg<'py>(
+    py: Python<'py>,
     name: &str,
     args: *const *mut ffi::PyObject,
-    nargsf: usize,
+    nargsf: ffi::Py_ssize_t,
     kwnames: *mut ffi::PyObject,
-    make: impl for<'py> FnOnce(Python<'py>, Option<&Bound<'py, PyAny>>) -> PyResult<Bound<'py, PyAny>>,
-) -> *mut ffi::PyObject {
-    // SAFETY: CPython calls vectorcall functions attached to the interpreter.
-    let py = unsafe { Python::assume_attached() };
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // SAFETY: see the function's contract.
-        let nargs = unsafe { ffi::PyVectorcall_NARGS(nargsf) };
-        // SAFETY: `kwnames` is NULL or a tuple.
-        if !kwnames.is_null() && unsafe { ffi::PyTuple_GET_SIZE(kwnames) } > 0 {
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    // SAFETY: guaranteed by the caller (the offset flag is masked off by `PyVectorcall_NARGS`).
+    unsafe {
+        if !kwnames.is_null() && ffi::PyTuple_GET_SIZE(kwnames) > 0 {
             return Err(PyTypeError::new_err(format!("{name}() takes no keyword arguments")));
         }
-        match nargs {
-            0 => make(py, None),
-            1 => {
-                // SAFETY: `args[0]` is a valid reference for the duration of the call.
-                let arg = unsafe { Borrowed::from_ptr(py, *args) }.to_owned();
-                make(py, Some(&arg))
-            }
+        match ffi::PyVectorcall_NARGS(nargsf as usize) {
+            0 => Ok(None),
+            1 => Ok(Some(Borrowed::from_ptr(py, *args).to_owned())),
             n => Err(PyTypeError::new_err(format!("{name} expected at most 1 argument, got {n}"))),
         }
-    }));
-    let err = match result {
-        Ok(Ok(obj)) => return obj.into_ptr(),
-        Ok(Err(e)) => e,
-        Err(_) => pyo3::panic::PanicException::new_err(format!("rustique: panic in {name}()")),
-    };
-    err.restore(py);
-    std::ptr::null_mut()
+    }
+}
+
+/// Body of `Set`'s vectorcall constructor, run in pyo3's fastcall trampoline (which has the
+/// vectorcall shape: errors raised, panics caught, attach count maintained).
+unsafe fn set_ctor(
+    py: Python<'_>,
+    _callable: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargsf: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> PyResult<*mut ffi::PyObject> {
+    // SAFETY: forwarded from CPython's vectorcall.
+    let arg = unsafe { ctor_arg(py, "Set", args, nargsf, kwnames)? };
+    Ok(Bound::new(py, Set::build(py, schema::any(), arg.as_ref())?)?.into_any().into_ptr())
 }
 
 /// Vectorcall of the `Set` type object (CPython's `set_vectorcall`): `Set(it)` without
 /// `type_call`, an argument tuple or a `tp_init` call. CPython never inherits
 /// `tp_vectorcall`, so subclasses keep `tp_new` + `__init__`.
 unsafe extern "C" fn set_vectorcall(
-    _callable: *mut ffi::PyObject,
+    callable: *mut ffi::PyObject,
     args: *const *mut ffi::PyObject,
     nargsf: usize,
     kwnames: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
-    // SAFETY: forwarded from CPython's vectorcall.
-    unsafe {
-        vectorcall_ctor("Set", args, nargsf, kwnames, |py, arg| {
-            Ok(Bound::new(py, Set::build(py, schema::any(), arg)?)?.into_any())
-        })
-    }
+    let body = pyo3::get_trampoline_function!(fastcall_cfunction_with_keywords, set_ctor);
+    // SAFETY: forwarded from CPython's vectorcall (same argument layout as fastcall).
+    unsafe { body(callable, args, nargsf as ffi::Py_ssize_t, kwnames) }
 }
 
 /// Give a type object a vectorcall constructor (the interpreter then specialises calls of

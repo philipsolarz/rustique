@@ -583,12 +583,13 @@ unsafe extern "C" fn frozenset_new(
 /// Vectorcall of the `FrozenSet` type object (CPython's `frozenset_vectorcall`), with the
 /// identity rule of [`frozenset_new`].
 unsafe extern "C" fn frozenset_vectorcall(
-    _callable: *mut ffi::PyObject,
+    callable: *mut ffi::PyObject,
     args: *const *mut ffi::PyObject,
     nargsf: usize,
     kwnames: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
-    // SAFETY: forwarded from CPython's vectorcall; `args[0]` is valid when `nargs == 1`.
+    // SAFETY: forwarded from CPython's vectorcall; `args[0]` is valid when `nargs == 1`. The
+    // identity case only increfs, so it needs no trampoline.
     unsafe {
         if ffi::PyVectorcall_NARGS(nargsf) == 1
             && kwnames.is_null()
@@ -596,10 +597,22 @@ unsafe extern "C" fn frozenset_vectorcall(
         {
             return same;
         }
-        set::vectorcall_ctor("FrozenSet", args, nargsf, kwnames, |py, arg| {
-            Ok(FrozenSet::from_iterable(py, schema::any(), arg)?.into_any())
-        })
+        let body = pyo3::get_trampoline_function!(fastcall_cfunction_with_keywords, frozenset_ctor);
+        body(callable, args, nargsf as ffi::Py_ssize_t, kwnames)
     }
+}
+
+/// Body of `FrozenSet`'s vectorcall constructor (see `set_ctor`).
+unsafe fn frozenset_ctor(
+    py: Python<'_>,
+    _callable: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargsf: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> PyResult<*mut ffi::PyObject> {
+    // SAFETY: forwarded from CPython's vectorcall.
+    let arg = unsafe { set::ctor_arg(py, "FrozenSet", args, nargsf, kwnames)? };
+    Ok(FrozenSet::from_iterable(py, schema::any(), arg.as_ref())?.into_any().into_ptr())
 }
 
 /// `obj` with a new reference when it is an exact, untyped `FrozenSet` (which constructing or

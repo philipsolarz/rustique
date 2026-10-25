@@ -763,3 +763,36 @@ def test_fast_method_descriptors_behave_like_set_methods():
     sub.add(2)
     sub.update([3])
     assert sub == {1, 2, 3} and type(sub.union([4])) is Set
+
+
+def test_object_lookups_compare_inline_and_fall_back():
+    from rustique import FrozenSet
+
+    items = [(1, "a"), 2.5, None, b"x", (2, (3, 4.0))]
+    for make in (Set, FrozenSet):
+        s = make(items)
+        assert tuple([1, "a"]) in s and float("2.5") in s and bytes([120]) in s
+        assert tuple([2, (3, 4)]) in s  # equal, not identical: 4 == 4.0
+        assert tuple([1, "b"]) not in s and 2.0 not in s and "x" not in s
+    s = Set(items)
+    s.discard(tuple([2, (3, 4)]))
+    s.remove(float("2.5"))
+    assert len(s) == 3
+
+    class Eq:
+        calls = 0
+
+        def __init__(self, v):
+            self.v = v
+
+        def __hash__(self):
+            return hash(self.v)
+
+        def __eq__(self, other):
+            Eq.calls += 1
+            return self.v == other
+
+    t = Set([1.5, "k"])
+    assert Eq(1.5) in t and Eq.calls == 1  # needs Python equality: the full path
+    t.discard(Eq("k"))
+    assert t == {1.5}
