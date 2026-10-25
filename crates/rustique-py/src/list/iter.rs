@@ -236,16 +236,22 @@ unsafe extern "C" fn length_hint_reverse(slf: Obj, _: Obj) -> Obj {
 }
 
 unsafe extern "C" fn reduce_forward(slf: Obj, _: Obj) -> Obj {
-    // SAFETY: see above.
     shield(ptr::null_mut(), || {
-        fallback(ptr::null_mut(), |py| Ok(iter_reduce(py, unsafe { state(slf) }, true)?.into_ptr()))
+        fallback(ptr::null_mut(), |py| {
+            // SAFETY: see above.
+            let state = unsafe { state(slf) };
+            Ok(iter_reduce(py, state, true)?.into_ptr())
+        })
     })
 }
 
 unsafe extern "C" fn reduce_reverse(slf: Obj, _: Obj) -> Obj {
-    // SAFETY: see above.
     shield(ptr::null_mut(), || {
-        fallback(ptr::null_mut(), |py| Ok(iter_reduce(py, unsafe { state(slf) }, false)?.into_ptr()))
+        fallback(ptr::null_mut(), |py| {
+            // SAFETY: see above.
+            let state = unsafe { state(slf) };
+            Ok(iter_reduce(py, state, false)?.into_ptr())
+        })
     })
 }
 
