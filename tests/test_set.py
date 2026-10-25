@@ -653,3 +653,74 @@ def test_equality_and_subset_stop_early():
     for _ in range(2000):
         assert big != other and not big <= other and not big.isdisjoint(other)
     assert time.perf_counter() - start < 2, "comparisons copy or scan whole tables"
+
+
+def test_large_builtin_operands_are_probed():
+    from rustique import FrozenSet
+
+    big = set(range(1000)) | {"a", (1, 2)}
+    for make in (Set, FrozenSet):
+        for small in ([1.0, 2, "a", "zz"], [True, 999], [(1, 2), 5000], []):
+            x, ref = make(small), frozenset(small)
+            check_same(x & big, ref & big)
+            check_same(x.intersection(big), ref.intersection(big))
+            check_same(x - big, ref - big)
+            assert x.isdisjoint(big) == ref.isdisjoint(big)
+            assert x.issubset(big) == ref.issubset(big)
+            for op in (operator.eq, operator.ne, operator.le, operator.lt, operator.ge, operator.gt):
+                assert op(x, big) == op(ref, big), op
+    calls = []
+
+    class Probe:
+        def __hash__(self):
+            return -7
+
+        def __eq__(self, other):
+            calls.append(other)
+            return False
+
+    big2 = {Probe() for _ in range(3)} | set(range(100))
+    assert not (Set([-7]) <= big2) and calls  # big2's elements compare as CPython would
+
+
+@pytest.mark.parametrize("make", [lambda i: i, lambda i: i + 0.5, lambda i: (i, "t")])
+def test_concurrent_algebra_between_mutating_sets(make):
+    from rustique import FrozenSet
+
+    a = Set(make(i) for i in range(300))
+    b = Set(make(i) for i in range(150, 450))
+    frozen = FrozenSet(make(i) for i in range(100, 200))
+    universe = {make(i) for i in range(-50, 500)}
+    stop = threading.Event()
+    errors = []
+
+    def mutate(s, lo):
+        i = 0
+        while not stop.is_set():
+            s.add(make(lo - i % 40))
+            s.discard(make(lo - (i + 20) % 40))
+            i += 1
+
+    def compute():
+        try:
+            for _ in range(150):
+                for r in (a | b, a & b, a - b, a ^ b, a & frozen, frozen | a, b - frozen):
+                    assert set(r) <= universe
+                a <= b, a == b, a.isdisjoint(b), b >= frozen
+                c = Set(a)
+                c.update(b)
+                c.difference_update(frozen)
+                assert set(c) <= universe
+        except Exception as e:  # pragma: no cover - reported below
+            errors.append(e)
+
+    mutators = [threading.Thread(target=mutate, args=(a, -1)), threading.Thread(target=mutate, args=(b, 490))]
+    workers = [threading.Thread(target=compute) for _ in range(3)]
+    for t in mutators + workers:
+        t.start()
+    for t in workers:
+        t.join()
+    stop.set()
+    for t in mutators:
+        t.join()
+    assert not errors, errors

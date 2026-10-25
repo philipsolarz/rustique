@@ -131,6 +131,12 @@ impl FrozenSet {
     /// `self <op> others…` as a new `FrozenSet`.
     fn compute(slf: &Bound<'_, Self>, op: Algebra, others: &[Bound<'_, PyAny>]) -> PyResult<FrozenSet> {
         let py = slf.py();
+        if let [other] = others
+            && let Some(table) =
+                set::small_op_large_builtin(py, op, &Operand::Frozen(slf.clone()), other, KeyKind::Adaptive)?
+        {
+            return Ok(FrozenSet::from_table(schema::any(), table));
+        }
         // One operand (the operators) needs no vector.
         let one;
         let many;
@@ -249,7 +255,11 @@ impl FrozenSet {
     }
 
     fn issubset(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
-        set::is_subset(slf.py(), &Operand::Frozen(slf.clone()), &Operand::new(other)?)
+        let me = Operand::Frozen(slf.clone());
+        if let Some(result) = set::predicate_large_builtin(slf.py(), &me, other, true)? {
+            return Ok(result);
+        }
+        set::is_subset(slf.py(), &me, &Operand::new(other)?)
     }
 
     fn issuperset(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
@@ -257,7 +267,11 @@ impl FrozenSet {
     }
 
     fn isdisjoint(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
-        set::is_disjoint(slf.py(), &Operand::Frozen(slf.clone()), &Operand::new(other)?)
+        let me = Operand::Frozen(slf.clone());
+        if let Some(result) = set::predicate_large_builtin(slf.py(), &me, other, false)? {
+            return Ok(result);
+        }
+        set::is_disjoint(slf.py(), &me, &Operand::new(other)?)
     }
 
     fn __or__(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
@@ -502,9 +516,8 @@ unsafe extern "C" fn frozenset_new(
         {
             let arg = ffi::PyTuple_GET_ITEM(args, 0);
             if ffi::Py_TYPE(arg) == subtype {
-                let untyped = Python::attach(|py| {
-                    Borrowed::from_ptr(py, arg).cast::<FrozenSet>().is_ok_and(|fs| fs.get().schema.is_any())
-                });
+                let py = Python::assume_attached();
+                let untyped = Borrowed::from_ptr(py, arg).cast::<FrozenSet>().is_ok_and(|fs| fs.get().schema.is_any());
                 if untyped {
                     ffi::Py_IncRef(arg);
                     return arg;

@@ -452,7 +452,9 @@ fn ingest_native<'py>(
         if let (Ok(start), Ok(stop), Ok(step)) = (start, stop, step) {
             let (start, stop, step) = (start as i64, stop as i64, step as i64);
             let n = crate::convert::range_len(start, stop, step);
-            table.reserve(n);
+            // Presize moderately (a huge range grows the table step by step, like any
+            // other source, instead of reserving everything up front).
+            table.reserve(n.min(1 << 20));
             let mut v = start;
             for _ in 0..n {
                 table.insert_prepared(py, Prepared::Int(v))?;
@@ -1143,8 +1145,28 @@ pub(crate) fn richcompare(
     if !is_set_operand(other) {
         return Ok(py.NotImplemented());
     }
+    let mine = me.len(py);
+    // Decided by the sizes alone (a builtin set is then never read).
+    if is_builtin_set(other) {
+        // SAFETY: `other` is a set or frozenset.
+        let theirs = unsafe { ffi::PySet_Size(other.as_ptr()) }.max(0) as usize;
+        let by_size = match op {
+            CompareOp::Eq | CompareOp::Ne if mine != theirs => Some(matches!(op, CompareOp::Ne)),
+            CompareOp::Le if mine > theirs => Some(false),
+            CompareOp::Lt if mine >= theirs => Some(false),
+            CompareOp::Ge if mine < theirs => Some(false),
+            CompareOp::Gt if mine <= theirs => Some(false),
+            CompareOp::Le | CompareOp::Lt if is_large_builtin(mine, other) => {
+                Some(probe_builtin(py, me, other, |_, found| (!found).then_some(()))?.is_none())
+            }
+            _ => None,
+        };
+        if let Some(result) = by_size {
+            return Ok(pyo3::types::PyBool::new(py, result).to_owned().into_any().unbind());
+        }
+    }
     let operand = Operand::new(other)?;
-    let (mine, theirs) = (me.len(py), operand.len(py));
+    let theirs = operand.len(py);
     let result = match op {
         CompareOp::Eq | CompareOp::Ne => {
             let differ_by_hash = match (&operand, my_hash) {
@@ -1160,6 +1182,76 @@ pub(crate) fn richcompare(
         CompareOp::Gt => mine > theirs && is_subset(py, &operand, me)?,
     };
     Ok(pyo3::types::PyBool::new(py, result).to_owned().into_any().unbind())
+}
+
+/// A builtin set operand this many times larger than the rustique set is probed element by
+/// element (CPython iterates the smaller set) instead of being read whole.
+const PROBE_RATIO: usize = 4;
+
+/// Whether `other` is a builtin set large enough, next to a rustique set of `mine`
+/// elements, to be probed rather than read.
+fn is_large_builtin(mine: usize, other: &Bound<'_, PyAny>) -> bool {
+    // SAFETY: a type check, then the size of a set or frozenset.
+    is_builtin_set(other)
+        && unsafe { ffi::PySet_Size(other.as_ptr()) }.max(0) as usize > PROBE_RATIO.saturating_mul(mine)
+}
+
+/// Look up each element of `me` in the builtin set `big` with `PySet_Contains` (so `big`
+/// compares exactly as CPython would; no lock is held), until `visit` returns `Some`.
+fn probe_builtin<'py, R>(
+    py: Python<'py>,
+    me: &Operand<'py>,
+    big: &Bound<'py, PyAny>,
+    mut visit: impl FnMut(&Key<'py>, bool) -> Option<R>,
+) -> PyResult<Option<R>> {
+    for key in &me.keys(py)? {
+        // SAFETY: `big` is a set or frozenset and `key.obj` a live object.
+        let found = match unsafe { ffi::PySet_Contains(big.as_ptr(), key.obj.as_ptr()) } {
+            -1 => return Err(PyErr::fetch(py)),
+            n => n == 1,
+        };
+        if let Some(r) = visit(key, found) {
+            return Ok(Some(r));
+        }
+    }
+    Ok(None)
+}
+
+/// `me & big` or `me - big` for a builtin set `big` much larger than `me`: `me`'s elements
+/// that `big` does (or does not) contain; `None` when `other` is not such a set.
+pub(crate) fn small_op_large_builtin(
+    py: Python<'_>,
+    op: Algebra,
+    me: &Operand<'_>,
+    other: &Bound<'_, PyAny>,
+    kind: KeyKind,
+) -> PyResult<Option<KeyTable>> {
+    if !matches!(op, Algebra::Intersection | Algebra::Difference) || !is_large_builtin(me.len(py), other) {
+        return Ok(None);
+    }
+    let keep = op == Algebra::Intersection;
+    let mut out = KeyTable::new(kind);
+    let failed = probe_builtin(py, me, other, |key, found| (found == keep).then(|| out.push(py, key).err()).flatten())?;
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(Some(out)),
+    }
+}
+
+/// `me.isdisjoint(other)` / `me.issubset(other)` by probing a large builtin set (`None`: not
+/// such a set).
+pub(crate) fn predicate_large_builtin(
+    py: Python<'_>,
+    me: &Operand<'_>,
+    other: &Bound<'_, PyAny>,
+    subset: bool,
+) -> PyResult<Option<bool>> {
+    if !is_large_builtin(me.len(py), other) {
+        return Ok(None);
+    }
+    // Subset: stop at a missing element; disjoint: stop at a shared one.
+    let stopped = probe_builtin(py, me, other, |_, found| (found != subset).then_some(()))?;
+    Ok(Some(stopped.is_none()))
 }
 
 /// `issuperset(other)`: every element of `other` is in `me`.
@@ -1555,6 +1647,12 @@ impl Set {
     /// `self <op> others…` as a new `Set` (typed when every operand has this set's schema).
     fn compute(slf: &Bound<'_, Self>, op: Algebra, others: &[Bound<'_, PyAny>]) -> PyResult<Set> {
         let py = slf.py();
+        if let [other] = others
+            && let Some(table) =
+                small_op_large_builtin(py, op, &Operand::Set(slf.clone()), other, KeyKind::for_schema(&schema::any()))?
+        {
+            return Ok(Set::with_table(schema::any(), table));
+        }
         // One operand (the operators) needs no vector.
         let one;
         let many;
@@ -1866,7 +1964,11 @@ impl Set {
     }
 
     fn issubset(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
-        is_subset(slf.py(), &Operand::Set(slf.clone()), &Operand::new(other)?)
+        let me = Operand::Set(slf.clone());
+        if let Some(result) = predicate_large_builtin(slf.py(), &me, other, true)? {
+            return Ok(result);
+        }
+        is_subset(slf.py(), &me, &Operand::new(other)?)
     }
 
     fn issuperset(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
@@ -1874,7 +1976,11 @@ impl Set {
     }
 
     fn isdisjoint(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
-        is_disjoint(slf.py(), &Operand::Set(slf.clone()), &Operand::new(other)?)
+        let me = Operand::Set(slf.clone());
+        if let Some(result) = predicate_large_builtin(slf.py(), &me, other, false)? {
+            return Ok(result);
+        }
+        is_disjoint(slf.py(), &me, &Operand::new(other)?)
     }
 
     fn __or__(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
