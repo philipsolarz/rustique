@@ -31,7 +31,7 @@ use pyo3::panic::PanicException;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 use rustique_core::kernels;
-use rustique_core::slice::{clamp_insert_index, normalize_index};
+use rustique_core::slice::{SliceIndices, clamp_insert_index, normalize_index};
 
 use super::{List, Side, Storage, compare_lengths, native_compare};
 use crate::convert::{self, Probe};
@@ -50,7 +50,7 @@ unsafe extern "C" {
 
 /// Run `f`; a panic becomes `PanicException` and the result `on_panic`.
 #[inline(always)]
-pub(super) fn shield<R>(on_panic: R, f: impl FnOnce() -> R) -> R {
+pub(crate) fn shield<R>(on_panic: R, f: impl FnOnce() -> R) -> R {
     match panic::catch_unwind(AssertUnwindSafe(f)) {
         Ok(r) => r,
         Err(payload) => {
@@ -78,7 +78,7 @@ fn report_panic(payload: Box<dyn std::any::Any + Send>) {
 /// Run `f` with PyO3's attach bookkeeping (so `Py` drops are immediate) and set its error.
 #[cold]
 #[inline(never)]
-pub(super) fn fallback<R>(error: R, f: impl FnOnce(Python<'_>) -> PyResult<R>) -> R {
+pub(crate) fn fallback<R>(error: R, f: impl FnOnce(Python<'_>) -> PyResult<R>) -> R {
     Python::attach(|py| match f(py) {
         Ok(r) => r,
         Err(e) => {
@@ -91,7 +91,7 @@ pub(super) fn fallback<R>(error: R, f: impl FnOnce(Python<'_>) -> PyResult<R>) -
 /// Set `exc` with a static message.
 #[cold]
 #[inline(never)]
-fn raise(exc: Obj, message: &CStr) {
+pub(crate) fn raise(exc: Obj, message: &CStr) {
     // SAFETY: attached; `exc` is an exception type, `message` NUL-terminated.
     unsafe { ffi::PyErr_SetString(exc, message.as_ptr()) }
 }
@@ -99,13 +99,13 @@ fn raise(exc: Obj, message: &CStr) {
 /// Set an error carried by a `PyErr`.
 #[cold]
 #[inline(never)]
-fn restore(e: PyErr) {
+pub(crate) fn restore(e: PyErr) {
     Python::attach(|py| e.restore(py));
 }
 
 /// The token for an attached thread (raw slots are only called attached).
 #[inline(always)]
-pub(super) fn py<'py>() -> Python<'py> {
+pub(crate) fn py<'py>() -> Python<'py> {
     // SAFETY: CPython calls slots and methods with the thread attached.
     unsafe { Python::assume_attached() }
 }
@@ -147,7 +147,7 @@ unsafe fn any<'py>(py: Python<'py>, p: Obj) -> Bound<'py, PyAny> {
 /// # Safety
 /// `p` must be a live object.
 #[inline(always)]
-unsafe fn compact_int(p: Obj) -> Option<isize> {
+pub(crate) unsafe fn compact_int(p: Obj) -> Option<isize> {
     // SAFETY: the layout of `PyLongObject` (CPython 3.12+): the header, then `lv_tag`
     // (sign in bits 0-1, digit count from bit 3) and 30-bit digits.
     unsafe {
@@ -192,7 +192,7 @@ unsafe fn index_arg_slow(p: Obj) -> Option<isize> {
 }
 
 #[inline(always)]
-pub(super) fn none() -> Obj {
+pub(crate) fn none() -> Obj {
     // SAFETY: `None` is immortal; a new reference.
     unsafe {
         let p = ffi::Py_None();
@@ -321,10 +321,33 @@ unsafe extern "C" fn mp_subscript(slf: Obj, key: Obj) -> Obj {
             };
         }
         // SAFETY: see above.
+        if unsafe { ffi::PySlice_Check(key) } != 0 {
+            return get_slice(unsafe { this(slf) }, key);
+        }
+        // SAFETY: see above.
         fallback(ptr::null_mut(), |py| unsafe {
             Ok(List::__getitem__(&bound(py, slf), &any(py, key))?.into_ptr())
         })
     })
+}
+
+/// `x[start:stop:step]` as a new `List` of the same schema.
+fn get_slice(list: &List, key: Obj) -> Obj {
+    let py = py();
+    let (mut start, mut stop, mut step) = (0, 0, 0);
+    // SAFETY: `key` is a slice; this may run `__index__` (no lock is held) and raises
+    // `ValueError` for a zero step.
+    if unsafe { ffi::PySlice_Unpack(key, &mut start, &mut stop, &mut step) } < 0 {
+        return ptr::null_mut();
+    }
+    let storage = {
+        let data = list.read(py);
+        match SliceIndices::new(Some(start), Some(stop), Some(step), data.len()) {
+            Ok(s) => data.take_slice(py, &s),
+            Err(_) => unreachable!("PySlice_Unpack rejects a zero step"),
+        }
+    };
+    super::LIST_CLASS.alloc(py, List::new_with(list.schema.clone(), storage))
 }
 
 unsafe extern "C" fn sq_item(slf: Obj, i: ffi::Py_ssize_t) -> Obj {
@@ -819,6 +842,22 @@ unsafe fn set_method(
         let name = CStr::from_ptr((*def).ml_name).to_str().unwrap_or_default();
         dict.set_item(name, descr)
     }
+}
+
+/// Replace the slot wrappers `name` of `ty` (a PyO3 class) by wrappers of the given raw
+/// functions (each with the C signature of its slot).
+///
+/// # Safety
+/// Module initialisation only; each function must match its slot's signature.
+pub(crate) unsafe fn rewrap_slots(py: Python<'_>, ty: *mut ffi::PyTypeObject, pairs: &[(&str, *mut c_void)]) -> PyResult<()> {
+    // SAFETY: as above.
+    unsafe {
+        let dict = type_dict(py, ty)?;
+        for (name, f) in pairs {
+            rewrap(py, ty, &dict, &dict, name, *f)?;
+        }
+    }
+    Ok(())
 }
 
 /// Install the raw slots and methods on `List` and its iterator types.

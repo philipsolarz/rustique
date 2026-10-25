@@ -268,7 +268,7 @@ fn compare_bool(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>, op: c_int) -> PyResu
     }
 }
 
-fn compare_lengths(a: usize, b: usize, op: CompareOp) -> bool {
+pub(crate) fn compare_lengths(a: usize, b: usize, op: CompareOp) -> bool {
     op.matches(a.cmp(&b))
 }
 
@@ -284,7 +284,7 @@ fn cmp_op(op: CompareOp) -> Option<CmpOp> {
 
 /// Native comparison of two columns, or `None` where Python raises `TypeError` (ordering a
 /// `str` against a number); the object path then raises it with CPython's message.
-fn native_compare(a: &Column, b: &Column, op: CompareOp) -> Option<bool> {
+pub(crate) fn native_compare(a: &Column, b: &Column, op: CompareOp) -> Option<bool> {
     match cmp_op(op) {
         Some(cmp) => kernels::try_lex_compare(a, b, cmp),
         None => Some(kernels::equal(a, b) == matches!(op, CompareOp::Eq)),
@@ -346,7 +346,7 @@ impl List {
 
     /// Wrap storage that is valid for `schema` in a new `List` (no conversion).
     pub fn from_storage(py: Python<'_>, schema: Arc<Schema>, storage: Storage) -> PyResult<Bound<'_, List>> {
-        Bound::new(py, List::new_with(schema, storage))
+        LIST_CLASS.new_bound(py, List::new_with(schema, storage))
     }
 
     /// INTERFACE. Construct a `List` with `schema` from an optional iterable.
@@ -1833,11 +1833,35 @@ fn arange_dtype(py: Python<'_>, dtype: Option<&Bound<'_, PyAny>>) -> PyResult<(A
     )))
 }
 
+pub(crate) mod alloc;
 mod iter;
-mod slots;
+pub(crate) mod slots;
+
+/// Raw allocation of `List` instances (see `alloc`).
+static LIST_CLASS: alloc::RawClass<List> = alloc::RawClass::new();
+
+impl alloc::RawDrop for List {
+    fn drop_attached(self, py: Python<'_>) {
+        let List { data, .. } = self;
+        // Elements are released through `Bound` (an immediate decref).
+        if let Storage::Object(objects) = data.into_inner() {
+            for o in objects {
+                drop(o.into_bound(py));
+            }
+        }
+    }
+}
+
+unsafe extern "C" fn list_dealloc(slf: *mut ffi::PyObject) {
+    // SAFETY: installed as `List`'s `tp_dealloc`.
+    slots::shield((), || unsafe { LIST_CLASS.dealloc(slf) })
+}
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<List>()?;
+    let sample = Bound::new(m.py(), List::new_with(schema::any(), Storage::Empty))?;
+    LIST_CLASS.install(&sample, sample.get(), list_dealloc)?;
+    drop(sample);
     iter::install(m.py())?;
     slots::install(m.py())?;
     // PyO3 names the type `rustique.List` at the C level; CPython messages that use
