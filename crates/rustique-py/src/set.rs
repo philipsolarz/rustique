@@ -258,6 +258,13 @@ pub(crate) fn build_table<'py>(
     name: &dyn Fn() -> String,
 ) -> PyResult<KeyTable> {
     let kind = KeyKind::for_schema(schema);
+    // An exact rustique set first (the copy constructor is the common case; subclass
+    // instances are found below, after the builtin sources).
+    if (iterable.is_exact_instance_of::<Set>() || iterable.is_exact_instance_of::<FrozenSet>())
+        && let Some(table) = copy_rustique_set(py, schema, iterable)
+    {
+        return Ok(table.with_kind(kind));
+    }
     let mut table = KeyTable::new(kind);
     match ingest_native(py, &mut table, schema, iterable)? {
         Some(pending) => {
