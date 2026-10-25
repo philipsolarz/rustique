@@ -13,6 +13,7 @@
 //! installation, and the class's other layout slots (borrow checker, thread checker, dict,
 //! weakref list) must be zero-sized, which [`RawClass::install`] checks via the basic size.
 
+#[cfg(not(Py_GIL_DISABLED))]
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ptr;

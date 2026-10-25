@@ -5,7 +5,7 @@ semantics, vectorised expressions over the element placeholder ``X``, and fixed-
 scalar types. See ``docs/ARCHITECTURE.md``.
 """
 
-from collections.abc import MutableMapping, MutableSequence, MutableSet
+from collections.abc import MutableMapping, MutableSequence, MutableSet, Sequence
 
 from rustique._rustique import (
     Dict,
@@ -15,6 +15,7 @@ from rustique._rustique import (
     ListType,
     Set,
     SetType,
+    Tuple,
     X,
     __version__,
     arange,
@@ -38,6 +39,7 @@ __all__ = [
     "ListType",
     "Set",
     "SetType",
+    "Tuple",
     "X",
     "__version__",
     "arange",
@@ -58,3 +60,4 @@ __all__ = [
 MutableSequence.register(List)
 MutableMapping.register(Dict)
 MutableSet.register(Set)
+Sequence.register(Tuple)
