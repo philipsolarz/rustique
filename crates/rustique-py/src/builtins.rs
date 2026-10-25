@@ -62,7 +62,7 @@ use std::ffi::{CStr, c_int};
 use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, Ordering as Atomic};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering as Atomic};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::ffi;
@@ -234,6 +234,9 @@ fn cmp_int_float(i: i64, f: f64) -> Option<Ordering> {
 
 /// Code-point order of two exact `str`s (Python's `unicode_compare`).
 ///
+/// One call into CPython: on 3.14+ the `PyUnicode_KIND`/`PyUnicode_DATA` accessors are
+/// out-of-line functions, so reading the strings here would cost four calls.
+///
 /// # Safety
 /// Both must be live exact `str` objects.
 #[inline]
@@ -241,37 +244,8 @@ unsafe fn str_cmp(a: *mut ffi::PyObject, b: *mut ffi::PyObject) -> Ordering {
     if a == b {
         return Ordering::Equal;
     }
-    // SAFETY: exact strings; `DATA` holds `GET_LENGTH` code points of `KIND` bytes each.
-    unsafe {
-        let (ka, kb) = (ffi::PyUnicode_KIND(a), ffi::PyUnicode_KIND(b));
-        let (la, lb) = (ffi::PyUnicode_GET_LENGTH(a) as usize, ffi::PyUnicode_GET_LENGTH(b) as usize);
-        let (da, db) = (ffi::PyUnicode_DATA(a), ffi::PyUnicode_DATA(b));
-        if ka == kb {
-            return match ka {
-                1 => {
-                    std::slice::from_raw_parts(da.cast::<u8>(), la).cmp(std::slice::from_raw_parts(db.cast::<u8>(), lb))
-                }
-                2 => std::slice::from_raw_parts(da.cast::<u16>(), la)
-                    .cmp(std::slice::from_raw_parts(db.cast::<u16>(), lb)),
-                _ => std::slice::from_raw_parts(da.cast::<u32>(), la)
-                    .cmp(std::slice::from_raw_parts(db.cast::<u32>(), lb)),
-            };
-        }
-        let at = |d: *mut std::ffi::c_void, k: u32, i: usize| -> u32 {
-            match k {
-                1 => u32::from(*d.cast::<u8>().add(i)),
-                2 => u32::from(*d.cast::<u16>().add(i)),
-                _ => *d.cast::<u32>().add(i),
-            }
-        };
-        for i in 0..la.min(lb) {
-            match at(da, ka, i).cmp(&at(db, kb, i)) {
-                Ordering::Equal => {}
-                o => return o,
-            }
-        }
-        la.cmp(&lb)
-    }
+    // SAFETY: two strings: the comparison cannot fail and runs no Python code.
+    unsafe { ffi::PyUnicode_Compare(a, b) }.cmp(&0)
 }
 
 // =======================================================================================
@@ -796,6 +770,11 @@ enum MKey {
     Str,
     /// An exact `int` beyond i64: compared with `PyObject_RichCompareBool` (pure).
     BigInt,
+    /// An exact `tuple`: compared element-wise like `tuple_richcompare` while the elements
+    /// compared are themselves pure.
+    Tuple,
+    /// `None` (any ordering comparison raises `TypeError`).
+    None,
 }
 
 /// # Safety
@@ -811,42 +790,121 @@ unsafe fn mkey(op: *mut ffi::PyObject) -> Option<MKey> {
             Some(MKey::Float(float_value(op)))
         } else if t == str_type() {
             Some(MKey::Str)
+        } else if t == tuple_type() {
+            Some(MKey::Tuple)
+        } else if op == ffi::Py_None() {
+            Some(MKey::None)
         } else {
             None
         }
     }
 }
 
-/// Whether `item <op> best` (`op` is `Py_LT` for `min`, `Py_GT` for `max`); `Err` with an
-/// exception set when the comparison raises (e.g. `str` vs `int`: a `TypeError`, as CPython).
+/// Outcome of a comparison attempted without running Python code.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cmp {
+    True,
+    False,
+    /// A Python exception is set (a builtin comparison raised, as CPython's would).
+    Error,
+    /// The comparison needs Python code (an element of a non-pure type).
+    Impure,
+}
+
+impl Cmp {
+    #[inline(always)]
+    fn of(b: bool) -> Cmp {
+        if b { Cmp::True } else { Cmp::False }
+    }
+
+    /// From a `PyObject_RichCompareBool` result.
+    #[inline(always)]
+    fn rich(r: c_int) -> Cmp {
+        if r < 0 { Cmp::Error } else { Cmp::of(r > 0) }
+    }
+}
+
+/// Nesting depth of tuples compared without Python code (deeper: handed to CPython).
+const MAX_TUPLE_DEPTH: u32 = 16;
+
+/// `a <op> b` for objects classified by [`mkey`] (`op`: `Py_LT`, `Py_GT` or `Py_EQ`),
+/// following `PyObject_RichCompareBool` and `tuple_richcompare` exactly.
 ///
 /// # Safety
-/// Live objects classified by [`mkey`]; runs no Python code.
-#[inline(always)]
-unsafe fn better(
-    item: *mut ffi::PyObject,
-    ik: MKey,
-    best: *mut ffi::PyObject,
-    bk: MKey,
-    op: c_int,
-) -> Result<bool, ()> {
-    let want = if op == ffi::Py_LT { Ordering::Less } else { Ordering::Greater };
-    match (ik, bk) {
-        (MKey::Int(a), MKey::Int(b)) => Ok(a.cmp(&b) == want),
-        (MKey::Float(a), MKey::Float(b)) => Ok(a.partial_cmp(&b) == Some(want)),
-        (MKey::Int(a), MKey::Float(b)) => Ok(cmp_int_float(a, b) == Some(want)),
-        (MKey::Float(a), MKey::Int(b)) => Ok(cmp_int_float(b, a).map(Ordering::reverse) == Some(want)),
-        // SAFETY: both exact strings.
-        (MKey::Str, MKey::Str) => Ok(unsafe { str_cmp(item, best) } == want),
-        _ => {
-            // Big ints, or mixed str/number (raises TypeError): builtin comparisons of exact
-            // builtin types, no Python code.
-            // SAFETY: live objects.
-            match unsafe { ffi::PyObject_RichCompareBool(item, best, op) } {
-                r if r < 0 => Err(()),
-                r => Ok(r > 0),
-            }
+/// Live objects; runs no Python code (returns `Impure` instead).
+unsafe fn pure_compare(a: *mut ffi::PyObject, ak: MKey, b: *mut ffi::PyObject, bk: MKey, op: c_int, depth: u32) -> Cmp {
+    if op == ffi::Py_EQ && a == b {
+        return Cmp::True; // identity implies equality
+    }
+    let order = |o: Option<Ordering>| -> Cmp {
+        match op {
+            ffi::Py_LT => Cmp::of(o == Some(Ordering::Less)),
+            ffi::Py_GT => Cmp::of(o == Some(Ordering::Greater)),
+            _ => Cmp::of(o == Some(Ordering::Equal)),
         }
+    };
+    match (ak, bk) {
+        (MKey::Int(x), MKey::Int(y)) => order(Some(x.cmp(&y))),
+        (MKey::Float(x), MKey::Float(y)) => order(x.partial_cmp(&y)),
+        (MKey::Int(x), MKey::Float(y)) => order(cmp_int_float(x, y)),
+        (MKey::Float(x), MKey::Int(y)) => order(cmp_int_float(y, x).map(Ordering::reverse)),
+        // SAFETY: both exact strings.
+        (MKey::Str, MKey::Str) => order(Some(unsafe { str_cmp(a, b) })),
+        (MKey::Tuple, MKey::Tuple) => {
+            if depth >= MAX_TUPLE_DEPTH {
+                return Cmp::Impure;
+            }
+            // SAFETY: exact tuples; their items are live while the tuples are.
+            unsafe { tuple_compare(a, b, op, depth + 1) }
+        }
+        // Mixed kinds among int/float/str/tuple/None and big ints: CPython's own comparison
+        // of exact builtin types (a `TypeError` for ordering mixed kinds, `False` for `==`).
+        // SAFETY: live objects of exact builtin types: no Python code runs.
+        _ => Cmp::rich(unsafe { ffi::PyObject_RichCompareBool(a, b, op) }),
+    }
+}
+
+/// `tuple_richcompare(a, b, op)` for exact tuples, without Python code.
+///
+/// # Safety
+/// Live exact tuples.
+unsafe fn tuple_compare(a: *mut ffi::PyObject, b: *mut ffi::PyObject, op: c_int, depth: u32) -> Cmp {
+    // SAFETY: tuple layout; items live as long as the tuples.
+    unsafe {
+        let (na, nb) = (ffi::PyTuple_GET_SIZE(a) as usize, ffi::PyTuple_GET_SIZE(b) as usize);
+        let ia = (*a.cast::<ffi::PyTupleObject>()).ob_item.as_ptr();
+        let ib = (*b.cast::<ffi::PyTupleObject>()).ob_item.as_ptr();
+        // The first index where the items differ (`==` with the identity shortcut).
+        let mut i = 0;
+        while i < na && i < nb {
+            let (x, y) = (*ia.add(i), *ib.add(i));
+            if x != y {
+                let (Some(xk), Some(yk)) = (mkey(x), mkey(y)) else {
+                    return Cmp::Impure;
+                };
+                match pure_compare(x, xk, y, yk, ffi::Py_EQ, depth) {
+                    Cmp::True => {}
+                    Cmp::False => break,
+                    other => return other,
+                }
+            }
+            i += 1;
+        }
+        if i >= na || i >= nb {
+            return Cmp::of(match op {
+                ffi::Py_LT => na < nb,
+                ffi::Py_GT => na > nb,
+                _ => na == nb,
+            });
+        }
+        if op == ffi::Py_EQ {
+            return Cmp::False;
+        }
+        let (x, y) = (*ia.add(i), *ib.add(i));
+        let (Some(xk), Some(yk)) = (mkey(x), mkey(y)) else {
+            return Cmp::Impure;
+        };
+        pure_compare(x, xk, y, yk, op, depth)
     }
 }
 
@@ -864,22 +922,88 @@ struct Best {
 /// Live items; runs no Python code.
 #[inline]
 unsafe fn minmax_scan(items: impl Iterator<Item = *mut ffi::PyObject>, op: c_int, best: &mut Option<Best>) -> Scan<()> {
+    let max = op == ffi::Py_GT;
     for (k, item) in items.enumerate() {
+        // SAFETY: live items; exact-type reads.
+        let t = unsafe { type_of(item) };
+        // Hot paths, inline: an item of the same kind as the current extreme.
+        if let Some(b) = best {
+            match b.key {
+                MKey::Int(bv) if t == long_type() || t == bool_type() => {
+                    // SAFETY: an exact int/bool.
+                    if let Some(v) = unsafe { int_value(item) } {
+                        if if max { v > bv } else { v < bv } {
+                            *b = Best { obj: item, key: MKey::Int(v) };
+                        }
+                        continue;
+                    }
+                }
+                MKey::Float(bv) if t == float_type() => {
+                    // SAFETY: an exact float.
+                    let v = unsafe { float_value(item) };
+                    if if max { v > bv } else { v < bv } {
+                        *b = Best { obj: item, key: MKey::Float(v) };
+                    }
+                    continue;
+                }
+                MKey::Str if t == str_type() => {
+                    // SAFETY: two exact strings.
+                    let o = unsafe { str_cmp(item, b.obj) };
+                    if o == if max { Ordering::Greater } else { Ordering::Less } {
+                        b.obj = item;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
         // SAFETY: forwarded.
         let Some(ik) = (unsafe { mkey(item) }) else {
             return Scan::Bail(k);
         };
         match best {
             None => *best = Some(Best { obj: item, key: ik }),
+            // `item <op> best`, as `min_max` asks.
             // SAFETY: forwarded.
-            Some(b) => match unsafe { better(item, ik, b.obj, b.key, op) } {
-                Ok(true) => *b = Best { obj: item, key: ik },
-                Ok(false) => {}
-                Err(()) => return Scan::Error,
+            Some(b) => match unsafe { pure_compare(item, ik, b.obj, b.key, op, 0) } {
+                Cmp::True => *b = Best { obj: item, key: ik },
+                Cmp::False => {}
+                Cmp::Error => return Scan::Error,
+                Cmp::Impure => return Scan::Bail(k),
             },
         }
     }
     Scan::Done(())
+}
+
+/// `min(a, b)` / `max(a, b)` for two exact `int`/`float`/`str` arguments: the extreme
+/// (borrowed; `a` on ties, as CPython keeps the first), or `None` for other arguments.
+///
+/// # Safety
+/// Live objects.
+#[inline(always)]
+unsafe fn minmax_pair(a: *mut ffi::PyObject, b: *mut ffi::PyObject, max: bool) -> Option<*mut ffi::PyObject> {
+    // SAFETY: exact-type reads.
+    unsafe {
+        let (ta, tb) = (type_of(a), type_of(b));
+        let want = if max { Ordering::Greater } else { Ordering::Less };
+        // CPython asks `b <op> a`: `b` replaces `a` only when strictly better.
+        let b_better = if (ta == long_type() || ta == bool_type()) && (tb == long_type() || tb == bool_type()) {
+            let (x, y) = (int_value(a)?, int_value(b)?);
+            y.cmp(&x) == want
+        } else if ta == float_type() && tb == float_type() {
+            float_value(b).partial_cmp(&float_value(a)) == Some(want)
+        } else if ta == str_type() && tb == str_type() {
+            str_cmp(b, a) == want
+        } else if ta == float_type() && (tb == long_type() || tb == bool_type()) {
+            cmp_int_float(int_value(b)?, float_value(a)) == Some(want)
+        } else if (ta == long_type() || ta == bool_type()) && tb == float_type() {
+            cmp_int_float(int_value(a)?, float_value(b)).map(Ordering::reverse) == Some(want)
+        } else {
+            return None;
+        };
+        Some(if b_better { b } else { a })
+    }
 }
 
 /// The result of `min`/`max` for a finished scan: the extreme, the default, or ValueError.
@@ -1260,8 +1384,11 @@ const NAMES: [&CStr; 6] = [c"sum", c"min", c"max", c"sorted", c"any", c"all"];
 const FASTCALL_KW: c_int = ffi::METH_FASTCALL | ffi::METH_KEYWORDS;
 const FLAGS: [c_int; 6] = [FASTCALL_KW, FASTCALL_KW, FASTCALL_KW, FASTCALL_KW, ffi::METH_O, ffi::METH_O];
 
-/// The original builtin function objects (kept alive by [`STATE`] forever once set).
-static ORIGINAL: [AtomicPtr<ffi::PyObject>; 6] = [const { AtomicPtr::new(ptr::null_mut()) }; 6];
+/// The original C entry points (`ml_meth`) of the six builtins, saved when first captured.
+/// The patched `PyMethodDef`s point to the kernels, so fallbacks call these directly.
+static ORIG_METH: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
+/// `self` of the builtins: the `builtins` module.
+static BUILTINS_MODULE: AtomicPtr<ffi::PyObject> = AtomicPtr::new(ptr::null_mut());
 /// Interned keyword names: `key`, `default`, `start`, `reverse`.
 static KW: [AtomicPtr<ffi::PyObject>; 4] = [const { AtomicPtr::new(ptr::null_mut()) }; 4];
 const KW_KEY: usize = 0;
@@ -1272,10 +1399,10 @@ const KW_REVERSE: usize = 3;
 static RS_LIST: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(ptr::null_mut());
 static RS_SET: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(ptr::null_mut());
 
-/// Call the original METH_FASTCALL|METH_KEYWORDS builtin (its `ml_meth` read now).
+/// Call the original METH_FASTCALL|METH_KEYWORDS builtin.
 ///
 /// # Safety
-/// The original was saved (true whenever a replacement is reachable); vectorcall arguments.
+/// The originals were captured (true whenever a kernel is reachable); vectorcall arguments.
 #[inline(always)]
 unsafe fn original_fastkw(
     which: Which,
@@ -1283,11 +1410,12 @@ unsafe fn original_fastkw(
     nargs: ffi::Py_ssize_t,
     kwnames: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
-    // SAFETY: a live `PyCFunctionObject` whose method has these flags (checked at install).
+    // SAFETY: the saved pointer is the original C function of a METH_FASTCALL|METH_KEYWORDS
+    // builtin (flags checked at capture), called as CPython would.
     unsafe {
-        let f = ORIGINAL[which as usize].load(Atomic::Relaxed).cast::<ffi::PyCFunctionObject>();
-        let meth = (*(*f).m_ml).ml_meth.PyCFunctionFastWithKeywords;
-        meth((*f).m_self, args, nargs, kwnames)
+        let meth: ffi::PyCFunctionFastWithKeywords =
+            std::mem::transmute(ORIG_METH[which as usize].load(Atomic::Relaxed));
+        meth(BUILTINS_MODULE.load(Atomic::Relaxed), args, nargs, kwnames)
     }
 }
 
@@ -1297,11 +1425,10 @@ unsafe fn original_fastkw(
 /// As [`original_fastkw`].
 #[inline(always)]
 unsafe fn original_o(which: Which, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
-    // SAFETY: as above.
+    // SAFETY: as above, for a METH_O builtin.
     unsafe {
-        let f = ORIGINAL[which as usize].load(Atomic::Relaxed).cast::<ffi::PyCFunctionObject>();
-        let meth = (*(*f).m_ml).ml_meth.PyCFunction;
-        meth((*f).m_self, arg)
+        let meth: ffi::PyCFunction = std::mem::transmute(ORIG_METH[which as usize].load(Atomic::Relaxed));
+        meth(BUILTINS_MODULE.load(Atomic::Relaxed), arg)
     }
 }
 
@@ -1547,6 +1674,11 @@ unsafe fn minmax_entry(
         let Some(default) = minmax_args(args, nargs, kwnames) else {
             return original_fastkw(which, args, nargs, kwnames);
         };
+        if nargs == 2
+            && let Some(r) = minmax_pair(*args, *args.add(1), which == Which::Max)
+        {
+            return ffi::Py_NewRef(r);
+        }
         let py = Python::assume_attached();
         if nargs > 1 {
             return guarded(|| minmax_seq(py, Seq::Args(args, nargs as usize), default, op));
@@ -1868,17 +2000,76 @@ unsafe fn rs_truth(py: Python<'_>, it: *mut ffi::PyObject, which: Which) -> PyRe
 }
 
 // =======================================================================================
-// Installation
+// Installation: patching the builtins' method table in place
 // =======================================================================================
+//
+// `install` swaps the `ml_meth` pointer of the six entries of CPython's static `builtins`
+// method table (`PyModule_GetDef(builtins)->m_methods`, non-const static data) for the
+// kernels, and `uninstall` swaps them back. The builtin function objects keep their
+// identity: CPython 3.14+ compiles `any(<genexpr>)` / `all(<genexpr>)` into an *identity*
+// check against the original `any`/`all` followed by an inlined loop, which a different
+// object in `builtins` would defeat (measured: `any(genexpr)` 1.19x the instructions);
+// references taken before `install()` (`from builtins import sum`, C extensions) are
+// accelerated too and keep pickling. Every caller reads `ml_meth` at call time (the
+// `CALL_BUILTIN_*` specialisations, `cfunction_vectorcall_*`), so the swap takes effect
+// everywhere at once; the store is one aligned pointer write, so a concurrent call sees
+// either function.
 
-/// The replacement functions and the originals they stand in for (created once, kept for
-/// the life of the process: a replacement may be referenced after `uninstall`).
-struct Replacements {
-    /// `(original, replacement)` per [`Which`]; `None` if the builtin was not recognised.
-    pairs: Vec<Option<(Py<PyAny>, Py<PyAny>)>>,
+/// The kernels, per [`Which`].
+fn kernel(which: Which) -> usize {
+    match which {
+        Which::Sum => rq_sum as ffi::PyCFunctionFastWithKeywords as usize,
+        Which::Min => rq_min as ffi::PyCFunctionFastWithKeywords as usize,
+        Which::Max => rq_max as ffi::PyCFunctionFastWithKeywords as usize,
+        Which::Sorted => rq_sorted as ffi::PyCFunctionFastWithKeywords as usize,
+        Which::Any => rq_any as ffi::PyCFunction as usize,
+        Which::All => rq_all as ffi::PyCFunction as usize,
+    }
 }
 
-static STATE: Mutex<Option<Replacements>> = Mutex::new(None);
+const ALL: [Which; 6] = [Which::Sum, Which::Min, Which::Max, Which::Sorted, Which::Any, Which::All];
+
+/// The builtins' method table entries, captured once: `None` per entry not recognised.
+struct Captured {
+    defs: [Option<usize>; 6],
+    /// Standalone function objects running the kernels (see [`replacement`]).
+    replacements: [Option<Py<PyAny>>; 6],
+}
+
+static STATE: Mutex<Option<Captured>> = Mutex::new(None);
+
+/// Is `[addr, addr + len)` inside a writable mapping of this process? (Linux: from
+/// `/proc/self/maps`; elsewhere CPython's static method tables are writable data.)
+fn writable(addr: usize, len: usize) -> bool {
+    if !cfg!(target_os = "linux") {
+        return true;
+    }
+    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
+        return false;
+    };
+    maps.lines().any(|line| {
+        let mut parts = line.split_whitespace();
+        let (Some(range), Some(perm)) = (parts.next(), parts.next()) else {
+            return false;
+        };
+        let Some((lo, hi)) = range.split_once('-') else {
+            return false;
+        };
+        let (Ok(lo), Ok(hi)) = (usize::from_str_radix(lo, 16), usize::from_str_radix(hi, 16)) else {
+            return false;
+        };
+        lo <= addr && addr + len <= hi && perm.as_bytes().get(1) == Some(&b'w')
+    })
+}
+
+/// The `ml_meth` field of a method table entry, as an atomic.
+///
+/// # Safety
+/// `def` is a live, writable `PyMethodDef`.
+unsafe fn meth_slot(def: usize) -> &'static AtomicUsize {
+    // SAFETY: `ml_meth` is a pointer-sized, pointer-aligned field.
+    unsafe { &*(&raw mut (*(def as *mut ffi::PyMethodDef)).ml_meth).cast::<AtomicUsize>() }
+}
 
 /// Verify the object layouts the kernels read directly.
 fn check_layouts(py: Python<'_>) -> PyResult<()> {
@@ -1915,44 +2106,63 @@ fn check_layouts(py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 
-/// Create the replacement for builtin `which` if the current builtin is the expected C
-/// function.
-fn make_replacement(py: Python<'_>, which: Which, current: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyAny>>> {
-    let p = current.as_ptr();
-    // SAFETY: type check, then reads of a live `PyCFunctionObject`.
+/// Find the six entries in the `builtins` method table and save their original entry
+/// points (once per process).
+fn capture<'a>(py: Python<'_>, state: &'a mut Option<Captured>) -> PyResult<&'a mut Captured> {
+    if let Some(captured) = state {
+        return Ok(captured);
+    }
+    check_layouts(py)?;
+    init_statics(py)?;
+    let builtins = py.import("builtins")?;
+    let mut defs = [None; 6];
+    // SAFETY: `PyModule_GetDef` of the builtins module returns its static definition; the
+    // method table is NULL-terminated (`ml_name == NULL`).
     unsafe {
-        if ffi::PyCFunction_CheckExact(p) == 0 {
-            return Ok(None);
+        let module_def = ffi::PyModule_GetDef(builtins.as_ptr());
+        let mut def = if module_def.is_null() { ptr::null_mut() } else { (*module_def).m_methods };
+        while !def.is_null() && !(*def).ml_name.is_null() {
+            let name = CStr::from_ptr((*def).ml_name);
+            if let Some(which) = ALL.into_iter().find(|&w| NAMES[w as usize] == name)
+                && (*def).ml_flags == FLAGS[which as usize]
+                && writable(def as usize, size_of::<ffi::PyMethodDef>())
+            {
+                let original = meth_slot(def as usize).load(Atomic::Acquire);
+                if original != 0 && original != kernel(which) {
+                    ORIG_METH[which as usize].store(original, Atomic::Release);
+                    defs[which as usize] = Some(def as usize);
+                }
+            }
+            def = def.add(1);
         }
-        let f = p.cast::<ffi::PyCFunctionObject>();
-        let def = (*f).m_ml;
-        if def.is_null()
-            || (*def).ml_flags != FLAGS[which as usize]
-            || (*def).ml_name.is_null()
-            || CStr::from_ptr((*def).ml_name) != NAMES[which as usize]
-            || (*f).m_self.is_null()
-            || ffi::PyModule_Check((*f).m_self) == 0
-        {
-            return Ok(None);
+    }
+    BUILTINS_MODULE.store(builtins.clone().into_ptr(), Atomic::Release); // kept forever
+    let mut replacements: [Option<Py<PyAny>>; 6] = Default::default();
+    for which in ALL {
+        if let Some(def) = defs[which as usize] {
+            replacements[which as usize] = Some(make_replacement(py, which, def, &builtins)?);
         }
-        let meth = match which {
-            Which::Sum => ffi::PyMethodDefPointer { PyCFunctionFastWithKeywords: rq_sum },
-            Which::Min => ffi::PyMethodDefPointer { PyCFunctionFastWithKeywords: rq_min },
-            Which::Max => ffi::PyMethodDefPointer { PyCFunctionFastWithKeywords: rq_max },
-            Which::Sorted => ffi::PyMethodDefPointer { PyCFunctionFastWithKeywords: rq_sorted },
-            Which::Any => ffi::PyMethodDefPointer { PyCFunction: rq_any },
-            Which::All => ffi::PyMethodDefPointer { PyCFunction: rq_all },
-        };
-        // The function object keeps a pointer to its `PyMethodDef`: give it static storage.
-        // Name and docstring point to the original's static strings.
+    }
+    Ok(state.insert(Captured { defs, replacements }))
+}
+
+/// A standalone builtin function running the kernel of `which` (same name, docstring,
+/// flags and `__self__` as the original), for tests and benchmarks that compare both
+/// without patching anything.
+fn make_replacement(py: Python<'_>, which: Which, def: usize, builtins: &Bound<'_, PyModule>) -> PyResult<Py<PyAny>> {
+    let original = def as *mut ffi::PyMethodDef;
+    // SAFETY: a valid method table entry; the new function object keeps a pointer to its
+    // own `PyMethodDef`, which therefore gets static storage.
+    unsafe {
         let new_def: &'static mut ffi::PyMethodDef = Box::leak(Box::new(ffi::PyMethodDef {
-            ml_name: (*def).ml_name,
-            ml_meth: meth,
-            ml_flags: (*def).ml_flags,
-            ml_doc: (*def).ml_doc,
+            ml_name: (*original).ml_name,
+            ml_meth: std::mem::transmute::<usize, ffi::PyMethodDefPointer>(kernel(which)),
+            ml_flags: (*original).ml_flags,
+            ml_doc: (*original).ml_doc,
         }));
-        let func = ffi::PyCFunction_NewEx(new_def, (*f).m_self, (*f).m_module);
-        Ok(Some(Bound::from_owned_ptr_or_err(py, func)?.unbind()))
+        let module_name = PyString::new(py, "builtins");
+        let func = ffi::PyCFunction_NewEx(new_def, builtins.as_ptr(), module_name.as_ptr());
+        Ok(Bound::from_owned_ptr_or_err(py, func)?.unbind())
     }
 }
 
@@ -1970,91 +2180,76 @@ fn init_statics(py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 
-/// Replace `sum`, `min`, `max`, `sorted`, `any` and `all` in the `builtins` module with the
-/// Rustique versions. Idempotent; returns the names now replaced. A builtin that is not
-/// the expected CPython function (e.g. replaced by someone else) is left alone.
-#[pyfunction]
-fn install(py: Python<'_>) -> PyResult<Vec<&'static str>> {
-    check_layouts(py)?;
-    init_statics(py)?;
-    let builtins = py.import("builtins")?;
-    let mut state = STATE.lock().map_err(|_| PyRuntimeError::new_err("rustique builtins: state poisoned"))?;
-    if state.is_none() {
-        let mut pairs = Vec::new();
-        for which in [Which::Sum, Which::Min, Which::Max, Which::Sorted, Which::Any, Which::All] {
-            let name = NAMES[which as usize].to_str().expect("ASCII names");
-            let current = builtins.getattr(name)?;
-            let pair = make_replacement(py, which, &current)?.map(|repl| {
-                ORIGINAL[which as usize].store(current.as_ptr(), Atomic::Release);
-                (current.unbind(), repl)
-            });
-            pairs.push(pair);
-        }
-        *state = Some(Replacements { pairs });
-    }
-    let mut active = Vec::new();
-    for (i, pair) in state.as_ref().expect("initialised above").pairs.iter().enumerate() {
-        let Some((original, replacement)) = pair else { continue };
-        let name = NAMES[i].to_str().expect("ASCII names");
-        let current = builtins.getattr(name)?;
-        if current.is(original) {
-            builtins.setattr(name, replacement.bind(py))?;
-            active.push(name);
-        } else if current.is(replacement) {
-            active.push(name);
-        }
-    }
-    Ok(active)
+fn lock_state() -> PyResult<std::sync::MutexGuard<'static, Option<Captured>>> {
+    STATE.lock().map_err(|_| PyRuntimeError::new_err("rustique builtins: state poisoned"))
 }
 
-/// Restore the original builtins (only where the Rustique version is still installed).
+/// Names whose method table entry currently points to the kernel.
+fn active(captured: &Captured) -> Vec<&'static str> {
+    ALL.into_iter()
+        .filter(|&w| {
+            // SAFETY: captured entries are live, writable method table entries.
+            captured.defs[w as usize].is_some_and(|def| unsafe { meth_slot(def) }.load(Atomic::Acquire) == kernel(w))
+        })
+        .map(|w| NAMES[w as usize].to_str().expect("ASCII names"))
+        .collect()
+}
+
+/// Accelerate `sum`, `min`, `max`, `sorted`, `any` and `all` in place (the builtin function
+/// objects keep their identity). Idempotent; returns the names now accelerated. An entry
+/// whose entry point was changed by someone else since it was captured is left alone.
+#[pyfunction]
+fn install(py: Python<'_>) -> PyResult<Vec<&'static str>> {
+    let mut state = lock_state()?;
+    let captured = capture(py, &mut state)?;
+    for which in ALL {
+        if let Some(def) = captured.defs[which as usize] {
+            // SAFETY: a captured, writable method table entry.
+            let slot = unsafe { meth_slot(def) };
+            let original = ORIG_METH[which as usize].load(Atomic::Relaxed);
+            let _ = slot.compare_exchange(original, kernel(which), Atomic::AcqRel, Atomic::Acquire);
+        }
+    }
+    Ok(active(captured))
+}
+
+/// Restore the original entry points (where the kernels are still installed).
 #[pyfunction]
 fn uninstall(py: Python<'_>) -> PyResult<()> {
-    let builtins = py.import("builtins")?;
-    let state = STATE.lock().map_err(|_| PyRuntimeError::new_err("rustique builtins: state poisoned"))?;
-    if let Some(state) = state.as_ref() {
-        for (i, pair) in state.pairs.iter().enumerate() {
-            let Some((original, replacement)) = pair else { continue };
-            let name = NAMES[i].to_str().expect("ASCII names");
-            if builtins.getattr(name)?.is(replacement) {
-                builtins.setattr(name, original.bind(py))?;
-            }
+    let mut state = lock_state()?;
+    let captured = capture(py, &mut state)?;
+    for which in ALL {
+        if let Some(def) = captured.defs[which as usize] {
+            // SAFETY: a captured, writable method table entry.
+            let slot = unsafe { meth_slot(def) };
+            let original = ORIG_METH[which as usize].load(Atomic::Relaxed);
+            let _ = slot.compare_exchange(kernel(which), original, Atomic::AcqRel, Atomic::Acquire);
         }
     }
     Ok(())
 }
 
-/// Names of the builtins currently replaced.
+/// Names of the builtins currently accelerated.
 #[pyfunction]
 fn installed(py: Python<'_>) -> PyResult<Vec<&'static str>> {
-    let builtins = py.import("builtins")?;
-    let state = STATE.lock().map_err(|_| PyRuntimeError::new_err("rustique builtins: state poisoned"))?;
-    let mut active = Vec::new();
-    if let Some(state) = state.as_ref() {
-        for (i, pair) in state.pairs.iter().enumerate() {
-            let Some((_, replacement)) = pair else { continue };
-            let name = NAMES[i].to_str().expect("ASCII names");
-            if builtins.getattr(name)?.is(replacement) {
-                active.push(name);
-            }
-        }
-    }
-    Ok(active)
+    let mut state = lock_state()?;
+    Ok(active(capture(py, &mut state)?))
 }
 
-/// The replacement function for `name` (created by the first `install`), whether or not it
-/// is currently installed. For tests and benchmarks.
+/// A standalone function running the kernel of builtin `name` (installed or not). For tests
+/// and benchmarks.
 #[pyfunction]
 fn replacement(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
-    let state = STATE.lock().map_err(|_| PyRuntimeError::new_err("rustique builtins: state poisoned"))?;
+    let mut state = lock_state()?;
+    let captured = capture(py, &mut state)?;
     let i = NAMES
         .iter()
         .position(|n| n.to_str() == Ok(name))
-        .ok_or_else(|| PyValueError::new_err(format!("not a replaced builtin: {name:?}")))?;
-    match state.as_ref().and_then(|s| s.pairs[i].as_ref()) {
-        Some((_, replacement)) => Ok(replacement.clone_ref(py)),
-        None => Err(PyValueError::new_err(format!("{name} has no replacement (install() first)"))),
-    }
+        .ok_or_else(|| PyValueError::new_err(format!("not an accelerated builtin: {name:?}")))?;
+    captured.replacements[i]
+        .as_ref()
+        .map(|r| r.clone_ref(py))
+        .ok_or_else(|| PyValueError::new_err(format!("builtin {name} was not recognised")))
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

@@ -84,9 +84,12 @@ crates/
     src/scalars.rs            # i8..u64, f32, f64 scalar pyclasses
     src/expr.rs               # Python-facing expression builder `X`
     src/capi.rs               # versioned C-API capsule `rustique._rustique._C_API` (§5.1)
+    src/builtins.rs           # replacement builtins sum/min/max/sorted/any/all (§4.6)
+    src/objsort.rs            # object-pointer sort via CPython's list.sort (§4.6)
 python/rustique/
   __init__.py                 # public re-exports
   __init__.pyi                # hand-written, precise type stubs
+  _builtins.py                # install()/uninstall() of the replacement builtins (§4.6)
   py.typed
 tests/                        # pytest (parity, typing, strategies, expr, threads, buffer)
 benches/                      # honest benchmark harness
@@ -304,6 +307,86 @@ column-at-a-time in Rust.
   for signals once per element).
 - Expressions are DAGs: shared subexpressions are planned and evaluated once (memoised by
   node). An expression may contain at most 100 000 nodes (`ValueError` beyond).
+
+### 4.6 Builtin functions: `rustique._builtins`
+
+`rustique._builtins.install()` replaces `sum`, `min`, `max`, `sorted`, `any` and `all` in
+the `builtins` module (`uninstall()` restores them, `installed()` lists them; `rs.enable()`
+calls `install()`). Nothing changes until it is called. Code: `crates/rustique-py/src/
+builtins.rs`, `python/rustique/_builtins.py`.
+
+**Indistinguishable replacements.** Each replacement is a `builtin_function_or_method`
+whose `PyMethodDef` copies the original's name, docstring and `ml_flags`, with the
+original's `__self__` (the `builtins` module) and `__module__`. So `__name__`,
+`__qualname__`, `__module__`, `__doc__`, `__text_signature__`, `inspect.signature`,
+`help()`, `repr` and `__reduce__` are the original's; `pickle.dumps(sum)` pickles by
+reference to `builtins.sum`; and the interpreter specialises calls exactly as before
+(`CALL_BUILTIN_FAST_WITH_KEYWORDS` for `sum`/`min`/`max`/`sorted`, `CALL_BUILTIN_O` for
+`any`/`all`). Only identity differs (`sum is <original>` is false; a reference to the
+original taken before `install()` keeps calling the original and no longer pickles, since
+`builtins.sum` is now another object). A builtin that is not CPython's original at install
+time (patched by other code) is left alone. Code compiled before `install()` sees the
+replacements (builtins are looked up at run time).
+
+**Dispatch.** The entry points are raw `extern "C"` functions (no PyO3 argument
+extraction). They look at the argument types; anything not handled calls the original C
+function (its `ml_meth`, read from the saved original at call time, so an acceleration
+installed underneath stays active) with the original arguments, so every error message
+and corner case of a fallback is CPython's own. Fast paths:
+
+| input | `sum` | `min`/`max` (no `key`) | `any`/`all` | `sorted` |
+|---|---|---|---|---|
+| builtin `list`/`tuple`, `min(a, b, ...)` | scan + continuation | scan + continuation | scan + continuation | original (its `list.sort`) |
+| builtin `set`/`frozenset`/`dict` (keys) | scan, else original | scan, else original | scan, else original | original |
+| `rustique.List`, native storage | kernel | kernel | native | native sort, boxed |
+| `rustique.List`, object storage / `rustique.Set` | snapshot scan, else original | snapshot scan, else original | snapshot scan, else original | copy + `list.sort` |
+| anything else (`Dict`, iterators, subclasses, ...) | original | original | original | original |
+
+- A *scan* reads the item array directly (a builtin list inside its critical section)
+  while each item has an exact type whose handling runs no Python code: `int`, `bool`,
+  `float`, `str` (plus `None`, `tuple`, `list`, `bytes` for truthiness; `None` and exact
+  tuples compared element-wise for `min`/`max`). It stops at the first item that would
+  need Python code. Nothing observable happened during the scan, so for a list/tuple the
+  computation *continues* from that index exactly like CPython's loop (items fetched one
+  at a time from the live list like `listiter`, Python code allowed, state carried over):
+  results, the order of Python-level calls (`__radd__`, `__lt__`, `__bool__`) and the
+  reaction to mutation are CPython's. For hashed containers and Rustique snapshots the
+  original builtin is called from scratch instead (at most one extra pure pass).
+- `sum` is a state machine following `builtin_sum_impl` (3.12+): exact `int` accumulation
+  in a C long, then CPython's compensated (Neumaier) float summation, then compensated
+  complex, then generic `+`; transitions happen at the same items, so float sums are
+  bit-identical and C-long overflow switches to exact big-int addition at the same point.
+  Native columns use `rustique-core`'s `kernels::sum` (exact, same compensated algorithm)
+  for the default start, and an element-wise version of the state machine for an exact
+  `int`/`float` start; any other start calls the original.
+- `min`/`max` keep the first extreme and replace it only when `item < best` (`>`), with
+  exact `int`/`float` comparisons, so the returned *object* is CPython's
+  (`min([1, 1.0]) is` the `1`). `key=` (other than `None`) always calls the original.
+- `sorted(List)` copies the column under the read lock, then evaluates `reverse` (like
+  `list.sort`'s argument parsing, after the copy), sorts natively and boxes into a new
+  builtin list. Float columns holding a NaN, a `key`, object storage and `Set`s build the
+  builtin list in one read and call `list.sort` on it (what `sorted` does after `list(x)`).
+- Builtin inputs to `sorted` go to the original, whose `list.sort` is the takeover tier's.
+
+**Not replaced: `enumerate`, `zip`, `reversed`.** They are types: a replacement would
+break `isinstance(x, enumerate)` for iterators created by the original type (by C code or
+before `install()`), `type(it) is enumerate`, subclassing, and pickling of their iterators
+(`__reduce__` names the type). There is also nothing to gain: the interpreter does not
+specialise iteration over them (`FOR_ITER` specialises lists, tuples, ranges and
+generators only), their C implementations already reuse result tuples, and over a
+Rustique container they call its `tp_iternext` once per item, so speeding up
+`enumerate(List)` means speeding up the List's own iterator (§4.1).
+
+**Object-storage sort (`objsort`).** `List.sort` on object storage (unless no `key` is
+given and every element compares natively, the existing native-key path) moves the
+`PyObject*` pointers into a temporary builtin list (no incref), calls `list.sort` through
+the method descriptor, and moves them back (no decref): CPython's timsort with its
+type-specialised compares, `key` called once per element, stability and `reverse`
+semantics. A failed sort leaves CPython's permutation (not the original order). The list
+appears empty while the sort runs and changes made meanwhile raise `ValueError("list
+modified during sort")` and are discarded, as before. Rust API (`objsort.rs`):
+`sort_objects(py, &mut Vec<Py<PyAny>>, key, reverse)`, `sort_slice` and the raw
+`unsafe fn sort_raw(py, *mut *mut PyObject, len, key, reverse)`.
 
 ---
 

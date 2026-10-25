@@ -261,6 +261,44 @@ def test_min_max_positional_forms() -> None:
         check(name, [], default=0, key=None)
 
 
+def test_tuple_comparisons() -> None:
+    nan = NAN
+    other_nan = float("nan")
+    cases = [
+        [(1, "a"), (1, "b"), (0, "z")],
+        [(1, 2), (1,), (1, 2, 3), ()],
+        [(nan, 1), (nan, 0)],  # the same NaN object: equal by identity, then 1 vs 0
+        [(nan, 1), (other_nan, 0)],  # different NaNs: unequal, then nan < nan is False
+        [(1, (2, 3)), (1, (2, 2)), (1, (2,))],
+        [((((1,),),),), ((((0,),),),)],
+        [(1, Decimal(2)), (1, Decimal(1))],  # impure element compared
+        [(0, Decimal(2)), (1, Decimal(1))],  # impure element never compared
+        [(1, "a"), (1, 2)],  # TypeError at the second element
+        [(1, None), (1, None)],  # identical None: equal, then lengths
+        [(1, None), (1, 0)],  # None vs 0: TypeError
+        [(2**70, 1), (2**70, 0), (2**70 + 1, 0)],
+        [(1.0, "b"), (1, "a"), (True, "c")],
+        [(1, 2), [1, 2]],  # tuple vs list: TypeError
+        [None, None],
+        [(1,), 1],
+        [("a",), ("a", 1), ("a", 0)],
+        [tuple(range(i, i + 3)) for i in (5, 3, 9, 3)],
+    ]
+    deep: Any = 0
+    for _ in range(40):
+        deep = (deep,)
+    cases.append([deep, deep[0]])
+    for values in cases:
+        for c in (values, tuple(values), rs.List(values)):
+            for name in ("min", "max"):
+                check(name, c)
+                check(name, c, default=None)
+            check("sorted", c)
+        if len(values) > 1:
+            check("min", *values)
+            check("max", *values)
+
+
 def test_sum_argument_forms() -> None:
     check("sum")
     check("sum", [1], 2, 3)
@@ -567,41 +605,61 @@ def test_introspection_matches(name: str) -> None:
 def test_pickle_by_reference(name: str) -> None:
     _builtins.install()
     try:
-        repl = getattr(builtins, name)
-        assert repl is REPL[name]
+        f = getattr(builtins, name)
+        assert f is ORIG[name]  # accelerated in place: identity preserved
         for proto in range(pickle.HIGHEST_PROTOCOL + 1):
-            assert pickle.loads(pickle.dumps(repl, proto)) is repl
+            assert pickle.loads(pickle.dumps(f, proto)) is f
     finally:
         _builtins.uninstall()
     assert pickle.loads(pickle.dumps(ORIG[name])) is ORIG[name]
 
 
 def test_install_uninstall() -> None:
+    from builtins import sum as captured_before  # a reference taken before installing
+
     assert _builtins.installed() == ()
     assert _builtins.install() == _builtins.REPLACED
     assert _builtins.install() == _builtins.REPLACED  # idempotent
     try:
         assert _builtins.installed() == _builtins.REPLACED
         for name in NAMES:
-            assert getattr(builtins, name) is REPL[name]
-        # Code compiled before installing sees the replacements (global lookup).
+            assert getattr(builtins, name) is ORIG[name]
+        assert captured_before is builtins.sum
         assert eval("sum([1, 2, 3])") == 6
+        assert captured_before([1.5, 2]) == 3.5
     finally:
         _builtins.uninstall()
     assert _builtins.installed() == ()
     for name in NAMES:
         assert getattr(builtins, name) is ORIG[name]
     _builtins.uninstall()  # idempotent
+    assert _builtins.installed() == ()
 
 
-def test_foreign_patch_is_left_alone() -> None:
+def test_identity_keyed_compiler_paths_still_apply() -> None:
+    # CPython 3.14+ compiles `any(<genexpr>)` / `all(<genexpr>)` into an identity check
+    # against the original builtin plus an inlined loop: the check must keep passing.
+    code = compile("any(v for v in x), all(v for v in x)", "<test>", "eval")
+    consts = [i.argval for i in dis.get_instructions(code) if i.opname == "LOAD_COMMON_CONSTANT"]
+    _builtins.install()
+    try:
+        assert builtins.any is ORIG["any"] and builtins.all is ORIG["all"]
+        if consts:  # the optimisation exists on this version
+            assert ORIG["any"] in consts and ORIG["all"] in consts
+        assert eval(code, {"x": [0, 1]}) == (True, False)
+    finally:
+        _builtins.uninstall()
+
+
+def test_patched_builtins_dict_is_left_alone() -> None:
     def my_sum(*args: Any) -> str:
         return "mine"
 
     builtins.sum = my_sum  # type: ignore[assignment]
     try:
-        assert "sum" not in _builtins.install()
-        assert builtins.sum is my_sum
+        assert "sum" in _builtins.install()  # the original function object is accelerated
+        assert builtins.sum is my_sum  # the builtins namespace is not touched
+        assert ORIG["sum"]([1, 2]) == 3
         _builtins.uninstall()
         assert builtins.sum is my_sum
     finally:
