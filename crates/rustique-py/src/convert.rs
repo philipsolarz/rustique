@@ -1370,6 +1370,9 @@ pub fn probe(obj: &Bound<'_, PyAny>) -> Probe {
         } else if ty == &raw mut ffi::PyUnicode_Type {
             exact_str(p).map_or(Probe::Never, |s| Probe::Native(Value::Str(s)))
         } else if ty == &raw mut ffi::PyLong_Type {
+            if let Some(v) = compact_int_value(p) {
+                return Probe::Native(Value::I64(v));
+            }
             match long_as_i128(obj) {
                 Ok(Some(v)) => match i64::try_from(v) {
                     Ok(v) => Probe::Native(Value::I64(v)),

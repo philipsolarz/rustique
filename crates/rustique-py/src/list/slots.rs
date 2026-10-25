@@ -506,15 +506,18 @@ unsafe extern "C" fn sq_contains(slf: Obj, value: Obj) -> c_int {
         let list = unsafe { this(slf) };
         // SAFETY: a live object.
         let object = unsafe { any(py, value) };
-        let probe = convert::probe(&object);
         {
             let data = list.read(py);
-            match (&*data, &probe) {
-                (Storage::Native(column), Probe::Native(needle)) => {
-                    return c_int::from(kernels::find(column, needle, 0, column.len()).is_some());
-                }
-                (Storage::Native(_), Probe::Never) | (Storage::Empty, _) => return 0,
-                _ => {}
+            match &*data {
+                Storage::Native(column) => match convert::probe(&object) {
+                    Probe::Native(needle) => {
+                        return c_int::from(kernels::find(column, &needle, 0, column.len()).is_some());
+                    }
+                    Probe::Never => return 0,
+                    Probe::Python => {}
+                },
+                Storage::Empty => return 0,
+                Storage::Object(_) => {}
             }
         }
         // Python equality (see `List::scan_equal`).
