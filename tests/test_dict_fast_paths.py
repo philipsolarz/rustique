@@ -61,7 +61,9 @@ VALUES = [object() for _ in range(6)] + [None, 1, "v"]
 
 ops = st.lists(
     st.tuples(
-        st.sampled_from(["set", "get", "getitem", "in", "del", "pop", "setdefault", "iter", "items", "popitem"]),
+        st.sampled_from(
+            ["set", "get", "getitem", "in", "del", "pop", "setdefault", "iter", "items", "popitem", "update", "update_rs", "eq"]
+        ),
         st.integers(0, len(KEYS) - 1),
         st.integers(0, len(VALUES) - 1),
     ),
@@ -93,6 +95,15 @@ def run(d, op, key, value):
             return list(d.items())
         if op == "popitem":
             return d.popitem()
+        if op in ("update", "update_rs"):
+            # A few entries starting at `key`'s position in the pool.
+            start = next(i for i, k in enumerate(KEYS) if k is key)
+            src = {k: value for k in KEYS[start : start + 4]}
+            d.update(rs.Dict(src) if op == "update_rs" and isinstance(d, rs.Dict) else src)
+            return None
+        if op == "eq":
+            twin = {k: v for k, v in d.items()}
+            return (d == twin, d == rs.Dict(twin) if isinstance(d, rs.Dict) else True)
     except Exception as e:  # noqa: BLE001
         return ("raised", type(e))
     raise AssertionError(op)

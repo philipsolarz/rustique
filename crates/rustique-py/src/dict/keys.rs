@@ -1336,6 +1336,20 @@ impl KeyTable {
         }
     }
 
+    /// Insert-or-find a native int key in an int (or empty adaptive) table; `None` for other
+    /// tables.
+    #[inline]
+    pub(crate) fn upsert_int(&mut self, v: i64) -> Option<(usize, bool)> {
+        match &mut self.store {
+            KeyStore::Int(ki) => Some(ki.insert(v)),
+            KeyStore::Empty if self.kind == KeyKind::Adaptive => {
+                self.set_store(KeyStore::Int(KeyIndex::default()));
+                self.upsert_int(v)
+            }
+            _ => None,
+        }
+    }
+
     /// Insert-or-find a native key in a native table of its kind with a single probe;
     /// anything else (object tables, demotion) is handed back.
     #[inline(always)]

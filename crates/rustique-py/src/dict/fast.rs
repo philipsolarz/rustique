@@ -43,9 +43,11 @@ struct Originals {
     iternext: ffi::iternextfunc,
     iter: ffi::getiterfunc,
     init: ffi::initproc,
-    /// The original `Dict.get` and `Dict.setdefault` method descriptors.
+    /// The original `Dict.get`, `setdefault`, `pop` and `popitem` method descriptors.
     get: Py<PyAny>,
     setdefault: Py<PyAny>,
+    pop: Py<PyAny>,
+    popitem: Py<PyAny>,
 }
 
 static ORIGINALS: OnceLock<Originals> = OnceLock::new();
@@ -156,8 +158,11 @@ unsafe extern "C" fn ass_subscript(
         let py = Python::assume_attached();
         let dict = dict_ref(py, slf);
         let fast = attempt_mut(|| {
-            let probe = FastKey::of(key)?;
-            if value.is_null() { dict.del_fast(py, &probe) } else { dict.set_fast(py, &probe, Borrowed::from_ptr(py, value)) }
+            if value.is_null() {
+                dict.del_fast(py, &FastKey::of(key)?)
+            } else {
+                dict.set_fast(py, key, Borrowed::from_ptr(py, value))
+            }
         });
         match fast {
             Fast::Done(()) => 0,
@@ -287,6 +292,45 @@ unsafe fn call_original(
         let n = usize::try_from(nargs).unwrap_or(0);
         let call: Vec<*mut ffi::PyObject> = std::iter::once(slf).chain((0..n).map(|i| *args.add(i))).collect();
         ffi::PyObject_Vectorcall(descr.as_ptr(), call.as_ptr(), call.len(), std::ptr::null_mut())
+    }
+}
+
+/// `d.pop(k[, default])` (`METH_FASTCALL`).
+unsafe extern "C" fn pop(slf: *mut ffi::PyObject, args: *mut *mut ffi::PyObject, nargs: ffi::Py_ssize_t) -> *mut ffi::PyObject {
+    // SAFETY: as for `get`.
+    unsafe {
+        let py = Python::assume_attached();
+        if nargs == 1 || nargs == 2 {
+            let fast = attempt_mut(|| {
+                let default = (nargs == 2).then(|| *args.add(1));
+                dict_ref(py, slf).pop_fast(py, *args, default)
+            });
+            match fast {
+                Fast::Done(value) => return value,
+                Fast::Fallback => {}
+                Fast::Panicked => {
+                    panicked();
+                    return std::ptr::null_mut();
+                }
+            }
+        }
+        call_original(&originals().pop, slf, args, nargs)
+    }
+}
+
+/// `d.popitem()` (`METH_NOARGS`).
+unsafe extern "C" fn popitem(slf: *mut ffi::PyObject, _: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    // SAFETY: CPython passes a live `Dict` (checked by the method descriptor).
+    unsafe {
+        let py = Python::assume_attached();
+        match attempt_mut(|| dict_ref(py, slf).popitem_fast(py)) {
+            Fast::Done(item) => item,
+            Fast::Fallback => call_original(&originals().popitem, slf, std::ptr::null_mut(), 0),
+            Fast::Panicked => {
+                panicked();
+                std::ptr::null_mut()
+            }
+        }
     }
 }
 
@@ -425,6 +469,20 @@ static FROM_BUILTIN_DEF: MethodDef = MethodDef(ffi::PyMethodDef {
     ml_doc: c"_from_builtin($cls, d, /)\n--\n\nA Dict with the items of the builtin dict d (a fresh temporary).".as_ptr(),
 });
 
+static POP_DEF: MethodDef = MethodDef(ffi::PyMethodDef {
+    ml_name: c"pop".as_ptr(),
+    ml_meth: ffi::PyMethodDefPointer { PyCFunctionFast: pop },
+    ml_flags: ffi::METH_FASTCALL,
+    ml_doc: c"pop($self, key, default=<unrepresentable>, /)\n--\n\nD.pop(k[,d]) -> v, remove specified key and return the corresponding value.\n\nIf the key is not found, return the default if given; otherwise,\nraise a KeyError.".as_ptr(),
+});
+
+static POPITEM_DEF: MethodDef = MethodDef(ffi::PyMethodDef {
+    ml_name: c"popitem".as_ptr(),
+    ml_meth: ffi::PyMethodDefPointer { PyCFunction: popitem },
+    ml_flags: ffi::METH_NOARGS,
+    ml_doc: c"popitem($self, /)\n--\n\nRemove and return a (key, value) pair as a 2-tuple.\n\nPairs are returned in LIFO (last-in, first-out) order.\nRaises KeyError if the dict is empty.".as_ptr(),
+});
+
 static SETDEFAULT_DOC: &CStr = c"setdefault($self, key, default=None, /)\n--\n\nInsert key with a value of default if key is not in the dictionary.\n\nReturn the value for key if key is in the dictionary, else default.";
 
 static SETDEFAULT_DEF: MethodDef = MethodDef(ffi::PyMethodDef {
@@ -447,6 +505,10 @@ pub(super) fn install(py: Python<'_>) -> PyResult<()> {
     let setdefault_name = pyo3::intern!(py, "setdefault");
     let original_get = dict_type.getattr(get_name)?.unbind();
     let original_setdefault = dict_type.getattr(setdefault_name)?.unbind();
+    let pop_name = pyo3::intern!(py, "pop");
+    let popitem_name = pyo3::intern!(py, "popitem");
+    let original_pop = dict_type.getattr(pop_name)?.unbind();
+    let original_popitem = dict_type.getattr(popitem_name)?.unbind();
     // SAFETY: `tp`/`itp` are the ready heap types PyO3 created for these classes; their slot
     // tables live inside the heap type objects and are writable. No instance or subclass
     // exists yet and module initialisation runs on one thread, so nothing reads the slots
@@ -468,6 +530,8 @@ pub(super) fn install(py: Python<'_>) -> PyResult<()> {
             iter: (*tp).tp_iter.ok_or_else(missing)?,
             get: original_get,
             setdefault: original_setdefault,
+            pop: original_pop,
+            popitem: original_popitem,
         };
         if ORIGINALS.set(originals).is_err() {
             return Ok(());
@@ -484,7 +548,9 @@ pub(super) fn install(py: Python<'_>) -> PyResult<()> {
         (*tp).tp_iter = Some(iter);
 
         let tp_dict = Borrowed::from_ptr(py, (*tp).tp_dict).cast_unchecked::<pyo3::types::PyDict>();
-        for (name, def) in [(get_name, &GET_DEF), (setdefault_name, &SETDEFAULT_DEF)] {
+        for (name, def) in
+            [(get_name, &GET_DEF), (setdefault_name, &SETDEFAULT_DEF), (pop_name, &POP_DEF), (popitem_name, &POPITEM_DEF)]
+        {
             let descr = ffi::PyDescr_NewMethod(tp, std::ptr::from_ref(&def.0).cast_mut());
             tp_dict.set_item(name, Bound::from_owned_ptr_or_err(py, descr)?)?;
         }

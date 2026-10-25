@@ -263,6 +263,15 @@ impl DictInner {
         self.table.positions().into_iter().map(|p| (self.table.key_object(py, p), self.value(py, p))).collect()
     }
 
+    /// Live entries for merging into another dict: native int keys stay native.
+    fn merge_items(&self, py: Python<'_>) -> Vec<(MergeKey, Py<PyAny>)> {
+        let Some(index) = self.table.index() else { return Vec::new() };
+        match self.table.store() {
+            KeyStore::Int(ki) => index.iter().map(|p| (MergeKey::Int(ki.raw_keys()[p]), self.value(py, p))).collect(),
+            _ => index.iter().map(|p| (MergeKey::Obj(self.table.key_object(py, p)), self.value(py, p))).collect(),
+        }
+    }
+
     fn values_list(&self, py: Python<'_>) -> Vec<Py<PyAny>> {
         self.table.positions().into_iter().map(|p| self.value(py, p)).collect()
     }
@@ -884,9 +893,89 @@ impl Dict {
     }
 
     fn update_from(&self, py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<()> {
+        if !self.is_typed() {
+            // `dict.update(mapping)` with a builtin dict or a Dict: merge under one write lock
+            // as far as no Python code is needed, then the general path for the rest.
+            let items: Option<Vec<(MergeKey, Py<PyAny>)>> = if let Ok(dict) = arg.cast_exact::<PyDict>() {
+                let (pairs, err) = collect_dict(dict);
+                if let Some(err) = err {
+                    return Err(err);
+                }
+                Some(pairs.into_iter().map(|(k, v)| (MergeKey::Obj(k.unbind()), v.unbind())).collect())
+            } else if let Ok(other) = arg.cast_exact::<Dict>() {
+                Some(other.get().inner.read(py).merge_items(py))
+            } else {
+                None
+            };
+            if let Some(items) = items {
+                let done = self.merge_fast(py, &items);
+                if done < items.len() {
+                    let raw = items[done..]
+                        .iter()
+                        .map(|(k, v)| {
+                            let k = match k {
+                                MergeKey::Int(n) => Key::from_int(py, *n).obj,
+                                MergeKey::Obj(o) => o.bind(py).clone(),
+                            };
+                            RawPair::Pair(Raw::Later(k), RawValue::Later(v.bind(py).clone()))
+                        })
+                        .collect();
+                    let (items, err) = self.finish_pairs(raw, None);
+                    self.insert_items(py, items, err)?;
+                }
+                return Ok(());
+            }
+        }
         let (raw, err) = read_pairs(arg, &self.key_schema, &self.value_schema);
         let (items, err) = self.finish_pairs(raw, err);
         self.insert_items(py, items, err)
+    }
+
+    /// Merge `items` in order into an untyped dict under one write lock while every key can
+    /// be placed without running Python code; returns how many were merged.
+    fn merge_fast(&self, py: Python<'_>, items: &[(MergeKey, Py<PyAny>)]) -> usize {
+        let mut replaced = Vec::new();
+        let mut moved = Vec::new();
+        let mut boxed = Vec::new();
+        let mut done = 0;
+        {
+            let mut inner = self.inner.write(py);
+            inner.table.reserve(items.len());
+            for (key, value) in items {
+                let slot = match key {
+                    MergeKey::Int(n) => match inner.table.upsert_int(*n) {
+                        Some(slot) => Some(slot),
+                        None => {
+                            // An object table: the key needs an `int` object (creating one is
+                            // fine under the lock).
+                            let obj = Key::from_int(py, *n).obj.unbind();
+                            let slot = inner.table.upsert_fast_key(py, &FastKey::Int(*n, obj.as_ptr()));
+                            boxed.push(obj);
+                            slot
+                        }
+                    },
+                    // SAFETY: the key object is live (held by `items`).
+                    MergeKey::Obj(obj) => match unsafe { FastKey::of(obj.as_ptr()) } {
+                        Some(probe) => inner.table.upsert_fast_key(py, &probe),
+                        None => None,
+                    },
+                };
+                let Some((pos, inserted)) = slot else { break };
+                let Storage::Object(objs) = &mut inner.values else { break };
+                if inserted {
+                    objs.push(value.clone_ref(py));
+                    inner.inserted(&mut moved);
+                } else {
+                    replaced.push(std::mem::replace(&mut objs[pos], value.clone_ref(py)));
+                }
+                done += 1;
+            }
+            self.publish_len(&inner);
+        }
+        drop(replaced);
+        drop(moved);
+        drop(boxed);
+        done
     }
 
     fn set_item(&self, py: Python<'_>, key: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -1006,7 +1095,19 @@ impl Dict {
             };
             match b.table.find_fast(&probe)? {
                 None => return Some(Err(())),
-                Some(j) => out.push((a.value(py, pos), b.value(py, j))),
+                Some(j) => {
+                    if !native
+                        && let (Storage::Object(x), Storage::Object(y)) = (&a.values, &b.values)
+                    {
+                        // SAFETY: both values are live while the read locks are held.
+                        match unsafe { settle(x[pos].as_ptr(), y[j].as_ptr()) } {
+                            Some(true) => continue,
+                            Some(false) => return Some(Err(())),
+                            None => {}
+                        }
+                    }
+                    out.push((a.value(py, pos), b.value(py, j)));
+                }
             }
         }
         Some(Ok((out, native)))
@@ -1030,7 +1131,16 @@ impl Dict {
                     let probe = FastKey::of(k)?;
                     match inner.table.find_fast(&probe)? {
                         None => return Some(Err(())),
-                        Some(at) => out.push((inner.value(py, at), Bound::from_borrowed_ptr(py, v).unbind())),
+                        Some(at) => {
+                            if let Storage::Object(ours) = &inner.values {
+                                match settle(ours[at].as_ptr(), v) {
+                                    Some(true) => continue,
+                                    Some(false) => return Some(Err(())),
+                                    None => {}
+                                }
+                            }
+                            out.push((inner.value(py, at), Bound::from_borrowed_ptr(py, v).unbind()));
+                        }
                     }
                 }
             }
@@ -1222,16 +1332,46 @@ fn release_all(objs: Vec<Py<PyAny>>) {
 impl Dict {
     /// `self[key] = value` for an untyped dict and a fast key (raw slot); `None` means
     /// "use the general path" (nothing was changed).
+    ///
+    /// # Safety
+    /// `key` must be a live object.
     #[inline(always)]
-    fn set_fast(&self, py: Python<'_>, probe: &FastKey, value: Borrowed<'_, '_, PyAny>) -> Option<()> {
+    unsafe fn set_fast(&self, py: Python<'_>, key: *mut ffi::PyObject, value: Borrowed<'_, '_, PyAny>) -> Option<()> {
         if !(self.key_schema.is_any() && self.value_schema.is_any()) {
             return None;
         }
+        let replaced = {
+            let mut inner = self.inner.write(py);
+            // SAFETY: `key` is live (guaranteed by the caller).
+            match unsafe { inner.table.find_object(key) }? {
+                Some(pos) => match &mut inner.values {
+                    Storage::Object(objs) => std::mem::replace(&mut objs[pos], value.to_owned().unbind()),
+                    values => values.set_any(py, pos, &value)?,
+                },
+                None => {
+                    drop(inner);
+                    // SAFETY: as above.
+                    return unsafe { self.insert_fast(py, key, value) };
+                }
+            }
+        };
+        release(Some(replaced));
+        Some(())
+    }
+
+    /// The insertion half of [`Dict::set_fast`] (out of line: growth may move entries).
+    ///
+    /// # Safety
+    /// `key` must be a live object.
+    #[inline(never)]
+    unsafe fn insert_fast(&self, py: Python<'_>, key: *mut ffi::PyObject, value: Borrowed<'_, '_, PyAny>) -> Option<()> {
         let mut replaced = None;
         let mut moved = Vec::new();
         {
+            // SAFETY: `key` is live (guaranteed by the caller).
+            let probe = unsafe { FastKey::of(key) }?;
             let mut inner = self.inner.write(py);
-            let (pos, inserted) = inner.table.upsert_fast_key(py, probe)?;
+            let (pos, inserted) = inner.table.upsert_fast_key(py, &probe)?;
             if inserted {
                 match &mut inner.values {
                     Storage::Object(objs) => objs.push(value.to_owned().unbind()),
@@ -1240,6 +1380,7 @@ impl Dict {
                 self.publish_len(&inner);
                 inner.inserted(&mut moved);
             } else {
+                // Inserted by another thread meanwhile.
                 replaced = match &mut inner.values {
                     Storage::Object(objs) => Some(std::mem::replace(&mut objs[pos], value.to_owned().unbind())),
                     values => values.set_any(py, pos, &value),
@@ -1266,6 +1407,55 @@ impl Dict {
         release(Some(value));
         release_all(displaced);
         Some(())
+    }
+
+    /// `self.pop(key[, default])` for a fast key (raw method): the value or the default as a
+    /// new reference; `None`: use the general path (a miss without default, which raises).
+    #[inline(always)]
+    fn pop_fast(&self, py: Python<'_>, key: *mut ffi::PyObject, default: Option<*mut ffi::PyObject>) -> Option<*mut ffi::PyObject> {
+        let mut displaced = Vec::new();
+        let value = {
+            let mut inner = self.inner.write(py);
+            // SAFETY: `key` is live for the duration of the call.
+            match unsafe { inner.table.find_object(key) }? {
+                Some(pos) => {
+                    let value = inner.remove_entry(py, pos, &mut displaced);
+                    self.publish_len(&inner);
+                    value.into_ptr()
+                }
+                // SAFETY: attached; a new reference to the default.
+                None => unsafe { ffi::Py_NewRef(default?) },
+            }
+        };
+        release_all(displaced);
+        Some(value)
+    }
+
+    /// `self.popitem()` (raw method): the `(key, value)` tuple; `None` when empty (the
+    /// general path raises).
+    #[inline(always)]
+    fn popitem_fast(&self, py: Python<'_>) -> Option<*mut ffi::PyObject> {
+        let mut displaced = Vec::new();
+        let (key, value) = {
+            let mut inner = self.inner.write(py);
+            let item = inner.pop_last(py, &mut displaced)?;
+            self.publish_len(&inner);
+            item
+        };
+        release_all(displaced);
+        // SAFETY: attached; the tuple steals both references (released on failure).
+        unsafe {
+            let (key, value) = (key.into_ptr(), value.into_ptr());
+            let t = ffi::PyTuple_New(2);
+            if t.is_null() {
+                ffi::Py_DECREF(key);
+                ffi::Py_DECREF(value);
+            } else {
+                ffi::PyTuple_SET_ITEM(t, 0, key);
+                ffi::PyTuple_SET_ITEM(t, 1, value);
+            }
+            Some(t)
+        }
     }
 
     /// `self.setdefault(key, default)` for an untyped dict and a fast key (raw method): the
@@ -1381,6 +1571,48 @@ unsafe fn uniquely_referenced(obj: *mut ffi::PyObject) -> bool {
     // SAFETY: `obj` is live. (CPython 3.14+: a reference count of one on GIL builds; on
     // free-threaded builds it also requires that this thread owns the object.)
     unsafe { ffi::PyUnstable_Object_IsUniquelyReferenced(obj) != 0 }
+}
+
+/// `a == b` for two values when it is decided without running Python code: identical
+/// objects, or builtin scalars (`int`, `float`, `str`, `bool`, `complex`, `None`), whose
+/// comparisons are pure C. `None`: compare outside the locks.
+///
+/// # Safety
+/// Both objects must be live.
+#[inline]
+unsafe fn settle(a: *mut ffi::PyObject, b: *mut ffi::PyObject) -> Option<bool> {
+    if a == b {
+        return Some(true);
+    }
+    // SAFETY: both objects are live; comparing builtin scalars runs no Python code.
+    unsafe {
+        let scalar = |o: *mut ffi::PyObject| {
+            let t = ffi::Py_TYPE(o);
+            t == &raw mut ffi::PyLong_Type
+                || t == &raw mut ffi::PyUnicode_Type
+                || t == &raw mut ffi::PyFloat_Type
+                || t == &raw mut ffi::PyBool_Type
+                || t == &raw mut ffi::PyComplex_Type
+                || o == ffi::Py_None()
+        };
+        if !(scalar(a) && scalar(b)) {
+            return None;
+        }
+        match ffi::PyObject_RichCompareBool(a, b, ffi::Py_EQ) {
+            1 => Some(true),
+            0 => Some(false),
+            _ => {
+                ffi::PyErr_Clear();
+                None
+            }
+        }
+    }
+}
+
+/// A key read for merging into another dict.
+enum MergeKey {
+    Int(i64),
+    Obj(Py<PyAny>),
 }
 
 /// Values paired by key, and whether either side stores values natively.
@@ -1944,8 +2176,31 @@ macro_rules! setlike_view {
                 Ok(mine.rich_compare(theirs, op)?.unbind())
             }
 
+            /// `_PyDictView_Intersect`: iterate the smaller operand, keep what the other
+            /// contains (membership in a `Dict` view is a direct lookup).
             fn __and__<'py>(slf: &Bound<'py, Self>, other: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-                view_set(slf.as_any())?.call_method1("intersection", (other,))
+                let py = slf.py();
+                let mine = slf.get().view_len(py);
+                if other.is_exact_instance_of::<PySet>() && mine <= other.len()? {
+                    return other.call_method1(pyo3::intern!(py, "intersection"), (slf,));
+                }
+                let result = PySet::empty(py)?;
+                if is_setlike(other) && !other.is_instance_of::<PySet>() && other.len()? > mine {
+                    for item in slf.try_iter()? {
+                        let item = item?;
+                        if other.contains(&item)? {
+                            result.add(item)?;
+                        }
+                    }
+                } else {
+                    for item in other.try_iter()? {
+                        let item = item?;
+                        if slf.get().view_contains(py, &item)? {
+                            result.add(item)?;
+                        }
+                    }
+                }
+                Ok(result.into_any())
             }
 
             fn __rand__<'py>(slf: &Bound<'py, Self>, other: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
@@ -1993,6 +2248,32 @@ macro_rules! setlike_view {
             }
         }
     };
+}
+
+/// Membership and size shared by the set-like views.
+trait SetLikeView {
+    fn view_len(&self, py: Python<'_>) -> usize;
+    fn view_contains(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<bool>;
+}
+
+impl SetLikeView for DictKeys {
+    fn view_len(&self, py: Python<'_>) -> usize {
+        self.dict.get().len(py)
+    }
+
+    fn view_contains(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<bool> {
+        keys::lookup(py, &self.dict.get().inner, item, classify_key, |_, pos| pos.is_some())
+    }
+}
+
+impl SetLikeView for DictItems {
+    fn view_len(&self, py: Python<'_>) -> usize {
+        self.dict.get().len(py)
+    }
+
+    fn view_contains(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<bool> {
+        self.__contains__(py, item)
+    }
 }
 
 /// `Dict.keys()`: a live, set-like view of the keys.
