@@ -6,43 +6,46 @@ Rewritten bytecode is cached next to the normal one under its own optimisation t
 never sees the other's bytecode, and the rewrite runs once per source change.
 """
 
-from __future__ import annotations
-
-import fnmatch
-import importlib.abc
 import importlib.machinery
 import importlib.util
 import marshal
+import _thread
 import sys
-import threading
-from typing import Any
 
 from rustique._takeover import _rewrite
 
 #: Optimisation tag of rewritten bytecode (bumped with the rewriter version).
 CACHE_TAG = f"rsnative{_rewrite.VERSION}"
 
-#: Never rewritten, whatever the patterns say.
-_NEVER = ("rustique", "rustique.*", "importlib", "importlib.*", "encodings", "encodings.*")
+#: Never rewritten, whatever the patterns say: rustique, importlib and encodings packages.
 
-_lock = threading.Lock()
+_lock = _thread.allocate_lock()
 _patterns: tuple[str, ...] = ()
+_targets: dict | None = None  # None: rustique's types (see _rewrite.default_targets)
 _finder: NativeFinder | None = None
 
 
+def _match(name: str, pattern: str) -> bool:
+    if not any(c in pattern for c in "*?["):
+        return name == pattern
+    import fnmatch  # imports `re`: only when a pattern needs it
+
+    return fnmatch.fnmatchcase(name, pattern)
+
+
 def matches(fullname: str) -> bool:
-    if any(fnmatch.fnmatchcase(fullname, p) for p in _NEVER):
+    if fullname.split(".", 1)[0] in ("rustique", "importlib", "encodings"):
         return False
-    return any(fnmatch.fnmatchcase(fullname, p) for p in _patterns)
+    return any(_match(fullname, p) for p in _patterns)
 
 
 class RewritingLoader(importlib.machinery.SourceFileLoader):
     """A source loader that applies the native-tier rewrite and binds its helpers."""
 
-    def source_to_code(self, data: Any, path: Any, *, _optimize: int = -1) -> Any:  # type: ignore[override]
+    def source_to_code(self, data, path, *, _optimize: int = -1) :  # type: ignore[override]
         return _rewrite.compile_rewritten(data, path, optimize=_optimize)
 
-    def get_code(self, fullname: str) -> Any:
+    def get_code(self, fullname: str) :
         from importlib import _bootstrap_external as bx  # private, present in 3.14/3.15
 
         source_path = self.get_filename(fullname)
@@ -67,18 +70,18 @@ class RewritingLoader(importlib.machinery.SourceFileLoader):
                 pass
         return code
 
-    def exec_module(self, module: Any) -> None:
-        for name, value in _rewrite.helpers().items():
+    def exec_module(self, module) -> None:
+        for name, value in _rewrite.helpers(_targets).items():
             module.__dict__.setdefault(name, value)
         super().exec_module(module)
 
 
-class NativeFinder(importlib.abc.MetaPathFinder):
+class NativeFinder:
     """Finds matching modules with the regular path finder and swaps in the rewriting
     loader for plain source files (extension modules, frozen and zip-imported modules are
     left as they are)."""
 
-    def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> Any:
+    def find_spec(self, fullname: str, path = None, target = None) :
         if not matches(fullname):
             return None
         spec = importlib.machinery.PathFinder.find_spec(fullname, path, target)
@@ -90,24 +93,27 @@ class NativeFinder(importlib.abc.MetaPathFinder):
         return spec
 
 
-def install(patterns: tuple[str, ...]) -> None:
+def install(patterns: tuple[str, ...], targets: dict | None = None) -> None:
     """Add module-name patterns (``fnmatch`` syntax) and make sure the finder is first on
-    ``sys.meta_path``."""
-    global _patterns, _finder
+    ``sys.meta_path``. ``targets`` overrides the builtin -> type mapping (e.g. the builtins
+    themselves, to validate the rewrite in isolation)."""
+    global _patterns, _finder, _targets
     with _lock:
         _patterns = tuple(dict.fromkeys(_patterns + tuple(patterns)))
+        if targets is not None:
+            _targets = dict(targets)
         if _finder is None:
             _finder = NativeFinder()
         if _finder in sys.meta_path:
             sys.meta_path.remove(_finder)
         sys.meta_path.insert(0, _finder)
-    importlib.invalidate_caches()
 
 
 def uninstall() -> None:
-    global _patterns
+    global _patterns, _targets
     with _lock:
         _patterns = ()
+        _targets = None
         if _finder is not None and _finder in sys.meta_path:
             sys.meta_path.remove(_finder)
 

@@ -437,31 +437,31 @@ def compile_section():
         total_rw += rw
     rows["total"] = {"compile ms": total_plain * 1e3, "rewrite+compile ms": total_rw * 1e3, "ratio": total_rw / total_plain}
     # Import through the hook: cold (rewrite + write the opt-rsnative pyc) vs warm (pyc hit).
+    # Both variants import rustique and enable the safe tier before the clock starts, so the
+    # only difference is the native tier for `big_mod`.
     with tempfile.TemporaryDirectory() as d:
         src = importlib.util.find_spec("argparse").origin
         mod = os.path.join(d, "big_mod.py")
         with open(src, "rb") as f, open(mod, "wb") as g:
             g.write(f.read())
-        code = ("import time, sys, rustique; rustique.enable(native='big_mod'); t0 = time.perf_counter(); "
-                "import big_mod; print(time.perf_counter() - t0)")
-        plain_code = "import time; t0 = time.perf_counter(); import big_mod; print(time.perf_counter() - t0)"
+        pre = "import time, rustique, ast, importlib.util, re, fnmatch, marshal; "
+        variants = {"plain": pre + "rustique.enable(); ", "native": pre + "rustique.enable(native='big_mod'); "}
 
-        def imp(c):
-            return min(float(subprocess.run([sys.executable, "-c", c], cwd=d, capture_output=True, text=True,
-                                            env={**os.environ, "PYTHONPATH": d}, check=True).stdout) for _ in range(5))
+        def once(prefix, cold):
+            if cold:
+                for f in glob.glob(os.path.join(d, "__pycache__", "*")):
+                    os.remove(f)
+            code = prefix + "t0 = time.perf_counter(); import big_mod; print(time.perf_counter() - t0)"
+            out = subprocess.run([sys.executable, "-c", code], cwd=d, capture_output=True, text=True,
+                                 env={**os.environ, "PYTHONPATH": d}, check=True).stdout
+            return float(out)
 
-        for f in glob.glob(os.path.join(d, "__pycache__", "*")):
-            os.remove(f)
-        cold_native = float(subprocess.run([sys.executable, "-c", code], cwd=d, capture_output=True, text=True,
-                                           env={**os.environ, "PYTHONPATH": d}, check=True).stdout)
-        warm_native = imp(code)
-        for f in glob.glob(os.path.join(d, "__pycache__", "*")):
-            os.remove(f)
-        cold_plain = float(subprocess.run([sys.executable, "-c", plain_code], cwd=d, capture_output=True, text=True,
-                                          env={**os.environ, "PYTHONPATH": d}, check=True).stdout)
-        warm_plain = imp(plain_code)
-        rows["import argparse copy"] = {"cold plain ms": cold_plain * 1e3, "cold native ms": cold_native * 1e3,
-                                        "warm plain ms": warm_plain * 1e3, "warm native ms": warm_native * 1e3}
+        row = {}
+        for name, prefix in variants.items():
+            row[f"cold {name} ms"] = min(once(prefix, True) for _ in range(5)) * 1e3
+            once(prefix, False)
+            row[f"warm {name} ms"] = min(once(prefix, False) for _ in range(5)) * 1e3
+        rows["import a copy of argparse"] = row
     return rows
 
 

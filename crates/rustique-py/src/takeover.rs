@@ -572,9 +572,11 @@ struct Originals {
     tuple_count: OFn,
     list_contains: ContainsFn,
     tuple_contains: ContainsFn,
-    /// Exception messages of the originals, captured at install time.
-    list_index_msg: Py<PyString>,
-    tuple_index_msg: Py<PyString>,
+    /// Exception messages of the originals, captured at install time. Kept as C strings,
+    /// not Python objects: the patched tables are process-global, so kernels also run in
+    /// subinterpreters, which must never share objects with the main interpreter.
+    list_index_msg: std::ffi::CString,
+    tuple_index_msg: std::ffi::CString,
 }
 
 static ORIGINALS: OnceLock<Originals> = OnceLock::new();
@@ -768,13 +770,13 @@ unsafe extern "C" fn tuple_contains_scan(seq: *mut ffi::PyObject, el: *mut ffi::
 ///
 /// # Safety
 /// Attached thread.
-unsafe fn index_result(r: Result<Option<isize>, ()>, msg: &Py<PyString>) -> *mut ffi::PyObject {
-    // SAFETY: attached thread; `msg` is a live str.
+unsafe fn index_result(r: Result<Option<isize>, ()>, msg: &CStr) -> *mut ffi::PyObject {
+    // SAFETY: attached thread; `msg` is NUL-terminated UTF-8.
     unsafe {
         match r {
             Ok(Some(i)) => ffi::PyLong_FromSsize_t(i),
             Ok(None) => {
-                ffi::PyErr_SetObject(ffi::PyExc_ValueError, msg.as_ptr());
+                ffi::PyErr_SetString(ffi::PyExc_ValueError, msg.as_ptr());
                 std::ptr::null_mut()
             }
             Err(()) => std::ptr::null_mut(),
@@ -1145,7 +1147,7 @@ unsafe fn store(slot: usize, value: usize) {
 }
 
 /// Capture the `ValueError` message the original `index` raises for a missing value.
-fn index_message(py: Python<'_>, original: FastFn, seq: &Bound<'_, PyAny>) -> PyResult<Py<PyString>> {
+fn index_message(py: Python<'_>, original: FastFn, seq: &Bound<'_, PyAny>) -> PyResult<std::ffi::CString> {
     let missing = PyTuple::empty(py); // never equal to an element of an empty sequence
     let argv = [missing.as_ptr()];
     // SAFETY: calling the original METH_FASTCALL function with one argument.
@@ -1159,7 +1161,8 @@ fn index_message(py: Python<'_>, original: FastFn, seq: &Bound<'_, PyAny>) -> Py
     if !err.is_instance_of::<PyValueError>(py) {
         return Err(err);
     }
-    Ok(err.value(py).str()?.unbind())
+    let text = err.value(py).str()?.to_string();
+    std::ffi::CString::new(text).map_err(|e| PyRuntimeError::new_err(e.to_string()))
 }
 
 /// Sanity-check the raw int/float layouts against the running interpreter.

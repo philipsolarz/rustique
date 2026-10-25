@@ -43,8 +43,10 @@ from __future__ import annotations
 
 import ast
 import builtins
-from collections.abc import Callable, Iterable
-from typing import Any
+TYPE_CHECKING = False  # (not `from typing import ...`: keeps `typing` off the import path)
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+    from typing import Any
 
 #: Bump whenever the generated code changes (it is part of the bytecode cache tag).
 VERSION = 1
