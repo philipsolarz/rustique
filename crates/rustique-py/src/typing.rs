@@ -24,9 +24,9 @@ use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PySet, PyString, PyTup
 use rustique_core::DType;
 
 use crate::dict::Dict;
+use crate::frozenset::FrozenSet;
 use crate::list::List;
 use crate::schema::{Schema, any, intern};
-use crate::frozenset::FrozenSet;
 use crate::set::Set;
 
 /// Nesting limit for type expressions (guards the recursive compiler and schema walks).
