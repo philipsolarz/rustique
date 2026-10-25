@@ -806,7 +806,7 @@ fn object_op(
     };
     match op {
         Algebra::Union | Algebra::SymmetricDifference => {
-            out.reserve(b.len());
+            out.reserve(if op == Algebra::Union { b.len() } else { a.len() + b.len() });
             if op == Algebra::SymmetricDifference {
                 for (_, obj, h) in object_entries(py, a) {
                     if !object_contains(py, b, obj, h)? {
@@ -883,6 +883,45 @@ fn table_op(
     }
 }
 
+/// Raw positions `0..n` in a scrambled order: blocks of 8 consecutive positions (one cache
+/// line of `i64` keys) visited with a stride coprime to the number of blocks, each position
+/// exactly once. Early-exit predicates (`isdisjoint`, `<=`) then sample the table the way
+/// CPython's hash-ordered iteration does, instead of scanning it in insertion order (which
+/// meets an overlapping tail only at the end: O(n) where `set` stops after a few probes).
+fn scrambled(n: usize) -> impl Iterator<Item = usize> {
+    const BLOCK: usize = 8;
+    let blocks = n.div_ceil(BLOCK);
+    let gcd = |mut a: usize, mut b: usize| {
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a
+    };
+    let mut stride = (blocks.saturating_mul(5) / 8).max(1);
+    while blocks > 0 && gcd(stride, blocks) != 1 {
+        stride += 1;
+    }
+    (0..blocks).flat_map(move |i| {
+        let block = (i * stride) % blocks;
+        block * BLOCK..((block + 1) * BLOCK).min(n)
+    })
+}
+
+/// Whether some live key of `x` (visited in [`scrambled`] order) satisfies `f`.
+fn any_scrambled<K: Hash + Eq>(x: &KeyIndex<K>, mut f: impl FnMut(&K) -> bool) -> bool {
+    scrambled(x.entries()).any(|pos| x.get_at(pos).is_some_and(&mut f))
+}
+
+/// The first `Some` of `f` over the live entries of an object table, in [`scrambled`] order.
+fn find_scrambled_object<R>(
+    py: Python<'_>,
+    x: &ObjectIndex,
+    mut f: impl FnMut(&Bound<'_, PyAny>, u64) -> Option<R>,
+) -> Option<R> {
+    let index = x.index();
+    scrambled(x.entries()).find_map(|pos| index.hash_at(pos).and_then(|h| f(x.raw_keys()[pos].bind(py), h)))
+}
+
 /// `a <= b` without Python code (`None`: Python equality needed).
 fn table_subset(py: Python<'_>, a: &KeyTable, b: &KeyTable) -> Option<bool> {
     if a.len() > b.len() {
@@ -892,16 +931,20 @@ fn table_subset(py: Python<'_>, a: &KeyTable, b: &KeyTable) -> Option<bool> {
         return Some(true);
     }
     match (a.store(), b.store()) {
-        (KeyStore::Int(x), KeyStore::Int(y)) => Some(x.iter().all(|(_, k)| y.contains(k))),
-        (KeyStore::Str(x), KeyStore::Str(y)) => Some(x.iter().all(|(_, k)| y.contains(k))),
+        (KeyStore::Int(x), KeyStore::Int(y)) => Some(!any_scrambled(x, |k| !y.contains(k))),
+        (KeyStore::Str(x), KeyStore::Str(y)) => Some(!any_scrambled(x, |k| !y.contains(k))),
         (KeyStore::Int(_), KeyStore::Str(_)) | (KeyStore::Str(_), KeyStore::Int(_)) => Some(false),
+        // `Some(Some(()))`: a missing element; `Some(None)`: needs Python equality.
         (KeyStore::Object(x), KeyStore::Object(y)) => {
-            for (_, obj, h) in object_entries(py, x) {
-                if !object_contains(py, y, obj, h)? {
-                    return Some(false);
-                }
+            match find_scrambled_object(py, x, |obj, h| match object_contains(py, y, obj, h) {
+                Some(true) => None,
+                Some(false) => Some(Some(())),
+                None => Some(None),
+            }) {
+                None => Some(true),
+                Some(Some(())) => Some(false),
+                Some(None) => None,
             }
-            Some(true)
         }
         _ => None,
     }
@@ -914,16 +957,20 @@ fn table_disjoint(py: Python<'_>, a: &KeyTable, b: &KeyTable) -> Option<bool> {
         return Some(true);
     }
     match (small.store(), large.store()) {
-        (KeyStore::Int(x), KeyStore::Int(y)) => Some(!x.iter().any(|(_, k)| y.contains(k))),
-        (KeyStore::Str(x), KeyStore::Str(y)) => Some(!x.iter().any(|(_, k)| y.contains(k))),
+        (KeyStore::Int(x), KeyStore::Int(y)) => Some(!any_scrambled(x, |k| y.contains(k))),
+        (KeyStore::Str(x), KeyStore::Str(y)) => Some(!any_scrambled(x, |k| y.contains(k))),
         (KeyStore::Int(_), KeyStore::Str(_)) | (KeyStore::Str(_), KeyStore::Int(_)) => Some(true),
+        // `Some(Some(()))`: a shared element; `Some(None)`: needs Python equality.
         (KeyStore::Object(x), KeyStore::Object(y)) => {
-            for (_, obj, h) in object_entries(py, x) {
-                if object_contains(py, y, obj, h)? {
-                    return Some(false);
-                }
+            match find_scrambled_object(py, x, |obj, h| match object_contains(py, y, obj, h) {
+                Some(false) => None,
+                Some(true) => Some(Some(())),
+                None => Some(None),
+            }) {
+                None => Some(true),
+                Some(Some(())) => Some(false),
+                Some(None) => None,
             }
-            Some(true)
         }
         _ => None,
     }
@@ -2776,6 +2823,19 @@ mod tests {
         assert_eq!(h(&[2, -1, 1]), h(&[1, 2, -1]));
         // 2**61 hashes like 1.
         assert_eq!(h(&[1 << 61]), h(&[1]));
+    }
+
+    #[test]
+    fn scrambled_visits_every_position_once() {
+        for n in [0usize, 1, 7, 8, 9, 16, 17, 100, 1000, 4096, 12_345] {
+            let mut seen: Vec<usize> = scrambled(n).collect();
+            assert_eq!(seen.len(), n);
+            seen.sort_unstable();
+            assert!(seen.iter().copied().eq(0..n), "n = {n}");
+        }
+        // An overlapping second half is met early, not after scanning the first half.
+        let first_tail = scrambled(1000).position(|p| p >= 500).unwrap();
+        assert!(first_tail < 32);
     }
 
     #[test]
