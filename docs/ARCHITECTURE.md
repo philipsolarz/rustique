@@ -266,8 +266,10 @@ keys (the same index serves `Set`). Values live in a parallel `Storage` (same po
   `dict`. Numeric key equivalence follows Python: `1`, `1.0`, `True` are the same key.
 
 **Raw slots** (`dict/fast.rs`). `d[k]`, `k in d`, `d[k] = v`, `del d[k]`, `len(d)`,
-`iter(d)`, `next(it)`, `d.get`, `d.setdefault`, `Dict(...)` (`tp_vectorcall`) and
-`__init__` are `extern "C"` CPython slots instead of PyO3 trampolines. They handle probes
+`iter(d)`, `next(it)`, `d.get`, `d.setdefault`, `d.pop`, `d.popitem`, `Dict(...)`
+(`tp_vectorcall`; `Dict` is an immutable type, so calls specialise to
+`CALL_BUILTIN_CLASS`) and `__init__` are `extern "C"` CPython slots instead of PyO3
+trampolines. They handle probes
 whose hash and comparisons run no Python code (exact `int`/`str`, and `float`, `bool`,
 `None`, `tuple`, `frozenset`, identity-compared instances when every candidate can be
 compared without Python code) and hand everything else to the original PyO3 methods, so
@@ -276,6 +278,14 @@ they never drop a `Py<T>` (only raw decrefs after unlocking) and use the lock AP
 like every other method. A panic in a read-only fast path falls back to the PyO3 method;
 in a mutating one it raises `SystemError`. Python subclasses inherit the slots, and
 defining the dunder in Python overrides them as usual.
+
+**Bulk paths.** `Dict(d)` for an exact builtin `dict` adopts its (pairwise distinct) keys
+without lookups in one pass inside the source's critical section; other untyped
+constructors, `fromkeys` and `|` fill a private table without locking; `update(d)` with a
+builtin `dict` or an exact `Dict` merges under one write lock while no Python code is
+needed. `==` pairs values by key under the read locks and decides builtin scalars in place
+(identity, or a pure-C comparison); only other values are compared outside the locks.
+`keys() & other` follows `_PyDictView_Intersect`.
 
 **Concurrency.** The dict state is behind its `PyRwLock` (§6). `len()` reads a relaxed
 atomic mirror of the entry count, updated under the write lock after every change (like
