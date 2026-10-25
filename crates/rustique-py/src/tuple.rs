@@ -137,6 +137,17 @@ impl Tuple {
         self.cache.item(py, &self.storage, i)
     }
 
+    /// Element `i` (in range) for a comparison: borrowed from object storage, materialised
+    /// (through the element cache) from native storage.
+    #[inline(always)]
+    fn item_ref<'py>(&self, py: Python<'py>, i: usize) -> Item<'py> {
+        match &self.storage {
+            Storage::Object(objects) => Item::Borrowed(objects[i].as_ptr()),
+            // SAFETY: `read_item` returns a new reference.
+            _ => Item::Owned(unsafe { Bound::from_owned_ptr(py, self.read_item(py, i)) }),
+        }
+    }
+
     /// New reference to element `i` (in range).
     #[inline]
     fn item<'py>(&self, py: Python<'py>, i: usize) -> Bound<'py, PyAny> {
@@ -234,11 +245,17 @@ impl Tuple {
             Other::Builtin(b) => {
                 // SAFETY: type check on a live object.
                 if matches!(slf.storage, Storage::Native(_)) && unsafe { ffi::PyTuple_CheckExact(b.as_ptr()) } != 0 {
-                    let converted = convert::ingest(py, &schema::any(), b)?;
-                    if let (Storage::Native(a), Storage::Native(c)) = (&slf.storage, &converted)
-                        && let Some(r) = native_compare(a, c, op)
-                    {
-                        return result(r);
+                    match convert::ingest_exact_seq_any(py, b) {
+                        Some(Storage::Native(c)) => {
+                            if let Storage::Native(a) = &slf.storage
+                                && let Some(r) = native_compare(a, &c, op)
+                            {
+                                return result(r);
+                            }
+                        }
+                        // Released without PyO3's attach check (raw-slot safe).
+                        Some(Storage::Object(objects)) => convert::drop_objects(py, objects),
+                        _ => {}
                     }
                 }
             }
@@ -249,24 +266,56 @@ impl Tuple {
             Other::Tuple(t) => (slf.len(), t.len()),
             Other::Builtin(b) => (slf.len(), b.len()?),
         };
-        let get = |i: usize| -> Bound<'_, PyAny> {
+        // Items are borrowed where they are stored (tuples are immutable and both operands
+        // are alive for the whole call, as in CPython) and materialised otherwise.
+        let mine = |i: usize| -> Item<'_> { slf.item_ref(py, i) };
+        let get = |i: usize| -> Item<'_> {
             match &theirs {
-                Other::Tuple(t) => t.item(py, i),
+                Other::Tuple(t) => t.item_ref(py, i),
                 // SAFETY: `i` is below the (immutable) length of a tuple or subclass.
-                Other::Builtin(b) => unsafe {
-                    Bound::from_borrowed_ptr(py, ffi::PyTuple_GET_ITEM(b.as_ptr(), i as isize))
-                },
+                Other::Builtin(b) => Item::Borrowed(unsafe { ffi::PyTuple_GET_ITEM(b.as_ptr(), i as isize) }),
             }
         };
         let mut i = 0;
+        // Skip the common prefix of identical objects without materialising anything.
+        if let Storage::Object(xs) = &slf.storage {
+            let n = la.min(lb);
+            match &theirs {
+                Other::Tuple(t) => {
+                    if let Storage::Object(ys) = &t.storage {
+                        while i < n && xs[i].as_ptr() == ys[i].as_ptr() {
+                            i += 1;
+                        }
+                    }
+                }
+                Other::Builtin(b) => {
+                    // SAFETY: `i < n` stays below the (immutable) tuple's length.
+                    while i < n && xs[i].as_ptr() == unsafe { ffi::PyTuple_GET_ITEM(b.as_ptr(), i as isize) } {
+                        i += 1;
+                    }
+                }
+            }
+        }
         while i < la && i < lb {
-            let (x, y) = (slf.item(py, i), get(i));
-            if !equal_ptr(py, x.clone(), y.as_ptr())? {
-                return match op {
-                    CompareOp::Eq => result(false),
-                    CompareOp::Ne => result(true),
-                    _ => Ok(x.rich_compare(&y, op)?.unbind()),
-                };
+            let (x, y) = (mine(i), get(i));
+            let (px, py_) = (x.as_ptr(), y.as_ptr());
+            if px != py_ {
+                // SAFETY: live objects.
+                match unsafe { ffi::PyObject_RichCompareBool(px, py_, ffi::Py_EQ) } {
+                    1 => {}
+                    0 => {
+                        return match op {
+                            CompareOp::Eq => result(false),
+                            CompareOp::Ne => result(true),
+                            // SAFETY: live objects; a new reference or null with an exception.
+                            _ => unsafe {
+                                Ok(Bound::from_owned_ptr_or_err(py, ffi::PyObject_RichCompare(px, py_, op as c_int))?
+                                    .unbind())
+                            },
+                        };
+                    }
+                    _ => return Err(PyErr::fetch(py)),
+                }
             }
             i += 1;
         }
@@ -298,6 +347,23 @@ impl Tuple {
     /// object or a new materialised one).
     fn storage_ptr<'py>(&self, py: Python<'py>, i: usize) -> Bound<'py, PyAny> {
         self.item(py, i)
+    }
+}
+
+/// An element taking part in a comparison.
+enum Item<'py> {
+    /// Owned by a tuple that outlives the comparison.
+    Borrowed(Obj),
+    Owned(Bound<'py, PyAny>),
+}
+
+impl Item<'_> {
+    #[inline(always)]
+    fn as_ptr(&self) -> Obj {
+        match self {
+            Item::Borrowed(p) => *p,
+            Item::Owned(b) => b.as_ptr(),
+        }
     }
 }
 
@@ -911,13 +977,19 @@ unsafe extern "C" fn tp_richcompare(slf: Obj, other: Obj, op: c_int) -> Obj {
             ffi::Py_GT => CompareOp::Gt,
             _ => CompareOp::Ge,
         };
-        fallback(ptr::null_mut(), |py| {
-            // SAFETY: see above.
-            let other = unsafe { Bound::from_borrowed_ptr(py, other) };
-            // SAFETY: see above.
-            let this = unsafe { this(slf) };
-            Ok(Tuple::compare_with(py, this, &other, compare_op)?.into_ptr())
-        })
+        let py = py();
+        // SAFETY: see above.
+        let other = unsafe { Bound::from_borrowed_ptr(py, other) };
+        // SAFETY: see above.
+        let this = unsafe { this(slf) };
+        // Raw-slot safe: `compare_with` drops no `Py` handle; errors are restored attached.
+        match Tuple::compare_with(py, this, &other, compare_op) {
+            Ok(r) => r.into_ptr(),
+            Err(e) => {
+                restore(e);
+                ptr::null_mut()
+            }
+        }
     })
 }
 
@@ -989,6 +1061,77 @@ unsafe extern "C" fn tp_vectorcall(_callable: Obj, args: *const Obj, nargsf: usi
     })
 }
 
+/// PyO3's `nb_add`/`nb_multiply` (general dispatch), for the cases the raw paths leave.
+static PYO3_NB_ADD: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
+static PYO3_NB_MULTIPLY: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
+
+#[inline(always)]
+fn is_tuple(p: Obj) -> bool {
+    // SAFETY: a type check on a live object against the (live) `Tuple` type.
+    unsafe { ffi::PyObject_TypeCheck(p, TUPLE_TYPE.load(Ordering::Relaxed)) != 0 }
+}
+
+/// `x + y` for two `Tuple`s whose storages concatenate without conversion.
+unsafe extern "C" fn nb_add(a: Obj, b: Obj) -> Obj {
+    shield(ptr::null_mut(), || {
+        let py = py();
+        if is_tuple(a) && is_tuple(b) {
+            // SAFETY: both are tuples.
+            let (ta, tb) = unsafe { (this(a), this(b)) };
+            if let Some(storage) = ta.storage.concat(py, &tb.storage) {
+                return match Tuple::from_storage(py, storage) {
+                    Ok(t) => t.into_ptr(),
+                    Err(e) => {
+                        restore(e);
+                        ptr::null_mut()
+                    }
+                };
+            }
+        }
+        // SAFETY: PyO3's own slot function for this type.
+        unsafe {
+            let f: ffi::binaryfunc = std::mem::transmute(PYO3_NB_ADD.load(Ordering::Relaxed));
+            f(a, b)
+        }
+    })
+}
+
+/// `x * n` / `n * x` for a compact `int` `n`.
+unsafe extern "C" fn nb_multiply(a: Obj, b: Obj) -> Obj {
+    shield(ptr::null_mut(), || {
+        let py = py();
+        // SAFETY: type checks and reads on live objects.
+        let (t, n) = unsafe {
+            if is_tuple(a)
+                && let Some(n) = compact_int(b)
+            {
+                (a, n)
+            } else if is_tuple(b)
+                && let Some(n) = compact_int(a)
+            {
+                (b, n)
+            } else {
+                let f: ffi::binaryfunc = std::mem::transmute(PYO3_NB_MULTIPLY.load(Ordering::Relaxed));
+                return f(a, b);
+            }
+        };
+        // SAFETY: a tuple; a type pointer read.
+        let (tuple, exact) = unsafe { (this(t), ffi::Py_TYPE(t) == TUPLE_TYPE.load(Ordering::Relaxed)) };
+        if exact && (n == 1 || tuple.is_empty()) {
+            // SAFETY: a live object; a new reference is returned.
+            unsafe { ffi::Py_INCREF(t) };
+            return t;
+        }
+        match tuple.storage.repeat(py, n).and_then(|storage| Tuple::from_storage(py, storage)) {
+            Ok(t) => t.into_ptr(),
+            Err(e) => {
+                restore(e);
+                ptr::null_mut()
+            }
+        }
+    })
+}
+
 unsafe extern "C" fn tuple_dealloc(slf: Obj) {
     // SAFETY: installed as `Tuple`'s `tp_dealloc`.
     shield((), || unsafe { TUPLE_CLASS.dealloc(slf) })
@@ -1055,6 +1198,13 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         (*ty).tp_iter = Some(tp_iter);
         (*ty).tp_hash = Some(tp_hash);
         (*ty).tp_richcompare = Some(tp_richcompare);
+        let num = (*ty).tp_as_number;
+        if let (Some(add), Some(mul)) = ((*num).nb_add, (*num).nb_multiply) {
+            PYO3_NB_ADD.store(add as *mut (), Ordering::Relaxed);
+            PYO3_NB_MULTIPLY.store(mul as *mut (), Ordering::Relaxed);
+            (*num).nb_add = Some(nb_add);
+            (*num).nb_multiply = Some(nb_multiply);
+        }
         (*ty).tp_vectorcall = Some(tp_vectorcall);
         #[cfg(Py_3_15)]
         {
