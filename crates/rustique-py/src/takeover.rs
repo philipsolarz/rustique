@@ -327,28 +327,53 @@ enum Outcome {
 /// (~23 instructions per element, measured), so long generic runs belong to the original.
 const DELEGATE_BEFORE: isize = 16;
 
-/// A scan in CPython's order: element `i` is fetched afresh every step (`get` returns NULL
-/// past the end; for lists it re-reads the size and the item array, which `__eq__` code
-/// may change), identity is tested first, then `fast` decides the comparison without
-/// running Python code where it can (`None`: `PyObject_RichCompareBool(item, needle,
-/// Py_EQ)`, item on the left like CPython). `OWNED`: `get` returns strong references.
+/// How a scan walks its sequence. `fast` decides the comparison of one (non-identical)
+/// element without running Python code where it can; `None` asks for CPython's
+/// `PyObject_RichCompareBool(item, needle, Py_EQ)` (item on the left, like CPython).
+trait Driver {
+    /// # Safety
+    /// `needle` is live; attached thread; `fast` runs no Python code.
+    unsafe fn run(&self, needle: *mut ffi::PyObject, mode: Scan, fast: impl Fn(*mut ffi::PyObject) -> Option<bool>) -> Outcome;
+}
+
+/// What one element contributes to a scan.
+#[inline(always)]
+fn tally(hit: bool, i: isize, mode: Scan, count: &mut isize) -> Option<Outcome> {
+    if hit {
+        if mode == Scan::First {
+            return Some(Outcome::Done(Ok(Some(i))));
+        }
+        *count += 1;
+    }
+    None
+}
+
+/// Generic comparison of one element with a strong reference held (Python code may run).
 ///
 /// # Safety
-/// `get` yields live objects; `needle` is live; attached thread.
-#[inline(always)]
-unsafe fn scan<const OWNED: bool>(
-    get: impl Fn(isize) -> *mut ffi::PyObject,
-    needle: *mut ffi::PyObject,
-    mode: Scan,
-    fast: impl Fn(*mut ffi::PyObject) -> Option<bool>,
-) -> Outcome {
-    let mut count: isize = 0;
-    let mut i: isize = 0;
-    let mut ran_python = false;
-    // SAFETY: per the function contract.
+/// `item` is a live borrowed reference; attached thread.
+#[inline(never)]
+unsafe fn generic_eq(item: *mut ffi::PyObject, needle: *mut ffi::PyObject) -> c_int {
+    // SAFETY: per the caller.
     unsafe {
+        ffi::Py_INCREF(item);
+        let r = ffi::PyObject_RichCompareBool(item, needle, ffi::Py_EQ);
+        ffi::Py_DECREF(item);
+        r
+    }
+}
+
+/// Borrowed items read directly: GIL builds (no other thread runs while no Python code
+/// does), and tuples on every build (immutable). `get` returns NULL past the end; for lists
+/// it re-reads the size and the item array every step (`__eq__` code may change them).
+struct Direct<G>(G);
+
+impl<G: Fn(isize) -> *mut ffi::PyObject> Driver for Direct<G> {
+    #[inline(always)]
+    unsafe fn run(&self, needle: *mut ffi::PyObject, mode: Scan, fast: impl Fn(*mut ffi::PyObject) -> Option<bool>) -> Outcome {
+        let (mut i, mut count, mut ran_python) = (0isize, 0isize, false);
         loop {
-            let item = get(i);
+            let item = (self.0)(i);
             if item.is_null() {
                 break;
             }
@@ -357,41 +382,176 @@ unsafe fn scan<const OWNED: bool>(
             } else {
                 match fast(item) {
                     Some(b) => c_int::from(b),
+                    None if !ran_python && i < DELEGATE_BEFORE => return Outcome::Delegate,
+                    None => {
+                        ran_python = true;
+                        // SAFETY: live item of the sequence, compared with a reference held.
+                        unsafe { generic_eq(item, needle) }
+                    }
+                }
+            };
+            if hit < 0 {
+                return Outcome::Done(Err(()));
+            }
+            if let Some(done) = tally(hit > 0, i, mode, &mut count) {
+                return done;
+            }
+            i += 1;
+        }
+        Outcome::Done(Ok(if mode == Scan::First { None } else { Some(count) }))
+    }
+}
+
+/// Free-threaded short lists: each element is taken as a strong reference
+/// (`PyList_GetItemRef`, CPython's lock-free protocol), so no critical section is paid.
+struct Owned(*mut ffi::PyObject);
+
+impl Driver for Owned {
+    #[inline(always)]
+    unsafe fn run(&self, needle: *mut ffi::PyObject, mode: Scan, fast: impl Fn(*mut ffi::PyObject) -> Option<bool>) -> Outcome {
+        // SAFETY: forwarded.
+        unsafe { owned_scan(self.0, needle, mode, 0, 0, false, fast) }
+    }
+}
+
+/// The per-element-reference scan from index `i` (also the tail of a [`Locked`] scan after
+/// its first generic comparison, so mixed lists pay no lock cycle per foreign element).
+///
+/// # Safety
+/// As for [`Driver::run`]; `list` is a list.
+#[inline(always)]
+unsafe fn owned_scan(
+    list: *mut ffi::PyObject,
+    needle: *mut ffi::PyObject,
+    mode: Scan,
+    mut i: isize,
+    mut count: isize,
+    mut ran_python: bool,
+    fast: impl Fn(*mut ffi::PyObject) -> Option<bool>,
+) -> Outcome {
+    // SAFETY: every element is held through its own strong reference while used.
+    unsafe {
+        loop {
+            if i >= ffi::PyList_GET_SIZE(list) {
+                break;
+            }
+            let item = ffi::PyList_GetItemRef(list, i);
+            if item.is_null() {
+                ffi::PyErr_Clear(); // shrunk concurrently: out of bounds
+                break;
+            }
+            let hit = if item == needle {
+                1
+            } else {
+                match fast(item) {
+                    Some(b) => c_int::from(b),
                     None if !ran_python && i < DELEGATE_BEFORE => {
-                        if OWNED {
-                            ffi::Py_DECREF(item);
-                        }
+                        ffi::Py_DECREF(item);
                         return Outcome::Delegate;
                     }
                     None => {
                         ran_python = true;
-                        if OWNED {
-                            ffi::PyObject_RichCompareBool(item, needle, ffi::Py_EQ)
-                        } else {
-                            ffi::Py_INCREF(item);
-                            let r = ffi::PyObject_RichCompareBool(item, needle, ffi::Py_EQ);
-                            ffi::Py_DECREF(item);
-                            r
-                        }
+                        ffi::PyObject_RichCompareBool(item, needle, ffi::Py_EQ)
                     }
                 }
             };
-            if OWNED {
-                ffi::Py_DECREF(item);
-            }
+            ffi::Py_DECREF(item);
             if hit < 0 {
                 return Outcome::Done(Err(()));
             }
-            if hit > 0 {
-                if mode == Scan::First {
-                    return Outcome::Done(Ok(Some(i)));
-                }
-                count += 1;
+            if let Some(done) = tally(hit > 0, i, mode, &mut count) {
+                return done;
             }
             i += 1;
         }
     }
     Outcome::Done(Ok(if mode == Scan::First { None } else { Some(count) }))
+}
+
+/// Free-threaded lists of at least this many elements are scanned under the list's critical
+/// section: its fixed cost (~120 instructions, measured) is below that of a strong reference
+/// per element (~60 per element) from about four elements on.
+const LOCKED_SCAN_FROM: isize = 4;
+
+/// Free-threaded lists: the pure part of the scan runs under the list's critical section
+/// with direct item reads (no other thread can remove an element meanwhile, so no
+/// per-element reference counting); an element that needs the generic comparison is
+/// taken with a strong reference and compared outside the critical section, after which
+/// the scan resumes at the next index against the live list, as CPython's lock-free
+/// `list_contains` does.
+struct Locked(*mut ffi::PyObject);
+
+impl Driver for Locked {
+    #[inline(always)]
+    unsafe fn run(&self, needle: *mut ffi::PyObject, mode: Scan, fast: impl Fn(*mut ffi::PyObject) -> Option<bool>) -> Outcome {
+        enum Step {
+            End,
+            Hit,
+            Generic(*mut ffi::PyObject),
+        }
+        let list = self.0;
+        // SAFETY: attached thread; `list` is live for the duration of the call.
+        let bound = unsafe { Borrowed::from_ptr(Python::assume_attached(), list) };
+        let (mut i, mut count) = (0isize, 0isize);
+        let step = with_critical_section(&bound, || {
+            // SAFETY: the list's critical section is held: items stay referenced by the
+            // list while we read them; `fast` runs no Python code.
+            unsafe {
+                loop {
+                    if i >= ffi::PyList_GET_SIZE(list) {
+                        return Step::End;
+                    }
+                    let item = *(*list.cast::<ffi::PyListObject>()).ob_item.offset(i);
+                    let hit = if item == needle {
+                        true
+                    } else {
+                        match fast(item) {
+                            Some(b) => b,
+                            None => {
+                                ffi::Py_INCREF(item);
+                                return Step::Generic(item);
+                            }
+                        }
+                    };
+                    if hit {
+                        if mode == Scan::First {
+                            return Step::Hit;
+                        }
+                        count += 1;
+                    }
+                    i += 1;
+                }
+            }
+        });
+        match step {
+            Step::End => {}
+            Step::Hit => return Outcome::Done(Ok(Some(i))),
+            Step::Generic(item) => {
+                // SAFETY: we own a reference to `item`; Python code may run. No Python code
+                // ran before this element, so an early one restarts in the original.
+                let r = unsafe {
+                    if i < DELEGATE_BEFORE {
+                        ffi::Py_DECREF(item);
+                        return Outcome::Delegate;
+                    }
+                    let r = ffi::PyObject_RichCompareBool(item, needle, ffi::Py_EQ);
+                    ffi::Py_DECREF(item);
+                    r
+                };
+                if r < 0 {
+                    return Outcome::Done(Err(()));
+                }
+                if let Some(done) = tally(r > 0, i, mode, &mut count) {
+                    return done;
+                }
+                // A list with foreign elements: finish with a reference per element rather
+                // than a lock cycle per foreign element.
+                // SAFETY: forwarded.
+                return unsafe { owned_scan(list, needle, mode, i + 1, count, true, fast) };
+            }
+        }
+        Outcome::Done(Ok(if mode == Scan::First { None } else { Some(count) }))
+    }
 }
 
 /// A cheap pre-filter for the types the fast paths decide (exact `int`/`bool`/`float`/
@@ -421,20 +581,16 @@ unsafe fn maybe_scalar(op: *mut ffi::PyObject) -> bool {
 /// ints); other big-int comparisons take the generic comparison.
 ///
 /// # Safety
-/// As for [`scan`].
+/// As for [`Driver::run`].
 #[inline(always)]
-unsafe fn scan_for<const OWNED: bool>(
-    get: impl Fn(isize) -> *mut ffi::PyObject,
-    needle: *mut ffi::PyObject,
-    mode: Scan,
-) -> Outcome {
+unsafe fn scan_for(driver: impl Driver, needle: *mut ffi::PyObject, mode: Scan) -> Outcome {
     // SAFETY: values are read according to the exact types checked first.
     unsafe {
         let t = ffi::Py_TYPE(needle);
         let none = ffi::Py_None();
         if t == long_type() || t == bool_type() {
             if let Some(v) = compact_value(needle) {
-                return scan::<OWNED>(get, needle, mode, |item| {
+                return driver.run(needle, mode, |item| {
                     let t = ffi::Py_TYPE(item);
                     if t == long_type() || t == bool_type() {
                         Some(compact_value(item) == Some(v))
@@ -447,7 +603,7 @@ unsafe fn scan_for<const OWNED: bool>(
                     }
                 });
             }
-            return scan::<OWNED>(get, needle, mode, |item| {
+            return driver.run(needle, mode, |item| {
                 let t = ffi::Py_TYPE(item);
                 if t == long_type() || t == bool_type() {
                     if compact_value(item).is_some() { Some(false) } else { None }
@@ -460,7 +616,7 @@ unsafe fn scan_for<const OWNED: bool>(
         }
         if t == float_type() {
             let f = float_value(needle);
-            return scan::<OWNED>(get, needle, mode, |item| {
+            return driver.run(needle, mode, |item| {
                 let t = ffi::Py_TYPE(item);
                 if t == float_type() {
                     Some(float_value(item) == f)
@@ -478,7 +634,7 @@ unsafe fn scan_for<const OWNED: bool>(
             let np = str_parts(needle);
             let (len, hash) = (np.len as isize, np.hash);
             let nbytes = np.len * np.kind as usize;
-            return scan::<OWNED>(get, needle, mode, |item| {
+            return driver.run(needle, mode, |item| {
                 let t = ffi::Py_TYPE(item);
                 if t == str_type() {
                     if ffi::PyUnicode_GET_LENGTH(item) != len {
@@ -499,7 +655,7 @@ unsafe fn scan_for<const OWNED: bool>(
             });
         }
         if needle == none {
-            return scan::<OWNED>(get, needle, mode, |item| {
+            return driver.run(needle, mode, |item| {
                 let t = ffi::Py_TYPE(item);
                 if t == long_type() || t == bool_type() || t == float_type() || t == str_type() { Some(false) } else { None }
             });
@@ -514,32 +670,22 @@ unsafe fn scan_for<const OWNED: bool>(
 /// `list` must be a `list` (exact or a subclass sharing the slot), `needle` a live object.
 #[inline(always)]
 unsafe fn scan_list(list: *mut ffi::PyObject, needle: *mut ffi::PyObject, mode: Scan) -> Outcome {
-    // SAFETY: the size and the item array are re-read at every step; on free-threaded
-    // builds each element is fetched as a strong reference (other threads may replace it).
+    // SAFETY: see the drivers.
     unsafe {
         if FREE_THREADED {
-            scan_for::<true>(
-                |i| {
-                    if i >= ffi::PyList_GET_SIZE(list) {
-                        return std::ptr::null_mut();
-                    }
-                    let item = ffi::PyList_GetItemRef(list, i);
-                    if item.is_null() {
-                        ffi::PyErr_Clear(); // shrunk concurrently: out of bounds
-                    }
-                    item
-                },
-                needle,
-                mode,
-            )
+            if ffi::PyList_GET_SIZE(list) >= LOCKED_SCAN_FROM {
+                scan_for(Locked(list), needle, mode)
+            } else {
+                scan_for(Owned(list), needle, mode)
+            }
         } else {
-            scan_for::<false>(
-                |i| {
+            scan_for(
+                Direct(|i| {
                     if i >= ffi::PyList_GET_SIZE(list) {
                         return std::ptr::null_mut();
                     }
                     *(*list.cast::<ffi::PyListObject>()).ob_item.offset(i)
-                },
+                }),
                 needle,
                 mode,
             )
@@ -556,8 +702,76 @@ unsafe fn scan_tuple(tuple: *mut ffi::PyObject, needle: *mut ffi::PyObject, mode
     // SAFETY: tuple items are immutable and owned by the tuple, which the caller keeps alive.
     unsafe {
         let n = ffi::PyTuple_GET_SIZE(tuple);
-        scan_for::<false>(|i| if i < n { ffi::PyTuple_GET_ITEM(tuple, i) } else { std::ptr::null_mut() }, needle, mode)
+        scan_for(Direct(|i| if i < n { ffi::PyTuple_GET_ITEM(tuple, i) } else { std::ptr::null_mut() }), needle, mode)
     }
+}
+
+/// Free-threaded lists: what can be decided before scanning, lock-free: an empty list, the
+/// needle being the first element, a needle or first element of a foreign type (delegate).
+///
+/// # Safety
+/// `list` is a list; `needle` live; attached thread.
+#[inline(always)]
+unsafe fn ft_prelude(list: *mut ffi::PyObject, needle: *mut ffi::PyObject, mode: Scan) -> Option<Outcome> {
+    // SAFETY: lock-free reads as in `ft_first_is`; the first element is examined through a
+    // strong reference.
+    unsafe {
+        if ffi::PyList_GET_SIZE(list) <= 0 {
+            return Some(Outcome::Done(Ok(if mode == Scan::First { None } else { Some(0) })));
+        }
+        if mode == Scan::First && ft_first_is(list, needle) {
+            return Some(Outcome::Done(Ok(Some(0))));
+        }
+        if !maybe_scalar(needle) {
+            return Some(Outcome::Delegate);
+        }
+        // A heuristic peek at the first element's type, without a reference: it only picks
+        // between two correct strategies (delegate, or scan), so a stale value is harmless.
+        // The read itself is safe for the reason CPython's lock-free `list_get_item_ref`
+        // is: QSBR keeps item arrays and object memory mapped while we are attached. The
+        // type pointer is only compared, never dereferenced.
+        let first = ft_first(list);
+        if first.is_null() || first == needle {
+            return None;
+        }
+        let t = std::ptr::read_volatile(&raw const (*first).ob_type);
+        let scalar = t == long_type() || t == float_type() || t == str_type() || t == bool_type() || first == ffi::Py_None();
+        if scalar { None } else { Some(Outcome::Delegate) }
+    }
+}
+
+/// Free-threaded lists: the first element pointer, read lock-free (NULL when empty).
+///
+/// # Safety
+/// `list` is a list; attached thread. The result may be stale and must not be
+/// dereferenced beyond its header (see [`ft_prelude`]).
+#[inline(always)]
+unsafe fn ft_first(list: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    // SAFETY: relaxed/acquire atomic loads like `list_get_item_ref`; a non-NULL item array
+    // has room for at least one item.
+    unsafe {
+        use std::sync::atomic::{AtomicPtr, Ordering};
+        if ffi::PyList_GET_SIZE(list) <= 0 {
+            return std::ptr::null_mut();
+        }
+        let slot = &raw mut (*list.cast::<ffi::PyListObject>()).ob_item;
+        let items = (*slot.cast::<AtomicPtr<*mut ffi::PyObject>>()).load(Ordering::Acquire);
+        if items.is_null() {
+            return std::ptr::null_mut();
+        }
+        (*items.cast::<AtomicPtr<ffi::PyObject>>()).load(Ordering::Relaxed)
+    }
+}
+
+/// Free-threaded lists: is `needle` the first element? Lock-free; the element pointer is
+/// only compared (see [`ft_first`]).
+///
+/// # Safety
+/// `list` is a list; attached thread.
+#[inline(always)]
+unsafe fn ft_first_is(list: *mut ffi::PyObject, needle: *mut ffi::PyObject) -> bool {
+    // SAFETY: forwarded.
+    unsafe { ft_first(list) == needle }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -673,7 +887,8 @@ unsafe fn prelude(items: *const *mut ffi::PyObject, n: isize, needle: *mut ffi::
 #[inline(always)]
 unsafe fn list_prelude(list: *mut ffi::PyObject, needle: *mut ffi::PyObject, mode: Scan) -> Option<Outcome> {
     if FREE_THREADED {
-        return None;
+        // SAFETY: list and live needle.
+        return unsafe { ft_prelude(list, needle, mode) };
     }
     // SAFETY: GIL held; the item array is valid for the current size.
     unsafe { prelude((*list.cast::<ffi::PyListObject>()).ob_item, ffi::PyList_GET_SIZE(list), needle, mode) }
@@ -704,7 +919,14 @@ unsafe extern "C" fn k_list_contains(seq: *mut ffi::PyObject, el: *mut ffi::PyOb
     // SAFETY: called by CPython through `sq_contains` with a list and a live object. The
     // checks below need no stack frame, so both exits are plain tail calls.
     unsafe {
-        if !FREE_THREADED {
+        if FREE_THREADED {
+            match ft_prelude(seq, el, Scan::First) {
+                Some(Outcome::Done(Ok(found))) => return c_int::from(found.is_some()),
+                Some(Outcome::Done(Err(()))) => return -1,
+                Some(Outcome::Delegate) => return contains_fn(&ORIG_LIST_CONTAINS)(seq, el),
+                None => {}
+            }
+        } else {
             let n = ffi::PyList_GET_SIZE(seq);
             if n == 0 {
                 return 0;
