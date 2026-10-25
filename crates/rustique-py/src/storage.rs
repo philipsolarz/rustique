@@ -495,12 +495,14 @@ impl Storage {
         Some(match (self, other) {
             (_, Storage::Empty) => self.clone_ref(py),
             (Storage::Empty, _) => other.clone_ref(py),
-            (Storage::Native(a), Storage::Native(b)) => Storage::Native(rustique_core::with_column_pair!(a, b, (x, y) => {
+            (Storage::Native(a), Storage::Native(b)) => {
+                Storage::Native(rustique_core::with_column_pair!(a, b, (x, y) => {
                 let mut v = Vec::with_capacity(x.len() + y.len());
                 v.extend_from_slice(x);
                 v.extend_from_slice(y);
                 Column::from(v)
-            }, _ => return None)),
+            }, _ => return None))
+            }
             (Storage::Object(a), Storage::Object(b)) => {
                 let mut v = Vec::with_capacity(a.len() + b.len());
                 v.extend(a.iter().chain(b).map(|o| o.clone_ref(py)));
@@ -762,7 +764,7 @@ impl ElemCache {
         let old = self.slots.swap(ptr::null_mut(), AcqRel);
         if !old.is_null() {
             // SAFETY: exclusive access: no reader holds the vector.
-            unsafe { release_slots(Box::from_raw(old)) };
+            unsafe { release_slots(*Box::from_raw(old)) };
         }
     }
 
@@ -783,14 +785,20 @@ impl ElemCache {
         }
     }
 
-    /// Mirror a replacement of element `i` (the slot is emptied).
+    /// Mirror a replacement of element `i` by the native value of `value` (an exact `int`,
+    /// `float` or `str` equal to the stored element, so it becomes the cached box: like a
+    /// builtin list, `x[i] = v; x[i] is v` holds), or empty the slot (`value` null).
     ///
     /// # Safety
-    /// As [`ElemCache::clear`].
+    /// As [`ElemCache::clear`]; `value` must be null or a live object as described.
     #[inline]
-    pub unsafe fn invalidate(&self, i: usize) {
+    pub unsafe fn replace(&self, i: usize, value: *mut pyo3::ffi::PyObject) {
         if let Some(slot) = self.slots().and_then(|s| s.get(i)) {
-            let old = slot.swap(ptr::null_mut(), Relaxed);
+            if !value.is_null() {
+                // SAFETY: a live object; the cache takes a reference.
+                unsafe { pyo3::ffi::Py_INCREF(value) };
+            }
+            let old = slot.swap(value, Relaxed);
             if !old.is_null() {
                 // SAFETY: owned by the cache; an exact builtin scalar.
                 unsafe { pyo3::ffi::Py_DECREF(old) };
@@ -822,7 +830,7 @@ impl ElemCache {
 ///
 /// # Safety
 /// Attached; the vector is no longer shared.
-unsafe fn release_slots(slots: Box<Vec<std::sync::atomic::AtomicPtr<pyo3::ffi::PyObject>>>) {
+unsafe fn release_slots(slots: Vec<std::sync::atomic::AtomicPtr<pyo3::ffi::PyObject>>) {
     for slot in slots.iter() {
         let p = slot.load(Relaxed);
         if !p.is_null() {
@@ -837,7 +845,7 @@ impl Drop for ElemCache {
         let old = *self.slots.get_mut();
         if !old.is_null() {
             // SAFETY: the owner is being dropped (attached: containers die in tp_dealloc).
-            unsafe { release_slots(Box::from_raw(old)) };
+            unsafe { release_slots(*Box::from_raw(old)) };
         }
     }
 }

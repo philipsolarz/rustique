@@ -319,7 +319,9 @@ unsafe extern "C" fn mp_subscript(slf: Obj, key: Obj) -> Obj {
     shield(ptr::null_mut(), || {
         // SAFETY: see above.
         if let Some(i) = unsafe { compact_int(key) } {
-            return match item_at(unsafe { this(slf) }, i) {
+            // SAFETY: see above.
+            let list = unsafe { this(slf) };
+            return match item_at(list, i) {
                 Some(item) => item,
                 None => {
                     // SAFETY: reading a static exception type.
@@ -330,12 +332,12 @@ unsafe extern "C" fn mp_subscript(slf: Obj, key: Obj) -> Obj {
         }
         // SAFETY: see above.
         if unsafe { ffi::PySlice_Check(key) } != 0 {
-            return get_slice(unsafe { this(slf) }, key);
+            // SAFETY: see above.
+            let list = unsafe { this(slf) };
+            return get_slice(list, key);
         }
         // SAFETY: see above.
-        fallback(ptr::null_mut(), |py| unsafe {
-            Ok(List::__getitem__(&bound(py, slf), &any(py, key))?.into_ptr())
-        })
+        fallback(ptr::null_mut(), |py| unsafe { Ok(List::__getitem__(&bound(py, slf), &any(py, key))?.into_ptr()) })
     })
 }
 
@@ -361,7 +363,9 @@ fn get_slice(list: &List, key: Obj) -> Obj {
 unsafe extern "C" fn sq_item(slf: Obj, i: ffi::Py_ssize_t) -> Obj {
     shield(ptr::null_mut(), || {
         // `PySequence_GetItem` already added the length to negative indices.
-        let item = if i < 0 { None } else { item_at(unsafe { this(slf) }, i) };
+        // SAFETY: see above.
+        let list = unsafe { this(slf) };
+        let item = if i < 0 { None } else { item_at(list, i) };
         item.unwrap_or_else(|| {
             // SAFETY: reading a static exception type.
             raise(unsafe { ffi::PyExc_IndexError }, c"list index out of range");
@@ -383,7 +387,9 @@ fn assign_item(list: &List, i: isize, value: Obj) -> Option<c_int> {
         && let Ok(displaced) = unsafe { store_fast(&mut data, Some(k), value) }
     {
         // SAFETY: exclusive access (the write guard).
-        unsafe { list.cache.invalidate(k) };
+        // (`store_fast` stored `value` natively only if it is an exact int/float/str, and
+        // object storage has no cache.)
+        unsafe { list.cache.replace(k, value) };
         list.version.bump_exclusive();
         drop(data);
         release(displaced);
@@ -446,8 +452,11 @@ fn assign_item(list: &List, i: isize, value: Obj) -> Option<c_int> {
 unsafe extern "C" fn mp_ass_subscript(slf: Obj, key: Obj, value: Obj) -> c_int {
     shield(-1, || {
         // SAFETY: see above.
+        // SAFETY: see above.
+        let list = unsafe { this(slf) };
+        // SAFETY: a live object.
         if let Some(i) = unsafe { compact_int(key) }
-            && let Some(r) = assign_item(unsafe { this(slf) }, i, value)
+            && let Some(r) = assign_item(list, i, value)
         {
             return r;
         }
@@ -540,6 +549,7 @@ unsafe extern "C" fn iteritem(slf: Obj, index: ffi::Py_ssize_t) -> ffi::_PyObjec
         // SAFETY: see above.
         let data = unsafe { this(slf) }.read(py);
         if (index as usize) < data.len() {
+            // SAFETY: see above.
             let list = unsafe { this(slf) };
             ffi::_PyObjectIndexPair { object: list.read_item(py, &data, index as usize), index: index + 1 }
         } else {
@@ -566,7 +576,9 @@ unsafe extern "C" fn tp_richcompare(slf: Obj, other: Obj, op: c_int) -> Obj {
         // Fast path: two lists with native (or empty) storage.
         // SAFETY: see above.
         let list_type = py.get_type::<List>();
+        // SAFETY: a type check on a live object.
         if unsafe { ffi::PyObject_TypeCheck(other, list_type.as_type_ptr()) } != 0 && slf != other {
+            // SAFETY: both are lists.
             let (a, b) = unsafe { (this(slf), this(other)) };
             let (da, db) = crate::sync::read_both(py, &a.data, &b.data);
             let r = if da.is_empty() || db.is_empty() {
@@ -650,12 +662,17 @@ unsafe extern "C" fn nb_multiply(a: Obj, b: Obj) -> Obj {
         let py = py();
         // SAFETY: type checks and reads on live objects.
         let (list, n) = unsafe {
-            if is_list(a) && let Some(n) = compact_int(b) {
+            if is_list(a)
+                && let Some(n) = compact_int(b)
+            {
                 (a, n)
-            } else if is_list(b) && let Some(n) = compact_int(a) {
+            } else if is_list(b)
+                && let Some(n) = compact_int(a)
+            {
                 (b, n)
             } else {
-                let f: ffi::binaryfunc = std::mem::transmute(PYO3_NB_MULTIPLY.load(std::sync::atomic::Ordering::Relaxed));
+                let f: ffi::binaryfunc =
+                    std::mem::transmute(PYO3_NB_MULTIPLY.load(std::sync::atomic::Ordering::Relaxed));
                 return f(a, b);
             }
         };
@@ -725,7 +742,11 @@ unsafe extern "C" fn tp_vectorcall(callable: Obj, args: *const Obj, nargsf: usiz
                     let iterable = unsafe { any(py, *args) };
                     convert::ingest(py, &crate::schema::any(), &iterable)?
                 }
-                n => return Err(pyo3::exceptions::PyTypeError::new_err(format!("List expected at most 1 argument, got {n}"))),
+                n => {
+                    return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                        "List expected at most 1 argument, got {n}"
+                    )));
+                }
             };
             Ok(List::from_storage(py, crate::schema::any(), storage)?.into_ptr())
         })
@@ -984,7 +1005,11 @@ unsafe fn set_method(
 ///
 /// # Safety
 /// Module initialisation only; each function must match its slot's signature.
-pub(crate) unsafe fn rewrap_slots(py: Python<'_>, ty: *mut ffi::PyTypeObject, pairs: &[(&str, *mut c_void)]) -> PyResult<()> {
+pub(crate) unsafe fn rewrap_slots(
+    py: Python<'_>,
+    ty: *mut ffi::PyTypeObject,
+    pairs: &[(&str, *mut c_void)],
+) -> PyResult<()> {
     // SAFETY: as above.
     unsafe {
         let dict = type_dict(py, ty)?;
@@ -1050,7 +1075,6 @@ pub(super) fn install(py: Python<'_>) -> PyResult<()> {
             (*ty)._tp_iteritem = Some(iteritem);
         }
         ffi::PyType_Modified(ty);
-
     }
     Ok(())
 }

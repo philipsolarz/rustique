@@ -303,4 +303,3 @@ impl<T: Send> PyMutex<T> {
         acquire_contended(py, None, Access::Exclusive, || self.inner.try_lock(), || !self.inner.is_locked())
     }
 }
-

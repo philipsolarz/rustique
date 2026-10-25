@@ -98,8 +98,9 @@ impl Tuple {
             return Ok(t.get().storage.clone_ref(py));
         }
         // SAFETY: exact type checks on a live object.
-        let (exact_list, exact_tuple) =
-            unsafe { (ffi::PyList_CheckExact(iterable.as_ptr()) != 0, ffi::PyTuple_CheckExact(iterable.as_ptr()) != 0) };
+        let (exact_list, exact_tuple) = unsafe {
+            (ffi::PyList_CheckExact(iterable.as_ptr()) != 0, ffi::PyTuple_CheckExact(iterable.as_ptr()) != 0)
+        };
         let storage = convert::ingest(py, &schema::any(), iterable)?;
         Ok(match storage {
             // A builtin source keeps its NaN objects themselves (identity).
@@ -252,7 +253,9 @@ impl Tuple {
             match &theirs {
                 Other::Tuple(t) => t.item(py, i),
                 // SAFETY: `i` is below the (immutable) length of a tuple or subclass.
-                Other::Builtin(b) => unsafe { Bound::from_borrowed_ptr(py, ffi::PyTuple_GET_ITEM(b.as_ptr(), i as isize)) },
+                Other::Builtin(b) => unsafe {
+                    Bound::from_borrowed_ptr(py, ffi::PyTuple_GET_ITEM(b.as_ptr(), i as isize))
+                },
             }
         };
         let mut i = 0;
@@ -340,7 +343,11 @@ impl Tuple {
     #[new]
     #[classmethod]
     #[pyo3(signature = (*args, **kwargs), text_signature = "(iterable=(), /)")]
-    fn py_new(cls: &Bound<'_, PyType>, args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+    fn py_new(
+        cls: &Bound<'_, PyType>,
+        args: &Bound<'_, PyTuple>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Self> {
         let py = cls.py();
         if kwargs.is_some_and(|k| !k.is_empty()) {
             let own_init = cls.getattr(intern!(py, "__init__"))?;
@@ -808,6 +815,7 @@ unsafe extern "C" fn mp_subscript(slf: Obj, key: Obj) -> Obj {
     shield(ptr::null_mut(), || {
         // SAFETY: see above.
         if let Some(i) = unsafe { compact_int(key) } {
+            // SAFETY: see above.
             let t = unsafe { this(slf) };
             return match normalize_index(i, t.len()) {
                 Some(k) => t.read_item(py(), k),
@@ -906,7 +914,9 @@ unsafe extern "C" fn tp_richcompare(slf: Obj, other: Obj, op: c_int) -> Obj {
         fallback(ptr::null_mut(), |py| {
             // SAFETY: see above.
             let other = unsafe { Bound::from_borrowed_ptr(py, other) };
-            Ok(Tuple::compare_with(py, unsafe { this(slf) }, &other, compare_op)?.into_ptr())
+            // SAFETY: see above.
+            let this = unsafe { this(slf) };
+            Ok(Tuple::compare_with(py, this, &other, compare_op)?.into_ptr())
         })
     })
 }

@@ -103,7 +103,11 @@ unsafe fn state<'a>(slf: Obj) -> &'a PyMutex<IterState> {
 }
 
 /// A new iterator over `list` (`forward`: from index 0; otherwise from the end).
-pub(super) fn new_iterator<'py>(py: Python<'py>, list: &Bound<'py, List>, forward: bool) -> PyResult<Bound<'py, PyAny>> {
+pub(super) fn new_iterator<'py>(
+    py: Python<'py>,
+    list: &Bound<'py, List>,
+    forward: bool,
+) -> PyResult<Bound<'py, PyAny>> {
     // SAFETY: a live list; a new reference or null with an exception set.
     unsafe { Bound::from_owned_ptr_or_err(py, new_iterator_ptr(list.as_ptr(), forward)) }
 }
@@ -233,12 +237,16 @@ unsafe extern "C" fn length_hint_reverse(slf: Obj, _: Obj) -> Obj {
 
 unsafe extern "C" fn reduce_forward(slf: Obj, _: Obj) -> Obj {
     // SAFETY: see above.
-    shield(ptr::null_mut(), || fallback(ptr::null_mut(), |py| Ok(iter_reduce(py, unsafe { state(slf) }, true)?.into_ptr())))
+    shield(ptr::null_mut(), || {
+        fallback(ptr::null_mut(), |py| Ok(iter_reduce(py, unsafe { state(slf) }, true)?.into_ptr()))
+    })
 }
 
 unsafe extern "C" fn reduce_reverse(slf: Obj, _: Obj) -> Obj {
     // SAFETY: see above.
-    shield(ptr::null_mut(), || fallback(ptr::null_mut(), |py| Ok(iter_reduce(py, unsafe { state(slf) }, false)?.into_ptr())))
+    shield(ptr::null_mut(), || {
+        fallback(ptr::null_mut(), |py| Ok(iter_reduce(py, unsafe { state(slf) }, false)?.into_ptr()))
+    })
 }
 
 unsafe extern "C" fn setstate_forward(slf: Obj, value: Obj) -> Obj {
@@ -273,14 +281,24 @@ macro_rules! method {
 }
 
 static mut FORWARD_METHODS: [ffi::PyMethodDef; 4] = [
-    method!(c"__length_hint__", length_hint_forward, ffi::METH_NOARGS, c"Private method returning an estimate of len(list(it))."),
+    method!(
+        c"__length_hint__",
+        length_hint_forward,
+        ffi::METH_NOARGS,
+        c"Private method returning an estimate of len(list(it))."
+    ),
     method!(c"__reduce__", reduce_forward, ffi::METH_NOARGS, c"Return state information for pickling."),
     method!(c"__setstate__", setstate_forward, ffi::METH_O, c"Set state information for unpickling."),
     ffi::PyMethodDef::zeroed(),
 ];
 
 static mut REVERSE_METHODS: [ffi::PyMethodDef; 4] = [
-    method!(c"__length_hint__", length_hint_reverse, ffi::METH_NOARGS, c"Private method returning an estimate of len(list(it))."),
+    method!(
+        c"__length_hint__",
+        length_hint_reverse,
+        ffi::METH_NOARGS,
+        c"Private method returning an estimate of len(list(it))."
+    ),
     method!(c"__reduce__", reduce_reverse, ffi::METH_NOARGS, c"Return state information for pickling."),
     method!(c"__setstate__", setstate_reverse, ffi::METH_O, c"Set state information for unpickling."),
     ffi::PyMethodDef::zeroed(),
@@ -325,7 +343,8 @@ pub(super) fn install(py: Python<'_>) -> PyResult<()> {
     // SAFETY: static method tables; module initialisation runs once.
     unsafe {
         let forward = create_type(py, c"rustique.ListIterator", next_forward, (&raw mut FORWARD_METHODS).cast())?;
-        let reverse = create_type(py, c"rustique.ListReverseIterator", next_reverse, (&raw mut REVERSE_METHODS).cast())?;
+        let reverse =
+            create_type(py, c"rustique.ListReverseIterator", next_reverse, (&raw mut REVERSE_METHODS).cast())?;
         TYPES[0].store(forward, Ordering::Release);
         TYPES[1].store(reverse, Ordering::Release);
     }

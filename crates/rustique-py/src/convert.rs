@@ -90,11 +90,18 @@ impl ToPython for CompactString {
             if fast_unicode() && bytes.len() <= 64 && bytes.is_ascii() {
                 let s = ffi::PyUnicode_New(bytes.len() as ffi::Py_ssize_t, 127);
                 if !s.is_null() {
-                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), s.cast::<ffi::PyASCIIObject>().add(1).cast::<u8>(), bytes.len());
+                    std::ptr::copy_nonoverlapping(
+                        bytes.as_ptr(),
+                        s.cast::<ffi::PyASCIIObject>().add(1).cast::<u8>(),
+                        bytes.len(),
+                    );
                 }
                 return Bound::from_owned_ptr(py, s);
             }
-            Bound::from_owned_ptr(py, ffi::PyUnicode_FromStringAndSize(bytes.as_ptr().cast(), bytes.len() as ffi::Py_ssize_t))
+            Bound::from_owned_ptr(
+                py,
+                ffi::PyUnicode_FromStringAndSize(bytes.as_ptr().cast(), bytes.len() as ffi::Py_ssize_t),
+            )
         }
     }
 }
@@ -133,7 +140,8 @@ pub fn init_fast_unicode(py: Python<'_>) {
         let wide = pyo3::types::PyString::new(py, "\u{3b1}\u{3b2}");
         // SAFETY: live `str` objects; reading their headers and data.
         unsafe {
-            let data_ok = ffi::PyUnicode_DATA(ascii.as_ptr()) == ascii.as_ptr().cast::<ffi::PyASCIIObject>().add(1).cast();
+            let data_ok =
+                ffi::PyUnicode_DATA(ascii.as_ptr()) == ascii.as_ptr().cast::<ffi::PyASCIIObject>().add(1).cast();
             Some(
                 data_ok
                     && is_compact_ascii(ascii.as_ptr())
@@ -600,7 +608,11 @@ pub fn ingest_exact_seq_any(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Option<St
     unsafe {
         if ffi::PyTuple_CheckExact(p) != 0 {
             let n = ffi::PyTuple_GET_SIZE(p) as usize;
-            let items = if n == 0 { &[][..] } else { std::slice::from_raw_parts((*p.cast::<ffi::PyTupleObject>()).ob_item.as_ptr(), n) };
+            let items = if n == 0 {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts((*p.cast::<ffi::PyTupleObject>()).ob_item.as_ptr(), n)
+            };
             return Some(any_items(py, items));
         }
         if ffi::PyList_CheckExact(p) == 0 {
@@ -612,7 +624,8 @@ pub fn ingest_exact_seq_any(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Option<St
         // pointers until the list is mutated, which cannot happen while it is held.
         unsafe {
             let n = ffi::PyList_GET_SIZE(p) as usize;
-            let items = if n == 0 { &[][..] } else { std::slice::from_raw_parts((*p.cast::<ffi::PyListObject>()).ob_item, n) };
+            let items =
+                if n == 0 { &[][..] } else { std::slice::from_raw_parts((*p.cast::<ffi::PyListObject>()).ob_item, n) };
             any_items(py, items)
         }
     }))

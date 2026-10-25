@@ -489,7 +489,13 @@ def test_element_cache_identity_and_refcounts() -> None:
     assert sys.getrefcount(v) == base
     big = 10**6 + 7
     x[3] = big
-    assert x[3] == big
+    assert x[3] is big  # the assigned object itself, like a builtin list
+    s = List(["a", "b"] * 20)
+    for _ in range(3):
+        list(s)
+    word = "".join(["wo", "rd"])
+    s[0] = word
+    assert s[0] is word
     assert x.pop() == 1009
     t = rs.Tuple(["a", "b"] * 20)
     for _ in range(3):

@@ -1943,7 +1943,8 @@ pub(crate) mod slots;
 static LIST_CLASS: alloc::RawClass<List> = alloc::RawClass::new();
 
 /// The `List` type object (set at module initialisation).
-static LIST_TYPE: std::sync::atomic::AtomicPtr<ffi::PyTypeObject> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+static LIST_TYPE: std::sync::atomic::AtomicPtr<ffi::PyTypeObject> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
 impl alloc::RawDrop for List {
     fn drop_attached(self, py: Python<'_>) {
@@ -1995,9 +1996,7 @@ mod tests {
         Python::attach(|py| {
             let module = pyo3::types::PyModule::new(py, "_rustique").unwrap();
             crate::list::register(&module).unwrap();
-            let make = || {
-                py.eval(c"[object(), 1, 'a']", None, None).unwrap().cast_into::<PyList>().unwrap()
-            };
+            let make = || py.eval(c"[object(), 1, 'a']", None, None).unwrap().cast_into::<PyList>().unwrap();
             // Unique: moved (the object's refcount is unchanged by the move).
             let temp = make();
             let first = temp.get_item(0).unwrap().unbind();
