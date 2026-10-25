@@ -205,17 +205,26 @@ Scoreboard (`benches/scoreboard.py instr --impls enabled`, sizes 0–100), **mea
 | tuple `hit in x` int 100, `count` float 100 | 0.24, 0.18 | 0.24, 0.19 |
 | worst touched cell | 1.043 (`list miss in x object 1`) | 1.047 (same cell) |
 
-Wall time, best of 5, fresh copies; the machine was loaded, so ratios are noisy. 3.15.1,
-**measured**:
+Wall time, pyperf scoreboard cells (`benches/scoreboard.py time --impls enabled`, idle
+machine, enabled and plain CPython in separate processes), 3.15.1, **measured**:
 
-| op | 10k | 1M |
-|---|---:|---:|
-| `x.sort()` ints / floats / strs | 0.30 / 0.35 / 0.54 | 0.13 / 0.19 / 0.35 |
-| `sorted(ints, reverse=True)` | 0.26 | 0.22 |
-| `-1 in ints` / `'zz' in strs` | 0.21 / 0.16 | 0.32 / 0.30 |
-| `x.count(5)` ints / `x.index(2.0)` floats | 0.19 / 0.12 | 0.41 / 0.37 |
+| op (list) | int 10k / 1M | float 10k / 1M | str 10k / 1M | object 10k / 1M |
+|---|---:|---:|---:|---:|
+| `hit in x` | 0.20 / 0.27 | 0.13 / 0.28 | 0.46 / 0.56 | 0.80 / 1.00 |
+| `miss in x` | 0.23 / 0.31 | 0.15 / 0.22 | 0.19 / 0.50 | 1.16 / 0.95 |
+| `x.index(hit)` | 0.23 / 0.29 | 0.09 / 0.22 | 0.38 / 0.59 | 0.97 / 1.00 |
+| `x.count(hit)` | 0.22 / 0.35 | 0.20 / 0.37 | 0.43 / 0.50 | 0.79 / 1.13 |
+| `sorted(x)` | 0.26 / 0.24 | 0.30 / 0.26 | 0.55 / 0.33 | 1.17 / 1.03 |
+| `x.sort()` | 0.26 / 0.15 | 0.32 / 0.20 | 0.58 / 0.33 | 1.08 / 0.93 |
 
-(pyperf scoreboard cells: `benches/results/enabled-time-3.15.1.json`, §11.)
+Tuples behave the same (`in`/`index`/`count`: 0.12–0.51).
+
+**Noise.** On this WSL2 VM, pyperf's per-cell coefficient of variation has a median of 18%
+and a maximum of 46%, so wall time cannot resolve a ≤ 1.05 bar. The object column is
+delegated wholesale to CPython's own code, and its 0.79–1.17 spread is cross-process
+noise: callgrind on the same cells at 10k elements gives 1.000 for all six object cells
+(16–389 Ir of difference on 1.2–25 M), 1.000 for the untouched `for v in x`, and
+0.19–0.41 for the int cells (**measured**, `benches/results/enabled-instr-3.15.1-10k.json`).
 
 Why the gains: CPython compares every element through `PyObject_RichCompareBool`, about
 130 Ir per element on 3.15.1 (measured: `v in x`, 8 ints, 1092 Ir). A kernel compares
