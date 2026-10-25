@@ -1,0 +1,2097 @@
+//! Replacement builtin functions: `sum`, `min`, `max`, `sorted`, `any`, `all`.
+//!
+//! OWNER: objects+builtins workstream (WS5).
+//!
+//! # Mechanism
+//!
+//! [`install`] puts a replacement for each function into the `builtins` module (and
+//! [`uninstall`] restores the originals). A replacement is a `builtin_function_or_method`
+//! built from a `PyMethodDef` that copies the original's name, docstring (hence
+//! `__text_signature__`, `inspect.signature`, `help()`) and call flags, with the original's
+//! `__self__` (the `builtins` module) and `__module__`. So it is indistinguishable from the
+//! original except by identity: `__name__`/`__qualname__`/`__module__`/`repr` are equal,
+//! `pickle.dumps(sum)` pickles by reference to `builtins.sum`, and the interpreter's
+//! `CALL_BUILTIN_FAST_WITH_KEYWORDS` / `CALL_BUILTIN_O` specialisations fire exactly as for
+//! the originals (same `ml_flags`).
+//!
+//! The entry points are raw `extern "C"` functions (no PyO3 argument extraction): they look
+//! at the argument types and either take a fast path or call the *original* C function with
+//! the original arguments, through the `ml_meth` pointer read from the saved original
+//! function object at call time. The fallback therefore costs a few type compares and one
+//! indirect call, and every error message, argument check and corner case of a fallback is
+//! CPython's own.
+//!
+//! # Fast paths (results identical to CPython's, including which object is returned)
+//!
+//! - **Builtin `list`/`tuple`** (and the positional arguments of `min(a, b, ...)`): the item
+//!   array is scanned directly (a list under its critical section on free-threaded builds)
+//!   while the items have an exact builtin type whose handling runs no Python code
+//!   (`int`/`bool`/`float`/`str`, plus `None`/`tuple`/`list`/`bytes` for truthiness). The
+//!   first other item ends the scan; the computation then *continues* from that index
+//!   exactly as CPython's loop would (items fetched one at a time from the live list, like
+//!   `listiter`, Python code allowed), carrying the state over. Nothing observable happened
+//!   during the scan, so the result, the order of Python-level calls and the reaction to
+//!   mutation are CPython's.
+//! - **Builtin `set`/`frozenset`/`dict`** (keys): the same scan over the hash table (under
+//!   the critical section); if an item needs Python code, the original builtin is called
+//!   from scratch (the scan had no side effects).
+//! - **`rustique.List`**: native storage runs the `rustique-core` kernels (`sum` with
+//!   CPython's compensated float summation, `min`/`max` with CPython's tie rules, `sort`) on
+//!   the column under the list's read lock; object storage is scanned like a builtin list
+//!   (on a snapshot); anything else calls the original builtin, which iterates the list.
+//! - **`rustique.Set`**: its elements are scanned like a builtin set.
+//! - `sorted(rustique.List / Set)` returns a new builtin `list`: native columns are sorted
+//!   natively and boxed; otherwise (a `key`, NaNs, object storage) the elements are copied
+//!   into a new builtin list and `list.sort` runs on it, as `sorted` does.
+//!
+//! `sum` follows `builtin_sum_impl` state by state (exact `int` accumulation in a C long,
+//! then compensated float summation, then complex, then generic `+`), so float results are
+//! bit-identical and integer overflow switches to exact big-int addition at the same point.
+//!
+//! # Concurrency
+//!
+//! Builtin lists, sets and dicts are read inside their per-object critical section; only
+//! exact-type reads and the creation of `int`/`float` results happen inside it (no Python
+//! code: no `__eq__`, no `__lt__`, no `__bool__`, no decref of objects with finalizers).
+//! Rustique containers are read under their own read lock with the same rule (§6 of
+//! ARCHITECTURE.md). Install and uninstall are thread-safe; a call racing with them sees
+//! either function.
+
+use std::cmp::Ordering;
+use std::ffi::{CStr, c_int};
+use std::panic::{self, AssertUnwindSafe};
+use std::ptr;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicPtr, Ordering as Atomic};
+
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::ffi;
+use pyo3::impl_::trampoline::{self, MethodDef};
+use pyo3::prelude::*;
+use pyo3::sync::critical_section::with_critical_section;
+use pyo3::types::PyString;
+use rustique_core::kernels::{self, Sum};
+use rustique_core::{Column, with_column};
+
+use crate::convert::{self, ToPython};
+use crate::list::List;
+use crate::objsort;
+use crate::set::Set;
+use crate::storage::Storage;
+
+/// Native kernels on at least this many elements run detached from the interpreter.
+const DETACH_THRESHOLD: usize = 1 << 16;
+/// Native sorts of at least this many elements run detached (they use the rayon pool).
+const SORT_DETACH_THRESHOLD: usize = 1 << 14;
+
+// =======================================================================================
+// Raw object access (exact builtin types only)
+// =======================================================================================
+
+/// `PyLongObject` (CPython >= 3.12): header, `lv_tag` (sign in bits 0-1: 0 positive,
+/// 1 zero, 2 negative; digit count from bit 3), 30-bit digits. Checked by
+/// [`check_layouts`] before anything is installed.
+#[repr(C)]
+struct RawLong {
+    ob_base: ffi::PyObject,
+    lv_tag: usize,
+    ob_digit: [u32; 1],
+}
+
+const LONG_NON_SIZE_BITS: u32 = 3;
+const SIGN_ZERO: usize = 1;
+
+#[inline(always)]
+fn long_type() -> *mut ffi::PyTypeObject {
+    &raw mut ffi::PyLong_Type
+}
+#[inline(always)]
+fn bool_type() -> *mut ffi::PyTypeObject {
+    &raw mut ffi::PyBool_Type
+}
+#[inline(always)]
+fn float_type() -> *mut ffi::PyTypeObject {
+    &raw mut ffi::PyFloat_Type
+}
+#[inline(always)]
+fn str_type() -> *mut ffi::PyTypeObject {
+    &raw mut ffi::PyUnicode_Type
+}
+#[inline(always)]
+fn list_type() -> *mut ffi::PyTypeObject {
+    &raw mut ffi::PyList_Type
+}
+#[inline(always)]
+fn tuple_type() -> *mut ffi::PyTypeObject {
+    &raw mut ffi::PyTuple_Type
+}
+#[inline(always)]
+fn complex_type() -> *mut ffi::PyTypeObject {
+    &raw mut ffi::PyComplex_Type
+}
+
+#[inline(always)]
+unsafe fn type_of(op: *mut ffi::PyObject) -> *mut ffi::PyTypeObject {
+    // SAFETY: caller passes a live object.
+    unsafe { ffi::Py_TYPE(op) }
+}
+
+/// Value of an exact `int`/`bool` if it fits `i64` (CPython's `Py_ssize_t` on 64-bit).
+///
+/// # Safety
+/// `op` must be a live object of type exactly `int` or `bool`.
+#[inline(always)]
+unsafe fn int_value(op: *mut ffi::PyObject) -> Option<i64> {
+    // SAFETY: exact int/bool, so the `RawLong` prefix is valid (layout checked at install).
+    let (tag, digit) = unsafe {
+        let l = op.cast::<RawLong>();
+        ((*l).lv_tag, (*l).ob_digit[0])
+    };
+    if tag < (2 << LONG_NON_SIZE_BITS) {
+        // Compact (at most one digit), as `_PyLong_CompactValue`.
+        return Some((1 - (tag & 3) as i64) * i64::from(digit));
+    }
+    let mut overflow: c_int = 0;
+    // SAFETY: exact int: no `__index__` call; overflow reported by flag, no error possible.
+    let v = unsafe { ffi::PyLong_AsLongLongAndOverflow(op, &mut overflow) };
+    (overflow == 0).then_some(v)
+}
+
+/// # Safety
+/// `op` must be a live `float` (or subclass).
+#[inline(always)]
+unsafe fn float_value(op: *mut ffi::PyObject) -> f64 {
+    // SAFETY: float layout.
+    unsafe { (*op.cast::<ffi::PyFloatObject>()).ob_fval }
+}
+
+/// Truthiness of objects whose `__bool__`/`__len__` is a builtin C slot that runs no
+/// Python code; `None` for anything else.
+///
+/// # Safety
+/// `op` must be a live object.
+#[inline(always)]
+unsafe fn pure_truth(op: *mut ffi::PyObject) -> Option<bool> {
+    // SAFETY: each read matches the checked exact type.
+    unsafe {
+        if op == ffi::Py_True() {
+            return Some(true);
+        }
+        if op == ffi::Py_False() || op == ffi::Py_None() {
+            return Some(false);
+        }
+        let t = type_of(op);
+        if t == long_type() {
+            Some((*op.cast::<RawLong>()).lv_tag & 3 != SIGN_ZERO)
+        } else if t == float_type() {
+            Some(float_value(op) != 0.0)
+        } else if t == str_type() {
+            Some(ffi::PyUnicode_GET_LENGTH(op) != 0)
+        } else if t == tuple_type() {
+            Some(ffi::PyTuple_GET_SIZE(op) != 0)
+        } else if t == list_type() {
+            Some(ffi::PyList_GET_SIZE(op) != 0)
+        } else if t == &raw mut ffi::PyBytes_Type {
+            Some(ffi::Py_SIZE(op) != 0)
+        } else {
+            None
+        }
+    }
+}
+
+/// Exact comparison of an integer with a float (Python's `float_richcompare`); `None` when
+/// the float is NaN.
+#[inline]
+fn cmp_int_float(i: i64, f: f64) -> Option<Ordering> {
+    const TWO53: i64 = 1 << 53;
+    const TWO63: f64 = 9_223_372_036_854_775_808.0;
+    if f.is_nan() {
+        return None;
+    }
+    if (-TWO53..=TWO53).contains(&i) {
+        // Exactly representable.
+        return (i as f64).partial_cmp(&f);
+    }
+    if f >= TWO63 {
+        return Some(Ordering::Less);
+    }
+    if f < -TWO63 {
+        return Some(Ordering::Greater);
+    }
+    // -2^63 <= f < 2^63: the integral part fits i64.
+    let whole = f.trunc();
+    Some(i.cmp(&(whole as i64)).then_with(|| {
+        let frac = f - whole;
+        if frac > 0.0 {
+            Ordering::Less
+        } else if frac < 0.0 {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
+    }))
+}
+
+/// Code-point order of two exact `str`s (Python's `unicode_compare`).
+///
+/// # Safety
+/// Both must be live exact `str` objects.
+#[inline]
+unsafe fn str_cmp(a: *mut ffi::PyObject, b: *mut ffi::PyObject) -> Ordering {
+    if a == b {
+        return Ordering::Equal;
+    }
+    // SAFETY: exact strings; `DATA` holds `GET_LENGTH` code points of `KIND` bytes each.
+    unsafe {
+        let (ka, kb) = (ffi::PyUnicode_KIND(a), ffi::PyUnicode_KIND(b));
+        let (la, lb) = (ffi::PyUnicode_GET_LENGTH(a) as usize, ffi::PyUnicode_GET_LENGTH(b) as usize);
+        let (da, db) = (ffi::PyUnicode_DATA(a), ffi::PyUnicode_DATA(b));
+        if ka == kb {
+            return match ka {
+                1 => {
+                    std::slice::from_raw_parts(da.cast::<u8>(), la).cmp(std::slice::from_raw_parts(db.cast::<u8>(), lb))
+                }
+                2 => std::slice::from_raw_parts(da.cast::<u16>(), la)
+                    .cmp(std::slice::from_raw_parts(db.cast::<u16>(), lb)),
+                _ => std::slice::from_raw_parts(da.cast::<u32>(), la)
+                    .cmp(std::slice::from_raw_parts(db.cast::<u32>(), lb)),
+            };
+        }
+        let at = |d: *mut std::ffi::c_void, k: u32, i: usize| -> u32 {
+            match k {
+                1 => u32::from(*d.cast::<u8>().add(i)),
+                2 => u32::from(*d.cast::<u16>().add(i)),
+                _ => *d.cast::<u32>().add(i),
+            }
+        };
+        for i in 0..la.min(lb) {
+            match at(da, ka, i).cmp(&at(db, kb, i)) {
+                Ordering::Equal => {}
+                o => return o,
+            }
+        }
+        la.cmp(&lb)
+    }
+}
+
+// =======================================================================================
+// Sources
+// =======================================================================================
+
+/// A sequence read like CPython's `listiter`/`tupleiter`: by index, re-checking a list's
+/// current length at every step.
+#[derive(Clone, Copy)]
+enum Seq {
+    List(*mut ffi::PyObject),
+    Tuple(*mut ffi::PyObject),
+    /// The positional arguments of the call (`min(a, b, ...)`).
+    Args(*const *mut ffi::PyObject, usize),
+}
+
+impl Seq {
+    /// Run `f` on the items as borrowed pointers: a list's under its critical section
+    /// (`f` must not run Python code nor block), a tuple's or the arguments directly.
+    ///
+    /// # Safety
+    /// Attached thread; the sequence is alive for the call.
+    #[inline(always)]
+    unsafe fn with_items<R>(self, py: Python<'_>, f: impl FnOnce(&[*mut ffi::PyObject]) -> R) -> R {
+        // SAFETY: exact list/tuple layouts; a list's `ob_item` is stable while its critical
+        // section is held (no other thread can mutate it, and `f` runs no Python code).
+        unsafe {
+            match self {
+                Seq::List(list) => {
+                    let bound = Borrowed::from_ptr(py, list);
+                    with_critical_section(&bound, || {
+                        let n = ffi::PyList_GET_SIZE(list) as usize;
+                        if n == 0 {
+                            f(&[])
+                        } else {
+                            f(std::slice::from_raw_parts((*list.cast::<ffi::PyListObject>()).ob_item, n))
+                        }
+                    })
+                }
+                Seq::Tuple(tuple) => {
+                    let n = ffi::PyTuple_GET_SIZE(tuple) as usize;
+                    if n == 0 {
+                        f(&[])
+                    } else {
+                        f(std::slice::from_raw_parts((*tuple.cast::<ffi::PyTupleObject>()).ob_item.as_ptr(), n))
+                    }
+                }
+                Seq::Args(args, n) => f(if n == 0 { &[] } else { std::slice::from_raw_parts(args, n) }),
+            }
+        }
+    }
+
+    /// Item `i` as a new reference, or `None` past the current end.
+    ///
+    /// # Safety
+    /// Attached thread; the sequence is alive.
+    #[inline]
+    unsafe fn get<'py>(self, py: Python<'py>, i: usize) -> Option<Bound<'py, PyAny>> {
+        // SAFETY: bounds-checked reads; `PyList_GetItemRef` is the thread-safe accessor.
+        unsafe {
+            match self {
+                Seq::List(list) => {
+                    if i >= ffi::PyList_GET_SIZE(list) as usize {
+                        return None;
+                    }
+                    let item = ffi::compat::PyList_GetItemRef(list, i as ffi::Py_ssize_t);
+                    if item.is_null() {
+                        // Shrunk concurrently (free-threaded): the end, as for `listiter`.
+                        ffi::PyErr_Clear();
+                        return None;
+                    }
+                    Some(Bound::from_owned_ptr(py, item))
+                }
+                Seq::Tuple(tuple) => (i < ffi::PyTuple_GET_SIZE(tuple) as usize).then(|| {
+                    Bound::from_borrowed_ptr(py, *(*tuple.cast::<ffi::PyTupleObject>()).ob_item.as_ptr().add(i))
+                }),
+                Seq::Args(args, n) => (i < n).then(|| Bound::from_borrowed_ptr(py, *args.add(i))),
+            }
+        }
+    }
+}
+
+unsafe extern "C" {
+    /// The marker of deleted set-table entries (exported by CPython).
+    static _PySet_Dummy: *mut ffi::PyObject;
+}
+
+/// Live keys of an exact `set`/`frozenset`, in iteration order (table order).
+///
+/// # Safety
+/// The set must stay unmodified while the iterator is used (critical section held for
+/// `set`; frozensets are immutable).
+unsafe fn set_keys(set: *mut ffi::PyObject) -> impl Iterator<Item = *mut ffi::PyObject> {
+    // SAFETY: `PySetObject` layout from the CPython headers (checked at install).
+    let (table, mask, dummy) = unsafe {
+        let so = set.cast::<ffi::PySetObject>();
+        ((*so).table, (*so).mask as usize, _PySet_Dummy)
+    };
+    (0..=mask).filter_map(move |i| {
+        // SAFETY: `table` has `mask + 1` entries.
+        let key = unsafe { (*table.add(i)).key };
+        (!key.is_null() && key != dummy).then_some(key)
+    })
+}
+
+/// Keys of an exact `dict`, in iteration order.
+///
+/// # Safety
+/// The dict's critical section must be held while the iterator is used.
+unsafe fn dict_keys(dict: *mut ffi::PyObject) -> impl Iterator<Item = *mut ffi::PyObject> {
+    let mut pos: ffi::Py_ssize_t = 0;
+    std::iter::from_fn(move || {
+        let (mut key, mut value) = (ptr::null_mut(), ptr::null_mut());
+        // SAFETY: borrowed references from a dict whose critical section is held.
+        (unsafe { ffi::PyDict_Next(dict, &mut pos, &mut key, &mut value) } != 0).then_some(key)
+    })
+}
+
+/// The kind of a builtin hashed container.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hashed {
+    Set,
+    FrozenSet,
+    Dict,
+}
+
+impl Hashed {
+    #[inline(always)]
+    fn of(t: *mut ffi::PyTypeObject) -> Option<Hashed> {
+        if t == &raw mut ffi::PySet_Type {
+            Some(Hashed::Set)
+        } else if t == &raw mut ffi::PyFrozenSet_Type {
+            Some(Hashed::FrozenSet)
+        } else if t == &raw mut ffi::PyDict_Type {
+            Some(Hashed::Dict)
+        } else {
+            None
+        }
+    }
+
+    /// Run `f` on the container's keys (see [`Seq::with_items`] for the rules on `f`).
+    ///
+    /// # Safety
+    /// Attached thread; `obj` is a live container of this kind.
+    unsafe fn with_keys<R>(
+        self,
+        py: Python<'_>,
+        obj: *mut ffi::PyObject,
+        f: impl FnOnce(&mut dyn Iterator<Item = *mut ffi::PyObject>) -> R,
+    ) -> R {
+        // SAFETY: the iterators' requirements are met by the critical section (or
+        // immutability for frozensets).
+        unsafe {
+            match self {
+                Hashed::FrozenSet => f(&mut set_keys(obj)),
+                Hashed::Set => with_critical_section(&Borrowed::from_ptr(py, obj), || f(&mut set_keys(obj))),
+                Hashed::Dict => with_critical_section(&Borrowed::from_ptr(py, obj), || f(&mut dict_keys(obj))),
+            }
+        }
+    }
+}
+
+/// How a scan without Python code ended.
+enum Scan<T> {
+    /// Finished with a result.
+    Done(T),
+    /// Item at this index needs Python code; nothing observable happened before it.
+    Bail(usize),
+    /// A Python exception is set (raised by exact-type operations, as CPython would).
+    Error,
+}
+
+/// Result of a kernel: an object (NULL = exception set) or "use the original builtin".
+enum Out {
+    Obj(*mut ffi::PyObject),
+    Fallback,
+}
+
+// =======================================================================================
+// sum: a state machine following `builtin_sum_impl` (CPython >= 3.12)
+// =======================================================================================
+
+/// CPython's `CompensatedSum` (`cs_from_double` / `cs_add` / `cs_to_double`).
+#[derive(Clone, Copy)]
+struct Cs {
+    hi: f64,
+    lo: f64,
+}
+
+impl Cs {
+    #[inline(always)]
+    fn new(x: f64) -> Cs {
+        Cs { hi: x, lo: 0.0 }
+    }
+
+    #[inline(always)]
+    fn add(&mut self, x: f64) {
+        let t = self.hi + x;
+        if self.hi.abs() >= x.abs() {
+            self.lo += (self.hi - t) + x;
+        } else {
+            self.lo += (x - t) + self.hi;
+        }
+        self.hi = t;
+    }
+
+    #[inline(always)]
+    fn value(self) -> f64 {
+        if self.lo != 0.0 && self.lo.is_finite() { self.hi + self.lo } else { self.hi }
+    }
+}
+
+enum SumState<'py> {
+    /// The C-long fast path (`i_result`).
+    Int(i64),
+    /// The compensated float path.
+    Float(Cs),
+    /// The compensated complex path (real, imaginary).
+    Complex(Cs, Cs),
+    /// The generic path: `result = result + item`.
+    Obj(Bound<'py, PyAny>),
+}
+
+/// Outcome of feeding one item to a [`SumState`].
+enum Step {
+    Ok,
+    /// The item needs Python code (only reported when that is not allowed).
+    Impure,
+    Error,
+}
+
+impl<'py> SumState<'py> {
+    /// Initial state for `start` (`NULL`: the default `0`). Only exact `int`/`float` starts
+    /// are handled; `None` otherwise.
+    ///
+    /// # Safety
+    /// `start` is NULL or a live object.
+    unsafe fn new(py: Python<'py>, start: *mut ffi::PyObject) -> Option<SumState<'py>> {
+        if start.is_null() {
+            return Some(SumState::Int(0));
+        }
+        // SAFETY: exact-type reads of a live object.
+        unsafe {
+            let t = type_of(start);
+            if t == long_type() {
+                Some(match int_value(start) {
+                    Some(v) => SumState::Int(v),
+                    None => SumState::Obj(Bound::from_borrowed_ptr(py, start)),
+                })
+            } else if t == float_type() {
+                Some(SumState::Float(Cs::new(float_value(start))))
+            } else {
+                None
+            }
+        }
+    }
+
+    /// The state after leaving the int path with `result` (CPython checks for an exact
+    /// float, then an exact complex, before falling back to generic addition).
+    ///
+    /// # Safety
+    /// `result` is a live object.
+    unsafe fn after_int(result: Bound<'py, PyAny>) -> SumState<'py> {
+        // SAFETY: exact-type checks and reads.
+        unsafe {
+            if type_of(result.as_ptr()) == float_type() {
+                SumState::Float(Cs::new(float_value(result.as_ptr())))
+            } else {
+                SumState::after_float(result)
+            }
+        }
+    }
+
+    /// # Safety
+    /// `result` is a live object.
+    unsafe fn after_float(result: Bound<'py, PyAny>) -> SumState<'py> {
+        // SAFETY: exact complex layout.
+        unsafe {
+            if type_of(result.as_ptr()) == complex_type() {
+                let z = (*result.as_ptr().cast::<ffi::PyComplexObject>()).cval;
+                SumState::Complex(Cs::new(z.real), Cs::new(z.imag))
+            } else {
+                SumState::Obj(result)
+            }
+        }
+    }
+
+    /// `PyNumber_Add(a, b)` as an owned result.
+    ///
+    /// # Safety
+    /// Live objects; may run Python code unless both are exact numbers.
+    #[inline]
+    unsafe fn add(py: Python<'py>, a: *mut ffi::PyObject, b: *mut ffi::PyObject) -> Option<Bound<'py, PyAny>> {
+        // SAFETY: new reference or NULL with an exception set.
+        unsafe { Bound::from_owned_ptr_or_opt(py, ffi::PyNumber_Add(a, b)) }
+    }
+
+    /// Feed one item. With `python == false`, an item whose handling could run Python
+    /// code is not consumed and `Step::Impure` is returned.
+    ///
+    /// # Safety
+    /// `item` is a live object.
+    #[inline(always)]
+    unsafe fn step(&mut self, py: Python<'py>, item: *mut ffi::PyObject, python: bool) -> Step {
+        // SAFETY: exact-type reads; `PyNumber_Add` on exact int/float operands runs no Python
+        // code, other operands only when `python` allows it.
+        unsafe {
+            let t = type_of(item);
+            match self {
+                SumState::Int(acc) => {
+                    if t == long_type() || t == bool_type() {
+                        if let Some(b) = int_value(item)
+                            && let Some(s) = acc.checked_add(b)
+                        {
+                            *acc = s;
+                            return Step::Ok;
+                        }
+                        // C-long overflow: exact int addition (no Python code).
+                    } else if t != float_type() && !python {
+                        return Step::Impure;
+                    }
+                    let Some(boxed) = Bound::from_owned_ptr_or_opt(py, ffi::PyLong_FromLongLong(*acc)) else {
+                        return Step::Error;
+                    };
+                    let Some(result) = Self::add(py, boxed.as_ptr(), item) else {
+                        return Step::Error;
+                    };
+                    *self = SumState::after_int(result);
+                    Step::Ok
+                }
+                SumState::Float(cs) => {
+                    if t == float_type() {
+                        cs.add(float_value(item));
+                        return Step::Ok;
+                    }
+                    if ffi::PyLong_Check(item) != 0 {
+                        // `PyLong_AsDouble` runs no Python code (also for int subclasses).
+                        let v = if t == long_type() || t == bool_type() {
+                            match int_value(item) {
+                                Some(v) => v as f64,
+                                None => ffi::PyLong_AsDouble(item),
+                            }
+                        } else {
+                            ffi::PyLong_AsDouble(item)
+                        };
+                        if v == -1.0 && !ffi::PyErr_Occurred().is_null() {
+                            return Step::Error;
+                        }
+                        cs.add(v);
+                        return Step::Ok;
+                    }
+                    if !python {
+                        return Step::Impure;
+                    }
+                    let Some(boxed) = Bound::from_owned_ptr_or_opt(py, ffi::PyFloat_FromDouble(cs.value())) else {
+                        return Step::Error;
+                    };
+                    let Some(result) = Self::add(py, boxed.as_ptr(), item) else {
+                        return Step::Error;
+                    };
+                    *self = SumState::after_float(result);
+                    Step::Ok
+                }
+                SumState::Complex(re, im) => {
+                    if t == complex_type() {
+                        let z = (*item.cast::<ffi::PyComplexObject>()).cval;
+                        re.add(z.real);
+                        im.add(z.imag);
+                        return Step::Ok;
+                    }
+                    if ffi::PyLong_Check(item) != 0 {
+                        let v = ffi::PyLong_AsDouble(item);
+                        if v == -1.0 && !ffi::PyErr_Occurred().is_null() {
+                            return Step::Error;
+                        }
+                        re.add(v);
+                        return Step::Ok;
+                    }
+                    if ffi::PyFloat_Check(item) != 0 {
+                        re.add(float_value(item));
+                        return Step::Ok;
+                    }
+                    if !python {
+                        return Step::Impure;
+                    }
+                    let Some(boxed) =
+                        Bound::from_owned_ptr_or_opt(py, ffi::PyComplex_FromDoubles(re.value(), im.value()))
+                    else {
+                        return Step::Error;
+                    };
+                    let Some(result) = Self::add(py, boxed.as_ptr(), item) else {
+                        return Step::Error;
+                    };
+                    *self = SumState::Obj(result);
+                    Step::Ok
+                }
+                SumState::Obj(result) => {
+                    let rt = type_of(result.as_ptr());
+                    let pure = (rt == long_type() || rt == float_type())
+                        && (t == long_type() || t == bool_type() || t == float_type());
+                    if !pure && !python {
+                        return Step::Impure;
+                    }
+                    let Some(next) = Self::add(py, result.as_ptr(), item) else {
+                        return Step::Error;
+                    };
+                    *result = next;
+                    Step::Ok
+                }
+            }
+        }
+    }
+
+    /// Feed items until one needs Python code.
+    ///
+    /// # Safety
+    /// Live items; Python code must not run (critical sections may be held).
+    #[inline]
+    unsafe fn scan(&mut self, py: Python<'py>, items: impl Iterator<Item = *mut ffi::PyObject>) -> Scan<()> {
+        for (k, item) in items.enumerate() {
+            // SAFETY: forwarded.
+            match unsafe { self.step(py, item, false) } {
+                Step::Ok => {}
+                Step::Impure => return Scan::Bail(k),
+                Step::Error => return Scan::Error,
+            }
+        }
+        Scan::Done(())
+    }
+
+    /// The result object (NULL with an exception set on failure).
+    fn finish(self) -> *mut ffi::PyObject {
+        // SAFETY: creating result objects; NULL propagates the exception.
+        unsafe {
+            match self {
+                SumState::Int(v) => ffi::PyLong_FromLongLong(v),
+                SumState::Float(cs) => ffi::PyFloat_FromDouble(cs.value()),
+                SumState::Complex(re, im) => ffi::PyComplex_FromDoubles(re.value(), im.value()),
+                SumState::Obj(r) => r.into_ptr(),
+            }
+        }
+    }
+}
+
+/// `sum(seq, start)` for a builtin list/tuple.
+///
+/// # Safety
+/// Attached thread; `start` is NULL or an exact `int`/`float`.
+unsafe fn sum_seq(py: Python<'_>, seq: Seq, start: *mut ffi::PyObject) -> Out {
+    // SAFETY: forwarded requirements; the scan runs no Python code.
+    unsafe {
+        let Some(mut state) = SumState::new(py, start) else {
+            return Out::Fallback;
+        };
+        match seq.with_items(py, |items| state.scan(py, items.iter().copied())) {
+            Scan::Done(()) => Out::Obj(state.finish()),
+            Scan::Error => Out::Obj(ptr::null_mut()),
+            Scan::Bail(mut i) => {
+                // Continue exactly like CPython's loop over the live sequence.
+                while let Some(item) = seq.get(py, i) {
+                    match state.step(py, item.as_ptr(), true) {
+                        Step::Ok => {}
+                        Step::Error | Step::Impure => return Out::Obj(ptr::null_mut()),
+                    }
+                    i += 1;
+                }
+                Out::Obj(state.finish())
+            }
+        }
+    }
+}
+
+/// `sum(container, start)` for a builtin set/frozenset/dict: a pure scan of the keys, or
+/// the original builtin.
+///
+/// # Safety
+/// Attached thread; `obj` a live container of kind `kind`; `start` NULL or exact int/float.
+unsafe fn sum_hashed(py: Python<'_>, kind: Hashed, obj: *mut ffi::PyObject, start: *mut ffi::PyObject) -> Out {
+    // SAFETY: forwarded requirements; the scan runs no Python code.
+    unsafe {
+        let Some(mut state) = SumState::new(py, start) else {
+            return Out::Fallback;
+        };
+        match kind.with_keys(py, obj, |keys| state.scan(py, keys)) {
+            Scan::Done(()) => Out::Obj(state.finish()),
+            Scan::Error => Out::Obj(ptr::null_mut()),
+            Scan::Bail(_) => Out::Fallback,
+        }
+    }
+}
+
+/// `sum` over borrowed items that the caller keeps alive (a snapshot): `None` if an item
+/// needs Python code.
+///
+/// # Safety
+/// Live items.
+unsafe fn sum_items(
+    py: Python<'_>,
+    items: &[*mut ffi::PyObject],
+    start: *mut ffi::PyObject,
+) -> Option<*mut ffi::PyObject> {
+    // SAFETY: forwarded.
+    unsafe {
+        let mut state = SumState::new(py, start)?;
+        match state.scan(py, items.iter().copied()) {
+            Scan::Done(()) => Some(state.finish()),
+            Scan::Error => Some(ptr::null_mut()),
+            Scan::Bail(_) => None,
+        }
+    }
+}
+
+// =======================================================================================
+// min / max
+// =======================================================================================
+
+/// What `min`/`max` know about an item without running Python code.
+#[derive(Clone, Copy)]
+enum MKey {
+    Int(i64),
+    Float(f64),
+    Str,
+    /// An exact `int` beyond i64: compared with `PyObject_RichCompareBool` (pure).
+    BigInt,
+}
+
+/// # Safety
+/// `op` is a live object.
+#[inline(always)]
+unsafe fn mkey(op: *mut ffi::PyObject) -> Option<MKey> {
+    // SAFETY: exact-type reads.
+    unsafe {
+        let t = type_of(op);
+        if t == long_type() || t == bool_type() {
+            Some(int_value(op).map_or(MKey::BigInt, MKey::Int))
+        } else if t == float_type() {
+            Some(MKey::Float(float_value(op)))
+        } else if t == str_type() {
+            Some(MKey::Str)
+        } else {
+            None
+        }
+    }
+}
+
+/// Whether `item <op> best` (`op` is `Py_LT` for `min`, `Py_GT` for `max`); `Err` with an
+/// exception set when the comparison raises (e.g. `str` vs `int`: a `TypeError`, as CPython).
+///
+/// # Safety
+/// Live objects classified by [`mkey`]; runs no Python code.
+#[inline(always)]
+unsafe fn better(
+    item: *mut ffi::PyObject,
+    ik: MKey,
+    best: *mut ffi::PyObject,
+    bk: MKey,
+    op: c_int,
+) -> Result<bool, ()> {
+    let want = if op == ffi::Py_LT { Ordering::Less } else { Ordering::Greater };
+    match (ik, bk) {
+        (MKey::Int(a), MKey::Int(b)) => Ok(a.cmp(&b) == want),
+        (MKey::Float(a), MKey::Float(b)) => Ok(a.partial_cmp(&b) == Some(want)),
+        (MKey::Int(a), MKey::Float(b)) => Ok(cmp_int_float(a, b) == Some(want)),
+        (MKey::Float(a), MKey::Int(b)) => Ok(cmp_int_float(b, a).map(Ordering::reverse) == Some(want)),
+        // SAFETY: both exact strings.
+        (MKey::Str, MKey::Str) => Ok(unsafe { str_cmp(item, best) } == want),
+        _ => {
+            // Big ints, or mixed str/number (raises TypeError): builtin comparisons of exact
+            // builtin types, no Python code.
+            // SAFETY: live objects.
+            match unsafe { ffi::PyObject_RichCompareBool(item, best, op) } {
+                r if r < 0 => Err(()),
+                r => Ok(r > 0),
+            }
+        }
+    }
+}
+
+/// The current extreme of a scan.
+#[derive(Clone, Copy)]
+struct Best {
+    obj: *mut ffi::PyObject,
+    key: MKey,
+}
+
+/// Scan for the extreme while items need no Python code. On `Bail`, `best` holds the
+/// extreme of the items before the bail index.
+///
+/// # Safety
+/// Live items; runs no Python code.
+#[inline]
+unsafe fn minmax_scan(items: impl Iterator<Item = *mut ffi::PyObject>, op: c_int, best: &mut Option<Best>) -> Scan<()> {
+    for (k, item) in items.enumerate() {
+        // SAFETY: forwarded.
+        let Some(ik) = (unsafe { mkey(item) }) else {
+            return Scan::Bail(k);
+        };
+        match best {
+            None => *best = Some(Best { obj: item, key: ik }),
+            // SAFETY: forwarded.
+            Some(b) => match unsafe { better(item, ik, b.obj, b.key, op) } {
+                Ok(true) => *b = Best { obj: item, key: ik },
+                Ok(false) => {}
+                Err(()) => return Scan::Error,
+            },
+        }
+    }
+    Scan::Done(())
+}
+
+/// The result of `min`/`max` for a finished scan: the extreme, the default, or ValueError.
+///
+/// # Safety
+/// `best` (if any) and `default` (if non-NULL) are live.
+unsafe fn minmax_result(
+    best: Option<*mut ffi::PyObject>,
+    default: *mut ffi::PyObject,
+    op: c_int,
+) -> *mut ffi::PyObject {
+    // SAFETY: new references to live objects; error path sets an exception.
+    unsafe {
+        match best {
+            Some(b) => ffi::Py_NewRef(b),
+            None if !default.is_null() => ffi::Py_NewRef(default),
+            None => {
+                let msg = if op == ffi::Py_LT {
+                    c"min() iterable argument is empty"
+                } else {
+                    c"max() iterable argument is empty"
+                };
+                ffi::PyErr_SetString(ffi::PyExc_ValueError, msg.as_ptr());
+                ptr::null_mut()
+            }
+        }
+    }
+}
+
+/// `min`/`max` (no key) over a builtin list/tuple or the positional arguments.
+///
+/// # Safety
+/// Attached thread; live arguments.
+unsafe fn minmax_seq(py: Python<'_>, seq: Seq, default: *mut ffi::PyObject, op: c_int) -> *mut ffi::PyObject {
+    // SAFETY: forwarded requirements; the scan runs no Python code, and the extreme is
+    // turned into a strong reference before the critical section ends.
+    unsafe {
+        let (scan, best) = seq.with_items(py, |items| {
+            let mut best = None;
+            let scan = minmax_scan(items.iter().copied(), op, &mut best);
+            (scan, best.map(|b| Bound::from_borrowed_ptr(py, b.obj)))
+        });
+        match scan {
+            Scan::Done(()) => minmax_result(best.as_ref().map(Bound::as_ptr), default, op),
+            Scan::Error => ptr::null_mut(),
+            Scan::Bail(mut i) => {
+                // CPython's loop from here on, over the live sequence.
+                let mut best = best;
+                while let Some(item) = seq.get(py, i) {
+                    match &best {
+                        None => best = Some(item),
+                        Some(b) => match ffi::PyObject_RichCompareBool(item.as_ptr(), b.as_ptr(), op) {
+                            r if r < 0 => return ptr::null_mut(),
+                            0 => {}
+                            _ => best = Some(item),
+                        },
+                    }
+                    i += 1;
+                }
+                minmax_result(best.as_ref().map(Bound::as_ptr), default, op)
+            }
+        }
+    }
+}
+
+/// `min`/`max` over a builtin set/frozenset/dict (keys).
+///
+/// # Safety
+/// Attached thread; live arguments.
+unsafe fn minmax_hashed(
+    py: Python<'_>,
+    kind: Hashed,
+    obj: *mut ffi::PyObject,
+    default: *mut ffi::PyObject,
+    op: c_int,
+) -> Out {
+    // SAFETY: as in `minmax_seq`.
+    unsafe {
+        let (scan, best) = kind.with_keys(py, obj, |keys| {
+            let mut best = None;
+            let scan = minmax_scan(keys, op, &mut best);
+            (scan, best.map(|b| Bound::from_borrowed_ptr(py, b.obj)))
+        });
+        match scan {
+            Scan::Done(()) => Out::Obj(minmax_result(best.as_ref().map(Bound::as_ptr), default, op)),
+            Scan::Error => Out::Obj(ptr::null_mut()),
+            Scan::Bail(_) => Out::Fallback,
+        }
+    }
+}
+
+/// `min`/`max` over items a snapshot keeps alive; `None` if an item needs Python code.
+///
+/// # Safety
+/// Live items and default.
+unsafe fn minmax_items(
+    items: &[*mut ffi::PyObject],
+    default: *mut ffi::PyObject,
+    op: c_int,
+) -> Option<*mut ffi::PyObject> {
+    // SAFETY: forwarded.
+    unsafe {
+        let mut best = None;
+        match minmax_scan(items.iter().copied(), op, &mut best) {
+            Scan::Done(()) => Some(minmax_result(best.map(|b| b.obj), default, op)),
+            Scan::Error => Some(ptr::null_mut()),
+            Scan::Bail(_) => None,
+        }
+    }
+}
+
+// =======================================================================================
+// any / all
+// =======================================================================================
+
+/// Scan for the first item whose truth is `stop` (`true` for `any`, `false` for `all`).
+/// `Done(true)` if found.
+///
+/// # Safety
+/// Live items; runs no Python code.
+#[inline]
+unsafe fn truth_scan(items: impl Iterator<Item = *mut ffi::PyObject>, stop: bool) -> Scan<bool> {
+    for (k, item) in items.enumerate() {
+        // SAFETY: forwarded.
+        match unsafe { pure_truth(item) } {
+            Some(t) if t == stop => return Scan::Done(true),
+            Some(_) => {}
+            None => return Scan::Bail(k),
+        }
+    }
+    Scan::Done(false)
+}
+
+#[inline(always)]
+fn bool_result(found: bool, stop: bool) -> *mut ffi::PyObject {
+    // `any`: found a true item → True; `all`: found a false item → False.
+    let value = if found { stop } else { !stop };
+    // SAFETY: new reference to a singleton.
+    unsafe { ffi::Py_NewRef(if value { ffi::Py_True() } else { ffi::Py_False() }) }
+}
+
+/// `any` (`stop = true`) / `all` (`stop = false`) over a builtin list/tuple.
+///
+/// # Safety
+/// Attached thread; live sequence.
+unsafe fn truth_seq(py: Python<'_>, seq: Seq, stop: bool) -> *mut ffi::PyObject {
+    // SAFETY: forwarded; the scan runs no Python code.
+    unsafe {
+        match seq.with_items(py, |items| truth_scan(items.iter().copied(), stop)) {
+            Scan::Done(found) => bool_result(found, stop),
+            Scan::Error => ptr::null_mut(),
+            Scan::Bail(mut i) => {
+                while let Some(item) = seq.get(py, i) {
+                    match ffi::PyObject_IsTrue(item.as_ptr()) {
+                        r if r < 0 => return ptr::null_mut(),
+                        r if (r > 0) == stop => return bool_result(true, stop),
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                bool_result(false, stop)
+            }
+        }
+    }
+}
+
+/// # Safety
+/// Attached thread; live container of kind `kind`.
+unsafe fn truth_hashed(py: Python<'_>, kind: Hashed, obj: *mut ffi::PyObject, stop: bool) -> Out {
+    // SAFETY: forwarded; the scan runs no Python code.
+    unsafe {
+        match kind.with_keys(py, obj, |keys| truth_scan(keys, stop)) {
+            Scan::Done(found) => Out::Obj(bool_result(found, stop)),
+            Scan::Error => Out::Obj(ptr::null_mut()),
+            Scan::Bail(_) => Out::Fallback,
+        }
+    }
+}
+
+// =======================================================================================
+// Native columns (rustique.List)
+// =======================================================================================
+
+/// How `start` enters a native sum.
+#[derive(Clone, Copy)]
+enum NativeStart {
+    Default,
+    Int(i64),
+    Float(f64),
+}
+
+/// `sum(column, start)` with CPython's result; `None`: not handled natively (str data,
+/// unusual starts), use the original builtin.
+fn column_sum<'py>(py: Python<'py>, column: &Column, start: NativeStart) -> Option<PyResult<Bound<'py, PyAny>>> {
+    let big = column.len() >= DETACH_THRESHOLD;
+    if matches!(column, Column::Str(v) if !v.is_empty()) {
+        return None; // CPython raises at the first `int + str`: let it.
+    }
+    let int_result = |x: i128| -> PyResult<Bound<'py, PyAny>> {
+        match i64::try_from(x) {
+            Ok(v) => Ok(v.to_python(py)),
+            Err(_) => Ok(x.into_pyobject(py)?.into_any()),
+        }
+    };
+    let is_float = matches!(column, Column::F32(_) | Column::F64(_));
+    match start {
+        NativeStart::Default => {
+            let sum = if big { py.detach(|| kernels::sum(column)) } else { kernels::sum(column) };
+            Some(match sum {
+                Ok(Sum::Int(x)) => int_result(x),
+                Ok(Sum::Float(x)) => Ok(x.to_python(py)),
+                Err(_) => return None,
+            })
+        }
+        NativeStart::Int(s) if !is_float => {
+            let sum = if big { py.detach(|| kernels::sum(column)) } else { kernels::sum(column) };
+            match sum {
+                // |x| < 2^124, so adding an i64 cannot overflow i128.
+                Ok(Sum::Int(x)) => Some(int_result(x + i128::from(s))),
+                _ => None,
+            }
+        }
+        NativeStart::Int(s) => {
+            // Int path until the first float: `float(s) + x0`, then compensated summation.
+            let run = || {
+                let mut items = float_items(column);
+                items.next().map(|x0| {
+                    let mut cs = Cs::new(s as f64 + x0);
+                    items.for_each(|x| cs.add(x));
+                    cs.value()
+                })
+            };
+            let total = if big { py.detach(run) } else { run() };
+            Some(Ok(match total {
+                Some(f) => f.to_python(py),
+                None => s.to_python(py),
+            }))
+        }
+        NativeStart::Float(f) => {
+            // Compensated float path from the start: ints convert like `PyLong_AsDouble`.
+            let run = || {
+                let mut cs = Cs::new(f);
+                with_column!(column, v => v.iter().for_each(|x| cs.add(element_as_f64(x))));
+                cs.value()
+            };
+            let total = if big { py.detach(run) } else { run() };
+            Some(Ok(total.to_python(py)))
+        }
+    }
+}
+
+/// The elements of a float column as `f64`.
+fn float_items(column: &Column) -> Box<dyn Iterator<Item = f64> + '_> {
+    match column {
+        Column::F64(v) => Box::new(v.iter().copied()),
+        Column::F32(v) => Box::new(v.iter().map(|&x| f64::from(x))),
+        _ => Box::new(std::iter::empty()),
+    }
+}
+
+/// A native element as Python's `float(x)` (correctly rounded for integers).
+trait AsF64 {
+    fn as_f64(&self) -> f64;
+}
+macro_rules! impl_as_f64 {
+    ($($t:ty),*) => {$(
+        impl AsF64 for $t {
+            #[inline(always)]
+            fn as_f64(&self) -> f64 {
+                *self as f64
+            }
+        }
+    )*};
+}
+impl_as_f64!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
+impl AsF64 for bool {
+    #[inline(always)]
+    fn as_f64(&self) -> f64 {
+        f64::from(u8::from(*self))
+    }
+}
+impl AsF64 for compact_str::CompactString {
+    fn as_f64(&self) -> f64 {
+        f64::NAN // unreachable: str columns are rejected before summing
+    }
+}
+
+#[inline(always)]
+fn element_as_f64<T: AsF64>(x: &T) -> f64 {
+    x.as_f64()
+}
+
+/// Truthiness of every element of a column (`any`: some true; `all`: all true).
+fn column_truth(column: &Column, stop: bool) -> bool {
+    macro_rules! scan {
+        ($v:expr, $truth:expr) => {
+            $v.iter().any(|x| $truth(x) == stop)
+        };
+    }
+    match column {
+        Column::Bool(v) => scan!(v, |x: &bool| *x),
+        Column::I8(v) => scan!(v, |x: &i8| *x != 0),
+        Column::I16(v) => scan!(v, |x: &i16| *x != 0),
+        Column::I32(v) => scan!(v, |x: &i32| *x != 0),
+        Column::I64(v) => scan!(v, |x: &i64| *x != 0),
+        Column::U8(v) => scan!(v, |x: &u8| *x != 0),
+        Column::U16(v) => scan!(v, |x: &u16| *x != 0),
+        Column::U32(v) => scan!(v, |x: &u32| *x != 0),
+        Column::U64(v) => scan!(v, |x: &u64| *x != 0),
+        Column::F32(v) => scan!(v, |x: &f32| *x != 0.0),
+        Column::F64(v) => scan!(v, |x: &f64| *x != 0.0),
+        Column::Str(v) => scan!(v, |x: &compact_str::CompactString| !x.is_empty()),
+    }
+}
+
+/// Whether a float column holds a NaN (CPython's sort order with NaNs differs from the
+/// native kernel's, so such columns are sorted by `list.sort`).
+fn has_nan(column: &Column) -> bool {
+    match column {
+        Column::F64(v) => v.iter().any(|x| x.is_nan()),
+        Column::F32(v) => v.iter().any(|x| x.is_nan()),
+        _ => false,
+    }
+}
+
+/// A new builtin list holding the column's elements as Python objects.
+fn column_to_pylist<'py>(py: Python<'py>, column: &Column) -> PyResult<Bound<'py, PyAny>> {
+    let n = column.len();
+    // SAFETY: a fresh list of `n` NULL slots, each filled exactly once with a new reference
+    // before the list is visible to anyone.
+    unsafe {
+        let list = Bound::from_owned_ptr_or_err(py, ffi::PyList_New(n as ffi::Py_ssize_t))?;
+        let slots = (*list.as_ptr().cast::<ffi::PyListObject>()).ob_item;
+        with_column!(column, v => {
+            for (i, x) in v.iter().enumerate() {
+                *slots.add(i) = x.to_python(py).into_ptr();
+            }
+        });
+        Ok(list)
+    }
+}
+
+/// A new builtin list taking over owned references.
+fn objects_to_pylist(py: Python<'_>, objects: Vec<Py<PyAny>>) -> PyResult<Bound<'_, PyAny>> {
+    // SAFETY: as in `column_to_pylist`; `into_ptr` transfers each reference to the list.
+    unsafe {
+        let list = Bound::from_owned_ptr_or_err(py, ffi::PyList_New(objects.len() as ffi::Py_ssize_t))?;
+        let slots = (*list.as_ptr().cast::<ffi::PyListObject>()).ob_item;
+        for (i, obj) in objects.into_iter().enumerate() {
+            *slots.add(i) = obj.into_ptr();
+        }
+        Ok(list)
+    }
+}
+
+/// Raw pointers of owned objects (borrowed for the lifetime of `objects`).
+fn raw(objects: &[Py<PyAny>]) -> &[*mut ffi::PyObject] {
+    // SAFETY: `Py<PyAny>` is `repr(transparent)` over a non-null `PyObject*`.
+    unsafe { std::slice::from_raw_parts(objects.as_ptr().cast::<*mut ffi::PyObject>(), objects.len()) }
+}
+
+// =======================================================================================
+// Saved originals, keyword names, Rustique types
+// =======================================================================================
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(usize)]
+enum Which {
+    Sum = 0,
+    Min = 1,
+    Max = 2,
+    Sorted = 3,
+    Any = 4,
+    All = 5,
+}
+
+const NAMES: [&CStr; 6] = [c"sum", c"min", c"max", c"sorted", c"any", c"all"];
+const FASTCALL_KW: c_int = ffi::METH_FASTCALL | ffi::METH_KEYWORDS;
+const FLAGS: [c_int; 6] = [FASTCALL_KW, FASTCALL_KW, FASTCALL_KW, FASTCALL_KW, ffi::METH_O, ffi::METH_O];
+
+/// The original builtin function objects (kept alive by [`STATE`] forever once set).
+static ORIGINAL: [AtomicPtr<ffi::PyObject>; 6] = [const { AtomicPtr::new(ptr::null_mut()) }; 6];
+/// Interned keyword names: `key`, `default`, `start`, `reverse`.
+static KW: [AtomicPtr<ffi::PyObject>; 4] = [const { AtomicPtr::new(ptr::null_mut()) }; 4];
+const KW_KEY: usize = 0;
+const KW_DEFAULT: usize = 1;
+const KW_START: usize = 2;
+const KW_REVERSE: usize = 3;
+/// Type objects of `rustique.List` and `rustique.Set`.
+static RS_LIST: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(ptr::null_mut());
+static RS_SET: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(ptr::null_mut());
+
+/// Call the original METH_FASTCALL|METH_KEYWORDS builtin (its `ml_meth` read now).
+///
+/// # Safety
+/// The original was saved (true whenever a replacement is reachable); vectorcall arguments.
+#[inline(always)]
+unsafe fn original_fastkw(
+    which: Which,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> *mut ffi::PyObject {
+    // SAFETY: a live `PyCFunctionObject` whose method has these flags (checked at install).
+    unsafe {
+        let f = ORIGINAL[which as usize].load(Atomic::Relaxed).cast::<ffi::PyCFunctionObject>();
+        let meth = (*(*f).m_ml).ml_meth.PyCFunctionFastWithKeywords;
+        meth((*f).m_self, args, nargs, kwnames)
+    }
+}
+
+/// Call the original METH_O builtin.
+///
+/// # Safety
+/// As [`original_fastkw`].
+#[inline(always)]
+unsafe fn original_o(which: Which, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    // SAFETY: as above.
+    unsafe {
+        let f = ORIGINAL[which as usize].load(Atomic::Relaxed).cast::<ffi::PyCFunctionObject>();
+        let meth = (*(*f).m_ml).ml_meth.PyCFunction;
+        meth((*f).m_self, arg)
+    }
+}
+
+/// Whether a keyword name equals one of the interned names.
+///
+/// # Safety
+/// `name` is a live `str`.
+#[inline(always)]
+unsafe fn kw_is(name: *mut ffi::PyObject, which: usize) -> bool {
+    let kw = KW[which].load(Atomic::Relaxed);
+    // SAFETY: both are strings (keyword names always are), so the comparison cannot fail.
+    name == kw || unsafe { ffi::PyUnicode_Compare(name, kw) } == 0
+}
+
+/// Keyword arguments of a vectorcall: `(name, value)` pairs.
+///
+/// # Safety
+/// Vectorcall arguments.
+#[inline(always)]
+unsafe fn kwargs(
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> impl Iterator<Item = (*mut ffi::PyObject, *mut ffi::PyObject)> {
+    // SAFETY: `kwnames` is NULL or a tuple whose length is the number of keyword values
+    // following the positional arguments.
+    let n = if kwnames.is_null() { 0 } else { unsafe { ffi::PyTuple_GET_SIZE(kwnames) } };
+    (0..n).map(move |i| {
+        // SAFETY: in bounds, see above.
+        unsafe { (ffi::PyTuple_GET_ITEM(kwnames, i), *args.offset(nargs + i)) }
+    })
+}
+
+/// Run a raw fast path, turning a Rust panic into `SystemError` (never unwinding into C).
+#[inline(always)]
+fn guarded(f: impl FnOnce() -> *mut ffi::PyObject) -> *mut ffi::PyObject {
+    match panic::catch_unwind(AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(_) => {
+            // SAFETY: attached thread (called by CPython).
+            unsafe { ffi::PyErr_SetString(ffi::PyExc_SystemError, c"rustique builtin kernel panicked".as_ptr()) };
+            ptr::null_mut()
+        }
+    }
+}
+
+#[inline(always)]
+fn is_rustique(t: *mut ffi::PyTypeObject) -> bool {
+    t == RS_LIST.load(Atomic::Relaxed) || t == RS_SET.load(Atomic::Relaxed)
+}
+
+// =======================================================================================
+// sum
+// =======================================================================================
+
+/// `sum(iterable, /, start=0)`.
+unsafe extern "C" fn rq_sum(
+    slf: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> *mut ffi::PyObject {
+    // SAFETY: called by CPython with vectorcall arguments on an attached thread.
+    unsafe {
+        let start = match (nargs, kwnames.is_null()) {
+            (1, true) => ptr::null_mut(),
+            (2, true) => *args.add(1),
+            (1, false) if ffi::PyTuple_GET_SIZE(kwnames) == 1 && kw_is(ffi::PyTuple_GET_ITEM(kwnames, 0), KW_START) => {
+                *args.add(1)
+            }
+            _ => return original_fastkw(Which::Sum, args, nargs, kwnames),
+        };
+        if !start.is_null() {
+            let t = type_of(start);
+            if t != long_type() && t != float_type() {
+                return original_fastkw(Which::Sum, args, nargs, kwnames);
+            }
+        }
+        let it = *args;
+        let t = type_of(it);
+        let py = Python::assume_attached();
+        let out = if t == list_type() {
+            Out::Obj(guarded(|| match sum_seq(py, Seq::List(it), start) {
+                Out::Obj(r) => r,
+                Out::Fallback => original_fastkw(Which::Sum, args, nargs, kwnames),
+            }))
+        } else if t == tuple_type() {
+            Out::Obj(guarded(|| match sum_seq(py, Seq::Tuple(it), start) {
+                Out::Obj(r) => r,
+                Out::Fallback => original_fastkw(Which::Sum, args, nargs, kwnames),
+            }))
+        } else if is_rustique(t) {
+            Out::Obj(trampoline::fastcall_cfunction_with_keywords::<RsSum>(slf, args, nargs, kwnames))
+        } else if let Some(kind) = Hashed::of(t) {
+            match guarded(|| match sum_hashed(py, kind, it, start) {
+                Out::Obj(r) => r,
+                Out::Fallback => FALLBACK_MARK,
+            }) {
+                r if r == FALLBACK_MARK => Out::Fallback,
+                r => Out::Obj(r),
+            }
+        } else {
+            Out::Fallback
+        };
+        match out {
+            Out::Obj(r) => r,
+            Out::Fallback => original_fastkw(Which::Sum, args, nargs, kwnames),
+        }
+    }
+}
+
+/// A non-null marker returned through [`guarded`] meaning "call the original" (never a
+/// real object pointer: nothing lives at the lowest page).
+const FALLBACK_MARK: *mut ffi::PyObject = ptr::dangling_mut();
+
+struct RsSum;
+impl MethodDef<trampoline::fastcall_cfunction_with_keywords::Func> for RsSum {
+    const METH: trampoline::fastcall_cfunction_with_keywords::Func = rs_sum;
+}
+
+/// `sum` over a `rustique.List`/`Set` (inside PyO3's trampoline: attached, panic-safe).
+unsafe fn rs_sum(
+    py: Python<'_>,
+    _slf: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> PyResult<*mut ffi::PyObject> {
+    // SAFETY: vectorcall arguments already validated by `rq_sum` (one iterable, optional
+    // exact int/float start).
+    unsafe {
+        let it = Borrowed::from_ptr(py, *args);
+        let start = if nargs == 2 || !kwnames.is_null() { *args.add(1) } else { ptr::null_mut() };
+        let native_start = if start.is_null() {
+            Some(NativeStart::Default)
+        } else if type_of(start) == float_type() {
+            Some(NativeStart::Float(float_value(start)))
+        } else {
+            int_value(start).map(NativeStart::Int)
+        };
+        let fallback = || Ok(original_fastkw(Which::Sum, args, nargs, kwnames));
+        let objects = if let Ok(list) = it.cast::<List>() {
+            let list = list.get();
+            if let Some(ns) = native_start
+                && let Some(done) = list.with_column(py, |column| column_sum(py, column, ns))
+            {
+                return match done {
+                    Some(result) => result.map(Bound::into_ptr),
+                    None => fallback(),
+                };
+            }
+            match list.snapshot(py) {
+                Storage::Native(column) => {
+                    return match native_start.and_then(|ns| column_sum(py, &column, ns)) {
+                        Some(result) => result.map(Bound::into_ptr),
+                        None => fallback(),
+                    };
+                }
+                storage => storage.into_objects(py),
+            }
+        } else {
+            it.cast::<Set>()?.get().element_objects(py)
+        };
+        match sum_items(py, raw(&objects), start) {
+            Some(r) if r.is_null() => Err(PyErr::fetch(py)),
+            Some(r) => Ok(r),
+            None => fallback(),
+        }
+    }
+}
+
+// =======================================================================================
+// min / max
+// =======================================================================================
+
+unsafe extern "C" fn rq_min(
+    slf: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> *mut ffi::PyObject {
+    // SAFETY: vectorcall arguments from CPython.
+    unsafe { minmax_entry(slf, args, nargs, kwnames, Which::Min) }
+}
+
+unsafe extern "C" fn rq_max(
+    slf: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> *mut ffi::PyObject {
+    // SAFETY: vectorcall arguments from CPython.
+    unsafe { minmax_entry(slf, args, nargs, kwnames, Which::Max) }
+}
+
+/// The `default` argument of a `min`/`max` call that a fast path can serve (no key
+/// function): `Some(default or NULL)`; `None` to call the original.
+///
+/// # Safety
+/// Vectorcall arguments.
+#[inline(always)]
+unsafe fn minmax_args(
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> Option<*mut ffi::PyObject> {
+    if nargs == 0 {
+        return None;
+    }
+    let mut default = ptr::null_mut();
+    // SAFETY: forwarded.
+    for (name, value) in unsafe { kwargs(args, nargs, kwnames) } {
+        // SAFETY: keyword names are strings.
+        let is = |which| unsafe { kw_is(name, which) };
+        if is(KW_KEY) {
+            // SAFETY: comparing with the None singleton.
+            if value != unsafe { ffi::Py_None() } {
+                return None;
+            }
+        } else if is(KW_DEFAULT) {
+            default = value;
+        } else {
+            return None;
+        }
+    }
+    // A default with several positional arguments is an error: the original reports it.
+    (nargs == 1 || default.is_null()).then_some(default)
+}
+
+/// # Safety
+/// Vectorcall arguments from CPython.
+#[inline(always)]
+unsafe fn minmax_entry(
+    slf: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+    which: Which,
+) -> *mut ffi::PyObject {
+    let op = if which == Which::Min { ffi::Py_LT } else { ffi::Py_GT };
+    // SAFETY: vectorcall arguments; the kernels' requirements hold for live arguments.
+    unsafe {
+        let Some(default) = minmax_args(args, nargs, kwnames) else {
+            return original_fastkw(which, args, nargs, kwnames);
+        };
+        let py = Python::assume_attached();
+        if nargs > 1 {
+            return guarded(|| minmax_seq(py, Seq::Args(args, nargs as usize), default, op));
+        }
+        let it = *args;
+        let t = type_of(it);
+        if t == list_type() {
+            guarded(|| minmax_seq(py, Seq::List(it), default, op))
+        } else if t == tuple_type() {
+            guarded(|| minmax_seq(py, Seq::Tuple(it), default, op))
+        } else if is_rustique(t) {
+            if which == Which::Min {
+                trampoline::fastcall_cfunction_with_keywords::<RsMin>(slf, args, nargs, kwnames)
+            } else {
+                trampoline::fastcall_cfunction_with_keywords::<RsMax>(slf, args, nargs, kwnames)
+            }
+        } else if let Some(kind) = Hashed::of(t) {
+            match guarded(|| match minmax_hashed(py, kind, it, default, op) {
+                Out::Obj(r) => r,
+                Out::Fallback => FALLBACK_MARK,
+            }) {
+                r if r == FALLBACK_MARK => original_fastkw(which, args, nargs, kwnames),
+                r => r,
+            }
+        } else {
+            original_fastkw(which, args, nargs, kwnames)
+        }
+    }
+}
+
+struct RsMin;
+impl MethodDef<trampoline::fastcall_cfunction_with_keywords::Func> for RsMin {
+    const METH: trampoline::fastcall_cfunction_with_keywords::Func = rs_min;
+}
+struct RsMax;
+impl MethodDef<trampoline::fastcall_cfunction_with_keywords::Func> for RsMax {
+    const METH: trampoline::fastcall_cfunction_with_keywords::Func = rs_max;
+}
+
+unsafe fn rs_min(
+    py: Python<'_>,
+    _slf: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> PyResult<*mut ffi::PyObject> {
+    // SAFETY: forwarded.
+    unsafe { rs_minmax(py, args, nargs, kwnames, Which::Min) }
+}
+
+unsafe fn rs_max(
+    py: Python<'_>,
+    _slf: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> PyResult<*mut ffi::PyObject> {
+    // SAFETY: forwarded.
+    unsafe { rs_minmax(py, args, nargs, kwnames, Which::Max) }
+}
+
+/// `min`/`max` of a `rustique.List`/`Set` (one positional argument, no key function).
+///
+/// # Safety
+/// Vectorcall arguments validated by [`minmax_entry`].
+unsafe fn rs_minmax(
+    py: Python<'_>,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+    which: Which,
+) -> PyResult<*mut ffi::PyObject> {
+    let op = if which == Which::Min { ffi::Py_LT } else { ffi::Py_GT };
+    let max = which == Which::Max;
+    // SAFETY: validated arguments; kernels on live objects.
+    unsafe {
+        let default = minmax_args(args, nargs, kwnames).unwrap_or(ptr::null_mut());
+        let it = Borrowed::from_ptr(py, *args);
+        let native = |column: &Column| -> Option<rustique_core::Value> {
+            let run = || if max { kernels::max(column) } else { kernels::min(column) };
+            if column.len() >= DETACH_THRESHOLD { py.detach(run) } else { run() }
+        };
+        let objects = if let Ok(list) = it.cast::<List>() {
+            let list = list.get();
+            let found = match list.with_column(py, |column| native(column)) {
+                Some(found) => Some(found),
+                None => match list.snapshot(py) {
+                    Storage::Native(column) => Some(native(&column)),
+                    storage => {
+                        let objects = storage.into_objects(py);
+                        if objects.is_empty() {
+                            Some(None)
+                        } else {
+                            return finish_items(py, &objects, default, op, args, nargs, kwnames, which);
+                        }
+                    }
+                },
+            };
+            return match found {
+                Some(Some(value)) => Ok(convert::value_to_python(py, &value).into_ptr()),
+                // Empty.
+                _ => {
+                    let r = minmax_result(None, default, op);
+                    if r.is_null() { Err(PyErr::fetch(py)) } else { Ok(r) }
+                }
+            };
+        } else {
+            it.cast::<Set>()?.get().element_objects(py)
+        };
+        finish_items(py, &objects, default, op, args, nargs, kwnames, which)
+    }
+}
+
+/// `min`/`max` over a snapshot of objects, or the original builtin if one needs Python code.
+///
+/// # Safety
+/// Vectorcall arguments; live default.
+#[allow(clippy::too_many_arguments)]
+unsafe fn finish_items(
+    py: Python<'_>,
+    objects: &[Py<PyAny>],
+    default: *mut ffi::PyObject,
+    op: c_int,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+    which: Which,
+) -> PyResult<*mut ffi::PyObject> {
+    // SAFETY: the snapshot keeps the items alive.
+    unsafe {
+        match minmax_items(raw(objects), default, op) {
+            Some(r) if r.is_null() => Err(PyErr::fetch(py)),
+            Some(r) => Ok(r),
+            None => Ok(original_fastkw(which, args, nargs, kwnames)),
+        }
+    }
+}
+
+// =======================================================================================
+// sorted
+// =======================================================================================
+
+unsafe extern "C" fn rq_sorted(
+    slf: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> *mut ffi::PyObject {
+    // SAFETY: vectorcall arguments from CPython.
+    unsafe {
+        if nargs == 1 && is_rustique(type_of(*args)) {
+            return trampoline::fastcall_cfunction_with_keywords::<RsSorted>(slf, args, nargs, kwnames);
+        }
+        // Builtin inputs: `sorted` copies and calls `list.sort` (itself accelerated by the
+        // takeover tier when enabled).
+        original_fastkw(Which::Sorted, args, nargs, kwnames)
+    }
+}
+
+struct RsSorted;
+impl MethodDef<trampoline::fastcall_cfunction_with_keywords::Func> for RsSorted {
+    const METH: trampoline::fastcall_cfunction_with_keywords::Func = rs_sorted;
+}
+
+/// `sorted(rustique.List / Set, *, key=None, reverse=False)`.
+unsafe fn rs_sorted(
+    py: Python<'_>,
+    _slf: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> PyResult<*mut ffi::PyObject> {
+    // SAFETY: vectorcall arguments (one positional, validated by `rq_sorted`).
+    unsafe {
+        let it = Borrowed::from_ptr(py, *args);
+        // Keyword arguments as `list.sort` will parse them; anything else goes to it as is.
+        let (mut key_none, mut reverse, mut plain) = (true, ptr::null_mut(), true);
+        for (name, value) in kwargs(args, nargs, kwnames) {
+            if kw_is(name, KW_KEY) {
+                key_none = value == ffi::Py_None();
+            } else if kw_is(name, KW_REVERSE) {
+                reverse = value;
+            } else {
+                plain = false;
+            }
+        }
+        let list = it.cast::<List>().ok();
+        if plain
+            && key_none
+            && let Some(list) = &list
+            // Copy the column under the read lock (like `list(x)`); NaNs: CPython's order.
+            && let Some(Some(mut column)) = list.get().with_column(py, |c| (!has_nan(c)).then(|| c.clone()))
+        {
+            // `list.sort` parses `reverse` (truthiness may run Python code) after the copy.
+            let reverse = !reverse.is_null() && {
+                let r = ffi::PyObject_IsTrue(reverse);
+                if r < 0 {
+                    return Err(PyErr::fetch(py));
+                }
+                r == 1
+            };
+            if column.len() >= SORT_DETACH_THRESHOLD {
+                py.detach(|| kernels::sort(&mut column, reverse));
+            } else {
+                kernels::sort(&mut column, reverse);
+            }
+            return column_to_pylist(py, &column).map(Bound::into_ptr);
+        }
+        // `list(x)` then `list.sort(**kwargs)`, like CPython's `sorted`, with the copy made
+        // in one read of the container instead of an iteration.
+        let objects = match list {
+            Some(list) => list.get().snapshot(py).into_objects(py),
+            None => it.cast::<Set>()?.get().element_objects(py),
+        };
+        let newlist = objects_to_pylist(py, objects)?;
+        let descriptor = objsort::list_sort_descriptor(py)?;
+        let nkw = if kwnames.is_null() { 0 } else { ffi::PyTuple_GET_SIZE(kwnames) as usize };
+        let mut call_args = Vec::with_capacity(1 + nkw);
+        call_args.push(newlist.as_ptr());
+        call_args.extend((0..nkw).map(|i| *args.add(nargs as usize + i)));
+        let r = ffi::PyObject_Vectorcall(descriptor.as_ptr(), call_args.as_ptr(), 1, kwnames);
+        if r.is_null() {
+            return Err(PyErr::fetch(py));
+        }
+        ffi::Py_DECREF(r);
+        Ok(newlist.into_ptr())
+    }
+}
+
+// =======================================================================================
+// any / all
+// =======================================================================================
+
+unsafe extern "C" fn rq_any(slf: *mut ffi::PyObject, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    // SAFETY: METH_O call from CPython.
+    unsafe { truth_entry(slf, arg, Which::Any) }
+}
+
+unsafe extern "C" fn rq_all(slf: *mut ffi::PyObject, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    // SAFETY: METH_O call from CPython.
+    unsafe { truth_entry(slf, arg, Which::All) }
+}
+
+/// # Safety
+/// METH_O arguments from CPython.
+#[inline(always)]
+unsafe fn truth_entry(slf: *mut ffi::PyObject, it: *mut ffi::PyObject, which: Which) -> *mut ffi::PyObject {
+    let stop = which == Which::Any;
+    // SAFETY: live argument; kernels' requirements hold.
+    unsafe {
+        let t = type_of(it);
+        let py = Python::assume_attached();
+        if t == list_type() {
+            guarded(|| truth_seq(py, Seq::List(it), stop))
+        } else if t == tuple_type() {
+            guarded(|| truth_seq(py, Seq::Tuple(it), stop))
+        } else if is_rustique(t) {
+            if stop { trampoline::binaryfunc::<RsAny>(slf, it) } else { trampoline::binaryfunc::<RsAll>(slf, it) }
+        } else if let Some(kind) = Hashed::of(t) {
+            match guarded(|| match truth_hashed(py, kind, it, stop) {
+                Out::Obj(r) => r,
+                Out::Fallback => FALLBACK_MARK,
+            }) {
+                r if r == FALLBACK_MARK => original_o(which, it),
+                r => r,
+            }
+        } else {
+            original_o(which, it)
+        }
+    }
+}
+
+struct RsAny;
+impl MethodDef<trampoline::binaryfunc::Func> for RsAny {
+    const METH: trampoline::binaryfunc::Func = rs_any;
+}
+struct RsAll;
+impl MethodDef<trampoline::binaryfunc::Func> for RsAll {
+    const METH: trampoline::binaryfunc::Func = rs_all;
+}
+
+unsafe fn rs_any(py: Python<'_>, _slf: *mut ffi::PyObject, it: *mut ffi::PyObject) -> PyResult<*mut ffi::PyObject> {
+    // SAFETY: forwarded.
+    unsafe { rs_truth(py, it, Which::Any) }
+}
+
+unsafe fn rs_all(py: Python<'_>, _slf: *mut ffi::PyObject, it: *mut ffi::PyObject) -> PyResult<*mut ffi::PyObject> {
+    // SAFETY: forwarded.
+    unsafe { rs_truth(py, it, Which::All) }
+}
+
+/// `any`/`all` of a `rustique.List`/`Set`.
+///
+/// # Safety
+/// `it` is a live `rustique.List` or `Set`.
+unsafe fn rs_truth(py: Python<'_>, it: *mut ffi::PyObject, which: Which) -> PyResult<*mut ffi::PyObject> {
+    let stop = which == Which::Any;
+    // SAFETY: live object; kernels on owned snapshots.
+    unsafe {
+        let obj = Borrowed::from_ptr(py, it);
+        let objects = if let Ok(list) = obj.cast::<List>() {
+            let list = list.get();
+            if let Some(found) = list.with_column(py, |c| column_truth(c, stop)) {
+                return Ok(bool_result(found, stop));
+            }
+            match list.snapshot(py) {
+                Storage::Native(column) => return Ok(bool_result(column_truth(&column, stop), stop)),
+                storage => storage.into_objects(py),
+            }
+        } else {
+            obj.cast::<Set>()?.get().element_objects(py)
+        };
+        match truth_scan(raw(&objects).iter().copied(), stop) {
+            Scan::Done(found) => Ok(bool_result(found, stop)),
+            Scan::Error => Err(PyErr::fetch(py)),
+            Scan::Bail(_) => Ok(original_o(which, it)),
+        }
+    }
+}
+
+// =======================================================================================
+// Installation
+// =======================================================================================
+
+/// The replacement functions and the originals they stand in for (created once, kept for
+/// the life of the process: a replacement may be referenced after `uninstall`).
+struct Replacements {
+    /// `(original, replacement)` per [`Which`]; `None` if the builtin was not recognised.
+    pairs: Vec<Option<(Py<PyAny>, Py<PyAny>)>>,
+}
+
+static STATE: Mutex<Option<Replacements>> = Mutex::new(None);
+
+/// Verify the object layouts the kernels read directly.
+fn check_layouts(py: Python<'_>) -> PyResult<()> {
+    let bad = |what: &str| PyRuntimeError::new_err(format!("rustique builtins: unexpected {what} layout"));
+    for v in [0i64, 1, -1, 7, -12345, (1 << 30) - 1, -((1 << 30) - 1), 1 << 30, i64::MAX, i64::MIN] {
+        let obj = v.into_pyobject(py)?;
+        // SAFETY: an exact int.
+        if unsafe { int_value(obj.as_ptr()) } != Some(v) {
+            return Err(bad("int"));
+        }
+        // SAFETY: an exact int.
+        if unsafe { pure_truth(obj.as_ptr()) } != Some(v != 0) {
+            return Err(bad("int"));
+        }
+    }
+    let big = py.eval(c"2 ** 64", None, None)?;
+    // SAFETY: an exact int.
+    if unsafe { int_value(big.as_ptr()) }.is_some() {
+        return Err(bad("int"));
+    }
+    let set = py.eval(c"{1, 2, 3, 'x'}", None, None)?;
+    set.call_method1("discard", (2,))?;
+    // SAFETY: an exact set, not shared with other threads.
+    let mut keys: Vec<String> = unsafe { set_keys(set.as_ptr()) }
+        .map(|k| {
+            // SAFETY: live keys of the set.
+            unsafe { Bound::from_borrowed_ptr(py, k) }.repr().map(|r| r.to_string())
+        })
+        .collect::<PyResult<_>>()?;
+    keys.sort();
+    if keys != ["'x'", "1", "3"] {
+        return Err(bad("set"));
+    }
+    Ok(())
+}
+
+/// Create the replacement for builtin `which` if the current builtin is the expected C
+/// function.
+fn make_replacement(py: Python<'_>, which: Which, current: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyAny>>> {
+    let p = current.as_ptr();
+    // SAFETY: type check, then reads of a live `PyCFunctionObject`.
+    unsafe {
+        if ffi::PyCFunction_CheckExact(p) == 0 {
+            return Ok(None);
+        }
+        let f = p.cast::<ffi::PyCFunctionObject>();
+        let def = (*f).m_ml;
+        if def.is_null()
+            || (*def).ml_flags != FLAGS[which as usize]
+            || (*def).ml_name.is_null()
+            || CStr::from_ptr((*def).ml_name) != NAMES[which as usize]
+            || (*f).m_self.is_null()
+            || ffi::PyModule_Check((*f).m_self) == 0
+        {
+            return Ok(None);
+        }
+        let meth = match which {
+            Which::Sum => ffi::PyMethodDefPointer { PyCFunctionFastWithKeywords: rq_sum },
+            Which::Min => ffi::PyMethodDefPointer { PyCFunctionFastWithKeywords: rq_min },
+            Which::Max => ffi::PyMethodDefPointer { PyCFunctionFastWithKeywords: rq_max },
+            Which::Sorted => ffi::PyMethodDefPointer { PyCFunctionFastWithKeywords: rq_sorted },
+            Which::Any => ffi::PyMethodDefPointer { PyCFunction: rq_any },
+            Which::All => ffi::PyMethodDefPointer { PyCFunction: rq_all },
+        };
+        // The function object keeps a pointer to its `PyMethodDef`: give it static storage.
+        // Name and docstring point to the original's static strings.
+        let new_def: &'static mut ffi::PyMethodDef = Box::leak(Box::new(ffi::PyMethodDef {
+            ml_name: (*def).ml_name,
+            ml_meth: meth,
+            ml_flags: (*def).ml_flags,
+            ml_doc: (*def).ml_doc,
+        }));
+        let func = ffi::PyCFunction_NewEx(new_def, (*f).m_self, (*f).m_module);
+        Ok(Some(Bound::from_owned_ptr_or_err(py, func)?.unbind()))
+    }
+}
+
+/// One-time initialisation of the statics the kernels read.
+fn init_statics(py: Python<'_>) -> PyResult<()> {
+    for (slot, name) in KW.iter().zip(["key", "default", "start", "reverse"]) {
+        if slot.load(Atomic::Relaxed).is_null() {
+            // Interned strings live as long as the interpreter; keep one reference forever.
+            slot.store(PyString::intern(py, name).into_ptr(), Atomic::Relaxed);
+        }
+    }
+    RS_LIST.store(py.get_type::<List>().as_type_ptr(), Atomic::Relaxed);
+    RS_SET.store(py.get_type::<Set>().as_type_ptr(), Atomic::Relaxed);
+    objsort::list_sort_descriptor(py)?;
+    Ok(())
+}
+
+/// Replace `sum`, `min`, `max`, `sorted`, `any` and `all` in the `builtins` module with the
+/// Rustique versions. Idempotent; returns the names now replaced. A builtin that is not
+/// the expected CPython function (e.g. replaced by someone else) is left alone.
+#[pyfunction]
+fn install(py: Python<'_>) -> PyResult<Vec<&'static str>> {
+    check_layouts(py)?;
+    init_statics(py)?;
+    let builtins = py.import("builtins")?;
+    let mut state = STATE.lock().map_err(|_| PyRuntimeError::new_err("rustique builtins: state poisoned"))?;
+    if state.is_none() {
+        let mut pairs = Vec::new();
+        for which in [Which::Sum, Which::Min, Which::Max, Which::Sorted, Which::Any, Which::All] {
+            let name = NAMES[which as usize].to_str().expect("ASCII names");
+            let current = builtins.getattr(name)?;
+            let pair = make_replacement(py, which, &current)?.map(|repl| {
+                ORIGINAL[which as usize].store(current.as_ptr(), Atomic::Release);
+                (current.unbind(), repl)
+            });
+            pairs.push(pair);
+        }
+        *state = Some(Replacements { pairs });
+    }
+    let mut active = Vec::new();
+    for (i, pair) in state.as_ref().expect("initialised above").pairs.iter().enumerate() {
+        let Some((original, replacement)) = pair else { continue };
+        let name = NAMES[i].to_str().expect("ASCII names");
+        let current = builtins.getattr(name)?;
+        if current.is(original) {
+            builtins.setattr(name, replacement.bind(py))?;
+            active.push(name);
+        } else if current.is(replacement) {
+            active.push(name);
+        }
+    }
+    Ok(active)
+}
+
+/// Restore the original builtins (only where the Rustique version is still installed).
+#[pyfunction]
+fn uninstall(py: Python<'_>) -> PyResult<()> {
+    let builtins = py.import("builtins")?;
+    let state = STATE.lock().map_err(|_| PyRuntimeError::new_err("rustique builtins: state poisoned"))?;
+    if let Some(state) = state.as_ref() {
+        for (i, pair) in state.pairs.iter().enumerate() {
+            let Some((original, replacement)) = pair else { continue };
+            let name = NAMES[i].to_str().expect("ASCII names");
+            if builtins.getattr(name)?.is(replacement) {
+                builtins.setattr(name, original.bind(py))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Names of the builtins currently replaced.
+#[pyfunction]
+fn installed(py: Python<'_>) -> PyResult<Vec<&'static str>> {
+    let builtins = py.import("builtins")?;
+    let state = STATE.lock().map_err(|_| PyRuntimeError::new_err("rustique builtins: state poisoned"))?;
+    let mut active = Vec::new();
+    if let Some(state) = state.as_ref() {
+        for (i, pair) in state.pairs.iter().enumerate() {
+            let Some((_, replacement)) = pair else { continue };
+            let name = NAMES[i].to_str().expect("ASCII names");
+            if builtins.getattr(name)?.is(replacement) {
+                active.push(name);
+            }
+        }
+    }
+    Ok(active)
+}
+
+/// The replacement function for `name` (created by the first `install`), whether or not it
+/// is currently installed. For tests and benchmarks.
+#[pyfunction]
+fn replacement(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
+    let state = STATE.lock().map_err(|_| PyRuntimeError::new_err("rustique builtins: state poisoned"))?;
+    let i = NAMES
+        .iter()
+        .position(|n| n.to_str() == Ok(name))
+        .ok_or_else(|| PyValueError::new_err(format!("not a replaced builtin: {name:?}")))?;
+    match state.as_ref().and_then(|s| s.pairs[i].as_ref()) {
+        Some((_, replacement)) => Ok(replacement.clone_ref(py)),
+        None => Err(PyValueError::new_err(format!("{name} has no replacement (install() first)"))),
+    }
+}
+
+pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    let sub = PyModule::new(m.py(), "_builtins")?;
+    sub.add_function(wrap_pyfunction!(install, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(uninstall, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(installed, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(replacement, &sub)?)?;
+    m.add("_builtins", sub)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn int_float_comparison_is_exact() {
+        use Ordering::*;
+        assert_eq!(cmp_int_float(1, 1.0), Some(Equal));
+        assert_eq!(cmp_int_float(1, 1.5), Some(Less));
+        assert_eq!(cmp_int_float(2, 1.5), Some(Greater));
+        assert_eq!(cmp_int_float(-1, -1.5), Some(Greater));
+        assert_eq!(cmp_int_float(0, f64::NAN), None);
+        assert_eq!(cmp_int_float(i64::MAX, 9_223_372_036_854_775_808.0), Some(Less));
+        assert_eq!(cmp_int_float(i64::MIN, -9_223_372_036_854_775_808.0), Some(Equal));
+        assert_eq!(cmp_int_float((1 << 53) + 1, (1u64 << 53) as f64), Some(Greater));
+        assert_eq!(cmp_int_float(i64::MAX, f64::INFINITY), Some(Less));
+        assert_eq!(cmp_int_float(i64::MIN, f64::NEG_INFINITY), Some(Greater));
+        assert_eq!(cmp_int_float(-(1 << 60) - 1, -((1u64 << 60) as f64)), Some(Less));
+    }
+
+    #[test]
+    fn compensated_sum_matches_cpython_rules() {
+        let mut cs = Cs::new(0.0 + 1e16);
+        cs.add(1.0);
+        cs.add(-1e16);
+        assert_eq!(cs.value(), 1.0);
+        assert!(Cs::new(-0.0).value().is_sign_negative());
+    }
+}

@@ -4,6 +4,7 @@
 
 use pyo3::prelude::*;
 
+pub mod builtins;
 pub mod capi;
 pub mod convert;
 pub mod dict;
@@ -27,5 +28,6 @@ fn _rustique(m: &Bound<'_, PyModule>) -> PyResult<()> {
     set::register(m)?;
     expr::register(m)?;
     capi::register(m)?;
+    builtins::register(m)?;
     Ok(())
 }
