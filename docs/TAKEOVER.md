@@ -22,21 +22,21 @@ python-build-standalone CPython 3.15.1 (PGO+LTO+BOLT, tail-calling interpreter) 
 2. Because nothing replaces the objects, literals, displays, comprehensions, `[*a]`,
    `{**d}` and `list(x)` need no rewriting. Code compiled before `enable()` (the `__main__`
    script, earlier imports, C extensions) is covered, every specializer and JIT fast path
-   keeps firing, and every boundary case works (76/76, §3.2).
+   keeps firing, and every boundary case works at full speed (77/77, §3.2).
 3. **Parity bar, measured**: the scoreboard's touched list and tuple cells (sizes 0–100) are
    218/218 at ratio ≤ 1.05 on both 3.15.1 and 3.15.1t, fallbacks included (worst 1.043 and
    1.047).
    Untouched operations run unchanged bytecode: ratio 1.00.
 4. **No foreign container type can be the default.** Even a subclass that inherits every C
    slot of `list` costs 2.4–4.5× the instructions of `list` on `x[i]`, `x[i] = v`,
-   `x.append`, `a, b, c = x` and `if x:` (up to 7.2× under the JIT). That is the floor for
+   `x.append`, `a, b, c = x` and `if x:` (3–7× under the JIT). That is the floor for
    *any* foreign type, before it does any work of its own (§3.1).
 5. **Native storage stays explicit or opt-in.** `rustique.List`/`Dict`/`Set` remain
    distinct types. An opt-in, per-module *native tier* rewrites literals, displays,
    comprehensions and `list()`/`dict()`/`set()` calls of selected modules to them:
    `rs.enable(native="pkg.*")`, `python -m rustique --native 'pkg.*' app.py`, or
    `@rs.native`. It is never the default: it misses the parity bar by construction (§3.3)
-   and breaks 40 of 76 boundary checks (§3.2).
+   and breaks 40 of 77 boundary checks, 30 more being slow (§3.2).
 
 ## 2. Layout requirement for List / Dict / Set (and Tuple / FrozenSet / frozendict)
 
@@ -48,7 +48,7 @@ python-build-standalone CPython 3.15.1 (PGO+LTO+BOLT, tail-calling interpreter) 
   `PyAnySet_Check`, and nothing can intercept that. So a subclass's builtin storage
   (`ob_item`/`ob_size`; `ma_keys`/`ma_values`; the set table) would have to hold every
   element at all times. **Measured**: a best-case native-storage subclass that overrides
-  every Python-visible method still returns *silently wrong* results in 19 of 76 checks:
+  every Python-visible method still returns *silently wrong* results in 19 of 77 checks:
   - `json.dumps(d)` gives `'{}'`;
   - `heapq.heappush` does nothing;
   - `frozenset(s)` and `array.array('q', x)` come back empty;
@@ -97,8 +97,10 @@ adds no work. **measured**, 3.15.1:
 | `s.add(k)` | 224 | 364 | 580 | **1.62** | 2.59 |
 | `for k in d` / `for v in s` | 140 / 157 | 140 / 157 | 280 / 254 | 1.00 | 1.99 / 1.62 |
 
-Under the JIT (`PYTHON_JIT=1`) subclass/exact is 3.09 for `x[i]`, 7.20 for `x.append`,
-5.29 for `if x:`, 2.24 for `k in d` and 2.37 for `k in s`. On 3.15.1t it matches the GIL
+Under the JIT (`PYTHON_JIT=1`, `takeover_overhead.py handicap --jit`) subclass/exact is
+3.04 for `x[i]`, 3.15 for `x[i] = v`, 6.16 for `x.append`, 5.17 for `if x:`, 3.92 for
+`a, b, c = x`, 2.24 for `k in d` and 2.37 for `k in s` (an earlier longer-warm-up run gave
+7.20 for `append`). On 3.15.1t it matches the GIL
 build within ±0.4. Both **measured**.
 
 Why (inferred from `Python/bytecodes.c` 3.15.1): list guards are `PyList_CheckExact`. Set
@@ -108,18 +110,21 @@ checks `Py_IS_TYPE(self, descr->d_type)`. Only dict subscripts compare slot poin
 (`mp_subscript == _PyDict_Subscript`), which a native-storage dict cannot satisfy.
 **No per-op work inside List/Dict/Set can close this gap; only exact builtins reach 1.00.**
 
-### 3.2 Boundary compatibility (76 checks run by non-opted-in code)
+### 3.2 Boundary compatibility (77 checks run by non-opted-in code)
 
-`benches/takeover_compat.py`, pinned by `tests/test_takeover_compat.py`, **measured**:
+`benches/takeover_compat.py`, pinned by `tests/test_takeover_compat.py`, **measured** on
+3.15.1 (3.15.1t: same columns within ±3 slow/works). A cell counts as *slow* when it is
+correct but takes more than 1.5× the exact builtin's wall time, timed interleaved with the
+reference and confirmed by a second measurement on an idle machine:
 
-| candidate | works | breaks | how |
-|---|---:|---:|---|
-| 6 exact builtin | 76 | 0 | — |
-| 6+K exact builtin + kernels (`rs.enable()`) | 76 | 0 | — |
-| 4a builtin subclass, builtin storage authoritative | 69 | 7 | `type(x) is` ×3, `marshal` ×3, `str.maketrans` (loud) |
-| 4b builtin subclass, native storage | 57 | 19 | **silent wrong results** (R2) + the 4a set |
-| 1/2/3 `rs` type (what any rewrite emits today) | 36 | 40 | see below |
-| 5 `rs` type, copied to a builtin at the boundary | 68 | 8 | callee mutations lost (heapq, bisect, shuffle, append/sort), identity |
+| candidate | works | slow | breaks | how it breaks / why it is slow |
+|---|---:|---:|---:|---|
+| 6 exact builtin | 77 | 0 | 0 | — |
+| 6+K exact builtin + kernels (`rs.enable()`) | 77 | 0 | 0 | — |
+| 4a builtin subclass, builtin storage authoritative | 62 | 8 | 7 | breaks: `type(x) is` ×3, `marshal` ×3, `str.maketrans` (loud); slow: pickle and copy go through `__reduce_ex__` instead of the exact-type fast paths (1.6–3.2×) |
+| 4b builtin subclass, native storage | 16 | 42 | 19 | **silent wrong results** (R2) + the 4a set; every protocol call goes through Python-level overrides |
+| 1/2/3 `rs` type (what any rewrite emits today) | 7 | 30 | 40 | see below; slow: generic protocol paths instead of exact-type fast paths (`==` with builtins 2.1–6.7×, `f(**d)`/`dict(d)`/`{**d}` 4.8×, `f(*x)` 2.0×, `'-'.join` 2.5×, set algebra with builtins 3–5×) |
+| 5 `rs` type, copied to a builtin at the boundary | 24 | 45 | 8 | callee mutations lost (heapq, bisect, shuffle, append/sort), identity; slow: an O(n) copy per crossing |
 
 The checks are `isinstance`, `type(x) is`, `repr`/`str`/f-string, `==`, json (C and Python
 encoders), pickle round trip and stream, `marshal`, `copy`/`deepcopy`, `pprint`,
@@ -222,12 +227,12 @@ stable sort instead of timsort over boxed objects.
 A pass-through hook that only calls `_PyEval_EvalFrameDefault`, **measured** (Ir per
 unit, ratio to no hook):
 
-| workload | 3.15.1 | 3.15.1t |
-|---|---:|---:|
-| `fib(15)` (per Python call) | 1.56 | 1.56 |
-| `o.m(i)` method call | 1.78 | 1.79 |
-| generator iteration (per item) | 1.54 | 1.47 |
-| loop without calls / inlined comprehension | 1.00 / 1.00 | 1.00 / 0.98 |
+| workload | 3.15.1 | 3.15.1 JIT | 3.15.1t |
+|---|---:|---:|---:|
+| `fib(15)` (per Python call) | 1.56 | 1.88 | 1.56 |
+| `o.m(i)` method call | 1.78 | 1.72 | 1.79 |
+| generator iteration (per item) | 1.54 | 1.48 | 1.47 |
+| loop without calls / inlined comprehension | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 0.98 |
 
 With a hook installed, the interpreter stops inlining Python-to-Python calls
 (`IS_PEP523_HOOKED` guards), so every call and every generator resume goes through the hook
@@ -290,10 +295,10 @@ native-tier hook*. It covers `test_list`, `test_tuple`, `test_dict` (with `list_
 |---|---|---|---|
 | 1 | import-hook AST rewriting | **kept as the opt-in native tier** | +130 Ir per construct floor (§3.3); 0 differences on 1288 CPython tests under identity mapping (§3.7); 4.8× compile time (§3.6) |
 | 2 | code-object rewriting of compiled functions | **kept as `@rs.native`** (re-compiles from source; closures, `__class__`, line numbers kept) | same runtime as 1; raw bytecode patching rejected: same emitted call, fragile across 3.14/3.15 bytecode (inferred) |
-| 3 | PEP 523 frame-eval hook | **rejected** | 1.47–1.79× on every Python call process-wide (§3.5) |
-| 4 | builtin subclassing | **rejected** for list/dict/set | 1.5–4.5× handicap (7.2× JIT) (§3.1); native storage behind it corrupts silently (§3.2) |
+| 3 | PEP 523 frame-eval hook | **rejected** | 1.47–1.88× on every Python call process-wide (§3.5) |
+| 4 | builtin subclassing | **rejected** for list/dict/set | 1.5–4.5× handicap (3–7× JIT) (§3.1); native storage behind it corrupts silently (§3.2) |
 | 5 | lazy materialisation at boundaries | **rejected** | loses callee mutations and identity (8 breaks); O(n) per crossing; boundaries cannot be found statically |
-| 6 | exact builtins accelerated in place | **chosen: the default** | 76/76 boundaries; 218/218 touched cells at parity on both builds; fast paths at 0.13–0.8 |
+| 6 | exact builtins accelerated in place | **chosen: the default** | 77/77 boundaries, none slow; 218/218 touched cells at parity on both builds; fast paths at 0.13–0.8 |
 
 ## 5. Scope and UX
 
@@ -314,7 +319,7 @@ native-tier hook*. It covers `test_list`, `test_tuple`, `test_dict` (with `list_
 
 **Safe tier**: the objects *are* the builtins, so `type(x) is list`, `isinstance`, json,
 pickle (by value, loadable without rustique), `copy`, `repr`, `marshal`, C extensions and
-PyO3 `downcast` behave exactly as on CPython (76/76, measured).
+PyO3 `downcast` behave exactly as on CPython (77/77, none slower, measured).
 
 The patched callables keep their identity, `repr`, `__doc__`, `__text_signature__` and
 pickling (`pickle.loads(pickle.dumps(list.sort)) is list.sort`). The mechanism:
@@ -421,6 +426,14 @@ following deviations apply, each pinned by tests:
 - **Lead, at integration:** add `enable`, `disable` and `native` to `rustique.__all__` and
   to the expected set in `tests/test_interop.py::test_public_api`. The names are exported
   as attributes today.
+- **When `Tuple`/`FrozenSet` land:** `_rewrite.default_targets()` already maps `tuple` and
+  `frozenset` to `rs.Tuple`/`rs.FrozenSet` when they exist, and the rewriter can route
+  `tuple(...)`/`frozenset(...)` calls to them (tested with stand-in types). Turning that
+  on is two lines in `python/rustique/_takeover/_rewrite.py`:
+  - add the kinds to `DEFAULT_KINDS`;
+  - bump `VERSION`, which invalidates cached rewritten bytecode.
+
+  Tuple *displays* stay unrewritten (see §6).
 
 ## 10. Files
 

@@ -356,9 +356,12 @@ def worker(section, lo, hi):
     h = helper()
     cells = SECTIONS[section]()[lo:hi]
     n = N_LOOPS[section]
+    jit = getattr(sys, "_jit", None)
+    # The JIT compiles a loop after thousands of back edges: warm up long enough for it.
+    warm = max(2, n // 2) if not (jit and jit.is_enabled()) else max(n * 15, 6000) // (1 if section != "pep523" else 100)
     for i, (label, col, setup, _div) in enumerate(cells):
         run, cleanup = setup()
-        run(max(2, n // 2))  # warm up / specialise
+        run(warm)  # warm up / specialise (/ JIT-compile)
         run(n)
         h.start()
         run(n)

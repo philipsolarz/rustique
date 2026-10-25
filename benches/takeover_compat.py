@@ -2,7 +2,8 @@
 
 Every check is run by "foreign" (non-opted-in) code against a container produced by each
 candidate, and compared with the same check on an exact builtin in plain CPython. Cells:
-works / slow (correct, but >1.5x the builtin's wall time when timing is on) / BREAKS
+works / slow (correct, but >1.5x the builtin's wall time when timing is on; timed
+interleaved with the reference) / BREAKS
 (different result or exception).
 
 Candidates:
@@ -405,7 +406,7 @@ CHECKS = [
     ("dict", "'%(a)s' % d, format_map", lambda x, B: ("%(a)s" % B(x), "{a}".format_map(B(x)))),
     ("dict", "exec(code, d) globals", lambda x, B: _ex(B, x)),
     ("dict", "str.maketrans(d)", lambda x, B: str.maketrans(B(x))),
-    ("dict", "type('T', (), d) namespace", lambda x, B: sorted(k for k in vars(type("T", (), B(x))) if not k.startswith("__"))),
+    ("dict", "type('T', (), d) namespace", lambda x, B: sorted(k for k in list(vars(type("T", (), B(x)))) if not k.startswith("__"))),
     ("dict", "hash(d) error", lambda x, B: _err(lambda: hash(B(x)))),
     ("dict", "d['zz'] error", lambda x, B: _err(lambda: B(x)["zz"])),
     ("dict", "mutation: callee d[k] = v", lambda x, B: (B(x).__setitem__("q", 1), sorted(x))[1], True),
@@ -442,23 +443,32 @@ def _probe_extra():
     ]
 
 
-def _timeit(fn, budget=0.02):
+def _loops(fn, budget=0.005):
     n = 1
     while True:
         t0 = time.perf_counter()
         for _ in range(n):
             fn()
-        dt = time.perf_counter() - t0
-        if dt > budget:
-            break
+        if time.perf_counter() - t0 > budget:
+            return n
         n *= 2
-    best = dt / n
-    for _ in range(4):
+
+
+def _ratio(ref, cand, rounds=7):
+    """Wall-time ratio cand/ref, timed interleaved (ref, cand, ref, cand, ...) and taking
+    the best of each, so that drifting machine load cancels."""
+    n_ref, n_cand = _loops(ref), _loops(cand)
+    best_ref = best_cand = float("inf")
+    for _ in range(rounds):
         t0 = time.perf_counter()
-        for _ in range(n):
-            fn()
-        best = min(best, (time.perf_counter() - t0) / n)
-    return best
+        for _ in range(n_ref):
+            ref()
+        best_ref = min(best_ref, (time.perf_counter() - t0) / n_ref)
+        t0 = time.perf_counter()
+        for _ in range(n_cand):
+            cand()
+        best_cand = min(best_cand, (time.perf_counter() - t0) / n_cand)
+    return best_cand / best_ref
 
 
 def _make(T, kind):
@@ -492,7 +502,7 @@ def _run(checks, names, time_it, kernels):
             ref = fn(_make(ref_types[kind], kind), _ident)
         except Exception as e:  # noqa: BLE001
             ref = ("raised", type(e).__name__, str(e))
-        tref = _timeit(lambda: fn(_make(ref_types[kind], kind), _ident)) if time_it else None
+        ref_fn = lambda: fn(_make(ref_types[kind], kind), _ident)  # noqa: E731
         row = {}
         for cname in names:
             types, B = CANDIDATES[cname]
@@ -512,7 +522,9 @@ def _run(checks, names, time_it, kernels):
                 if cname.startswith("6+K"):
                     kernels.install()
                 try:
-                    r = _timeit(lambda: fn(_make(T, kind), B)) / tref
+                    r = _ratio(ref_fn, lambda: fn(_make(T, kind), B))
+                    if r > 1.5:  # confirm before calling it slow (sub-microsecond checks are noisy)
+                        r = min(r, _ratio(ref_fn, lambda: fn(_make(T, kind), B)))
                 finally:
                     kernels.uninstall()
                 row[cname] = ("slow", f"{r:.1f}x") if r > 1.5 else ("works", f"{r:.2f}x")

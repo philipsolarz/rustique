@@ -1,7 +1,7 @@
 """Boundary compatibility of the takeover tiers (docs/TAKEOVER.md §3.2).
 
 The matrix itself lives in `benches/takeover_compat.py` (it is also a benchmark section).
-It runs ~76 checks of how non-opted-in code (stdlib C and Python code, numpy, PyO3
+It runs 77 checks of how non-opted-in code (stdlib C and Python code, numpy, PyO3
 extensions) treats the containers each candidate produces, against exact builtins.
 
 * The safe tier (exact builtins, with or without the kernels) must pass every check.
