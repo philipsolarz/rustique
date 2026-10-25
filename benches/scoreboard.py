@@ -27,7 +27,9 @@ Metrics
             operations get fresh inputs prepared outside the timed region.
     instr   instructions per operation under callgrind (valgrind), measuring exactly the
             timed region via client requests; immune to machine load. Computed from two
-            runs (L and 2L loops) so fixed costs cancel. Default sizes 0..100.
+            runs (L and 2L loops) so fixed costs cancel. Default sizes 0..100. Workers run
+            with PYTHONHASHSEED=0 and at most `--chunk` cells each (callgrind's memory grows
+            per measured cell); keep `--shards` (concurrent workers) at 2-3.
 
 Every cell is verified first: both implementations must produce equal results (Rustique
 containers are converted to builtins for the comparison). `error` / `mismatch` cells are
@@ -660,7 +662,12 @@ def run_instr_worker(args: argparse.Namespace) -> None:
         assert impls == ["enabled"], "the enabled tier is process-wide: measure it in its own process"
         enabled_ok = enable_rustique()
     cg = Callgrind(args.cg_dir)
-    cells = select(all_cells(), args)
+    if args.keys_file:
+        with open(args.keys_file) as f:
+            wanted_keys = set(f.read().split("\n"))
+        cells = [c for c in all_cells() if c.key in wanted_keys]
+    else:
+        cells = select(all_cells(), args)
     results = []
     for cell in cells:
         entry: dict[str, Any] = {"key": cell.key, "metric": "instr"}
@@ -701,33 +708,54 @@ def run_instr_worker(args: argparse.Namespace) -> None:
 
 
 def run_instr(args: argparse.Namespace) -> None:
+    """Callgrind workers over bounded chunks of cells.
+
+    Memory: callgrind's call tracking grows with the instructions it instruments on
+    CPython 3.15's tail-calling interpreter and is never returned (measured: ~15 MB per
+    cell for dict/str cells; 8.8 GB when instrumenting a whole run). So only the measured
+    regions are instrumented (`--instr-atstart=no` + client requests) and each worker
+    process measures at most `--chunk` cells (~150-300 MB peak at the default 10)."""
     if args.size is None:
         args.size = ",".join(map(str, SMALL_SIZES))
     wanted = [i.strip() for i in args.impls.split(",") if i.strip()]
     groups = [["builtin"] + (["rustique"] if "rustique" in wanted else [])]
     if "enabled" in wanted:
         groups.append(["enabled"])
-    shards = max(1, args.shards)
+    keys = [c.key for c in select(all_cells(), args)]
+    chunks = [keys[i : i + args.chunk] for i in range(0, len(keys), args.chunk)]
+    jobs = [(g, group, k, chunk) for g, group in enumerate(groups) for k, chunk in enumerate(chunks)]
     tmp = tempfile.mkdtemp(prefix="scoreboard-cg-")
-    procs = []
-    outs = []
-    cmd_args = filter_cli(args)
-    for g, group in enumerate(groups):
-        for k in range(shards):
-            cg_dir = os.path.join(tmp, f"g{g}s{k}")
-            os.makedirs(cg_dir)
-            out = os.path.join(tmp, f"instr{g}-{k}.json")
-            outs.append(out)
-            cmd = [
-                "valgrind", "--tool=callgrind", "--instr-atstart=no", f"--callgrind-out-file={cg_dir}/cg.out",
-                "--dump-instr=no", "--dump-line=no", "--compress-strings=no", "-q", sys.executable,
-                os.path.abspath(__file__), "_instr_worker", *cmd_args, "--impls", ",".join(group),
-                "--shard", f"{k}/{shards}", "--cg-dir", cg_dir, "-o", out,
-            ]
-            procs.append(subprocess.Popen(cmd, stderr=subprocess.DEVNULL if args.quiet else None))
-    rc = [p.wait() for p in procs]
-    if any(rc):
-        sys.exit(f"instr workers failed: {rc}")
+    outs: list[str] = []
+    running: list[subprocess.Popen[bytes]] = []
+    failed: list[int] = []
+    done = 0
+    for g, group, k, chunk in jobs:
+        while len(running) >= max(1, args.shards):
+            running, finished = _reap(running)
+            failed += [rc for rc in finished if rc]
+            done += len(finished)
+        cg_dir = os.path.join(tmp, f"g{g}c{k}")
+        os.makedirs(cg_dir)
+        keys_file = os.path.join(cg_dir, "keys.txt")
+        with open(keys_file, "w") as f:
+            f.write("\n".join(chunk))
+        out = os.path.join(tmp, f"instr{g}-{k}.json")
+        outs.append(out)
+        cmd = [
+            "valgrind", "--tool=callgrind", "--instr-atstart=no", f"--callgrind-out-file={cg_dir}/cg.out",
+            "--dump-instr=no", "--dump-line=no", "--compress-strings=no", "-q", sys.executable,
+            os.path.abspath(__file__), "_instr_worker", "--impls", ",".join(group), "--keys-file", keys_file,
+            "--cg-dir", cg_dir, "-o", out,
+        ]
+        # Fixed str hashing: dict/set probe sequences (and so instruction counts) are
+        # otherwise randomised per process (~3% run-to-run drift on str keys).
+        env = {**os.environ, "PYTHONHASHSEED": "0"}
+        running.append(subprocess.Popen(cmd, stderr=subprocess.DEVNULL if args.quiet else None, env=env))
+    while running:
+        running, finished = _reap(running)
+        failed += [rc for rc in finished if rc]
+    if failed:
+        sys.exit(f"instr workers failed: {failed}")
     merged: dict[str, dict[str, Any]] = {}
     meta = None
     for out in outs:
@@ -740,12 +768,24 @@ def run_instr(args: argparse.Namespace) -> None:
         if "digest_enabled" in c and "digest_builtin" in c and "status_enabled" not in c:
             same_result = c["digest_enabled"] == c["digest_builtin"]
             c["status_enabled"] = "ok" if same_result else "mismatch"
-    assert meta is not None
+    meta = meta or metadata("instr")
     meta["impls"] = wanted
     with open(args.output, "w") as f:
         json.dump({"meta": meta, "cells": list(merged.values())}, f, indent=0)
     shutil.rmtree(tmp, ignore_errors=True)
     print(f"wrote {args.output} ({len(merged)} cells)")
+
+
+def _reap(running: list[subprocess.Popen[bytes]]) -> tuple[list[subprocess.Popen[bytes]], list[int]]:
+    """Wait until at least one worker exits; returns (still running, exit codes)."""
+    while True:
+        still, finished = [], []
+        for p in running:
+            rc = p.poll()
+            (still if rc is None else finished).append(p if rc is None else rc)
+        if finished or not still:
+            return still, finished
+        time.sleep(0.05)
 
 
 def filter_cli(args: argparse.Namespace) -> list[str]:
@@ -1046,10 +1086,14 @@ def main() -> None:
         sp.add_argument("--impls", default="rustique", help="rustique,enabled (the builtin is always measured)")
         if name in ("instr", "time", "_instr_worker"):
             sp.add_argument("-o", "--output", default=f"scoreboard-{name.strip('_').split('_')[0]}.json")
-            sp.add_argument("--shards", type=int, default=1)
+            sp.add_argument("--shards", type=int, default=2,
+                            help="concurrent worker processes (instr: ~150-300 MB each)")
             sp.add_argument("--quiet", action="store_true")
         if name == "_instr_worker":
             sp.add_argument("--cg-dir", required=True)
+            sp.add_argument("--keys-file")
+        if name == "instr":
+            sp.add_argument("--chunk", type=int, default=10, help="cells per callgrind process (bounds memory)")
         if name == "time":
             sp.add_argument("-p", "--processes", type=int, default=2)
             sp.add_argument("-n", "--values", type=int, default=3)
