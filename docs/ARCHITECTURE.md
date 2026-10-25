@@ -84,12 +84,15 @@ crates/
     src/scalars.rs            # i8..u64, f32, f64 scalar pyclasses
     src/expr.rs               # Python-facing expression builder `X`
     src/capi.rs               # versioned C-API capsule `rustique._rustique._C_API` (§5.1)
-    src/builtins.rs           # replacement builtins sum/min/max/sorted/any/all (§4.6)
+    src/builtins.rs           # accelerated builtins sum/min/max/sorted/any/all (§4.6)
     src/objsort.rs            # object-pointer sort via CPython's list.sort (§4.6)
+    src/takeover.rs           # safe-tier kernels behind builtin list/tuple methods (§8)
 python/rustique/
   __init__.py                 # public re-exports
+  __main__.py                 # `python -m rustique` runner (§8)
+  _takeover/                  # enable()/disable(), native-tier rewriter and import hook (§8)
   __init__.pyi                # hand-written, precise type stubs
-  _builtins.py                # install()/uninstall() of the replacement builtins (§4.6)
+  _builtins.py                # install()/uninstall() of the accelerated builtins (§4.6)
   py.typed
 tests/                        # pytest (parity, typing, strategies, expr, threads, buffer)
 benches/                      # honest benchmark harness
@@ -555,3 +558,22 @@ cost of a borrow/release pair is about 0.1 µs.
     stress; skipped where meaningless).
 - `benches/bench.py` — fresh inputs per repetition, result verification, reports
   rustique/builtin ratios.
+
+---
+
+## 8. Takeover (`rustique.enable()`)
+
+Decision record and measurements: [`docs/TAKEOVER.md`](TAKEOVER.md). In short:
+
+- **Safe tier (default, process-wide).** Containers stay exact builtins; `enable()` swaps
+  the `ml_meth` pointers of CPython's static `PyMethodDef`s of `list.sort`/`index`/`count`
+  and `tuple.index`/`count`, and the `sq_contains` slots of `list`/`tuple`, for
+  exact-semantics Rust kernels (`takeover.rs`) that fall back to the saved originals; the
+  replacement builtin functions come from `rustique._builtins`. No type object is
+  modified.
+- **Native tier (opt-in, per module).** An import hook / runner / decorator rewrites
+  displays, comprehensions and `list()`/`dict()`/`set()` calls of selected modules to
+  `List`/`Dict`/`Set`.
+- **Layout rule.** A Rustique type with native storage must not subclass a builtin
+  container (C code reads the builtin layout after non-exact type checks).
+

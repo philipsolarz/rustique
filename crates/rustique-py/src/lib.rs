@@ -16,6 +16,7 @@ pub mod schema;
 pub mod set;
 pub mod storage;
 pub mod sync;
+pub mod takeover;
 pub mod typing;
 
 #[pymodule]
@@ -29,5 +30,6 @@ fn _rustique(m: &Bound<'_, PyModule>) -> PyResult<()> {
     expr::register(m)?;
     capi::register(m)?;
     builtins::register(m)?;
+    takeover::register(m)?;
     Ok(())
 }
