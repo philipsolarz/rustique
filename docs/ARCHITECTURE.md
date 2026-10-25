@@ -310,29 +310,31 @@ column-at-a-time in Rust.
 
 ### 4.6 Builtin functions: `rustique._builtins`
 
-`rustique._builtins.install()` replaces `sum`, `min`, `max`, `sorted`, `any` and `all` in
-the `builtins` module (`uninstall()` restores them, `installed()` lists them; `rs.enable()`
-calls `install()`). Nothing changes until it is called. Code: `crates/rustique-py/src/
-builtins.rs`, `python/rustique/_builtins.py`.
+`rustique._builtins.install()` accelerates `sum`, `min`, `max`, `sorted`, `any` and `all`
+(`uninstall()` restores them, `installed()` lists them; `rs.enable()` calls `install()`).
+Nothing changes until it is called. Code: `crates/rustique-py/src/builtins.rs`,
+`python/rustique/_builtins.py`.
 
-**Indistinguishable replacements.** Each replacement is a `builtin_function_or_method`
-whose `PyMethodDef` copies the original's name, docstring and `ml_flags`, with the
-original's `__self__` (the `builtins` module) and `__module__`. So `__name__`,
-`__qualname__`, `__module__`, `__doc__`, `__text_signature__`, `inspect.signature`,
-`help()`, `repr` and `__reduce__` are the original's; `pickle.dumps(sum)` pickles by
-reference to `builtins.sum`; and the interpreter specialises calls exactly as before
-(`CALL_BUILTIN_FAST_WITH_KEYWORDS` for `sum`/`min`/`max`/`sorted`, `CALL_BUILTIN_O` for
-`any`/`all`). Only identity differs (`sum is <original>` is false; a reference to the
-original taken before `install()` keeps calling the original and no longer pickles, since
-`builtins.sum` is now another object). A builtin that is not CPython's original at install
-time (patched by other code) is left alone. Code compiled before `install()` sees the
-replacements (builtins are looked up at run time).
+**In place, identity kept.** `install()` swaps the `ml_meth` entry point of the six
+entries of CPython's static `builtins` method table (`PyModule_GetDef(builtins)->
+m_methods`, non-const static data, checked writable) for the Rust kernels; `uninstall()`
+swaps them back (compare-and-swap, so an entry changed by someone else meanwhile is left
+alone). The builtin function objects are unchanged: same identity, name, docstring,
+`__text_signature__`, `inspect.signature`, `help()`, `repr`, pickling by reference, flags
+(so `CALL_BUILTIN_FAST_WITH_KEYWORDS` / `CALL_BUILTIN_O` specialise as before), and
+references taken before `install()` (`from builtins import sum`, C extensions) are
+accelerated too. Identity matters: CPython 3.14+ compiles `any(<genexpr>)` and
+`all(<genexpr>)` into an identity check against the original builtin followed by an
+inlined loop; putting a different function object into `builtins` defeated that and made
+`any(genexpr)` cost 1.19x the instructions (measured). Every caller reads `ml_meth` at
+call time, so the swap applies everywhere at once; it is one aligned pointer store, so a
+concurrent call runs either version. The table is process-global (all interpreters).
 
-**Dispatch.** The entry points are raw `extern "C"` functions (no PyO3 argument
-extraction). They look at the argument types; anything not handled calls the original C
-function (its `ml_meth`, read from the saved original at call time, so an acceleration
-installed underneath stays active) with the original arguments, so every error message
-and corner case of a fallback is CPython's own. Fast paths:
+**Dispatch.** The kernels are raw `extern "C"` functions (no PyO3 argument extraction;
+Rustique containers are handled inside PyO3's trampoline). They look at the argument
+types; anything not handled calls the original C function (the entry point saved at
+install) with the original arguments, so every error message and corner case of a
+fallback is CPython's own. Fast paths:
 
 | input | `sum` | `min`/`max` (no `key`) | `any`/`all` | `sorted` |
 |---|---|---|---|---|
