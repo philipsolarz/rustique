@@ -1639,6 +1639,20 @@ fn guarded(f: impl FnOnce() -> *mut ffi::PyObject) -> *mut ffi::PyObject {
     }
 }
 
+/// The `rustique.List` behind `obj`, if that is its type.
+///
+/// # Safety
+/// `obj` is a live object.
+#[inline(always)]
+unsafe fn as_rs_list<'a>(py: Python<'_>, obj: *mut ffi::PyObject) -> Option<&'a List> {
+    // SAFETY: exact type check; `List` is a frozen pyclass, so a shared reference to its
+    // Rust value is valid for as long as the (caller-owned) object lives.
+    unsafe {
+        (type_of(obj) == RS_LIST.load(Atomic::Relaxed))
+            .then(|| &*(Borrowed::from_ptr(py, obj).cast_unchecked::<List>().get() as *const List))
+    }
+}
+
 #[inline(always)]
 fn is_rustique(t: *mut ffi::PyTypeObject) -> bool {
     t == RS_LIST.load(Atomic::Relaxed) || t == RS_SET.load(Atomic::Relaxed)
@@ -1648,8 +1662,39 @@ fn is_rustique(t: *mut ffi::PyTypeObject) -> bool {
 // sum
 // =======================================================================================
 
+/// Whether a fast path may apply to an iterable of this type (anything else goes straight
+/// to the original, from a thin entry point that adds only these compares).
+#[inline(always)]
+fn candidate(t: *mut ffi::PyTypeObject) -> bool {
+    t == list_type()
+        || t == tuple_type()
+        || t == &raw mut ffi::PySet_Type
+        || t == &raw mut ffi::PyFrozenSet_Type
+        || t == &raw mut ffi::PyDict_Type
+        || is_rustique(t)
+}
+
 /// `sum(iterable, /, start=0)`.
 unsafe extern "C" fn rq_sum(
+    slf: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> *mut ffi::PyObject {
+    // SAFETY: called by CPython with vectorcall arguments on an attached thread.
+    unsafe {
+        if nargs >= 1 && candidate(type_of(*args)) {
+            sum_entry(slf, args, nargs, kwnames)
+        } else {
+            original_fastkw(Which::Sum, args, nargs, kwnames)
+        }
+    }
+}
+
+/// # Safety
+/// Vectorcall arguments from CPython.
+#[inline(never)]
+unsafe fn sum_entry(
     slf: *mut ffi::PyObject,
     args: *const *mut ffi::PyObject,
     nargs: ffi::Py_ssize_t,
@@ -1685,7 +1730,26 @@ unsafe extern "C" fn rq_sum(
                 Out::Fallback => original_fastkw(Which::Sum, args, nargs, kwnames),
             }))
         } else if is_rustique(t) {
-            Out::Obj(trampoline::fastcall_cfunction_with_keywords::<RsSum>(slf, args, nargs, kwnames))
+            // Native storage: the column kernel, without PyO3's trampoline (nothing here
+            // drops a `Py<T>`); everything else inside it.
+            let native = as_rs_list(py, it).and_then(|list| {
+                let ns = if start.is_null() {
+                    NativeStart::Default
+                } else if type_of(start) == float_type() {
+                    NativeStart::Float(float_value(start))
+                } else {
+                    NativeStart::Int(int_value(start)?)
+                };
+                list.with_column(py, |column| column_sum(py, column, ns))?
+            });
+            match native {
+                Some(Ok(result)) => Out::Obj(result.into_ptr()),
+                Some(Err(e)) => {
+                    e.restore(py);
+                    Out::Obj(ptr::null_mut())
+                }
+                None => Out::Obj(trampoline::fastcall_cfunction_with_keywords::<RsSum>(slf, args, nargs, kwnames)),
+            }
         } else if let Some(kind) = Hashed::of(t) {
             match guarded(|| match sum_hashed(py, kind, it, start) {
                 Out::Obj(r) => r,
@@ -1775,7 +1839,13 @@ unsafe extern "C" fn rq_min(
     kwnames: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
     // SAFETY: vectorcall arguments from CPython.
-    unsafe { minmax_entry(slf, args, nargs, kwnames, Which::Min) }
+    unsafe {
+        if nargs > 1 || (nargs == 1 && candidate(type_of(*args))) {
+            minmax_entry(slf, args, nargs, kwnames, Which::Min)
+        } else {
+            original_fastkw(Which::Min, args, nargs, kwnames)
+        }
+    }
 }
 
 unsafe extern "C" fn rq_max(
@@ -1785,7 +1855,13 @@ unsafe extern "C" fn rq_max(
     kwnames: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
     // SAFETY: vectorcall arguments from CPython.
-    unsafe { minmax_entry(slf, args, nargs, kwnames, Which::Max) }
+    unsafe {
+        if nargs > 1 || (nargs == 1 && candidate(type_of(*args))) {
+            minmax_entry(slf, args, nargs, kwnames, Which::Max)
+        } else {
+            original_fastkw(Which::Max, args, nargs, kwnames)
+        }
+    }
 }
 
 /// The `default` argument of a `min`/`max` call that a fast path can serve (no key
@@ -1824,7 +1900,7 @@ unsafe fn minmax_args(
 
 /// # Safety
 /// Vectorcall arguments from CPython.
-#[inline(always)]
+#[inline(never)]
 unsafe fn minmax_entry(
     slf: *mut ffi::PyObject,
     args: *const *mut ffi::PyObject,
@@ -1854,10 +1930,20 @@ unsafe fn minmax_entry(
         } else if t == tuple_type() {
             guarded(|| minmax_seq(py, Seq::Tuple(it), default, op))
         } else if is_rustique(t) {
-            if which == Which::Min {
-                trampoline::fastcall_cfunction_with_keywords::<RsMin>(slf, args, nargs, kwnames)
-            } else {
-                trampoline::fastcall_cfunction_with_keywords::<RsMax>(slf, args, nargs, kwnames)
+            // Native storage: the column kernel, without PyO3's trampoline.
+            let native = as_rs_list(py, it).and_then(|list| {
+                list.with_column(py, |column| {
+                    let run = || if op == ffi::Py_GT { kernels::max(column) } else { kernels::min(column) };
+                    if column.len() >= DETACH_THRESHOLD { py.detach(run) } else { run() }
+                })
+            });
+            match native {
+                Some(Some(value)) => convert::value_to_python(py, &value).into_ptr(),
+                Some(None) => minmax_result(None, default, op),
+                None if which == Which::Min => {
+                    trampoline::fastcall_cfunction_with_keywords::<RsMin>(slf, args, nargs, kwnames)
+                }
+                None => trampoline::fastcall_cfunction_with_keywords::<RsMax>(slf, args, nargs, kwnames),
             }
         } else if let Some(kind) = Hashed::of(t) {
             match guarded(|| match minmax_hashed(py, kind, it, default, op) {
@@ -2078,17 +2164,17 @@ unsafe fn rs_sorted(
 
 unsafe extern "C" fn rq_any(slf: *mut ffi::PyObject, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: METH_O call from CPython.
-    unsafe { truth_entry(slf, arg, Which::Any) }
+    unsafe { if candidate(type_of(arg)) { truth_entry(slf, arg, Which::Any) } else { original_o(Which::Any, arg) } }
 }
 
 unsafe extern "C" fn rq_all(slf: *mut ffi::PyObject, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: METH_O call from CPython.
-    unsafe { truth_entry(slf, arg, Which::All) }
+    unsafe { if candidate(type_of(arg)) { truth_entry(slf, arg, Which::All) } else { original_o(Which::All, arg) } }
 }
 
 /// # Safety
 /// METH_O arguments from CPython.
-#[inline(always)]
+#[inline(never)]
 unsafe fn truth_entry(slf: *mut ffi::PyObject, it: *mut ffi::PyObject, which: Which) -> *mut ffi::PyObject {
     let stop = which == Which::Any;
     // SAFETY: live argument; kernels' requirements hold.
@@ -2100,6 +2186,22 @@ unsafe fn truth_entry(slf: *mut ffi::PyObject, it: *mut ffi::PyObject, which: Wh
         } else if t == tuple_type() {
             guarded(|| truth_seq(py, Seq::Tuple(it), stop))
         } else if is_rustique(t) {
+            match as_rs_list(py, it) {
+                Some(list) => {
+                    // Native storage: the column scan, without PyO3's trampoline.
+                    if let Some(found) = list.with_column(py, |c| column_truth(c, stop)) {
+                        return bool_result(found, stop);
+                    }
+                    // `any`/`all` usually stop early, but a snapshot costs every element.
+                    if list.len() > SNAPSHOT_TRUTH_MAX {
+                        return original_o(which, it);
+                    }
+                }
+                // `any` over a Set nearly always stops at its first element: a snapshot of
+                // every element (all there is without a native view of the keys) loses.
+                None if stop => return original_o(which, it),
+                None => {}
+            }
             if stop { trampoline::binaryfunc::<RsAny>(slf, it) } else { trampoline::binaryfunc::<RsAll>(slf, it) }
         } else if let Some(kind) = Hashed::of(t) {
             match guarded(|| match truth_hashed(py, kind, it, stop) {

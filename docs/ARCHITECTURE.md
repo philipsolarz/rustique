@@ -341,7 +341,7 @@ fallback is CPython's own. Fast paths:
 | builtin `list`/`tuple`, `min(a, b, ...)` | scan + continuation | scan + continuation | scan + continuation | original (its `list.sort`) |
 | builtin `set`/`frozenset`/`dict` (keys) | scan, else original | scan, else original | scan, else original | original |
 | `rustique.List`, native storage | kernel | kernel | native | native sort, boxed |
-| `rustique.List`, object storage / `rustique.Set` | snapshot scan, else original | snapshot scan, else original | snapshot scan, else original | copy + `list.sort` |
+| `rustique.List`, object storage / `rustique.Set` | snapshot scan, else original | snapshot scan, else original | up to 32 elements: snapshot scan, else original (`any(Set)`: original) | copy + `list.sort` |
 | anything else (`Dict`, iterators, subclasses, ...) | original | original | original | original |
 
 - A *scan* reads the item array directly (a builtin list inside its critical section)
@@ -354,6 +354,11 @@ fallback is CPython's own. Fast paths:
   results, the order of Python-level calls (`__radd__`, `__lt__`, `__bool__`) and the
   reaction to mutation are CPython's. For hashed containers and Rustique snapshots the
   original builtin is called from scratch instead (at most one extra pure pass).
+- Rustique containers have no lock-scoped element view yet, so object storage and `Set`s
+  are scanned on a snapshot (every element increfed or boxed). That pays off for `sum`,
+  `min`, `max` and `sorted`, which visit every element anyway, but not for `any`/`all`,
+  which CPython usually ends early: those snapshot only up to 32 elements and otherwise
+  iterate lazily through the original (`any(Set)` always does).
 - `sum` is a state machine following `builtin_sum_impl` (3.12+): exact `int` accumulation
   in a C long, then CPython's compensated (Neumaier) float summation, then compensated
   complex, then generic `+`; transitions happen at the same items, so float sums are
