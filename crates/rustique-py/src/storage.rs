@@ -9,7 +9,7 @@
 //! that a mutation removes are handed back as [`Displaced`] so the caller can drop them
 //! after unlocking.
 
-use std::mem;
+use std::{mem, ptr};
 
 use pyo3::exceptions::PyMemoryError;
 use pyo3::prelude::*;
@@ -489,6 +489,27 @@ impl Storage {
         }
     }
 
+    /// `self + other` as new storage when no conversion is needed (same native dtype, both
+    /// object storage, or either side empty); `None` otherwise. Runs no Python code.
+    pub fn concat(&self, py: Python<'_>, other: &Storage) -> Option<Storage> {
+        Some(match (self, other) {
+            (_, Storage::Empty) => self.clone_ref(py),
+            (Storage::Empty, _) => other.clone_ref(py),
+            (Storage::Native(a), Storage::Native(b)) => Storage::Native(rustique_core::with_column_pair!(a, b, (x, y) => {
+                let mut v = Vec::with_capacity(x.len() + y.len());
+                v.extend_from_slice(x);
+                v.extend_from_slice(y);
+                Column::from(v)
+            }, _ => return None)),
+            (Storage::Object(a), Storage::Object(b)) => {
+                let mut v = Vec::with_capacity(a.len() + b.len());
+                v.extend(a.iter().chain(b).map(|o| o.clone_ref(py)));
+                Storage::Object(v)
+            }
+            _ => return None,
+        })
+    }
+
     /// `self * n` (list semantics: `n <= 0` gives an empty sequence). `MemoryError` when
     /// the result cannot be allocated.
     pub fn repeat(&self, py: Python<'_>, n: isize) -> PyResult<Storage> {
@@ -596,4 +617,227 @@ fn repeat_slice<T: Clone>(v: &[T], total: usize) -> PyResult<Vec<T>> {
         out.extend_from_slice(v);
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------------------
+// Boxed element cache
+// ---------------------------------------------------------------------------------------
+
+/// Boxed copies of native elements, so that element-wise reads (`x[i]`, iteration,
+/// unpacking) of a native container read repeatedly cost an incref instead of creating
+/// a new `int`/`float`/`str` object each time.
+///
+/// A container enables its cache once it has served more element reads than it has
+/// elements (plus a margin) since it was last invalidated (see [`ElemCache::note_read`]):
+/// code that reads every element once never pays for it. The slots are filled on demand.
+/// Cached objects are exact `int`/`float`/`bool`/`str` objects, whose deallocation runs no
+/// Python code, so the cache may be cleared under a container lock.
+///
+/// Concurrency: the slot array is created by any reader (racing creators: one wins) and
+/// slots are filled by readers with atomic stores (compare-exchange on free-threaded
+/// builds); every other change (clearing, pushing, popping, replacing slots) needs the
+/// container's exclusive access, which the `unsafe` methods require of their callers.
+/// All methods must be called attached.
+#[derive(Default)]
+pub struct ElemCache {
+    slots: std::sync::atomic::AtomicPtr<Vec<std::sync::atomic::AtomicPtr<pyo3::ffi::PyObject>>>,
+    /// Element reads since the cache was last cleared (racy counting is fine).
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl std::fmt::Debug for ElemCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ElemCache").field("enabled", &!self.slots.load(Relaxed).is_null()).finish()
+    }
+}
+
+#[cfg(not(Py_GIL_DISABLED))]
+use std::sync::atomic::Ordering::Release;
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
+
+impl ElemCache {
+    /// Containers longer than this never cache (bounds the memory a cache can pin).
+    pub const MAX_LEN: usize = 1 << 22;
+
+    pub const fn new() -> Self {
+        ElemCache {
+            slots: std::sync::atomic::AtomicPtr::new(ptr::null_mut()),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    #[inline(always)]
+    fn slots(&self) -> Option<&Vec<std::sync::atomic::AtomicPtr<pyo3::ffi::PyObject>>> {
+        // SAFETY: a non-null pointer is a live boxed vector, freed only with exclusive
+        // access (`clear`/drop), which excludes the caller's shared access.
+        unsafe { self.slots.load(Acquire).as_ref() }
+    }
+
+    /// Whether the cache is enabled.
+    #[inline(always)]
+    pub fn is_enabled(&self) -> bool {
+        !self.slots.load(Relaxed).is_null()
+    }
+
+    /// Count one element read of a container of `len` elements; enable the cache once the
+    /// reads exceed `len + 16`. Callers have shared access to the container.
+    #[inline(always)]
+    pub fn note_read(&self, len: usize) {
+        if self.is_enabled() {
+            return;
+        }
+        let reads = self.reads.load(Relaxed) + 1;
+        self.reads.store(reads, Relaxed);
+        if reads > len + 16 && len <= Self::MAX_LEN {
+            self.enable(len);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn enable(&self, len: usize) {
+        let mut slots = Vec::with_capacity(len);
+        slots.resize_with(len, || std::sync::atomic::AtomicPtr::new(ptr::null_mut()));
+        let new = Box::into_raw(Box::new(slots));
+        if self.slots.compare_exchange(ptr::null_mut(), new, AcqRel, Acquire).is_err() {
+            // SAFETY: never published.
+            drop(unsafe { Box::from_raw(new) });
+        }
+    }
+
+    /// A new reference to element `i` of `storage` (in range), from the cache when it is
+    /// enabled and holds the element. Callers have shared access to the container.
+    #[inline(always)]
+    pub fn item(&self, py: Python<'_>, storage: &Storage, i: usize) -> *mut pyo3::ffi::PyObject {
+        let Storage::Native(column) = storage else {
+            return storage.item_ptr(py, i);
+        };
+        let Some(slot) = self.slots().and_then(|s| s.get(i)) else {
+            return column_item(py, column, i).into_ptr();
+        };
+        let p = slot.load(Acquire);
+        if !p.is_null() {
+            // SAFETY: the cache owns a reference; a new one is returned.
+            unsafe { pyo3::ffi::Py_INCREF(p) };
+            return p;
+        }
+        let new = column_item(py, column, i).into_ptr();
+        #[cfg(not(Py_GIL_DISABLED))]
+        {
+            // Readers are serialised by the GIL (detached kernels never touch the cache).
+            slot.store(new, Release);
+            // SAFETY: one reference for the cache, one returned.
+            unsafe { pyo3::ffi::Py_INCREF(new) };
+            new
+        }
+        #[cfg(Py_GIL_DISABLED)]
+        match slot.compare_exchange(ptr::null_mut(), new, AcqRel, Acquire) {
+            Ok(_) => {
+                // SAFETY: one reference for the cache, one returned.
+                unsafe { pyo3::ffi::Py_INCREF(new) };
+                new
+            }
+            Err(existing) => {
+                // SAFETY: `new` is unshared (an exact builtin scalar: its deallocation runs
+                // no Python code); `existing` is owned by the cache.
+                unsafe {
+                    pyo3::ffi::Py_DECREF(new);
+                    pyo3::ffi::Py_INCREF(existing);
+                }
+                existing
+            }
+        }
+    }
+
+    /// Drop the cache (and reset the read count).
+    ///
+    /// # Safety
+    /// The caller must have exclusive access to the container and be attached.
+    #[inline]
+    pub unsafe fn clear(&self) {
+        self.reads.store(0, Relaxed);
+        if self.slots.load(Relaxed).is_null() {
+            return;
+        }
+        let old = self.slots.swap(ptr::null_mut(), AcqRel);
+        if !old.is_null() {
+            // SAFETY: exclusive access: no reader holds the vector.
+            unsafe { release_slots(Box::from_raw(old)) };
+        }
+    }
+
+    /// Mirror an append to the container.
+    ///
+    /// # Safety
+    /// As [`ElemCache::clear`].
+    #[inline]
+    pub unsafe fn push(&self) {
+        // SAFETY: exclusive access (caller contract).
+        if let Some(slots) = unsafe { self.slots.load(Relaxed).as_mut() } {
+            if slots.len() >= Self::MAX_LEN {
+                // SAFETY: as above.
+                unsafe { self.clear() };
+            } else {
+                slots.push(std::sync::atomic::AtomicPtr::new(ptr::null_mut()));
+            }
+        }
+    }
+
+    /// Mirror a replacement of element `i` (the slot is emptied).
+    ///
+    /// # Safety
+    /// As [`ElemCache::clear`].
+    #[inline]
+    pub unsafe fn invalidate(&self, i: usize) {
+        if let Some(slot) = self.slots().and_then(|s| s.get(i)) {
+            let old = slot.swap(ptr::null_mut(), Relaxed);
+            if !old.is_null() {
+                // SAFETY: owned by the cache; an exact builtin scalar.
+                unsafe { pyo3::ffi::Py_DECREF(old) };
+            }
+        }
+    }
+
+    /// Mirror removing the last of `len` elements; returns its cached object (a new
+    /// reference transferred from the cache) if there was one.
+    ///
+    /// # Safety
+    /// As [`ElemCache::clear`].
+    #[inline]
+    pub unsafe fn pop(&self, len: usize) -> Option<*mut pyo3::ffi::PyObject> {
+        // SAFETY: exclusive access (caller contract).
+        let slots = unsafe { self.slots.load(Relaxed).as_mut() }?;
+        if slots.len() != len {
+            // Out of step with the container (never expected): start over.
+            // SAFETY: as above.
+            unsafe { self.clear() };
+            return None;
+        }
+        let p = slots.pop()?.into_inner();
+        (!p.is_null()).then_some(p)
+    }
+}
+
+/// Release every cached object of a slot vector.
+///
+/// # Safety
+/// Attached; the vector is no longer shared.
+unsafe fn release_slots(slots: Box<Vec<std::sync::atomic::AtomicPtr<pyo3::ffi::PyObject>>>) {
+    for slot in slots.iter() {
+        let p = slot.load(Relaxed);
+        if !p.is_null() {
+            // SAFETY: owned by the cache; exact builtin scalars.
+            unsafe { pyo3::ffi::Py_DECREF(p) };
+        }
+    }
+}
+
+impl Drop for ElemCache {
+    fn drop(&mut self) {
+        let old = *self.slots.get_mut();
+        if !old.is_null() {
+            // SAFETY: the owner is being dropped (attached: containers die in tp_dealloc).
+            unsafe { release_slots(Box::from_raw(old)) };
+        }
+    }
 }

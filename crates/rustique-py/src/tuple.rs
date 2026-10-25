@@ -32,7 +32,7 @@ use crate::list::alloc::{RawClass, RawDrop};
 use crate::list::slots::{compact_int, fallback, none, py, raise, restore, shield};
 use crate::list::{compare_lengths, native_compare};
 use crate::schema;
-use crate::storage::Storage;
+use crate::storage::{ElemCache, Storage};
 use crate::sync::PyMutex;
 
 type Obj = *mut ffi::PyObject;
@@ -46,6 +46,8 @@ pub struct Tuple {
     storage: Storage,
     /// Cached `hash(self)`, [`NO_HASH`] until computed (relaxed accesses, like CPython).
     hash: AtomicIsize,
+    /// Boxed copies of native elements read repeatedly (never invalidated: immutable).
+    cache: ElemCache,
 }
 
 /// Raw allocation of `Tuple` instances.
@@ -75,7 +77,7 @@ fn tuple_storage(py: Python<'_>, storage: Storage) -> Storage {
 
 impl Tuple {
     fn new_value(storage: Storage) -> Tuple {
-        Tuple { storage, hash: AtomicIsize::new(NO_HASH) }
+        Tuple { storage, hash: AtomicIsize::new(NO_HASH), cache: ElemCache::new() }
     }
 
     /// A new exact `Tuple` holding `storage` (which must be NaN-free if a float column).
@@ -122,6 +124,16 @@ impl Tuple {
     /// The storage (immutable).
     pub fn storage(&self) -> &Storage {
         &self.storage
+    }
+
+    /// New reference to element `i` (in range) for an element-wise read, through the
+    /// boxed element cache.
+    #[inline(always)]
+    fn read_item(&self, py: Python<'_>, i: usize) -> Obj {
+        if let Storage::Native(_) = self.storage {
+            self.cache.note_read(self.len());
+        }
+        self.cache.item(py, &self.storage, i)
     }
 
     /// New reference to element `i` (in range).
@@ -646,7 +658,7 @@ unsafe extern "C" fn iter_next(slf: Obj) -> Obj {
         if let Some(t) = &st.tuple {
             let t = t.get();
             if st.index < t.len() {
-                let item = t.storage.item_ptr(py, st.index);
+                let item = t.read_item(py, st.index);
                 st.index += 1;
                 return item;
             }
@@ -798,7 +810,7 @@ unsafe extern "C" fn mp_subscript(slf: Obj, key: Obj) -> Obj {
         if let Some(i) = unsafe { compact_int(key) } {
             let t = unsafe { this(slf) };
             return match normalize_index(i, t.len()) {
-                Some(k) => t.storage.item_ptr(py(), k),
+                Some(k) => t.read_item(py(), k),
                 None => {
                     // SAFETY: reading a static exception type.
                     raise(unsafe { ffi::PyExc_IndexError }, c"tuple index out of range");
@@ -821,7 +833,7 @@ unsafe extern "C" fn sq_item(slf: Obj, i: ffi::Py_ssize_t) -> Obj {
         // SAFETY: see above.
         let t = unsafe { this(slf) };
         if i >= 0 && (i as usize) < t.len() {
-            return t.storage.item_ptr(py(), i as usize);
+            return t.read_item(py(), i as usize);
         }
         // SAFETY: reading a static exception type.
         raise(unsafe { ffi::PyExc_IndexError }, c"tuple index out of range");
@@ -856,7 +868,7 @@ unsafe extern "C" fn iteritem(slf: Obj, index: ffi::Py_ssize_t) -> ffi::_PyObjec
         // SAFETY: see above.
         let t = unsafe { this(slf) };
         if (index as usize) < t.len() {
-            ffi::_PyObjectIndexPair { object: t.storage.item_ptr(py(), index as usize), index: index + 1 }
+            ffi::_PyObjectIndexPair { object: t.read_item(py(), index as usize), index: index + 1 }
         } else {
             ffi::_PyObjectIndexPair { object: ptr::null_mut(), index }
         }
@@ -918,6 +930,39 @@ unsafe extern "C" fn tp_vectorcall(_callable: Obj, args: *const Obj, nargsf: usi
                 unsafe { ffi::Py_INCREF(arg) };
                 return arg;
             }
+            // An exact builtin list or tuple: converted without Python code or `Py` drops.
+            let py = py();
+            // SAFETY: a live object.
+            let source = unsafe { Bound::from_borrowed_ptr(py, arg) };
+            if let Some(storage) = convert::ingest_exact_seq_any(py, &source) {
+                let storage = match storage {
+                    Storage::Native(Column::F64(ref v)) if v.iter().any(|x| x.is_nan()) => {
+                        match convert::ingest_objects_raw(py, &source) {
+                            Ok(objects) => objects,
+                            Err(e) => {
+                                restore(e.error);
+                                return ptr::null_mut();
+                            }
+                        }
+                    }
+                    other => other,
+                };
+                return match Tuple::from_storage(py, storage) {
+                    Ok(t) => t.into_ptr(),
+                    Err(e) => {
+                        restore(e);
+                        ptr::null_mut()
+                    }
+                };
+            }
+        } else if nargs == 0 {
+            return match Tuple::from_storage(py(), Storage::Empty) {
+                Ok(t) => t.into_ptr(),
+                Err(e) => {
+                    restore(e);
+                    ptr::null_mut()
+                }
+            };
         }
         fallback(ptr::null_mut(), |py| {
             let storage = match nargs {

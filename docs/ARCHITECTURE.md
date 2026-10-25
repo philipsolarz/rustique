@@ -77,8 +77,12 @@ crates/
     src/storage.rs            # Storage = Native(Column) | Object(Vec<Py<PyAny>>), strategies
     src/schema.rs             # Python type expression → Schema; alias cache; ListType/DictType/SetType
     src/convert.rs            # Python ↔ native element conversion, bulk ingest fast paths
-    src/sync.rs               # locking discipline (see §6)
-    src/list.rs               # List pyclass + ListIterator
+    src/sync.rs               # locking discipline (see §6); sync/gil.rs, sync/ft.rs per build
+    src/list.rs               # List pyclass
+    src/list/slots.rs         # raw C slots/methods for List's hot paths (§6.1)
+    src/list/iter.rs          # ListIterator / ListReverseIterator (C-API types)
+    src/list/alloc.rs         # raw allocation/deallocation of PyO3 instances (§6.1)
+    src/tuple.rs              # Tuple pyclass + TupleIterator (§4.6)
     src/dict.rs               # Dict pyclass + views/iterators
     src/set.rs                # Set pyclass + iterator
     src/scalars.rs            # i8..u64, f32, f64 scalar pyclasses
@@ -187,7 +191,13 @@ from rustique import List, Dict, Set, X
 ```
 
 ### 4.1 `List`
-Constructor: `List(iterable=(), /)`, `List[T](iterable=(), /)`.
+Constructor: `List(iterable=(), /)`, `List[T](iterable=(), /)`. Like `list`, `List.__new__`
+creates an empty list and `List.__init__(iterable=())` clears and refills it (so
+`x.__init__(...)` re-initialises and Python subclasses work: `class Sub(List)`);
+`List(iterable)` itself takes a vectorcall fast path doing both at once. The type is
+immutable (`List.attr = ...` raises, like the builtins). Rust code can build an untyped
+`List` from a temporary builtin list with `List::from_temporary_list` (references are
+moved out of a uniquely referenced list instead of copied; for the opt-in native tier).
 Bulk ingest fast paths: builtin `list`/`tuple` (direct item array), `range`
 (computed natively), rustique `List` (column clone/convert), buffer-protocol objects whose
 format matches a numeric dtype (memcpy; e.g. `array.array`, NumPy), generic iterables.
@@ -208,6 +218,11 @@ and storage is native; NaN ordering must not panic), `copy`.
 `repr`: untyped `List([1, 2, 3])`, typed `List[int]([1, 2, 3])`; element reprs are CPython's.
 
 Element reads return Python builtins (`int`, `float`, `bool`, `str`, or the stored object).
+A native list read element-wise more often than it has elements (since its last
+mutation) keeps boxed copies of the elements it hands out (`ElemCache`, lists of up to
+2^22 elements), so repeated `x[i]`/iteration cost an incref like a builtin list; every
+mutation keeps the cache coherent or drops it. The sort of object storage is CPython's
+own `list.sort` (the references are moved into a temporary builtin list and back).
 
 Native extras (single Rust call, GIL detached for large inputs where safe):
 - `sum()`, `min()`, `max()` — Python semantics (`min`/`max` of empty → `ValueError`;
@@ -304,6 +319,21 @@ column-at-a-time in Rust.
   for signals once per element).
 - Expressions are DAGs: shared subexpressions are planned and evaluated once (memoised by
   node). An expression may contain at most 100 000 nodes (`ValueError` beyond).
+
+### 4.6 `Tuple`
+`Tuple(iterable=(), /)`: an immutable sequence with builtin `tuple` semantics and the
+untyped `List` storage strategies (`i64`, `f64`, `bool`, `str` columns or objects). A
+float column never holds a NaN (such tuples store the objects), so identity, equality and
+hashing are exactly the builtin's. `hash` is CPython's xxHash `tuplehash` over the element
+hashes (native numbers hashed natively), cached: `hash(Tuple(t)) == hash(t)` and
+`Tuple(t) == t`, so equal `Tuple`s and `tuple`s are interchangeable dict/set keys.
+Parity: `len`, indexing, slicing (returns `Tuple`; `t[:] is t`), `in`, iteration
+(`TupleIterator`, picklable), comparisons with `Tuple` and builtin tuples
+(`tuple_richcompare`), `+`/`*` (`tuple + Tuple` → `Tuple`), `count`, `index`, pickling,
+`copy`/`deepcopy`, subclassing with `tuple`'s keyword rules, `Tuple(t) is t` for an exact
+`Tuple`, `repr` `Tuple((1, 2))`, `Tuple[...]` as a `types.GenericAlias` (no typed schemas:
+`Tuple[int]` would mean a homogeneous tuple, unlike `typing`'s `tuple[int]`). No locks:
+the storage never changes after construction. Tuples of native values are not GC-tracked.
 
 ---
 
@@ -411,7 +441,18 @@ cost of a borrow/release pair is about 0.1 µs.
 
 ## 6. Concurrency & safety
 
-- Every container is a `#[pyclass(frozen)]` whose mutable state lives behind a lock.
+- Every mutable container is a `#[pyclass(frozen)]` whose mutable state lives behind a
+  `PyRwLock` (`sync.rs`), with one API and two implementations:
+  - **GIL builds**: a borrow flag (like `RefCell`) changed with plain loads and stores. The
+    GIL serialises attached threads and the three-phase discipline keeps Python code out
+    of guarded regions, so no atomic read-modify-write is needed. A guard held across
+    `py.detach` (big kernels) stays registered; a conflicting attached thread waits
+    detached until the holder re-attaches and releases it.
+  - **Free-threaded builds**: the parking_lot reader-writer lock described below.
+    CPython's per-object critical sections (what the builtins use) were measured as the
+    alternative: +21 instructions per `x[i]` (callgrind, 3.15.1t) and readers exclude
+    each other, so the reader-writer lock stays.
+- (Free-threaded builds.) Every container's mutable state lives behind a lock.
   Readers share, writers exclude. Lock acquisition must never deadlock against the GIL /
   interpreter: when contended, wait while *detached* from the interpreter — and **never
   hold or queue on a Rustique lock while detached**. A waiter spins briefly attached, then
@@ -451,6 +492,22 @@ cost of a borrow/release pair is about 0.1 µs.
   anything input-dependent.
 
 ---
+
+### 6.1 Raw slots
+
+`List`'s and `Tuple`'s per-element hot paths (`len`, `bool`, `x[i]`, `x[i] = v`, `del x[i]`,
+`in`, iteration, comparisons, hashing, construction, `append`/`pop`/`insert`/`extend`,
+`__init__`) are raw C functions installed into the PyO3-created types, replacing both the
+slot pointers and the type dict's slot wrappers (so explicit dunder calls and Python
+subclasses use them). `append`/`extend` are `METH_O` and `pop`/`insert` `METH_FASTCALL`
+method descriptors, which CPython's specializer calls directly
+(`CALL_METHOD_DESCRIPTOR_O`/`_FAST`). On 3.15, `_tp_iteritem` gives `for` loops the
+interpreter's virtual iteration (no iterator object). Exact instances are allocated and
+freed without PyO3 (`list/alloc.rs`; free lists on GIL builds); iterators are C-API types.
+Rules: nothing unwinds into C (panics become `PanicException`); a `Py<T>` is never
+dropped in a raw slot outside `Python::attach` (PyO3 would defer the decref to its
+reference pool), so hot paths release objects through `Bound`; the three-phase discipline
+is unchanged.
 
 ## 7. Testing & validation
 - `cargo test -p rustique-core` — unit + property tests of columns, kernels, expr, index,

@@ -304,7 +304,7 @@ unsafe extern "C" fn nb_bool(slf: Obj) -> c_int {
 fn item_at(list: &List, i: isize) -> Option<Obj> {
     let py = py();
     let data = list.read(py);
-    normalize_index(i, data.len()).map(|k| data.item_ptr(py, k))
+    normalize_index(i, data.len()).map(|k| list.read_item(py, &data, k))
 }
 
 unsafe extern "C" fn mp_subscript(slf: Obj, key: Obj) -> Obj {
@@ -374,6 +374,8 @@ fn assign_item(list: &List, i: isize, value: Obj) -> Option<c_int> {
         // SAFETY: a live value; `k` is in range.
         && let Ok(displaced) = unsafe { store_fast(&mut data, Some(k), value) }
     {
+        // SAFETY: exclusive access (the write guard).
+        unsafe { list.cache.invalidate(k) };
         list.version.bump_exclusive();
         drop(data);
         release(displaced);
@@ -530,7 +532,8 @@ unsafe extern "C" fn iteritem(slf: Obj, index: ffi::Py_ssize_t) -> ffi::_PyObjec
         // SAFETY: see above.
         let data = unsafe { this(slf) }.read(py);
         if (index as usize) < data.len() {
-            ffi::_PyObjectIndexPair { object: data.item_ptr(py, index as usize), index: index + 1 }
+            let list = unsafe { this(slf) };
+            ffi::_PyObjectIndexPair { object: list.read_item(py, &data, index as usize), index: index + 1 }
         } else {
             ffi::_PyObjectIndexPair { object: ptr::null_mut(), index }
         }
@@ -591,12 +594,113 @@ unsafe extern "C" fn tp_richcompare(slf: Obj, other: Obj, op: c_int) -> Obj {
 }
 
 // ---------------------------------------------------------------------------------------
+// Arithmetic: `x + y`, `x * n`
+// ---------------------------------------------------------------------------------------
+
+/// PyO3's `nb_add`/`nb_multiply` (the general `__add__`/`__radd__`/`__mul__`/`__rmul__`
+/// dispatch), used for every case the raw fast paths below do not handle.
+static PYO3_NB_ADD: std::sync::atomic::AtomicPtr<()> = std::sync::atomic::AtomicPtr::new(ptr::null_mut());
+static PYO3_NB_MULTIPLY: std::sync::atomic::AtomicPtr<()> = std::sync::atomic::AtomicPtr::new(ptr::null_mut());
+
+#[inline(always)]
+fn is_list(p: Obj) -> bool {
+    // SAFETY: a type check on a live object against the (live) `List` type.
+    unsafe { ffi::PyObject_TypeCheck(p, super::LIST_TYPE.load(std::sync::atomic::Ordering::Relaxed)) != 0 }
+}
+
+/// `x + y` for two lists of the same schema whose storages concatenate without conversion.
+unsafe extern "C" fn nb_add(a: Obj, b: Obj) -> Obj {
+    shield(ptr::null_mut(), || {
+        let py = py();
+        if is_list(a) && is_list(b) {
+            // SAFETY: both are lists.
+            let (la, lb) = unsafe { (this(a), this(b)) };
+            if std::sync::Arc::ptr_eq(&la.schema, &lb.schema) {
+                let storage = if a == b {
+                    let data = la.read(py);
+                    data.concat(py, &data)
+                } else {
+                    let (da, db) = crate::sync::read_both(py, &la.data, &lb.data);
+                    da.concat(py, &db)
+                };
+                if let Some(storage) = storage {
+                    return super::LIST_CLASS.alloc(py, List::new_with(la.schema.clone(), storage));
+                }
+            }
+        }
+        // SAFETY: PyO3's own slot function for this type.
+        unsafe {
+            let f: ffi::binaryfunc = std::mem::transmute(PYO3_NB_ADD.load(std::sync::atomic::Ordering::Relaxed));
+            f(a, b)
+        }
+    })
+}
+
+/// `x * n` / `n * x` for a compact `int` `n`.
+unsafe extern "C" fn nb_multiply(a: Obj, b: Obj) -> Obj {
+    shield(ptr::null_mut(), || {
+        let py = py();
+        // SAFETY: type checks and reads on live objects.
+        let (list, n) = unsafe {
+            if is_list(a) && let Some(n) = compact_int(b) {
+                (a, n)
+            } else if is_list(b) && let Some(n) = compact_int(a) {
+                (b, n)
+            } else {
+                let f: ffi::binaryfunc = std::mem::transmute(PYO3_NB_MULTIPLY.load(std::sync::atomic::Ordering::Relaxed));
+                return f(a, b);
+            }
+        };
+        // SAFETY: a list.
+        let list = unsafe { this(list) };
+        let repeated = list.read(py).repeat(py, n);
+        match repeated {
+            Ok(storage) => super::LIST_CLASS.alloc(py, List::new_with(list.schema.clone(), storage)),
+            Err(e) => {
+                restore(e);
+                ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// `x.copy()`.
+unsafe extern "C" fn copy(slf: Obj, _: Obj) -> Obj {
+    shield(ptr::null_mut(), || {
+        let py = py();
+        // SAFETY: see above.
+        let list = unsafe { this(slf) };
+        let storage = list.read(py).clone_ref(py);
+        super::LIST_CLASS.alloc(py, List::new_with(list.schema.clone(), storage))
+    })
+}
+
+// ---------------------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------------------
 
 /// `List(iterable=())`: allocation and ingest in one step (bypassing `__new__`/`__init__`).
 unsafe extern "C" fn tp_vectorcall(callable: Obj, args: *const Obj, nargsf: usize, kwnames: Obj) -> Obj {
     shield(ptr::null_mut(), || {
+        // Fast path: no argument, or one exact builtin list/tuple (raw-slot safe).
+        // SAFETY: vectorcall protocol: `nargs` positional arguments, then the keywords.
+        let nargs = unsafe { ffi::PyVectorcall_NARGS(nargsf) };
+        // SAFETY: `kwnames` is NULL or a tuple.
+        if kwnames.is_null() || unsafe { ffi::PyTuple_GET_SIZE(kwnames) } == 0 {
+            let py = py();
+            let storage = match nargs {
+                0 => Some(Storage::Empty),
+                1 => {
+                    // SAFETY: one live positional argument.
+                    let arg = unsafe { any(py, *args) };
+                    convert::ingest_exact_seq_any(py, &arg)
+                }
+                _ => None,
+            };
+            if let Some(storage) = storage {
+                return super::LIST_CLASS.alloc(py, List::new_with(crate::schema::any(), storage));
+            }
+        }
         fallback(ptr::null_mut(), |py| {
             // SAFETY: vectorcall protocol: `nargs` positional arguments, then the keywords.
             let nargs = unsafe { ffi::PyVectorcall_NARGS(nargsf) };
@@ -649,6 +753,8 @@ unsafe extern "C" fn append(slf: Obj, value: Obj) -> Obj {
                 // SAFETY: a live value.
                 && unsafe { store_fast(&mut data, None, value) }.is_ok()
             {
+                // SAFETY: exclusive access (the write guard).
+                unsafe { list.cache.push() };
                 list.publish_len(data.len());
                 return none();
             }
@@ -685,6 +791,20 @@ unsafe extern "C" fn pop(slf: Obj, args: *mut Obj, nargs: ffi::Py_ssize_t) -> Ob
         };
         // SAFETY: see above.
         let list = unsafe { this(slf) };
+        // Fast path: `pop()` from native storage hands back the cached box if there is one.
+        if let Some(mut data) = list.write_fast(py)
+            && let Storage::Native(column) = &mut *data
+            && let len = column.len()
+            && len > 0
+            && normalize_index(index, len) == Some(len - 1)
+        {
+            // SAFETY: exclusive access (the write guard).
+            let item = unsafe { list.cache.pop(len) }
+                .unwrap_or_else(|| crate::convert::column_item(py, column, len - 1).into_ptr());
+            rustique_core::with_column!(column, v => drop(v.pop()));
+            list.publish_len(len - 1);
+            return item;
+        }
         let mut data = match list.mutate(py) {
             Ok(data) => data,
             Err(e) => {
@@ -780,6 +900,13 @@ static mut POP_DEF: ffi::PyMethodDef = ffi::PyMethodDef {
     ml_flags: ffi::METH_FASTCALL,
     ml_doc: c"pop($self, index=-1, /)\n--\n\nRemove and return item at index (default last).\n\nRaises IndexError if list is empty or index is out of range."
         .as_ptr(),
+};
+
+static mut COPY_DEF: ffi::PyMethodDef = ffi::PyMethodDef {
+    ml_name: c"copy".as_ptr(),
+    ml_meth: ffi::PyMethodDefPointer { PyCFunction: copy },
+    ml_flags: ffi::METH_NOARGS,
+    ml_doc: c"Return a shallow copy of the list.".as_ptr(),
 };
 
 static mut INSERT_DEF: ffi::PyMethodDef = ffi::PyMethodDef {
@@ -886,6 +1013,7 @@ pub(super) fn install(py: Python<'_>) -> PyResult<()> {
         set_method(py, ty, &dict, &raw mut EXTEND_DEF)?;
         set_method(py, ty, &dict, &raw mut POP_DEF)?;
         set_method(py, ty, &dict, &raw mut INSERT_DEF)?;
+        set_method(py, ty, &dict, &raw mut COPY_DEF)?;
 
         let seq = (*ty).tp_as_sequence;
         (*seq).sq_length = Some(sq_length);
@@ -895,7 +1023,16 @@ pub(super) fn install(py: Python<'_>) -> PyResult<()> {
         let map = (*ty).tp_as_mapping;
         (*map).mp_subscript = Some(mp_subscript);
         (*map).mp_ass_subscript = Some(mp_ass_subscript);
-        (*(*ty).tp_as_number).nb_bool = Some(nb_bool);
+        let num = (*ty).tp_as_number;
+        (*num).nb_bool = Some(nb_bool);
+        // `x + y` / `x * n`: raw fast paths in front of PyO3's dispatch (the dict's
+        // `__add__`/`__radd__`/`__mul__`/`__rmul__` wrappers stay PyO3's).
+        if let (Some(add), Some(mul)) = ((*num).nb_add, (*num).nb_multiply) {
+            PYO3_NB_ADD.store(add as *mut (), std::sync::atomic::Ordering::Relaxed);
+            PYO3_NB_MULTIPLY.store(mul as *mut (), std::sync::atomic::Ordering::Relaxed);
+            (*num).nb_add = Some(nb_add);
+            (*num).nb_multiply = Some(nb_multiply);
+        }
         (*ty).tp_iter = Some(tp_iter);
         (*ty).tp_richcompare = Some(tp_richcompare);
         (*ty).tp_init = Some(tp_init);

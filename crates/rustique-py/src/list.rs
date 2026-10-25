@@ -24,7 +24,7 @@ use rustique_core::{Column, DType, with_column};
 
 use crate::convert::{self, IngestError, Probe, ToPython};
 use crate::schema::{self, Coerced, Schema};
-use crate::storage::Storage;
+use crate::storage::{ElemCache, Storage};
 use crate::sync::{MutationCounter, MutexGuard, PyMutex, PyRwLock, ReadGuard, WriteGuard, read_both};
 
 /// Native kernels on at least this many elements run detached from the interpreter.
@@ -46,6 +46,9 @@ pub struct List {
     exports: AtomicUsize,
     /// Python-level sorts in progress (their elements are out of the list): no exports.
     sorting: AtomicUsize,
+    /// Boxed copies of native elements read repeatedly (see `ElemCache`); cleared by every
+    /// mutation except the ones that maintain it (append, item assignment, `pop()`).
+    cache: ElemCache,
 }
 
 /// Exclusive access for a mutation. Mutable access marks the storage as changed; on
@@ -82,6 +85,10 @@ impl Deref for Mutation<'_> {
 
 impl DerefMut for Mutation<'_> {
     fn deref_mut(&mut self) -> &mut Storage {
+        if !self.changed {
+            // SAFETY: the write guard gives exclusive access; attached.
+            unsafe { self.list.cache.clear() };
+        }
         self.changed = true;
         &mut self.guard
     }
@@ -341,12 +348,38 @@ impl List {
             version: MutationCounter::new(),
             exports: AtomicUsize::new(0),
             sorting: AtomicUsize::new(0),
+            cache: ElemCache::new(),
         }
     }
 
     /// Wrap storage that is valid for `schema` in a new `List` (no conversion).
     pub fn from_storage(py: Python<'_>, schema: Arc<Schema>, storage: Storage) -> PyResult<Bound<'_, List>> {
         LIST_CLASS.new_bound(py, List::new_with(schema, storage))
+    }
+
+    /// INTERFACE (native-tier rewrite, WS1): an untyped `List` from a *temporary* builtin
+    /// `list`, e.g. the result of a list display or comprehension passed straight in.
+    /// Native items are converted as usual; otherwise the item references are moved out of
+    /// the temporary (no per-item reference counting) and it is left empty.
+    ///
+    /// The steal only happens when `list` is an exact `list` that this reference is the
+    /// only one to (`PyUnstable_Object_IsUniquelyReferenced`); otherwise the items are
+    /// copied like `List(list)`. Callers must still only pass true temporaries: since
+    /// CPython 3.14 a local variable can lend its list to the stack without a reference
+    /// (`LOAD_FAST_BORROW`), so a reference count of one does not prove that no variable
+    /// refers to the list.
+    pub fn from_temporary_list<'py>(py: Python<'py>, list: Bound<'py, PyList>) -> PyResult<Bound<'py, List>> {
+        let p = list.as_ptr();
+        // SAFETY: type and uniqueness checks on a live object.
+        let unique = unsafe { ffi::PyList_CheckExact(p) != 0 && ffi::PyUnstable_Object_IsUniquelyReferenced(p) == 1 };
+        let storage = if unique {
+            // SAFETY: exact and uniquely referenced (checked) and a temporary (contract).
+            unsafe { convert::take_temporary_list(py, &list) }
+        } else {
+            convert::ingest(py, &schema::any(), list.as_any())?
+        };
+        drop(list);
+        Self::from_storage(py, schema::any(), storage)
     }
 
     /// INTERFACE. Construct a `List` with `schema` from an optional iterable.
@@ -457,6 +490,16 @@ impl List {
     }
 
     /// New reference to element `i` of the current list, or `None` past the end.
+    /// New reference to element `k` (in range) for an element-wise read, through the
+    /// boxed element cache.
+    #[inline(always)]
+    fn read_item(&self, py: Python<'_>, data: &Storage, k: usize) -> *mut ffi::PyObject {
+        if let Storage::Native(_) = data {
+            self.cache.note_read(data.len());
+        }
+        self.cache.item(py, data, k)
+    }
+
     #[inline]
     fn get_ref<'py>(&self, py: Python<'py>, i: usize) -> Option<Bound<'py, PyAny>> {
         let data = self.read(py);
@@ -853,15 +896,73 @@ fn merge_sort(v: &mut [usize], mut lt: impl FnMut(usize, usize) -> PyResult<bool
     Ok(())
 }
 
+/// Sort Python objects with CPython's own `list.sort` (timsort, `key`/`reverse`, exact
+/// comparison and exception semantics): the references move into a temporary builtin list,
+/// are sorted there and move back (no reference counting per element).
+///
+/// INTERFACE HOOK (WS5): `objsort::sort_objects` implements the same contract for the
+/// builtins workstream; when it lands, this function can delegate to it.
+///
+/// Returns the objects (sorted, or in the permutation `list.sort` left them in when it
+/// raised) and the result.
+fn sort_objects(
+    py: Python<'_>,
+    objects: Vec<Py<PyAny>>,
+    key: Option<&Bound<'_, PyAny>>,
+    reverse: bool,
+) -> (Vec<Py<PyAny>>, PyResult<()>) {
+    let n = objects.len();
+    // SAFETY: a new list of `n` empty slots, each filled once with a reference moved out
+    // of `objects`; nobody else can reach the list.
+    let list = match unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyList_New(n as ffi::Py_ssize_t)) } {
+        Ok(list) => list,
+        Err(e) => return (objects, Err(e)),
+    };
+    for (i, o) in objects.into_iter().enumerate() {
+        // SAFETY: see above.
+        unsafe { ffi::PyList_SET_ITEM(list.as_ptr(), i as ffi::Py_ssize_t, o.into_ptr()) };
+    }
+    let result = (|| {
+        let kwargs = PyDict::new(py);
+        if let Some(key) = key {
+            kwargs.set_item(intern!(py, "key"), key)?;
+        }
+        if reverse {
+            kwargs.set_item(intern!(py, "reverse"), true)?;
+        }
+        list.call_method(intern!(py, "sort"), (), Some(&kwargs)).map(drop)
+    })();
+    // Move the references back out and leave the temporary empty (its deallocation then
+    // releases nothing). `list.sort` keeps every element whether or not it raised.
+    // SAFETY: the list is private; its size is read after the sort finished.
+    let objects = unsafe {
+        let p = list.as_ptr();
+        let len = ffi::PyList_GET_SIZE(p) as usize;
+        let items = (*p.cast::<ffi::PyListObject>()).ob_item;
+        let out = (0..len).map(|i| Bound::from_owned_ptr(py, *items.add(i)).unbind()).collect::<Vec<_>>();
+        (*p.cast::<ffi::PyVarObject>()).ob_size = 0;
+        out
+    };
+    (objects, result)
+}
+
 /// Sort taken-out list elements with Python semantics (`key` calls, Python `<` unless the
 /// keys compare natively). Returns the sorted storage, or the elements in their original
-/// order together with the exception that stopped the sort.
+/// order (or, for object storage, the permutation `list.sort` left) together with the
+/// exception that stopped the sort.
 fn sort_storage(
     py: Python<'_>,
     elements: Storage,
     key: Option<&Bound<'_, PyAny>>,
     reverse: bool,
 ) -> (Storage, PyResult<()>) {
+    let elements = match elements {
+        Storage::Object(objects) => {
+            let (objects, result) = sort_objects(py, objects, key, reverse);
+            return (Storage::Object(objects), result);
+        }
+        other => other,
+    };
     let perm = {
         let materialised = match &elements {
             Storage::Native(column) => Some(convert::column_objects(py, column, 0..column.len())),
@@ -1649,9 +1750,10 @@ fn iter_next_ptr(py: Python<'_>, state: &PyMutex<IterState>, forward: bool) -> *
     let mut st = state.lock(py);
     let item = match &st.list {
         Some(list) if st.index >= 0 => {
-            let data = list.get().read(py);
+            let list = list.get();
+            let data = list.read(py);
             let i = st.index as usize;
-            (i < data.len()).then(|| data.item_ptr(py, i))
+            (i < data.len()).then(|| list.read_item(py, &data, i))
         }
         Some(_) => None,
         None => return std::ptr::null_mut(),
@@ -1840,6 +1942,9 @@ pub(crate) mod slots;
 /// Raw allocation of `List` instances (see `alloc`).
 static LIST_CLASS: alloc::RawClass<List> = alloc::RawClass::new();
 
+/// The `List` type object (set at module initialisation).
+static LIST_TYPE: std::sync::atomic::AtomicPtr<ffi::PyTypeObject> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
 impl alloc::RawDrop for List {
     fn drop_attached(self, py: Python<'_>) {
         let List { data, .. } = self;
@@ -1859,6 +1964,7 @@ unsafe extern "C" fn list_dealloc(slf: *mut ffi::PyObject) {
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<List>()?;
+    LIST_TYPE.store(m.py().get_type::<List>().as_type_ptr(), Ordering::Release);
     let sample = Bound::new(m.py(), List::new_with(schema::any(), Storage::Empty))?;
     LIST_CLASS.install(&sample, sample.get(), list_dealloc)?;
     drop(sample);
@@ -1874,4 +1980,43 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
     m.add_function(wrap_pyfunction!(arange, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `from_temporary_list` moves object references out of a uniquely referenced list and
+    /// copies (leaving the source intact) when the list is shared.
+    #[test]
+    fn from_temporary_list_steals_only_unique_lists() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = pyo3::types::PyModule::new(py, "_rustique").unwrap();
+            crate::list::register(&module).unwrap();
+            let make = || {
+                py.eval(c"[object(), 1, 'a']", None, None).unwrap().cast_into::<PyList>().unwrap()
+            };
+            // Unique: moved (the object's refcount is unchanged by the move).
+            let temp = make();
+            let first = temp.get_item(0).unwrap().unbind();
+            // SAFETY: reading the reference count of a live object.
+            let refcnt = |o: &Py<PyAny>| unsafe { ffi::Py_REFCNT(o.as_ptr()) };
+            let before = refcnt(&first);
+            let list = List::from_temporary_list(py, temp).unwrap();
+            assert_eq!(list.get().len(), 3);
+            assert_eq!(refcnt(&first), before);
+            assert!(list.get().get_ref(py, 0).unwrap().is(first.bind(py)));
+            // Shared: copied, the source keeps its items.
+            let shared = make();
+            let keep = shared.clone();
+            let list = List::from_temporary_list(py, shared).unwrap();
+            assert_eq!(list.get().len(), 3);
+            assert_eq!(keep.len(), 3);
+            // Native items are converted.
+            let ints = py.eval(c"[1, 2, 3]", None, None).unwrap().cast_into::<PyList>().unwrap();
+            let list = List::from_temporary_list(py, ints).unwrap();
+            assert_eq!(list.get().read(py).strategy(), "i64");
+        });
+    }
 }

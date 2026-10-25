@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import gc
 import pickle
+import re
 import sys
 import threading
 import weakref
@@ -404,7 +405,7 @@ def test_detached_sort_and_concurrent_mutation() -> None:
             for _ in range(50):
                 x.append(0)
                 seen.append(x[0])
-                x.pop()
+                x.remove(0)  # wherever a concurrent sort moved it
         except BaseException as e:  # pragma: no cover - reported below
             errors.append(e)
 
@@ -416,7 +417,7 @@ def test_detached_sort_and_concurrent_mutation() -> None:
     t.join()
     assert not errors
     assert len(x) == 400_000 and sorted(x) == list(range(1, 400_001))
-    assert all(v in (1, 400_000) for v in seen)
+    assert all(type(v) is int and 0 <= v <= 400_000 for v in seen)
 
 
 def test_panic_free_errors_from_raw_slots() -> None:
@@ -437,3 +438,137 @@ def test_panic_free_errors_from_raw_slots() -> None:
 
 def test_rs_exports_still_there() -> None:
     assert rs.List is List
+
+
+@pytest.mark.parametrize("data", STORAGES[:4])
+def test_element_cache_stays_coherent(data: list[object]) -> None:
+    # Repeated element reads enable the boxed element cache; every mutation must keep it
+    # coherent with the native storage.
+    x, b = List(data * 3), data * 3
+    for _ in range(5):
+        assert [x[i] for i in range(len(b))] == b
+        assert list(x) == b and [v for v in x] == b
+    x[0] = data[1]
+    b[0] = data[1]
+    assert x[0] == b[0] and list(x) == b
+    x.append(data[2])
+    b.append(data[2])
+    assert x[-1] == b[-1] and [v for v in x] == b
+    assert x.pop() == b.pop() and x.pop() == b.pop()
+    assert list(x) == b
+    x.insert(1, data[3])
+    b.insert(1, data[3])
+    assert [x[i] for i in range(len(b))] == b
+    x.sort()
+    b.sort()
+    assert [v for v in x] == b
+    x.reverse()
+    b.reverse()
+    assert [x[i] for i in range(len(b))] == b
+    del x[2:4]
+    del b[2:4]
+    assert [v for v in x] == b
+    x.append(object())  # demotes to object storage
+    assert x.strategy == "object" and list(x)[:-1] == b
+    x.clear()
+    assert list(x) == []
+
+
+def test_element_cache_identity_and_refcounts() -> None:
+    x = List([1000 + i for i in range(10)])
+    for _ in range(3):
+        for v in x:
+            pass
+    assert x[3] is x[3]  # cached box (like a builtin list's element)
+    v = x[3]
+    base = sys.getrefcount(v)
+    for _ in range(100):
+        x[3]
+        for _ in x:
+            pass
+    assert sys.getrefcount(v) == base
+    big = 10**6 + 7
+    x[3] = big
+    assert x[3] == big
+    assert x.pop() == 1009
+    t = rs.Tuple(["a", "b"] * 20)
+    for _ in range(3):
+        list(t)
+    assert t[1] is t[1] and t[1] == "b"
+
+
+def test_element_cache_under_concurrency() -> None:
+    # Readers fill the element cache while writers maintain or clear it (free-threaded
+    # builds run these truly in parallel).
+    x = List(range(1000, 1200))
+    t = rs.Tuple(range(1000, 1200))
+    stop = threading.Event()
+    errors: list[BaseException] = []
+
+    def reader() -> None:
+        try:
+            while not stop.is_set():
+                for v in x:
+                    assert type(v) is int
+                n = len(x)
+                if n:
+                    v = x[n // 2] if n // 2 < len(x) else 0
+                    assert type(v) is int
+                assert sum(t) == sum(range(1000, 1200))
+        except IndexError:
+            pass
+        except BaseException as e:  # pragma: no cover
+            errors.append(e)
+
+    def writer() -> None:
+        try:
+            for k in range(300):
+                x.append(k)
+                x[0] = k + 5000
+                x.pop()
+                if k % 50 == 0:
+                    x.sort()
+                if k % 70 == 0:
+                    x.insert(0, 7)
+        except BaseException as e:  # pragma: no cover
+            errors.append(e)
+
+    readers = [threading.Thread(target=reader) for _ in range(3)]
+    w = threading.Thread(target=writer)
+    for r in readers:
+        r.start()
+    w.start()
+    w.join()
+    stop.set()
+    for r in readers:
+        r.join()
+    assert not errors
+    assert len(x) == 205 and all(type(v) is int for v in x)
+
+
+@pytest.mark.parametrize("data", [[(3, "c"), (1, "a"), (2, "b"), (1, "z")], [3, "a", 2.5], [None, None], [[2], [1], [3]]])
+def test_object_sort_is_cpython_timsort(data: list[object]) -> None:
+    for kwargs in ({}, {"reverse": True}, {"key": repr}, {"key": repr, "reverse": True}):
+        b, x = list(data), List(data)
+        try:
+            b.sort(**kwargs)
+        except TypeError as e:
+            with pytest.raises(TypeError, match=re.escape(str(e))):
+                x.sort(**kwargs)
+            assert sorted(map(repr, x)) == sorted(map(repr, data))  # nothing lost
+            continue
+        x.sort(**kwargs)
+        assert list(x) == b
+        assert all(p is q for p, q in zip(x, b))  # the same objects, stable order
+
+
+def test_object_sort_detects_modification() -> None:
+    x = List([(2,), (1,), (3,)])
+
+    def key(v: tuple) -> tuple:
+        x.append((0,))
+        return v
+
+    with pytest.raises(ValueError, match="list modified during sort"):
+        x.sort(key=key)
+    assert sorted(x) == [(1,), (2,), (3,)]
