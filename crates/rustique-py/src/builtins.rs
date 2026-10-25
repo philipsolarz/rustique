@@ -2164,7 +2164,16 @@ unsafe fn rs_sorted(
 
 unsafe extern "C" fn rq_any(slf: *mut ffi::PyObject, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: METH_O call from CPython.
-    unsafe { if candidate(type_of(arg)) { truth_entry(slf, arg, Which::Any) } else { original_o(Which::Any, arg) } }
+    // `any` over a Rustique Set nearly always stops at its first element; snapshotting
+    // the Set (all there is without a native view of its keys) would cost every element.
+    unsafe {
+        let t = type_of(arg);
+        if candidate(t) && t != RS_SET.load(Atomic::Relaxed) {
+            truth_entry(slf, arg, Which::Any)
+        } else {
+            original_o(Which::Any, arg)
+        }
+    }
 }
 
 unsafe extern "C" fn rq_all(slf: *mut ffi::PyObject, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
@@ -2197,10 +2206,13 @@ unsafe fn truth_entry(slf: *mut ffi::PyObject, it: *mut ffi::PyObject, which: Wh
                         return original_o(which, it);
                     }
                 }
-                // `any` over a Set nearly always stops at its first element: a snapshot of
-                // every element (all there is without a native view of the keys) loses.
-                None if stop => return original_o(which, it),
-                None => {}
+                // A Set (`any` never gets here): snapshot only small ones.
+                None => {
+                    let set = Borrowed::from_ptr(py, it).cast_unchecked::<Set>();
+                    if stop || set.get().len(py) > SNAPSHOT_TRUTH_MAX {
+                        return original_o(which, it);
+                    }
+                }
             }
             if stop { trampoline::binaryfunc::<RsAny>(slf, it) } else { trampoline::binaryfunc::<RsAll>(slf, it) }
         } else if let Some(kind) = Hashed::of(t) {
