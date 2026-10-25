@@ -32,10 +32,6 @@ use keys::{FastKey, Key, KeyKind, KeyStore, KeyTable, Keyed, Locked, NativeKeys,
 pub(crate) struct DictInner {
     table: KeyTable,
     values: Storage,
-    /// The number of live entries, mirrored for lock-free `len()` (shared with the `Dict`;
-    /// updated after every change under the write lock, read with relaxed loads like
-    /// CPython's `ma_used`).
-    len: Arc<AtomicUsize>,
 }
 
 impl Keyed for DictInner {
@@ -49,7 +45,6 @@ impl Keyed for DictInner {
 
     #[inline]
     fn inserted(&mut self, out: &mut Vec<Py<PyAny>>) {
-        self.sync_len();
         if let Some(remap) = self.table.grow() {
             out.extend(remap_storage(&mut self.values, &remap));
         }
@@ -62,14 +57,7 @@ impl DictInner {
     }
 
     fn with(table: KeyTable, values: Storage) -> DictInner {
-        let len = Arc::new(AtomicUsize::new(table.len()));
-        DictInner { table, values, len }
-    }
-
-    /// Publish the live entry count (see `DictInner::len`).
-    #[inline(always)]
-    fn sync_len(&self) {
-        self.len.store(self.table.len(), Ordering::Relaxed);
+        DictInner { table, values }
     }
 
     fn value(&self, py: Python<'_>, pos: usize) -> Py<PyAny> {
@@ -102,7 +90,6 @@ impl DictInner {
     fn remove_entry(&mut self, py: Python<'_>, pos: usize, out: &mut Displaced) -> Py<PyAny> {
         let value = take_value(py, &mut self.values, pos);
         out.extend(self.table.remove_at(py, pos));
-        self.sync_len();
         value
     }
 
@@ -113,13 +100,11 @@ impl DictInner {
         let value = take_value(py, &mut self.values, pos);
         out.extend(self.table.truncate(pos));
         out.extend(truncate_storage(&mut self.values, pos));
-        self.sync_len();
         Some((key, value))
     }
 
     fn clear(&mut self, value_schema: &Schema, out: &mut Displaced) {
         out.extend(self.table.clear());
-        self.sync_len();
         let old = std::mem::replace(&mut self.values, value_storage(value_schema));
         if let Storage::Object(objs) = old {
             out.extend(objs);
@@ -170,7 +155,9 @@ impl DictInner {
                     hashes.push(hash);
                     values.push(Bound::from_borrowed_ptr(py, v).unbind());
                 }
-                let table = if all_int {
+                let table = if n == 0 {
+                    KeyTable::for_dict(KeyKind::Adaptive)
+                } else if all_int {
                     KeyTable::dict_from_ints(KeyKind::Adaptive, ints, hashes)
                 } else {
                     let objs = keys.into_iter().map(|k| Bound::from_borrowed_ptr(py, k).unbind()).collect();
@@ -700,7 +687,7 @@ fn native_values_equal(a: &Column, i: usize, b: &Column, j: usize) -> Option<boo
 }
 
 /// An insertion-ordered mapping with native key and value storage.
-#[pyclass(module = "rustique", frozen, mapping, subclass)]
+#[pyclass(module = "rustique", frozen, mapping, subclass, immutable_type)]
 pub struct Dict {
     key_schema: Arc<Schema>,
     value_schema: Arc<Schema>,
@@ -708,8 +695,10 @@ pub struct Dict {
     /// The argument tuple `__new__` already applied (exact `Dict` only), so that the
     /// `__init__` call `type.__call__` makes right after it does not apply it again.
     init_args: AtomicUsize,
-    /// The live entry count (`DictInner::len`).
-    len: Arc<AtomicUsize>,
+    /// The number of live entries, mirrored for lock-free `len()`: every change publishes
+    /// it while still holding the write lock ([`Dict::publish_len`]); readers use relaxed
+    /// loads, like CPython's `ma_used`.
+    len: AtomicUsize,
 }
 
 impl Dict {
@@ -735,8 +724,14 @@ impl Dict {
     }
 
     fn assemble(key_schema: Arc<Schema>, value_schema: Arc<Schema>, inner: DictInner) -> Dict {
-        let len = inner.len.clone();
+        let len = AtomicUsize::new(inner.table.len());
         Dict { key_schema, value_schema, inner: Locked::new(inner), init_args: AtomicUsize::new(0), len }
+    }
+
+    /// Publish the entry count of `inner` (call while holding its write lock).
+    #[inline(always)]
+    fn publish_len(&self, inner: &DictInner) {
+        self.len.store(inner.table.len(), Ordering::Relaxed);
     }
 
     fn empty(key_schema: Arc<Schema>, value_schema: Arc<Schema>) -> Dict {
@@ -744,7 +739,7 @@ impl Dict {
         Dict::assemble(key_schema, value_schema, inner)
     }
 
-    fn build<'py>(
+    pub(crate) fn build<'py>(
         py: Python<'py>,
         key_schema: Arc<Schema>,
         value_schema: Arc<Schema>,
@@ -752,10 +747,11 @@ impl Dict {
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Dict> {
         if let Some(arg) = arg
-            && let Ok(other) = arg.cast::<Dict>()
-            && other.get().same_schema(&key_schema, &value_schema)
+            && key_schema.is_any()
+            && value_schema.is_any()
+            && let Ok(src) = arg.cast_exact::<PyDict>()
+            && let Some(inner) = DictInner::from_builtin(py, src)
         {
-            let inner = other.get().inner.read(py).clone_ref(py);
             let dict = Dict::assemble(key_schema, value_schema, inner);
             if let Some(kwargs) = kwargs {
                 dict.update_from(py, kwargs.as_any())?;
@@ -763,11 +759,10 @@ impl Dict {
             return Ok(dict);
         }
         if let Some(arg) = arg
-            && key_schema.is_any()
-            && value_schema.is_any()
-            && let Ok(src) = arg.cast_exact::<PyDict>()
-            && let Some(inner) = DictInner::from_builtin(py, src)
+            && let Ok(other) = arg.cast::<Dict>()
+            && other.get().same_schema(&key_schema, &value_schema)
         {
+            let inner = other.get().inner.read(py).clone_ref(py);
             let dict = Dict::assemble(key_schema, value_schema, inner);
             if let Some(kwargs) = kwargs {
                 dict.update_from(py, kwargs.as_any())?;
@@ -880,6 +875,7 @@ impl Dict {
                 }
                 Slot::Absent(key) => inner.push_entry(py, key, value, &mut displaced)?,
             }
+            self.publish_len(inner);
             Ok(())
         });
         drop(displaced);
@@ -907,6 +903,7 @@ impl Dict {
                         inner.values.push_any(py, value);
                     }
                 }
+                self.publish_len(inner);
                 Ok(())
             })?;
         } else {
@@ -917,6 +914,7 @@ impl Dict {
                     Slot::Inserted(_) => inner.values.push(py, value),
                     Slot::Absent(key) => inner.push_entry(py, key, value, &mut displaced)?,
                 }
+                self.publish_len(inner);
                 Ok(())
             })?;
         }
@@ -932,7 +930,9 @@ impl Dict {
     fn remove_key(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyAny>>> {
         let mut displaced = Vec::new();
         let value = keys::lookup_mut(py, &self.inner, key, classify_key, |inner, pos| {
-            pos.map(|p| inner.remove_entry(py, p, &mut displaced))
+            let value = pos.map(|p| inner.remove_entry(py, p, &mut displaced));
+            self.publish_len(inner);
+            value
         })?;
         drop(displaced);
         Ok(value)
@@ -1237,6 +1237,7 @@ impl Dict {
                     Storage::Object(objs) => objs.push(value.to_owned().unbind()),
                     values => values.push_any(py, &value),
                 }
+                self.publish_len(&inner);
                 inner.inserted(&mut moved);
             } else {
                 replaced = match &mut inner.values {
@@ -1258,7 +1259,9 @@ impl Dict {
         let value = {
             let mut inner = self.inner.write(py);
             let pos = inner.table.find_fast(probe)??;
-            inner.remove_entry(py, pos, &mut displaced)
+            let value = inner.remove_entry(py, pos, &mut displaced);
+            self.publish_len(&inner);
+            value
         };
         release(Some(value));
         release_all(displaced);
@@ -1282,6 +1285,7 @@ impl Dict {
                     values => values.push_any(py, &default),
                 }
                 let value = inner.value_ptr(py, pos);
+                self.publish_len(&inner);
                 inner.inserted(&mut moved);
                 value
             } else {
@@ -1558,7 +1562,9 @@ impl Dict {
             result.update_from(py, other)?;
         } else {
             // The result is private until returned.
-            result.inner.get_mut().update_private(py, other)?;
+            let inner = result.inner.get_mut();
+            inner.update_private(py, other)?;
+            result.len.store(inner.table.len(), Ordering::Relaxed);
         }
         Ok(Bound::new(py, result)?.into_any().unbind())
     }
@@ -1613,7 +1619,12 @@ impl Dict {
     /// Remove and return the most recently inserted `(key, value)` pair.
     fn popitem<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         let mut displaced = Vec::new();
-        let item = self.inner.write(py).pop_last(py, &mut displaced);
+        let item = {
+            let mut inner = self.inner.write(py);
+            let item = inner.pop_last(py, &mut displaced);
+            self.publish_len(&inner);
+            item
+        };
         drop(displaced);
         match item {
             Some((k, v)) => PyTuple::new(py, [k, v]),
@@ -1656,6 +1667,7 @@ impl Dict {
                 }
             };
             result = Some(inner.value(py, pos));
+            self.publish_len(inner);
             Ok(())
         });
         drop(unused);
@@ -1681,7 +1693,11 @@ impl Dict {
 
     fn clear(&self, py: Python<'_>) {
         let mut displaced = Vec::new();
-        self.inner.write(py).clear(&self.value_schema, &mut displaced);
+        {
+            let mut inner = self.inner.write(py);
+            inner.clear(&self.value_schema, &mut displaced);
+            self.publish_len(&inner);
+        }
         drop(displaced);
     }
 
@@ -1772,6 +1788,7 @@ impl Dict {
         let displaced = self.inner.try_write().map(|mut inner| {
             let mut out = Vec::new();
             inner.clear(&self.value_schema, &mut out);
+            self.publish_len(&inner);
             out
         });
         drop(displaced);

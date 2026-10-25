@@ -195,6 +195,31 @@ fn probe_find<W: SlotWidth>(slots: &[W], hashes: &[u64], hash: u64, mut eq: impl
     }
 }
 
+/// Like [`probe_find`] with a three-way test: `Some(true)` found, `Some(false)` go on,
+/// `None` give up (the whole search returns `None`).
+#[inline(always)]
+fn probe_try_find<W: SlotWidth>(
+    slots: &[W],
+    hashes: &[u64],
+    hash: u64,
+    mut eq: impl FnMut(usize) -> Option<bool>,
+) -> Option<Option<usize>> {
+    let mut p = Probe::new(hash, slots.len() - 1);
+    loop {
+        let s = slots[p.i];
+        if s == W::EMPTY {
+            return Some(None);
+        }
+        if s != W::DUMMY {
+            let pos = s.pos();
+            if hashes[pos] == hash && eq(pos)? {
+                return Some(Some(pos));
+            }
+        }
+        p.advance();
+    }
+}
+
 /// Like [`probe_find`], also returning the first free (`EMPTY` or `DUMMY`) slot of the
 /// sequence when the key is absent, so an insertion needs no second probe.
 #[inline(always)]
@@ -356,6 +381,15 @@ impl HashIndex {
     pub fn find(&self, hash: u64, eq: impl FnMut(usize) -> bool) -> Option<usize> {
         let hashes = &self.hashes;
         with_slots!(&self.slots, s => probe_find(s, hashes, hash, eq), None => None)
+    }
+
+    /// [`find`](Self::find) with a test that may give up: `eq(position)` returns
+    /// `Some(true)` (found), `Some(false)` (not this one) or `None` (cannot decide: the
+    /// search returns `None`). `Some(None)` means absent.
+    #[inline(always)]
+    pub fn try_find(&self, hash: u64, eq: impl FnMut(usize) -> Option<bool>) -> Option<Option<usize>> {
+        let hashes = &self.hashes;
+        with_slots!(&self.slots, s => probe_try_find(s, hashes, hash, eq), None => Some(None))
     }
 
     /// Positions of all live entries whose hash equals `hash`, in probe order, each once.
@@ -801,9 +835,19 @@ pub fn py_hash_i64(v: i64) -> u64 {
     }
 }
 
-/// Builds [`PyHasher`]s: Python's own `hash()` for `i64` keys, seeded foldhash otherwise.
-#[derive(Clone, Default, Debug)]
-pub struct PyHashState(foldhash::fast::RandomState);
+/// Builds [`PyHasher`]s: Python's own `hash()` for `i64` keys, foldhash otherwise, seeded
+/// once per process (like Python's own string hashing), so creating a table is cheap.
+#[derive(Clone, Debug)]
+pub struct PyHashState(foldhash::fast::FixedState);
+
+impl Default for PyHashState {
+    #[inline]
+    fn default() -> Self {
+        static SEED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let seed = *SEED.get_or_init(|| foldhash::fast::RandomState::default().hash_one(0x5eed_u64));
+        PyHashState(foldhash::fast::FixedState::with_seed(seed))
+    }
+}
 
 impl BuildHasher for PyHashState {
     type Hasher = PyHasher;
@@ -1386,6 +1430,16 @@ mod tests {
         }
         assert!(idx.slots() <= 16);
         assert_eq!(idx.find(7, |_| true), None);
+    }
+
+    #[test]
+    fn try_find_gives_up_or_finds() {
+        let keys = [1u64, 2, 3];
+        let idx = HashIndex::from_hashes(keys);
+        assert_eq!(idx.try_find(2, |p| Some(keys[p] == 2)), Some(Some(1)));
+        assert_eq!(idx.try_find(9, |_| Some(true)), Some(None));
+        assert_eq!(idx.try_find(3, |_| None), None);
+        assert_eq!(HashIndex::new().try_find(1, |_| None), Some(None));
     }
 
     #[test]

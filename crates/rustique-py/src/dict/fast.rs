@@ -15,7 +15,9 @@
 //!   decref directly), and never run Python code;
 //! - they use the container lock through `sync.rs`'s public API (the same discipline as
 //!   every other method) and release it before any decref;
-//! - a panic falls back to the original implementation (which reports it as usual).
+//! - a panic in a read-only fast path falls back to the original implementation (which
+//!   reports it as usual); a panic in a fast path that may have changed something raises
+//!   `SystemError` instead of retrying.
 //!
 //! The slots are installed once, when the module is initialised, before any instance or
 //! subclass exists; Python subclasses inherit them like any C slot (and override them by
@@ -72,10 +74,39 @@ unsafe fn dict_ref<'a>(py: Python<'_>, slf: *mut ffi::PyObject) -> &'a Dict {
     }
 }
 
-/// Run a fast path; `None` (or a panic) means "use the original implementation".
+/// Run a read-only fast path; `None` (or a panic) means "use the original implementation".
 #[inline(always)]
 fn attempt<R>(f: impl FnOnce() -> Option<R>) -> Option<R> {
     catch_unwind(AssertUnwindSafe(f)).ok().flatten()
+}
+
+/// Outcome of a fast path that may change state (see [`attempt_mut`]).
+enum Fast<R> {
+    Done(R),
+    Fallback,
+    /// A bug: reported as `SystemError` (retrying could apply a change twice).
+    Panicked,
+}
+
+/// Run a fast path that may change state before deciding: `None` means "nothing was
+/// changed, use the original implementation".
+#[inline(always)]
+fn attempt_mut<R>(f: impl FnOnce() -> Option<R>) -> Fast<R> {
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(Some(r)) => Fast::Done(r),
+        Ok(None) => Fast::Fallback,
+        Err(_) => Fast::Panicked,
+    }
+}
+
+/// Raise the `SystemError` for a panicked fast path.
+///
+/// # Safety
+/// Attached to the interpreter.
+#[cold]
+unsafe fn panicked() {
+    // SAFETY: attached; static NUL-terminated message.
+    unsafe { ffi::PyErr_SetString(ffi::PyExc_SystemError, c"rustique: internal error (panic) in a Dict fast path".as_ptr()) }
 }
 
 /// `d[k]`.
@@ -84,11 +115,10 @@ unsafe extern "C" fn subscript(slf: *mut ffi::PyObject, key: *mut ffi::PyObject)
     unsafe {
         let py = Python::assume_attached();
         let fast = attempt(|| {
-            let probe = FastKey::of(key)?;
             let dict = dict_ref(py, slf);
             let inner = dict.inner.read(py);
             // A miss raises `KeyError`: leave that to the original implementation.
-            let pos = inner.table.find_fast(&probe)??;
+            let pos = inner.table.find_object(key)??;
             inner.value_ptr(py, pos)
         });
         match fast {
@@ -104,10 +134,9 @@ unsafe extern "C" fn contains(slf: *mut ffi::PyObject, key: *mut ffi::PyObject) 
     unsafe {
         let py = Python::assume_attached();
         let fast = attempt(|| {
-            let probe = FastKey::of(key)?;
             let dict = dict_ref(py, slf);
             let inner = dict.inner.read(py);
-            inner.table.find_fast(&probe)
+            inner.table.find_object(key)
         });
         match fast {
             Some(found) => c_int::from(found.is_some()),
@@ -126,14 +155,18 @@ unsafe extern "C" fn ass_subscript(
     unsafe {
         let py = Python::assume_attached();
         let dict = dict_ref(py, slf);
-        let fast = attempt(|| {
+        let fast = attempt_mut(|| {
             let probe = FastKey::of(key)?;
             if value.is_null() { dict.del_fast(py, &probe) } else { dict.set_fast(py, &probe, Borrowed::from_ptr(py, value)) }
         });
-        if fast.is_some() {
-            return 0;
+        match fast {
+            Fast::Done(()) => 0,
+            Fast::Fallback => (originals().ass_subscript)(slf, key, value),
+            Fast::Panicked => {
+                panicked();
+                -1
+            }
         }
-        (originals().ass_subscript)(slf, key, value)
     }
 }
 
@@ -169,14 +202,18 @@ unsafe extern "C" fn iternext(slf: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: CPython calls `tp_iternext` attached with a live `DictIterator`.
     unsafe {
         let py = Python::assume_attached();
-        let fast = attempt(|| {
+        let fast = attempt_mut(|| {
             let it = Borrowed::from_ptr(py, slf).cast_unchecked::<DictIterator>();
             let it: &DictIterator = &*std::ptr::from_ref(it.get());
             Some(it.next_ptr(py))
         });
         match fast {
-            Some(item) => item,
-            None => (originals().iternext)(slf),
+            Fast::Done(item) => item,
+            Fast::Fallback => (originals().iternext)(slf),
+            Fast::Panicked => {
+                panicked();
+                std::ptr::null_mut()
+            }
         }
     }
 }
@@ -217,10 +254,9 @@ unsafe extern "C" fn get(
         if nargs == 1 || nargs == 2 {
             let key = *args;
             let fast = attempt(|| {
-                let probe = FastKey::of(key)?;
                 let dict = dict_ref(py, slf);
                 let inner = dict.inner.read(py);
-                match inner.table.find_fast(&probe)? {
+                match inner.table.find_object(key)? {
                     Some(pos) => inner.value_ptr(py, pos),
                     None => {
                         let default = if nargs == 2 { *args.add(1) } else { ffi::Py_None() };
@@ -265,16 +301,105 @@ unsafe extern "C" fn setdefault(
         let py = Python::assume_attached();
         if nargs == 1 || nargs == 2 {
             let key = *args;
-            let fast = attempt(|| {
+            let fast = attempt_mut(|| {
                 let probe = FastKey::of(key)?;
                 let default = if nargs == 2 { *args.add(1) } else { ffi::Py_None() };
                 dict_ref(py, slf).setdefault_fast(py, &probe, Borrowed::from_ptr(py, default))
             });
-            if let Some(value) = fast {
-                return value;
+            match fast {
+                Fast::Done(value) => return value,
+                Fast::Fallback => {}
+                Fast::Panicked => {
+                    panicked();
+                    return std::ptr::null_mut();
+                }
             }
         }
         call_original(&originals().setdefault, slf, args, nargs)
+    }
+}
+
+/// `Dict(...)`: the type's vectorcall (`tp_vectorcall`, used by `CALL_BUILTIN_CLASS` and
+/// every call of the type; subclasses do not inherit it). `Dict()` and `Dict(x)` build
+/// directly, without an argument tuple or the `__new__`/`__init__` pair; anything else goes
+/// through `type.__call__`.
+unsafe extern "C" fn vectorcall(
+    callable: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargsf: usize,
+    kwnames: *mut ffi::PyObject,
+) -> *mut ffi::PyObject {
+    // SAFETY: CPython passes the type object, `nargs` live positional arguments followed by
+    // the keyword values named by `kwnames` (or NULL).
+    unsafe {
+        let py = Python::assume_attached();
+        let nargs = ffi::PyVectorcall_NARGS(nargsf);
+        if kwnames.is_null() && nargs <= 1 && callable == py.get_type::<Dict>().as_ptr() {
+            let fast = attempt_mut(|| {
+                let arg = (nargs == 1).then(|| Borrowed::from_ptr(py, *args).to_owned());
+                let built = super::Dict::build(py, crate::schema::any(), crate::schema::any(), arg.as_ref(), None)
+                    .and_then(|d| Bound::new(py, d));
+                Some(match built {
+                    Ok(d) => d.into_ptr(),
+                    Err(err) => {
+                        err.restore(py);
+                        std::ptr::null_mut()
+                    }
+                })
+            });
+            match fast {
+                Fast::Done(d) => return d,
+                Fast::Fallback => {}
+                Fast::Panicked => {
+                    panicked();
+                    return std::ptr::null_mut();
+                }
+            }
+        }
+        // `type.__call__(Dict, *args, **kwargs)`: `__new__` then `__init__`.
+        let nkw = if kwnames.is_null() { 0 } else { ffi::PyTuple_GET_SIZE(kwnames) };
+        let tuple = ffi::PyTuple_New(nargs);
+        if tuple.is_null() {
+            return std::ptr::null_mut();
+        }
+        for i in 0..nargs {
+            let item = *args.offset(i);
+            ffi::PyTuple_SET_ITEM(tuple, i, ffi::Py_NewRef(item));
+        }
+        let mut kwargs = std::ptr::null_mut();
+        if nkw > 0 {
+            kwargs = ffi::PyDict_New();
+            for i in 0..nkw {
+                if kwargs.is_null()
+                    || ffi::PyDict_SetItem(kwargs, ffi::PyTuple_GET_ITEM(kwnames, i), *args.offset(nargs + i)) < 0
+                {
+                    ffi::Py_XDECREF(kwargs);
+                    ffi::Py_DECREF(tuple);
+                    return std::ptr::null_mut();
+                }
+            }
+        }
+        let result = match ffi::PyType_Type.tp_call {
+            Some(call) => call(callable, tuple, kwargs),
+            None => std::ptr::null_mut(),
+        };
+        ffi::Py_DECREF(tuple);
+        ffi::Py_XDECREF(kwargs);
+        result
+    }
+}
+
+/// `Dict._from_builtin(d)` (for the native tier's rewriter, TAKEOVER.md §9): build from a
+/// fresh builtin `dict` temporary (its keys are adopted without lookups); anything else is
+/// `cls(d)`.
+unsafe extern "C" fn from_builtin(cls: *mut ffi::PyObject, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    // SAFETY: CPython passes the class (`METH_CLASS`) and one live argument (`METH_O`).
+    unsafe {
+        let py = Python::assume_attached();
+        if cls == py.get_type::<Dict>().as_ptr() {
+            return vectorcall(cls, &raw const arg, 1, std::ptr::null_mut());
+        }
+        ffi::PyObject_CallOneArg(cls, arg)
     }
 }
 
@@ -291,6 +416,13 @@ static GET_DEF: MethodDef = MethodDef(ffi::PyMethodDef {
     ml_meth: ffi::PyMethodDefPointer { PyCFunctionFast: get },
     ml_flags: ffi::METH_FASTCALL,
     ml_doc: GET_DOC.as_ptr(),
+});
+
+static FROM_BUILTIN_DEF: MethodDef = MethodDef(ffi::PyMethodDef {
+    ml_name: c"_from_builtin".as_ptr(),
+    ml_meth: ffi::PyMethodDefPointer { PyCFunction: from_builtin },
+    ml_flags: ffi::METH_O | ffi::METH_CLASS,
+    ml_doc: c"_from_builtin($cls, d, /)\n--\n\nA Dict with the items of the builtin dict d (a fresh temporary).".as_ptr(),
 });
 
 static SETDEFAULT_DOC: &CStr = c"setdefault($self, key, default=None, /)\n--\n\nInsert key with a value of default if key is not in the dictionary.\n\nReturn the value for key if key is in the dictionary, else default.";
@@ -356,6 +488,9 @@ pub(super) fn install(py: Python<'_>) -> PyResult<()> {
             let descr = ffi::PyDescr_NewMethod(tp, std::ptr::from_ref(&def.0).cast_mut());
             tp_dict.set_item(name, Bound::from_owned_ptr_or_err(py, descr)?)?;
         }
+        let descr = ffi::PyDescr_NewClassMethod(tp, std::ptr::from_ref(&FROM_BUILTIN_DEF.0).cast_mut());
+        tp_dict.set_item(pyo3::intern!(py, "_from_builtin"), Bound::from_owned_ptr_or_err(py, descr)?)?;
+        (*tp).tp_vectorcall = Some(vectorcall);
         ffi::PyType_Modified(tp);
     }
     Ok(())

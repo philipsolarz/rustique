@@ -448,12 +448,20 @@ unsafe fn decide_eq(stored: *mut ffi::PyObject, probe: &FastKey) -> Option<bool>
 fn object_find(ki: &KeyIndex<Py<PyAny>, ()>, probe: &FastKey) -> Option<Option<usize>> {
     let target = probe.ptr();
     let keys = ki.raw_keys();
-    let mut undecided = false;
-    let found = ki.index().find(mix(probe.py_hash()), |pos| {
+    ki.index().try_find(mix(probe.py_hash()), |pos| {
         let stored = keys[pos].as_ptr();
-        stored == target || decide_slow(stored, probe, &mut undecided)
-    });
-    if undecided { None } else { Some(found) }
+        if stored == target { Some(true) } else { decide_slow(stored, probe) }
+    })
+}
+
+/// [`object_find`] for an exact `str` probe and its hash.
+#[inline(always)]
+fn object_find_str(ki: &KeyIndex<Py<PyAny>, ()>, key: *mut ffi::PyObject, hash: isize) -> Option<Option<usize>> {
+    let keys = ki.raw_keys();
+    ki.index().try_find(mix(hash), |pos| {
+        let stored = keys[pos].as_ptr();
+        if stored == key { Some(true) } else { decide_slow(stored, &FastKey::Str(key, hash)) }
+    })
 }
 
 /// Whether `hash(obj)` runs no Python code: builtin scalars, `str`, `bytes`, `frozenset`,
@@ -485,18 +493,11 @@ pub(crate) unsafe fn pure_hash(obj: *mut ffi::PyObject, depth: u32) -> bool {
     }
 }
 
-/// [`decide_eq`] for [`object_find`]: an undecidable comparison stops the search (returns
-/// `true`) and sets `undecided`.
+/// [`decide_eq`], out of line.
 #[inline(never)]
-fn decide_slow(stored: *mut ffi::PyObject, probe: &FastKey, undecided: &mut bool) -> bool {
+fn decide_slow(stored: *mut ffi::PyObject, probe: &FastKey) -> Option<bool> {
     // SAFETY: stored keys are live objects owned by the table.
-    match unsafe { decide_eq(stored, probe) } {
-        Some(eq) => eq,
-        None => {
-            *undecided = true;
-            true
-        }
-    }
+    unsafe { decide_eq(stored, probe) }
 }
 
 /// The native form of an exact `int`/`str` key under a key `schema` (`None` when it needs
@@ -908,13 +909,18 @@ pub(crate) struct KeyTable {
 impl KeyTable {
     /// A set table: `int` and `str` elements are stored natively.
     pub(crate) fn new(kind: KeyKind) -> KeyTable {
+        KeyTable::with_store(kind, Self::empty_store(kind, false), false)
+    }
+
+    #[inline]
+    fn with_store(kind: KeyKind, store: KeyStore, str_objects: bool) -> KeyTable {
         KeyTable {
-            store: Self::empty_store(kind, false),
+            store,
             kind,
             reserve_hint: 0,
             usable: MIN_USABLE,
             str_hashes: OnceLock::new(),
-            str_objects: false,
+            str_objects,
             str_only: false,
         }
     }
@@ -923,12 +929,9 @@ impl KeyTable {
     /// CPython's unicode-keyed tables): lookups use the cached `str` hash and identity, and
     /// iteration hands out the stored objects instead of creating new strings.
     pub(crate) fn for_dict(kind: KeyKind) -> KeyTable {
-        KeyTable {
-            store: Self::empty_store(kind, true),
-            str_objects: true,
-            str_only: kind == KeyKind::Str,
-            ..KeyTable::new(kind)
-        }
+        let mut table = KeyTable::with_store(kind, Self::empty_store(kind, true), true);
+        table.str_only = kind == KeyKind::Str;
+        table
     }
 
     fn empty_store(kind: KeyKind, str_objects: bool) -> KeyStore {
@@ -972,11 +975,9 @@ impl KeyTable {
         debug_assert!(keys.iter().zip(&hashes).all(|(&k, &h)| rustique_core::index::py_hash_i64(k) == h as u64));
         let index = HashIndex::from_hashes(hashes.into_iter().map(mix));
         let usable = (index.slots() * 2 / 3).max(MIN_USABLE);
-        KeyTable {
-            store: KeyStore::Int(KeyIndex::from_parts(keys, index, Default::default())),
-            usable,
-            ..KeyTable::for_dict(kind)
-        }
+        let mut table = KeyTable::with_store(kind, KeyStore::Int(KeyIndex::from_parts(keys, index, Default::default())), true);
+        table.usable = usable;
+        table
     }
 
     /// A dict table over pairwise-distinct object keys with their Python hashes (bulk
@@ -984,12 +985,9 @@ impl KeyTable {
     pub(crate) fn dict_from_objects(kind: KeyKind, keys: Vec<Py<PyAny>>, hashes: Vec<isize>, str_only: bool) -> KeyTable {
         let index = HashIndex::from_hashes(hashes.into_iter().map(mix));
         let usable = (index.slots() * 2 / 3).max(MIN_USABLE);
-        KeyTable {
-            store: KeyStore::Object(KeyIndex::from_parts(keys, index, ())),
-            usable,
-            str_only,
-            ..KeyTable::for_dict(kind)
-        }
+        let mut table = KeyTable::with_store(kind, KeyStore::Object(KeyIndex::from_parts(keys, index, ())), true);
+        (table.usable, table.str_only) = (usable, str_only);
+        table
     }
 
     /// The same keys under a different pinned strategy (e.g. an untyped copy of a typed set).
@@ -1241,6 +1239,29 @@ impl KeyTable {
 
     /// Look up a fast probe without running Python code: `Some(position or None)`, or
     /// `None` when deciding needs the general path (a stored key's `__eq__` may run).
+    /// Look up any key object without running Python code (`None`: use the general path).
+    /// Exact `str` and `int` keys take dedicated paths.
+    ///
+    /// # Safety
+    /// `key` must be a live object.
+    #[inline(always)]
+    pub(crate) unsafe fn find_object(&self, key: *mut ffi::PyObject) -> Option<Option<usize>> {
+        // SAFETY: `key` is live; reads match the checked exact types.
+        unsafe {
+            let ty = ffi::Py_TYPE(key);
+            if ty == &raw mut ffi::PyUnicode_Type {
+                if let KeyStore::Object(ki) = &self.store {
+                    return object_find_str(ki, key, exact_str_hash(key));
+                }
+            } else if ty == &raw mut ffi::PyLong_Type
+                && let KeyStore::Int(ki) = &self.store
+            {
+                return Some(ki.get(&exact_int_value(key)?));
+            }
+            self.find_fast(&FastKey::of(key)?)
+        }
+    }
+
     #[inline(always)]
     pub(crate) fn find_fast(&self, probe: &FastKey) -> Option<Option<usize>> {
         match (&self.store, probe) {
