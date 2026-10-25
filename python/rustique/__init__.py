@@ -30,6 +30,10 @@ from rustique._rustique import (
     u64,
 )
 
+# The takeover (docs/TAKEOVER.md). Not in `__all__` yet: tests/test_interop.py pins it and
+# other workstreams extend it in parallel; the lead adds these names at integration.
+from rustique._takeover import disable, enable, native
+
 __all__ = [
     "Dict",
     "DictType",
