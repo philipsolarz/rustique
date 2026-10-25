@@ -32,6 +32,10 @@ use keys::{FastKey, Key, KeyKind, KeyStore, KeyTable, Keyed, Locked, NativeKeys,
 pub(crate) struct DictInner {
     table: KeyTable,
     values: Storage,
+    /// The number of live entries, mirrored for lock-free `len()` (shared with the `Dict`;
+    /// updated after every change under the write lock, read with relaxed loads like
+    /// CPython's `ma_used`).
+    len: Arc<AtomicUsize>,
 }
 
 impl Keyed for DictInner {
@@ -45,6 +49,7 @@ impl Keyed for DictInner {
 
     #[inline]
     fn inserted(&mut self, out: &mut Vec<Py<PyAny>>) {
+        self.sync_len();
         if let Some(remap) = self.table.grow() {
             out.extend(remap_storage(&mut self.values, &remap));
         }
@@ -53,7 +58,18 @@ impl Keyed for DictInner {
 
 impl DictInner {
     fn new(key_schema: &Schema, value_schema: &Schema) -> DictInner {
-        DictInner { table: KeyTable::for_dict(KeyKind::for_schema(key_schema)), values: value_storage(value_schema) }
+        DictInner::with(KeyTable::for_dict(KeyKind::for_schema(key_schema)), value_storage(value_schema))
+    }
+
+    fn with(table: KeyTable, values: Storage) -> DictInner {
+        let len = Arc::new(AtomicUsize::new(table.len()));
+        DictInner { table, values, len }
+    }
+
+    /// Publish the live entry count (see `DictInner::len`).
+    #[inline(always)]
+    fn sync_len(&self) {
+        self.len.store(self.table.len(), Ordering::Relaxed);
     }
 
     fn value(&self, py: Python<'_>, pos: usize) -> Py<PyAny> {
@@ -86,6 +102,7 @@ impl DictInner {
     fn remove_entry(&mut self, py: Python<'_>, pos: usize, out: &mut Displaced) -> Py<PyAny> {
         let value = take_value(py, &mut self.values, pos);
         out.extend(self.table.remove_at(py, pos));
+        self.sync_len();
         value
     }
 
@@ -96,11 +113,13 @@ impl DictInner {
         let value = take_value(py, &mut self.values, pos);
         out.extend(self.table.truncate(pos));
         out.extend(truncate_storage(&mut self.values, pos));
+        self.sync_len();
         Some((key, value))
     }
 
     fn clear(&mut self, value_schema: &Schema, out: &mut Displaced) {
         out.extend(self.table.clear());
+        self.sync_len();
         let old = std::mem::replace(&mut self.values, value_storage(value_schema));
         if let Storage::Object(objs) = old {
             out.extend(objs);
@@ -157,7 +176,7 @@ impl DictInner {
                     let objs = keys.into_iter().map(|k| Bound::from_borrowed_ptr(py, k).unbind()).collect();
                     KeyTable::dict_from_objects(KeyKind::Adaptive, objs, hashes, str_only && n > 0)
                 };
-                Some(DictInner { table, values: Storage::Object(values) })
+                Some(DictInner::with(table, Storage::Object(values)))
             }
         })
     }
@@ -245,8 +264,12 @@ impl DictInner {
         err.map_or(Ok(()), Err)
     }
 
+    fn values_native(&self) -> bool {
+        matches!(self.values, Storage::Native(_))
+    }
+
     fn clone_ref(&self, py: Python<'_>) -> DictInner {
-        DictInner { table: self.table.clone_ref(py), values: self.values.clone_ref(py) }
+        DictInner::with(self.table.clone_ref(py), self.values.clone_ref(py))
     }
 
     fn items(&self, py: Python<'_>) -> Vec<(Py<PyAny>, Py<PyAny>)> {
@@ -651,6 +674,13 @@ impl Drop for ReprGuard<'_, '_> {
     }
 }
 
+/// Equality of two values as `dict` compares them: identity first, then `==`. Values read
+/// from native storage have no identity, so there two NaN floats count as equal
+/// (`nan_equal`; documented deviation of native float storage).
+pub(crate) fn values_equal(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>, nan_equal: bool) -> PyResult<bool> {
+    if nan_equal { objects_equal(a, b) } else { Ok(a.is(b) || a.eq(b)?) }
+}
+
 /// Equality of two objects as containers compare them: identity first, and floats that are
 /// both NaN count as equal (native float storage does not preserve NaN identity).
 pub(crate) fn objects_equal(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<bool> {
@@ -678,6 +708,8 @@ pub struct Dict {
     /// The argument tuple `__new__` already applied (exact `Dict` only), so that the
     /// `__init__` call `type.__call__` makes right after it does not apply it again.
     init_args: AtomicUsize,
+    /// The live entry count (`DictInner::len`).
+    len: Arc<AtomicUsize>,
 }
 
 impl Dict {
@@ -703,7 +735,8 @@ impl Dict {
     }
 
     fn assemble(key_schema: Arc<Schema>, value_schema: Arc<Schema>, inner: DictInner) -> Dict {
-        Dict { key_schema, value_schema, inner: Locked::new(inner), init_args: AtomicUsize::new(0) }
+        let len = inner.len.clone();
+        Dict { key_schema, value_schema, inner: Locked::new(inner), init_args: AtomicUsize::new(0), len }
     }
 
     fn empty(key_schema: Arc<Schema>, value_schema: Arc<Schema>) -> Dict {
@@ -905,8 +938,8 @@ impl Dict {
         Ok(value)
     }
 
-    pub(crate) fn len(&self, py: Python<'_>) -> usize {
-        self.inner.read(py).table.len()
+    pub(crate) fn len(&self, _py: Python<'_>) -> usize {
+        self.len.load(Ordering::Relaxed)
     }
 
     fn items_snapshot(&self, py: Python<'_>) -> Vec<(Py<PyAny>, Py<PyAny>)> {
@@ -953,21 +986,90 @@ impl Dict {
         Some(true)
     }
 
+    /// Values of `self` and `other` paired by key (in `self`'s order), matched under both
+    /// read locks without running Python code. `Err(())`: the key sets differ; `None`: a key
+    /// could not be matched without Python code (use the general path).
+    fn pair_with_dict(&self, py: Python<'_>, other: &Dict) -> Option<Result<Paired, ()>> {
+        let (a, b) = crate::sync::read_both(py, &self.inner, &other.inner);
+        if a.table.len() != b.table.len() {
+            return Some(Err(()));
+        }
+        let mut out = Vec::with_capacity(a.table.len());
+        let native = a.values_native() || b.values_native();
+        let Some(index) = a.table.index() else { return Some(Ok((out, native))) };
+        for pos in index.iter() {
+            let probe = match a.table.store() {
+                KeyStore::Int(ki) => FastKey::Int(ki.raw_keys()[pos], std::ptr::null_mut()),
+                // SAFETY: stored keys are live while the read lock is held.
+                KeyStore::Object(ki) => unsafe { FastKey::of(ki.raw_keys()[pos].as_ptr())? },
+                _ => return None,
+            };
+            match b.table.find_fast(&probe)? {
+                None => return Some(Err(())),
+                Some(j) => out.push((a.value(py, pos), b.value(py, j))),
+            }
+        }
+        Some(Ok((out, native)))
+    }
+
+    /// [`Dict::pair_with_dict`] against an exact builtin `dict` (read inside its critical
+    /// section; our read lock is held meanwhile and only pure reads run inside).
+    fn pair_with_builtin(&self, py: Python<'_>, other: &Bound<'_, PyDict>) -> Option<Result<Paired, ()>> {
+        let inner = self.inner.read(py);
+        if inner.table.len() != other.len() {
+            return Some(Err(()));
+        }
+        let native = inner.values_native();
+        with_critical_section(other.as_any(), || {
+            let mut out = Vec::with_capacity(other.len());
+            let (mut pos, mut k, mut v) = (0, std::ptr::null_mut(), std::ptr::null_mut());
+            // SAFETY: we hold the dict's critical section and run no Python code (fast probes
+            // only), so the iteration state and the borrowed items stay valid.
+            unsafe {
+                while ffi::PyDict_Next(other.as_ptr(), &mut pos, &mut k, &mut v) != 0 {
+                    let probe = FastKey::of(k)?;
+                    match inner.table.find_fast(&probe)? {
+                        None => return Some(Err(())),
+                        Some(at) => out.push((inner.value(py, at), Bound::from_borrowed_ptr(py, v).unbind())),
+                    }
+                }
+            }
+            Some(Ok((out, native)))
+        })
+    }
+
+    /// Compare paired values (outside every lock: `__eq__` may run).
+    fn values_all_equal(py: Python<'_>, (pairs, native): Paired) -> PyResult<bool> {
+        for (a, b) in &pairs {
+            if !values_equal(a.bind(py), b.bind(py), native)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     fn eq_dict(&self, py: Python<'_>, other: &Dict) -> PyResult<bool> {
         if let Some(eq) = self.native_eq(py, other) {
             return Ok(eq);
         }
-        let (keys, values) = {
+        match self.pair_with_dict(py, other) {
+            Some(Ok(pairs)) => return Dict::values_all_equal(py, pairs),
+            Some(Err(())) => return Ok(false),
+            None => {}
+        }
+        let (keys, values, native) = {
             let inner = self.inner.read(py);
-            (inner.table.element_keys(py)?, inner.values_list(py))
+            (inner.table.element_keys(py)?, inner.values_list(py), inner.values_native())
         };
         if keys.len() != other.len(py) {
             return Ok(false);
         }
         for (key, v) in keys.iter().zip(values) {
-            let theirs = keys::with_entry(py, &other.inner, key, |inner, pos| pos.map(|p| inner.value(py, p)))?;
+            let theirs = keys::with_entry(py, &other.inner, key, |inner, pos| {
+                pos.map(|p| (inner.value(py, p), inner.values_native()))
+            })?;
             match theirs {
-                Some(theirs) if objects_equal(v.bind(py), theirs.bind(py))? => {}
+                Some((theirs, n)) if values_equal(v.bind(py), theirs.bind(py), native || n)? => {}
                 _ => return Ok(false),
             }
         }
@@ -1008,12 +1110,20 @@ impl Dict {
     }
 
     fn eq_mapping(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
-        if let Ok(dict) = other.cast_exact::<PyDict>()
-            && let Some(eq) = self.native_eq_builtin(py, dict)
-        {
-            return Ok(eq);
+        if let Ok(dict) = other.cast_exact::<PyDict>() {
+            if let Some(eq) = self.native_eq_builtin(py, dict) {
+                return Ok(eq);
+            }
+            match self.pair_with_builtin(py, dict) {
+                Some(Ok(pairs)) => return Dict::values_all_equal(py, pairs),
+                Some(Err(())) => return Ok(false),
+                None => {}
+            }
         }
-        let items = self.items_snapshot(py);
+        let (items, native) = {
+            let inner = self.inner.read(py);
+            (inner.items(py), inner.values_native())
+        };
         if items.len() != other.len()? {
             return Ok(false);
         }
@@ -1028,7 +1138,7 @@ impl Dict {
                 },
             };
             match theirs {
-                Some(theirs) if objects_equal(v.bind(py), &theirs)? => {}
+                Some(theirs) if values_equal(v.bind(py), &theirs, native)? => {}
                 _ => return Ok(false),
             }
         }
@@ -1268,6 +1378,9 @@ unsafe fn uniquely_referenced(obj: *mut ffi::PyObject) -> bool {
     // free-threaded builds it also requires that this thread owns the object.)
     unsafe { ffi::PyUnstable_Object_IsUniquelyReferenced(obj) != 0 }
 }
+
+/// Values paired by key, and whether either side stores values natively.
+type Paired = (Vec<(Py<PyAny>, Py<PyAny>)>, bool);
 
 fn keys_len(keys: &NativeKeys) -> usize {
     match keys {
@@ -1924,9 +2037,12 @@ impl DictValues {
     }
 
     fn __contains__(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<bool> {
-        let values = self.dict.get().inner.read(py).values_list(py);
+        let (values, native) = {
+            let inner = self.dict.get().inner.read(py);
+            (inner.values_list(py), inner.values_native())
+        };
         for v in values {
-            if objects_equal(v.bind(py), value)? {
+            if values_equal(v.bind(py), value, native)? {
                 return Ok(true);
             }
         }
@@ -1968,12 +2084,14 @@ setlike_view!(DictItems {
     }
 
     fn __contains__(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<bool> {
-        let Ok(pair) = item.cast_exact::<PyTuple>() else { return Ok(false) };
+        let Ok(pair) = item.cast::<PyTuple>() else { return Ok(false) };
         if pair.len() != 2 {
             return Ok(false);
         }
-        match self.dict.get().get_value(py, &pair.get_item(0)?)? {
-            Some(v) => objects_equal(v.bind(py), &pair.get_item(1)?),
+        let dict = self.dict.get();
+        let native = dict.inner.read(py).values_native();
+        match dict.get_value(py, &pair.get_item(0)?)? {
+            Some(v) => values_equal(v.bind(py), &pair.get_item(1)?, native),
             None => Ok(false),
         }
     }

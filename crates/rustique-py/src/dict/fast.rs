@@ -142,10 +142,7 @@ unsafe extern "C" fn length(slf: *mut ffi::PyObject) -> ffi::Py_ssize_t {
     // SAFETY: as for `subscript`.
     unsafe {
         let py = Python::assume_attached();
-        let fast = attempt(|| {
-            let len = dict_ref(py, slf).inner.read(py).table.len();
-            ffi::Py_ssize_t::try_from(len).ok()
-        });
+        let fast = attempt(|| ffi::Py_ssize_t::try_from(dict_ref(py, slf).len(py)).ok());
         match fast {
             Some(len) => len,
             None => (originals().length)(slf),

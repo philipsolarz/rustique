@@ -768,7 +768,11 @@ def test_native_equality_with_builtin_dict_follows_python():
     assert Dict({1: 1, 2: 2}) != {1: 1, 3: 2}
     assert Dict({1: [1]}) == {1: [1]}
     assert Dict({"x": 0.0}) == {"x": -0.0}
-    assert Dict({"k": NAN}) == {"k": float("nan")}  # native floats have no identity
+    # Untyped dicts keep value objects: a different NaN object is unequal, like `dict`.
+    assert (Dict({"k": NAN}) == {"k": float("nan")}) is False
+    assert Dict({"k": NAN}) == {"k": NAN} == Dict({"k": NAN})
+    # Native float values have no identity: NaN equals NaN (documented deviation).
+    assert Dict[str, float]({"k": NAN}) == {"k": float("nan")}
 
 
 def test_untyped_values_keep_identity_in_object_storage():
