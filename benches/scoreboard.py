@@ -17,7 +17,9 @@ the provisional rewrite form on the Rustique side (e.g. `List((a, b, c))`), unti
 takeover mechanism (docs/TAKEOVER.md) produces them for real.
 
 Implementations (`--impls`, the builtin is always measured as the reference)
-    rustique  the Rustique types (`rs.List`, ...) running the same statements
+    rustique  the Rustique types (`rs.List`, ...) running the same statements, in a process
+              where `rustique.enable()` is active when it exists (the whole product: builtin
+              functions such as `sum` dispatch to native kernels)
     enabled   the builtin types in a process where `rustique.enable()` is active (the
               in-place acceleration tier, docs/TAKEOVER.md); compared against plain CPython
               in a separate process, results cross-checked by digest
@@ -658,8 +660,10 @@ def instr_loops(cell: Cell) -> int:
 
 def run_instr_worker(args: argparse.Namespace) -> None:
     impls = args.impls.split(",")
-    if "enabled" in impls:
-        assert impls == ["enabled"], "the enabled tier is process-wide: measure it in its own process"
+    enabled_ok = False
+    if "enabled" in impls or "rustique" in impls:
+        # Process-wide tiers: never in the same process as the builtin reference.
+        assert len(impls) == 1, "rustique/enabled are measured in their own processes"
         enabled_ok = enable_rustique()
     cg = Callgrind(args.cg_dir)
     if args.keys_file:
@@ -676,7 +680,7 @@ def run_instr_worker(args: argparse.Namespace) -> None:
                 entry["status"], entry["detail"] = verify(cell)
                 if entry["status"] in ("missing", "error"):
                     continue
-            if impl == "enabled" and not enabled_ok:
+            if impl == "enabled" and not enabled_ok:  # (rustique runs either way)
                 entry["status_enabled"], entry["detail_enabled"] = "missing", "rustique.enable() does not exist"
                 continue
             try:
@@ -718,9 +722,7 @@ def run_instr(args: argparse.Namespace) -> None:
     if args.size is None:
         args.size = ",".join(map(str, SMALL_SIZES))
     wanted = [i.strip() for i in args.impls.split(",") if i.strip()]
-    groups = [["builtin"] + (["rustique"] if "rustique" in wanted else [])]
-    if "enabled" in wanted:
-        groups.append(["enabled"])
+    groups = [["builtin"]] + [[i] for i in ("rustique", "enabled") if i in wanted]
     keys = [c.key for c in select(all_cells(), args)]
     chunks = [keys[i : i + args.chunk] for i in range(0, len(keys), args.chunk)]
     jobs = [(g, group, k, chunk) for g, group in enumerate(groups) for k, chunk in enumerate(chunks)]
@@ -840,6 +842,8 @@ def run_time_worker() -> None:
                 # process-wide tier here never affects a builtin measurement.
                 if impl == "enabled" and not enable_rustique():
                     raise RuntimeError("rustique.enable() does not exist")
+                if impl == "rustique":
+                    enable_rustique()  # the whole product, when it exists
                 if "fn" not in state:
                     env = make_env(cell.type, cell.storage, cell.n, impl)
                     if env is None:
