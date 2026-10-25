@@ -9,6 +9,7 @@ pub mod capi;
 pub mod convert;
 pub mod dict;
 pub mod expr;
+pub mod frozenset;
 pub mod list;
 pub mod objsort;
 pub mod scalars;
@@ -27,6 +28,7 @@ fn _rustique(m: &Bound<'_, PyModule>) -> PyResult<()> {
     list::register(m)?;
     dict::register(m)?;
     set::register(m)?;
+    frozenset::register(m)?;
     expr::register(m)?;
     capi::register(m)?;
     builtins::register(m)?;
