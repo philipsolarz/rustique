@@ -292,12 +292,20 @@ def test_strategies_and_demotion_preserve_order():
 
 
 def test_value_strategies():
-    assert Dict({"a": 1})._value_strategy == "i64"
-    assert Dict({"a": 1.5})._value_strategy == "f64"
-    d = Dict({"a": 1})
-    d["b"] = "x"
+    # Untyped dicts keep the value objects (reads are increfs, identity is preserved);
+    # typed dicts store values natively per their schema.
+    big, f = 10**6 + 1, 1.5
+    d = Dict({"a": big, "b": f})
     assert d._value_strategy == "object"
-    check_same(d, {"a": 1, "b": "x"})
+    assert d["a"] is big and d.get("b") is f and next(iter(d.values())) is big
+    d["c"] = "x"
+    check_same(d, {"a": big, "b": f, "c": "x"})
+    assert Dict[str, int]({"a": 1})._value_strategy == "i64"
+    assert Dict[str, float]({"a": 1.5})._value_strategy == "f64"
+    t = Dict[str, int]({"a": 1})
+    t["b"] = 2
+    assert t._value_strategy == "i64"
+    check_same(t, {"a": 1, "b": 2})
 
 
 # --- order, deletion, churn -----------------------------------------------------------
