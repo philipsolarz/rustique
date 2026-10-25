@@ -12,7 +12,7 @@
 //! tables — under read locks for a `Set`, without any lock for a `FrozenSet` — reusing the
 //! stored hashes; otherwise elements are compared with Python equality outside every lock.
 
-use std::ffi::c_int;
+use std::ffi::{CStr, c_int};
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -140,6 +140,43 @@ pub(crate) fn probe<'py>(elem: &Bound<'py, PyAny>) -> PyResult<Key<'py>> {
     }
 }
 
+/// `elem in table` for the common cases, without classifying `elem` or creating Python
+/// references: native probes of native tables, and identity hits and clean misses (no
+/// stored key with an equal hash) in object tables. Otherwise `Err` with `hash(elem)` when
+/// computed (`None`: unhashable, the error was cleared; the full lookup raises it again).
+/// `read` runs its argument on the table (under the set's read lock for a `Set`).
+#[inline]
+pub(crate) fn quick_contains(
+    elem: &Bound<'_, PyAny>,
+    read: impl Fn(&dyn Fn(&KeyTable) -> Option<bool>) -> Option<bool>,
+) -> Result<bool, Option<isize>> {
+    if let Some(probe) = keys::quick(elem)
+        && let Some(found) = read(&|t: &KeyTable| t.find_quick(&probe).map(|pos| pos.is_some()))
+    {
+        return Ok(found);
+    }
+    // SAFETY: `elem` is a valid object; on failure the error is cleared and the full lookup
+    // computes the hash again (and raises).
+    let hash = unsafe { ffi::PyObject_Hash(elem.as_ptr()) };
+    if hash == -1 {
+        // SAFETY: attached; clears the error `PyObject_Hash` set.
+        unsafe { ffi::PyErr_Clear() };
+        return Err(None);
+    }
+    let found = read(&|t: &KeyTable| match t.store() {
+        KeyStore::Object(ki) => {
+            let mut candidates = ki.index().candidates(keys::mix(hash)).peekable();
+            if candidates.peek().is_none() {
+                return Some(false);
+            }
+            // Candidates but none identical: compared by `==` in the full lookup.
+            candidates.any(|pos| ki.raw_keys()[pos].is(elem)).then_some(true)
+        }
+        _ => None,
+    });
+    found.ok_or(Some(hash))
+}
+
 // --- reading builtin sets ----------------------------------------------------------------
 
 unsafe extern "C" {
@@ -212,8 +249,11 @@ pub(crate) fn build_table<'py>(
         }
         None => {
             for item in iterable.try_iter()? {
-                let key = keys::prepare_owned(item?, schema, Role::SetElement, name)?;
-                table.insert_prepared(py, key)?;
+                let item = item?;
+                match keys::native_key(&item, schema) {
+                    Some(key) => table.insert_prepared(py, key)?,
+                    None => insert_pending(py, &mut table, schema, Pending::Object(item, None), name)?,
+                }
             }
         }
     }
@@ -247,21 +287,60 @@ fn insert_pending<'py>(
 ) -> PyResult<()> {
     let key = match item {
         Pending::Native(key) => key,
-        Pending::Object(obj, Some(hash)) => Prepared::Key(Key::with_hash(obj, hash)?),
-        Pending::Object(obj, None) => keys::prepare_owned(obj, schema, Role::SetElement, name)?,
+        Pending::Object(obj, known) if schema.is_any() => match insert_object_fast(py, table, &obj, known)? {
+            Ok(()) => return Ok(()),
+            Err(Some(hash)) => Prepared::Key(Key::with_hash(obj, hash)?),
+            Err(None) => keys::prepare_owned(obj, schema, Role::SetElement, name)?,
+        },
+        Pending::Object(obj, _) => keys::prepare_owned(obj, schema, Role::SetElement, name)?,
     };
     table.insert_prepared(py, key)
+}
+
+/// Insert `obj` into a private object table without classifying it, when it compares with
+/// the stored keys it meets without Python code (builtin scalars, tuples of them, objects
+/// compared by identity). Otherwise `Err` with its hash when computed (the general path
+/// then reuses it, so `__hash__` runs once).
+fn insert_object_fast(
+    py: Python<'_>,
+    table: &mut KeyTable,
+    obj: &Bound<'_, PyAny>,
+    known: Option<isize>,
+) -> PyResult<Result<(), Option<isize>>> {
+    if !matches!(table.store(), KeyStore::Object(_)) || keys::simplicity(obj, 0) != Simple::Yes {
+        return Ok(Err(known));
+    }
+    let hash = match known {
+        Some(h) => h,
+        None => obj.hash()?,
+    };
+    let mixed = keys::mix(hash);
+    let KeyStore::Object(ki) = table.store() else {
+        return Ok(Err(Some(hash)));
+    };
+    match object_contains(py, ki, obj, mixed) {
+        Some(true) => Ok(Ok(())),
+        Some(false) => {
+            table
+                .push(py, &Key { obj: obj.clone(), class: Class::Other { hash, exotic: true, simple: Simple::No } })?;
+            Ok(Ok(()))
+        }
+        None => Ok(Err(Some(hash))),
+    }
 }
 
 /// Collects the elements a source critical section could not insert natively.
 struct Ingest<'py> {
     pending: Vec<Pending<'py>>,
     err: Option<PyErr>,
+    /// Elements the source holds (capacity for `pending` once something is queued).
+    size: usize,
+    seen: usize,
 }
 
 impl<'py> Ingest<'py> {
     fn new() -> Self {
-        Ingest { pending: Vec::new(), err: None }
+        Ingest { pending: Vec::new(), err: None, size: 0, seen: 0 }
     }
 
     /// Take one borrowed source element: inserted natively while nothing is pending (no
@@ -276,12 +355,22 @@ impl<'py> Ingest<'py> {
         item: Borrowed<'_, 'py, PyAny>,
         hash: Option<isize>,
     ) {
-        match keys::native_key(&item, schema) {
-            Some(key) if self.pending.is_empty() && self.err.is_none() => {
-                if let Err(e) = table.insert_prepared(py, key) {
-                    self.err = Some(e);
+        self.seen += 1;
+        let key = keys::native_key(&item, schema);
+        if self.pending.is_empty() {
+            match key {
+                Some(key) => {
+                    if self.err.is_none()
+                        && let Err(e) = table.insert_prepared(py, key)
+                    {
+                        self.err = Some(e);
+                    }
+                    return;
                 }
+                None => self.pending.reserve(self.size.saturating_sub(self.seen) + 1),
             }
+        }
+        match key {
             Some(key) => self.pending.push(Pending::Native(key)),
             None => self.pending.push(Pending::Object(item.to_owned(), if schema.is_any() { hash } else { None })),
         }
@@ -311,6 +400,7 @@ fn ingest_native<'py>(
             // and the borrowed item pointers stay valid while we read them.
             let n = unsafe { ffi::PyList_GET_SIZE(p) };
             table.reserve(n as usize);
+            ingest.size = n as usize;
             for i in 0..n {
                 // SAFETY: `i` is in bounds (see above).
                 let item = unsafe { Borrowed::from_ptr(py, ffi::PyList_GET_ITEM(p, i)) };
@@ -321,6 +411,7 @@ fn ingest_native<'py>(
     }
     if let Ok(tuple) = obj.cast_exact::<PyTuple>() {
         table.reserve(tuple.len());
+        ingest.size = tuple.len();
         for item in tuple.iter_borrowed() {
             ingest.push(py, table, schema, item, None);
         }
@@ -328,7 +419,8 @@ fn ingest_native<'py>(
     }
     if is_builtin_set(obj) {
         // SAFETY: `obj` is a set or frozenset.
-        table.reserve(unsafe { ffi::PySet_Size(obj.as_ptr()) }.max(0) as usize);
+        ingest.size = unsafe { ffi::PySet_Size(obj.as_ptr()) }.max(0) as usize;
+        table.reserve(ingest.size);
         for_each_set_entry(obj, |item, hash| {
             ingest.push(py, table, schema, item, Some(hash));
             true
@@ -338,6 +430,7 @@ fn ingest_native<'py>(
     if let Ok(dict) = obj.cast_exact::<PyDict>() {
         with_critical_section(dict.as_any(), || {
             table.reserve(dict.len());
+            ingest.size = dict.len();
             let (mut pos, mut k, mut v) = (0, std::ptr::null_mut(), std::ptr::null_mut());
             // SAFETY: we hold the dict's critical section and run no Python code, so the
             // iteration state and the borrowed keys stay valid.
@@ -546,7 +639,12 @@ fn stored_hash<K: Hash + Eq>(ki: &KeyIndex<K>, pos: usize, key: &K) -> u64 {
 /// `a <op> b` for native keys of one kind (`b_set`: `b` came from a set, so an intersection
 /// may iterate `a` when it is smaller; elements of an iterable are always iterated). Results
 /// reuse the stored hashes of the table whose hasher they inherit.
-fn native_op<K: Hash + Eq + Clone + Default>(op: Algebra, a: &KeyIndex<K>, b: &KeyIndex<K>, b_set: bool) -> KeyIndex<K> {
+fn native_op<K: Hash + Eq + Clone + Default>(
+    op: Algebra,
+    a: &KeyIndex<K>,
+    b: &KeyIndex<K>,
+    b_set: bool,
+) -> KeyIndex<K> {
     match op {
         Algebra::Union => {
             let mut out = a.clone();
@@ -706,7 +804,13 @@ fn object_op(
 /// `a <op> b` without Python code, or `None` when Python equality is needed (`b_set`: `b`
 /// came from a set). Runs under the operands' read locks: creates no objects other than
 /// increfs of stored ones (and drops only such copies, whose objects the operands still hold).
-fn table_op(py: Python<'_>, op: Algebra, a: &KeyTable, (b, b_set): (&KeyTable, bool), kind: KeyKind) -> Option<KeyTable> {
+fn table_op(
+    py: Python<'_>,
+    op: Algebra,
+    a: &KeyTable,
+    (b, b_set): (&KeyTable, bool),
+    kind: KeyKind,
+) -> Option<KeyTable> {
     let copy = |t: &KeyTable| t.clone_ref(py).with_kind(kind);
     match (a.store(), b.store()) {
         (KeyStore::Int(x), KeyStore::Int(y)) => {
@@ -870,7 +974,13 @@ fn native_update<K: Hash + Eq + Clone + Default>(op: Algebra, ki: &mut KeyIndex<
 }
 
 /// `mine <op> other` with Python equality (`mine` is private).
-fn table_algebra(py: Python<'_>, op: Algebra, mine: KeyTable, other: &Operand<'_>, kind: KeyKind) -> PyResult<KeyTable> {
+fn table_algebra(
+    py: Python<'_>,
+    op: Algebra,
+    mine: KeyTable,
+    other: &Operand<'_>,
+    kind: KeyKind,
+) -> PyResult<KeyTable> {
     match op {
         Algebra::Union => {
             let mut mine = mine;
@@ -1079,7 +1189,12 @@ pub(crate) fn set_repr(slf: &Bound<'_, PyAny>, name: &str, elems: impl FnOnce() 
 }
 
 /// The display name of a set type: the class name for subclasses, else `Base` or `Base[T]`.
-pub(crate) fn display_name(slf: &Bound<'_, PyAny>, base: &Bound<'_, PyType>, base_name: &str, schema: &Schema) -> PyResult<String> {
+pub(crate) fn display_name(
+    slf: &Bound<'_, PyAny>,
+    base: &Bound<'_, PyType>,
+    base_name: &str,
+    schema: &Schema,
+) -> PyResult<String> {
     let ty = slf.get_type();
     if !ty.is(base) {
         return Ok(ty.name()?.to_string());
@@ -1192,40 +1307,37 @@ impl Set {
     /// `elem in self`. Identity hits and clean misses in object tables are decided with one
     /// hash and no classification.
     fn contains(&self, elem: &Bound<'_, PyAny>) -> PyResult<bool> {
+        match self.contains_fast(elem) {
+            Ok(found) => Ok(found),
+            Err(hash) => self.contains_slow(elem, hash),
+        }
+    }
+
+    /// The common cases of `elem in self` without classifying `elem` or creating Python
+    /// references (see [`quick_contains`]); `Err` carries `hash(elem)` when it was computed.
+    fn contains_fast(&self, elem: &Bound<'_, PyAny>) -> Result<bool, Option<isize>> {
+        quick_contains(elem, |f| f(&self.inner.read(elem.py()).table))
+    }
+
+    fn contains_slow(&self, elem: &Bound<'_, PyAny>, hash: Option<isize>) -> PyResult<bool> {
         let py = elem.py();
-        if let Some(probe) = keys::quick(elem) {
-            let guard = self.inner.read(py);
-            if let Some(pos) = guard.table.find_quick(&probe) {
-                return Ok(pos.is_some());
+        match hash {
+            Some(hash) => {
+                let key = Key::with_hash(elem.clone(), hash)?;
+                keys::with_entry(py, &self.inner, &key, |_, pos| pos.is_some())
             }
+            // Unhashable: a set probe or an error (raised again here).
+            None => keys::lookup(py, &self.inner, elem, probe, |_, pos| pos.is_some()),
         }
-        let Ok(hash) = elem.hash() else {
-            // Unhashable: a set probe or an error (raised again by the full path).
-            return keys::lookup(py, &self.inner, elem, probe, |_, pos| pos.is_some());
-        };
-        {
-            let guard = self.inner.read(py);
-            if let KeyStore::Object(ki) = guard.table.store() {
-                let mut candidates = ki.index().candidates(keys::mix(hash)).peekable();
-                if candidates.peek().is_none() {
-                    return Ok(false);
-                }
-                if candidates.any(|pos| ki.raw_keys()[pos].is(elem)) {
-                    return Ok(true);
-                }
-            }
-        }
-        let key = Key::with_hash(elem.clone(), hash)?;
-        keys::with_entry(py, &self.inner, &key, |_, pos| pos.is_some())
     }
 
     fn contains_key(&self, key: &Key<'_>) -> PyResult<bool> {
         keys::with_entry(key.obj.py(), &self.inner, key, |_, pos| pos.is_some())
     }
 
-    /// The native keys of a rustique set source as insertable keys, when this set stores them
-    /// as they are (untyped, or typed with the same native kind).
-    fn native_source(&self, py: Python<'_>, source: &Bound<'_, PyAny>) -> Option<Vec<Prepared<'static>>> {
+    /// The native keys of a rustique set source, when this set stores them as they are
+    /// (untyped, or typed with the same native kind).
+    fn native_source(&self, py: Python<'_>, source: &Bound<'_, PyAny>) -> Option<Natives> {
         let (ints, strs) = match *self.schema {
             Schema::Any => (true, true),
             Schema::Int => (true, false),
@@ -1233,9 +1345,9 @@ impl Set {
             _ => return None,
         };
         let read = |table: &KeyTable| match table.store() {
-            KeyStore::Int(ki) if ints => Some(ki.iter().map(|(_, &v)| Prepared::Int(v)).collect()),
-            KeyStore::Str(ki) if strs => Some(ki.iter().map(|(_, s)| Prepared::Str(s.clone())).collect()),
-            KeyStore::Empty => Some(Vec::new()),
+            KeyStore::Int(ki) if ints => Some(Natives::Int(ki.iter().map(|(_, &v)| v).collect())),
+            KeyStore::Str(ki) if strs => Some(Natives::Str(ki.iter().map(|(_, s)| s.clone()).collect())),
+            KeyStore::Empty => Some(Natives::Int(Vec::new())),
             _ => None,
         };
         if let Ok(set) = source.cast::<Set>() {
@@ -1251,8 +1363,21 @@ impl Set {
     /// when an element is rejected.
     fn add_all(&self, py: Python<'_>, iterable: &Bound<'_, PyAny>) -> PyResult<()> {
         let (prepared, err) = match self.native_source(py, iterable) {
-            Some(natives) => (natives, None),
-            None => self.prepare_all(iterable),
+            Some(natives) => {
+                // Native keys into a table without arbitrary objects: one write lock, no
+                // Python code (comparisons, if any, are between exact ints/strs).
+                let mut inner = self.inner.write(py);
+                if !matches!(inner.table.store(), KeyStore::Object(_)) {
+                    inner.table.reserve(natives.len());
+                    return natives.insert_into(py, &mut inner.table);
+                }
+                drop(inner);
+                (natives.into_prepared(), None)
+            }
+            None => match self.add_objects(py, iterable)? {
+                Some(rest) => (rest, None),
+                None => self.prepare_all(iterable),
+            },
         };
         if prepared.len() > 1 {
             self.inner.write(py).table.reserve(prepared.len());
@@ -1266,22 +1391,69 @@ impl Set {
         err.map_or(Ok(()), Err)
     }
 
+    /// `self |= other` for an untyped set and a rustique set `other` storing objects: the
+    /// elements are added with their stored hashes, comparing inline under the write lock
+    /// while that needs no Python code. Returns the elements left for the general path
+    /// (`None`: `other` is not such a source).
+    fn add_objects<'py>(&self, py: Python<'py>, other: &Bound<'py, PyAny>) -> PyResult<Option<Vec<Prepared<'py>>>> {
+        if !self.schema.is_any() {
+            return Ok(None);
+        }
+        let read = |table: &KeyTable| match table.store() {
+            KeyStore::Object(ki) => {
+                Some(object_entries(py, ki).map(|(_, obj, h)| (obj.clone(), h)).collect::<Vec<_>>())
+            }
+            _ => None,
+        };
+        let objects = if let Ok(set) = other.cast::<Set>() {
+            read(&set.get().inner.read(py).table)
+        } else if let Ok(frozen) = other.cast::<FrozenSet>() {
+            read(frozen.get().table())
+        } else {
+            None
+        };
+        let Some(objects) = objects else {
+            return Ok(None);
+        };
+        let mut done = 0;
+        {
+            let mut inner = self.inner.write(py);
+            inner.table.reserve(objects.len());
+            for (obj, h) in &objects {
+                let present = match inner.table.store() {
+                    KeyStore::Object(ki) => object_contains(py, ki, obj, *h),
+                    KeyStore::Empty => Some(false),
+                    _ => None,
+                };
+                match present {
+                    Some(true) => {}
+                    Some(false) => {
+                        inner.table.push(py, &hashed_key(obj, *h))?;
+                    }
+                    None => break,
+                }
+                done += 1;
+            }
+        }
+        let rest = objects
+            .into_iter()
+            .skip(done)
+            .map(|(obj, h)| Key::with_hash(obj, keys::unmix(h)).map(Prepared::Key))
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(Some(rest))
+    }
+
     /// Remove every element of `iterable` that is present.
     fn remove_all(&self, py: Python<'_>, iterable: &Bound<'_, PyAny>) -> PyResult<()> {
         if let Some(natives) = self.native_source(py, iterable) {
             let mut displaced = Vec::new();
             let mut inner = self.inner.write(py);
             if !matches!(inner.table.store(), KeyStore::Object(_)) {
-                for key in &natives {
-                    let probe = match key {
-                        Prepared::Int(v) => keys::Quick::Int(*v),
-                        Prepared::Str(s) => keys::Quick::Str(s),
-                        Prepared::Key(_) => continue,
-                    };
+                natives.for_each_quick(|probe| {
                     if let Some(Some(pos)) = inner.table.find_quick(&probe) {
                         inner.remove_at(py, pos, &mut displaced);
                     }
-                }
+                });
                 drop(inner);
                 drop(displaced);
                 return Ok(());
@@ -1383,10 +1555,22 @@ impl Set {
     /// `self <op> others…` as a new `Set` (typed when every operand has this set's schema).
     fn compute(slf: &Bound<'_, Self>, op: Algebra, others: &[Bound<'_, PyAny>]) -> PyResult<Set> {
         let py = slf.py();
-        let operands = others.iter().map(Operand::new).collect::<PyResult<Vec<_>>>()?;
-        let schema = result_schema(&slf.get().schema, &operands);
+        // One operand (the operators) needs no vector.
+        let one;
+        let many;
+        let operands: &[Operand<'_>] = match others {
+            [other] => {
+                one = [Operand::new(other)?];
+                &one
+            }
+            _ => {
+                many = others.iter().map(Operand::new).collect::<PyResult<Vec<_>>>()?;
+                &many
+            }
+        };
+        let schema = result_schema(&slf.get().schema, operands);
         let kind = KeyKind::for_schema(&schema);
-        let table = fold(py, op, &Operand::Set(slf.clone()), &operands, kind)?;
+        let table = fold(py, op, &Operand::Set(slf.clone()), operands, kind)?;
         Ok(Set::with_table(schema, table))
     }
 
@@ -1438,7 +1622,43 @@ impl Set {
             }
         }
     }
+}
 
+/// Native keys copied out of a rustique set.
+enum Natives {
+    Int(Vec<i64>),
+    Str(Vec<compact_str::CompactString>),
+}
+
+impl Natives {
+    fn len(&self) -> usize {
+        match self {
+            Natives::Int(v) => v.len(),
+            Natives::Str(v) => v.len(),
+        }
+    }
+
+    /// Insert into a table that holds no arbitrary objects (runs no Python code).
+    fn insert_into(self, py: Python<'_>, table: &mut KeyTable) -> PyResult<()> {
+        match self {
+            Natives::Int(v) => v.into_iter().try_for_each(|k| table.insert_prepared(py, Prepared::Int(k))),
+            Natives::Str(v) => v.into_iter().try_for_each(|k| table.insert_prepared(py, Prepared::Str(k))),
+        }
+    }
+
+    fn into_prepared(self) -> Vec<Prepared<'static>> {
+        match self {
+            Natives::Int(v) => v.into_iter().map(Prepared::Int).collect(),
+            Natives::Str(v) => v.into_iter().map(Prepared::Str).collect(),
+        }
+    }
+
+    fn for_each_quick(&self, mut f: impl FnMut(keys::Quick<'_>)) {
+        match self {
+            Natives::Int(v) => v.iter().for_each(|&k| f(keys::Quick::Int(k))),
+            Natives::Str(v) => v.iter().for_each(|k| f(keys::Quick::Str(k))),
+        }
+    }
 }
 
 /// `other <op> right` with a builtin set on the left: a rustique set of the left operand's
@@ -1486,7 +1706,11 @@ impl Set {
     #[new]
     #[classmethod]
     #[pyo3(signature = (*args, **kwargs))]
-    fn __new__(cls: &Bound<'_, PyType>, args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+    fn __new__(
+        cls: &Bound<'_, PyType>,
+        args: &Bound<'_, PyTuple>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Self> {
         let py = cls.py();
         if !cls.is(py.get_type::<Set>()) {
             return Ok(Set::empty(schema::any()));
@@ -1498,7 +1722,11 @@ impl Set {
     /// `set.__init__`: clear, then add the elements of `iterable` (installed as `__init__`
     /// by [`register`], without a `tp_init` slot: see there).
     #[pyo3(signature = (*args, **kwargs))]
-    fn _rustique_init(slf: &Bound<'_, Self>, args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
+    fn _rustique_init(
+        slf: &Bound<'_, Self>,
+        args: &Bound<'_, PyTuple>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<()> {
         let py = slf.py();
         let name = slf.get_type().name()?.to_string();
         no_keywords(&name, kwargs)?;
@@ -1591,18 +1819,18 @@ impl Set {
     }
 
     #[pyo3(signature = (*others))]
-    fn union(slf: &Bound<'_, Self>, others: Vec<Bound<'_, PyAny>>) -> PyResult<Set> {
-        Set::compute(slf, Algebra::Union, &others)
+    fn union(slf: &Bound<'_, Self>, others: &Bound<'_, PyTuple>) -> PyResult<Set> {
+        Set::compute(slf, Algebra::Union, &others.iter().collect::<Vec<_>>())
     }
 
     #[pyo3(signature = (*others))]
-    fn intersection(slf: &Bound<'_, Self>, others: Vec<Bound<'_, PyAny>>) -> PyResult<Set> {
-        Set::compute(slf, Algebra::Intersection, &others)
+    fn intersection(slf: &Bound<'_, Self>, others: &Bound<'_, PyTuple>) -> PyResult<Set> {
+        Set::compute(slf, Algebra::Intersection, &others.iter().collect::<Vec<_>>())
     }
 
     #[pyo3(signature = (*others))]
-    fn difference(slf: &Bound<'_, Self>, others: Vec<Bound<'_, PyAny>>) -> PyResult<Set> {
-        Set::compute(slf, Algebra::Difference, &others)
+    fn difference(slf: &Bound<'_, Self>, others: &Bound<'_, PyTuple>) -> PyResult<Set> {
+        Set::compute(slf, Algebra::Difference, &others.iter().collect::<Vec<_>>())
     }
 
     fn symmetric_difference(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<Set> {
@@ -1610,18 +1838,27 @@ impl Set {
     }
 
     #[pyo3(signature = (*others))]
-    fn update(&self, py: Python<'_>, others: Vec<Bound<'_, PyAny>>) -> PyResult<()> {
-        self.in_place(py, Algebra::Union, &others)
+    fn update(&self, py: Python<'_>, others: &Bound<'_, PyTuple>) -> PyResult<()> {
+        match others.len() {
+            1 => self.in_place(py, Algebra::Union, std::slice::from_ref(&others.get_item(0)?)),
+            _ => self.in_place(py, Algebra::Union, &others.iter().collect::<Vec<_>>()),
+        }
     }
 
     #[pyo3(signature = (*others))]
-    fn intersection_update(&self, py: Python<'_>, others: Vec<Bound<'_, PyAny>>) -> PyResult<()> {
-        self.in_place(py, Algebra::Intersection, &others)
+    fn intersection_update(&self, py: Python<'_>, others: &Bound<'_, PyTuple>) -> PyResult<()> {
+        match others.len() {
+            1 => self.in_place(py, Algebra::Intersection, std::slice::from_ref(&others.get_item(0)?)),
+            _ => self.in_place(py, Algebra::Intersection, &others.iter().collect::<Vec<_>>()),
+        }
     }
 
     #[pyo3(signature = (*others))]
-    fn difference_update(&self, py: Python<'_>, others: Vec<Bound<'_, PyAny>>) -> PyResult<()> {
-        self.in_place(py, Algebra::Difference, &others)
+    fn difference_update(&self, py: Python<'_>, others: &Bound<'_, PyTuple>) -> PyResult<()> {
+        match others.len() {
+            1 => self.in_place(py, Algebra::Difference, std::slice::from_ref(&others.get_item(0)?)),
+            _ => self.in_place(py, Algebra::Difference, &others.iter().collect::<Vec<_>>()),
+        }
     }
 
     fn symmetric_difference_update(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -1764,28 +2001,7 @@ impl SetIterator {
     }
 
     fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let mut st = self.state.write(py);
-        let SetIterState { set, pos, expected, remaining } = &mut *st;
-        let Some(owner) = set.as_ref() else {
-            return Ok(None);
-        };
-        let inner = owner.get().inner.read(py);
-        if inner.table.len() != *expected {
-            *expected = usize::MAX;
-            return Err(PyRuntimeError::new_err("Set changed size during iteration"));
-        }
-        if *remaining > 0
-            && let Some(p) = inner.table.next_live(*pos)
-        {
-            *pos = p + 1;
-            *remaining -= 1;
-            return Ok(Some(inner.table.key_object(py, p)));
-        }
-        drop(inner);
-        let released = set.take();
-        drop(st);
-        drop(released);
-        Ok(None)
+        self.next(py)
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
@@ -1831,6 +2047,254 @@ impl SetIterator {
         };
         let iter = py.import("builtins")?.getattr("iter")?;
         PyTuple::new(py, [iter, PyTuple::new(py, [PyList::new(py, remaining)?])?.into_any()])
+    }
+}
+
+/// Raw `tp_iternext` of `SetIterator` (`for x in s` without pyo3's slot trampoline).
+unsafe extern "C" fn set_iter_next(slf: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    // SAFETY: CPython calls the slot attached, with a live object of the slot's type
+    // (`SetIterator` is final).
+    unsafe {
+        raw_slot(std::ptr::null_mut(), |py| {
+            let it = Borrowed::from_ptr(py, slf).cast_unchecked::<SetIterator>();
+            Ok(it.get().next(py)?.map_or(std::ptr::null_mut(), Py::into_ptr))
+        })
+    }
+}
+
+/// Run the body of a raw type slot: errors are raised, panics become `PanicException`s.
+/// Bodies must release Python references through `Bound` (pyo3's GIL count is not
+/// maintained here, so dropping a `Py` would defer its decref to pyo3's pool).
+///
+/// # Safety
+/// The caller must be attached to the interpreter (CPython calls slots attached).
+pub(crate) unsafe fn raw_slot<R>(failed: R, body: impl FnOnce(Python<'_>) -> PyResult<R>) -> R {
+    // SAFETY: guaranteed by the caller.
+    let py = unsafe { Python::assume_attached() };
+    let err = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(py))) {
+        Ok(Ok(r)) => return r,
+        Ok(Err(e)) => e,
+        Err(_) => pyo3::panic::PanicException::new_err("rustique: panic in a type slot"),
+    };
+    err.restore(py);
+    failed
+}
+
+/// Raw `sq_contains` of `Set` (`x in s` without pyo3's slot trampoline for the common
+/// cases; the full lookup runs attached through pyo3).
+unsafe extern "C" fn set_contains_slot(slf: *mut ffi::PyObject, elem: *mut ffi::PyObject) -> c_int {
+    // SAFETY: CPython calls the slot attached, with a live `Set` (or subclass instance, which
+    // shares the layout) and a live element.
+    unsafe {
+        raw_slot(-1, |py| {
+            let this = Borrowed::from_ptr(py, slf).cast_unchecked::<Set>();
+            let elem = Borrowed::from_ptr(py, elem);
+            let found = match this.get().contains_fast(&elem) {
+                Ok(found) => found,
+                Err(hash) => Python::attach(|_| this.get().contains_slow(&elem, hash))?,
+            };
+            Ok(c_int::from(found))
+        })
+    }
+}
+
+/// Raw `mp_length`/`sq_length` of `Set`.
+unsafe extern "C" fn set_len_slot(slf: *mut ffi::PyObject) -> ffi::Py_ssize_t {
+    // SAFETY: as for `set_contains_slot`.
+    unsafe {
+        raw_slot(-1, |py| {
+            let this = Borrowed::from_ptr(py, slf).cast_unchecked::<Set>();
+            Ok(this.get().len(py) as ffi::Py_ssize_t)
+        })
+    }
+}
+
+/// Install a `METH_O` method descriptor named `name` on `ty`, replacing pyo3's
+/// (`METH_FASTCALL | METH_KEYWORDS`) one: the interpreter then specialises calls to
+/// `CALL_METHOD_DESCRIPTOR_O` (`s.add(x)` like `set.add`), and no argument parsing runs.
+/// `f` is a pyo3 slot trampoline (panics and errors handled, attach count maintained).
+pub(crate) fn install_meth_o(
+    ty: &Bound<'_, PyType>,
+    name: &'static CStr,
+    doc: &'static CStr,
+    f: ffi::PyCFunction,
+) -> PyResult<()> {
+    install_method(ty, name, doc, f, ffi::METH_O)
+}
+
+fn install_method(
+    ty: &Bound<'_, PyType>,
+    name: &'static CStr,
+    doc: &'static CStr,
+    f: ffi::PyCFunction,
+    flags: c_int,
+) -> PyResult<()> {
+    let py = ty.py();
+    // A method table entry must outlive the type: leaked once per process.
+    let def = Box::leak(Box::new(ffi::PyMethodDef {
+        ml_name: name.as_ptr(),
+        ml_meth: ffi::PyMethodDefPointer { PyCFunction: f },
+        ml_flags: flags,
+        ml_doc: doc.as_ptr(),
+    }));
+    // SAFETY: `ty` is a valid type and `def` a valid, never freed method table entry;
+    // `PyDescr_NewMethod` returns a new reference (or NULL with an exception).
+    let descr = unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyDescr_NewMethod(ty.as_type_ptr(), def))? };
+    // SAFETY: `PyType_GetDict` returns a new reference to the type's dict.
+    let dict =
+        unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyType_GetDict(ty.as_type_ptr()))? }.cast_into::<PyDict>()?;
+    dict.set_item(name.to_str().map_err(|e| PyRuntimeError::new_err(e.to_string()))?, descr)?;
+    // SAFETY: the dict was changed directly; invalidate the type's attribute caches.
+    unsafe { ffi::PyType_Modified(ty.as_type_ptr()) };
+    Ok(())
+}
+
+/// The bodies of `Set`'s `METH_O` methods: `self` and the argument as borrowed references.
+mod meth_o {
+    use super::*;
+
+    /// # Safety
+    /// `slf` is a live `Set` (the method descriptor checks the type) and `arg` a live object.
+    unsafe fn args<'a, 'py>(
+        py: Python<'py>,
+        slf: *mut ffi::PyObject,
+        arg: *mut ffi::PyObject,
+    ) -> (Borrowed<'a, 'py, Set>, Borrowed<'a, 'py, PyAny>) {
+        // SAFETY: guaranteed by the caller.
+        unsafe { (Borrowed::from_ptr(py, slf).cast_unchecked::<Set>(), Borrowed::from_ptr(py, arg)) }
+    }
+
+    fn none(py: Python<'_>) -> *mut ffi::PyObject {
+        py.None().into_ptr()
+    }
+
+    fn boolean(py: Python<'_>, b: bool) -> *mut ffi::PyObject {
+        pyo3::types::PyBool::new(py, b).to_owned().into_any().into_ptr()
+    }
+
+    pub(super) unsafe fn add(
+        py: Python<'_>,
+        slf: *mut ffi::PyObject,
+        arg: *mut ffi::PyObject,
+    ) -> PyResult<*mut ffi::PyObject> {
+        // SAFETY: called by the `METH_O` trampoline with the descriptor's arguments.
+        let (this, elem) = unsafe { args(py, slf, arg) };
+        this.get().add(py, &elem)?;
+        Ok(none(py))
+    }
+
+    pub(super) unsafe fn discard(
+        py: Python<'_>,
+        slf: *mut ffi::PyObject,
+        arg: *mut ffi::PyObject,
+    ) -> PyResult<*mut ffi::PyObject> {
+        // SAFETY: as for `add`.
+        let (this, elem) = unsafe { args(py, slf, arg) };
+        this.get().discard(py, &elem)?;
+        Ok(none(py))
+    }
+
+    pub(super) unsafe fn remove(
+        py: Python<'_>,
+        slf: *mut ffi::PyObject,
+        arg: *mut ffi::PyObject,
+    ) -> PyResult<*mut ffi::PyObject> {
+        // SAFETY: as for `add`.
+        let (this, elem) = unsafe { args(py, slf, arg) };
+        this.get().remove(py, &elem)?;
+        Ok(none(py))
+    }
+
+    pub(super) unsafe fn isdisjoint(
+        py: Python<'_>,
+        slf: *mut ffi::PyObject,
+        arg: *mut ffi::PyObject,
+    ) -> PyResult<*mut ffi::PyObject> {
+        // SAFETY: as for `add`.
+        let (this, other) = unsafe { args(py, slf, arg) };
+        Ok(boolean(py, Set::isdisjoint(&this, &other)?))
+    }
+
+    pub(super) unsafe fn issubset(
+        py: Python<'_>,
+        slf: *mut ffi::PyObject,
+        arg: *mut ffi::PyObject,
+    ) -> PyResult<*mut ffi::PyObject> {
+        // SAFETY: as for `add`.
+        let (this, other) = unsafe { args(py, slf, arg) };
+        Ok(boolean(py, Set::issubset(&this, &other)?))
+    }
+
+    pub(super) unsafe fn issuperset(
+        py: Python<'_>,
+        slf: *mut ffi::PyObject,
+        arg: *mut ffi::PyObject,
+    ) -> PyResult<*mut ffi::PyObject> {
+        // SAFETY: as for `add`.
+        let (this, other) = unsafe { args(py, slf, arg) };
+        Ok(boolean(py, Set::issuperset(&this, &other)?))
+    }
+}
+
+/// Point a type's `len()` and `in` slots at raw implementations (the `__len__` and
+/// `__contains__` methods keep pyo3's; both behave the same).
+pub(crate) fn install_len_contains(ty: &Bound<'_, PyType>, len: ffi::lenfunc, contains: ffi::objobjproc) {
+    // SAFETY: `ty` is a fully initialised heap type with embedded slot tables, patched at
+    // module initialisation before any instance exists.
+    unsafe {
+        let tp = ty.as_type_ptr();
+        if let Some(sq) = (*tp).tp_as_sequence.as_mut() {
+            sq.sq_contains = Some(contains);
+            if sq.sq_length.is_some() {
+                sq.sq_length = Some(len);
+            }
+        }
+        if let Some(mp) = (*tp).tp_as_mapping.as_mut()
+            && mp.mp_length.is_some()
+        {
+            mp.mp_length = Some(len);
+        }
+        ffi::PyType_Modified(tp);
+    }
+}
+
+/// Point `tp_iternext` of an iterator type at a raw slot (the `__next__` method keeps
+/// pyo3's implementation; both behave the same).
+pub(crate) fn install_iternext(ty: &Bound<'_, PyType>, f: ffi::iternextfunc) {
+    // SAFETY: `ty` is a fully initialised heap type, patched at module initialisation
+    // before any instance exists; `PyType_Modified` drops caches derived from slots.
+    unsafe {
+        (*ty.as_type_ptr()).tp_iternext = Some(f);
+        ffi::PyType_Modified(ty.as_type_ptr());
+    }
+}
+
+impl SetIterator {
+    fn next(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        let mut st = self.state.write(py);
+        let SetIterState { set, pos, expected, remaining } = &mut *st;
+        let Some(owner) = set.as_ref() else {
+            return Ok(None);
+        };
+        let inner = owner.get().inner.read(py);
+        if inner.table.len() != *expected {
+            *expected = usize::MAX;
+            return Err(PyRuntimeError::new_err("Set changed size during iteration"));
+        }
+        if *remaining > 0
+            && let Some(p) = inner.table.next_live(*pos)
+        {
+            *pos = p + 1;
+            *remaining -= 1;
+            return Ok(Some(inner.table.key_object(py, p)));
+        }
+        drop(inner);
+        let released = set.take();
+        drop(st);
+        // Released through `Bound` so the decref happens now even without pyo3's GIL count
+        // (the raw `tp_iternext` slot does not maintain it).
+        drop(released.map(|s| s.into_bound(py)));
+        Ok(None)
     }
 }
 
@@ -1927,7 +2391,45 @@ pub(crate) fn install_init(ty: &Bound<'_, PyType>, method: &str) -> PyResult<()>
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Set>()?;
     m.add_class::<SetIterator>()?;
+    install_iternext(&m.py().get_type::<SetIterator>(), set_iter_next);
     let ty = m.py().get_type::<Set>();
+    install_len_contains(&ty, set_len_slot, set_contains_slot);
+    install_meth_o(
+        &ty,
+        c"add",
+        c"add($self, object, /)\n--\n\nAdd an element to a set.",
+        pyo3::get_trampoline_function!(binaryfunc, meth_o::add),
+    )?;
+    install_meth_o(
+        &ty,
+        c"discard",
+        c"discard($self, object, /)\n--\n\nRemove an element from a set if it is a member.",
+        pyo3::get_trampoline_function!(binaryfunc, meth_o::discard),
+    )?;
+    install_meth_o(
+        &ty,
+        c"remove",
+        c"remove($self, object, /)\n--\n\nRemove an element from a set; it must be a member.",
+        pyo3::get_trampoline_function!(binaryfunc, meth_o::remove),
+    )?;
+    install_meth_o(
+        &ty,
+        c"isdisjoint",
+        c"isdisjoint($self, other, /)\n--\n\nReturn True if two sets have a null intersection.",
+        pyo3::get_trampoline_function!(binaryfunc, meth_o::isdisjoint),
+    )?;
+    install_meth_o(
+        &ty,
+        c"issubset",
+        c"issubset($self, other, /)\n--\n\nReport whether another set contains this set.",
+        pyo3::get_trampoline_function!(binaryfunc, meth_o::issubset),
+    )?;
+    install_meth_o(
+        &ty,
+        c"issuperset",
+        c"issuperset($self, other, /)\n--\n\nReport whether this set contains another set.",
+        pyo3::get_trampoline_function!(binaryfunc, meth_o::issuperset),
+    )?;
     install_vectorcall(&ty, set_vectorcall);
     install_init(&ty, "_rustique_init")
 }

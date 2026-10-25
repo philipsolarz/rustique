@@ -20,7 +20,7 @@ use pyo3::pyclass::CompareOp;
 use pyo3::types::{PyDict, PyTuple, PyType};
 use pyo3::{Borrowed, PyTraverseError, ffi};
 
-use crate::dict::keys::{self, Key, KeyKind, KeyStore, KeyTable};
+use crate::dict::keys::{Key, KeyKind, KeyTable};
 use crate::schema::{self, Schema};
 use crate::set::{self, Algebra, Operand};
 
@@ -98,29 +98,25 @@ impl FrozenSet {
         self.table.key_objects(py)
     }
 
-    /// `elem in self` (identity hits and clean misses in object tables take one hash).
+    /// `elem in self`.
     fn contains(&self, elem: &Bound<'_, PyAny>) -> PyResult<bool> {
+        match self.contains_fast(elem) {
+            Ok(found) => Ok(found),
+            Err(hash) => self.contains_slow(elem, hash),
+        }
+    }
+
+    fn contains_fast(&self, elem: &Bound<'_, PyAny>) -> Result<bool, Option<isize>> {
+        set::quick_contains(elem, |f| f(&self.table))
+    }
+
+    fn contains_slow(&self, elem: &Bound<'_, PyAny>, hash: Option<isize>) -> PyResult<bool> {
         let py = elem.py();
-        if let Some(probe) = keys::quick(elem)
-            && let Some(pos) = self.table.find_quick(&probe)
-        {
-            return Ok(pos.is_some());
-        }
-        let Ok(hash) = elem.hash() else {
+        let key = match hash {
+            Some(hash) => Key::with_hash(elem.clone(), hash)?,
             // Unhashable: a set probe or an error (raised again by `probe`).
-            let key = set::probe(elem)?;
-            return Ok(self.table.find_local(py, &key)?.is_some());
+            None => set::probe(elem)?,
         };
-        if let KeyStore::Object(ki) = self.table.store() {
-            let mut candidates = ki.index().candidates(keys::mix(hash)).peekable();
-            if candidates.peek().is_none() {
-                return Ok(false);
-            }
-            if candidates.any(|pos| ki.raw_keys()[pos].is(elem)) {
-                return Ok(true);
-            }
-        }
-        let key = Key::with_hash(elem.clone(), hash)?;
         Ok(self.table.find_local(py, &key)?.is_some())
     }
 
@@ -135,10 +131,22 @@ impl FrozenSet {
     /// `self <op> others…` as a new `FrozenSet`.
     fn compute(slf: &Bound<'_, Self>, op: Algebra, others: &[Bound<'_, PyAny>]) -> PyResult<FrozenSet> {
         let py = slf.py();
-        let operands = others.iter().map(Operand::new).collect::<PyResult<Vec<_>>>()?;
-        let schema = set::result_schema(&slf.get().schema, &operands);
+        // One operand (the operators) needs no vector.
+        let one;
+        let many;
+        let operands: &[Operand<'_>] = match others {
+            [other] => {
+                one = [Operand::new(other)?];
+                &one
+            }
+            _ => {
+                many = others.iter().map(Operand::new).collect::<PyResult<Vec<_>>>()?;
+                &many
+            }
+        };
+        let schema = set::result_schema(&slf.get().schema, operands);
         let kind = KeyKind::for_schema(&schema);
-        let table = set::fold(py, op, &Operand::Frozen(slf.clone()), &operands, kind)?;
+        let table = set::fold(py, op, &Operand::Frozen(slf.clone()), operands, kind)?;
         Ok(FrozenSet::from_table(schema, table))
     }
 
@@ -167,7 +175,11 @@ impl FrozenSet {
     #[new]
     #[classmethod]
     #[pyo3(signature = (*args, **kwargs))]
-    fn __new__(cls: &Bound<'_, PyType>, args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+    fn __new__(
+        cls: &Bound<'_, PyType>,
+        args: &Bound<'_, PyTuple>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Self> {
         let py = cls.py();
         let name = cls.name()?.to_string();
         if cls.is(py.get_type::<FrozenSet>()) || !has_own_init(cls) {
@@ -218,18 +230,18 @@ impl FrozenSet {
     }
 
     #[pyo3(signature = (*others))]
-    fn union(slf: &Bound<'_, Self>, others: Vec<Bound<'_, PyAny>>) -> PyResult<FrozenSet> {
-        FrozenSet::compute(slf, Algebra::Union, &others)
+    fn union(slf: &Bound<'_, Self>, others: &Bound<'_, PyTuple>) -> PyResult<FrozenSet> {
+        FrozenSet::compute(slf, Algebra::Union, &others.iter().collect::<Vec<_>>())
     }
 
     #[pyo3(signature = (*others))]
-    fn intersection(slf: &Bound<'_, Self>, others: Vec<Bound<'_, PyAny>>) -> PyResult<FrozenSet> {
-        FrozenSet::compute(slf, Algebra::Intersection, &others)
+    fn intersection(slf: &Bound<'_, Self>, others: &Bound<'_, PyTuple>) -> PyResult<FrozenSet> {
+        FrozenSet::compute(slf, Algebra::Intersection, &others.iter().collect::<Vec<_>>())
     }
 
     #[pyo3(signature = (*others))]
-    fn difference(slf: &Bound<'_, Self>, others: Vec<Bound<'_, PyAny>>) -> PyResult<FrozenSet> {
-        FrozenSet::compute(slf, Algebra::Difference, &others)
+    fn difference(slf: &Bound<'_, Self>, others: &Bound<'_, PyTuple>) -> PyResult<FrozenSet> {
+        FrozenSet::compute(slf, Algebra::Difference, &others.iter().collect::<Vec<_>>())
     }
 
     fn symmetric_difference(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<FrozenSet> {
@@ -337,18 +349,7 @@ impl FrozenSetIterator {
     }
 
     fn __next__(&self, py: Python<'_>) -> Option<Py<PyAny>> {
-        let table = &self.set.get().table;
-        let mut pos = self.pos.load(Ordering::Relaxed);
-        loop {
-            let found = table.next_live(pos)?;
-            match self.pos.compare_exchange_weak(pos, found + 1, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => {
-                    self.yielded.fetch_add(1, Ordering::Relaxed);
-                    return Some(table.key_object(py, found));
-                }
-                Err(now) => pos = now,
-            }
-        }
+        self.next(py)
     }
 
     fn __length_hint__(&self) -> usize {
@@ -370,6 +371,112 @@ impl FrozenSetIterator {
         }
         let iter = py.import("builtins")?.getattr("iter")?;
         PyTuple::new(py, [iter, PyTuple::new(py, [pyo3::types::PyList::new(py, remaining)?])?.into_any()])
+    }
+}
+
+/// Raw `sq_contains` of `FrozenSet` (see `set_contains_slot`).
+unsafe extern "C" fn frozenset_contains_slot(slf: *mut ffi::PyObject, elem: *mut ffi::PyObject) -> std::ffi::c_int {
+    // SAFETY: CPython calls the slot attached, with a live `FrozenSet` (or subclass
+    // instance) and a live element.
+    unsafe {
+        set::raw_slot(-1, |py| {
+            let this = Borrowed::from_ptr(py, slf).cast_unchecked::<FrozenSet>();
+            let elem = Borrowed::from_ptr(py, elem);
+            let found = match this.get().contains_fast(&elem) {
+                Ok(found) => found,
+                Err(hash) => Python::attach(|_| this.get().contains_slow(&elem, hash))?,
+            };
+            Ok(std::ffi::c_int::from(found))
+        })
+    }
+}
+
+/// Raw `mp_length`/`sq_length` of `FrozenSet`.
+unsafe extern "C" fn frozenset_len_slot(slf: *mut ffi::PyObject) -> ffi::Py_ssize_t {
+    // SAFETY: as for `frozenset_contains_slot`.
+    unsafe {
+        set::raw_slot(-1, |py| {
+            Ok(Borrowed::from_ptr(py, slf).cast_unchecked::<FrozenSet>().get().table.len() as ffi::Py_ssize_t)
+        })
+    }
+}
+
+/// Raw `tp_hash` of `FrozenSet` (a subclass defining `__hash__` gets its own slot).
+unsafe extern "C" fn frozenset_hash_slot(slf: *mut ffi::PyObject) -> ffi::Py_hash_t {
+    // SAFETY: as for `frozenset_contains_slot`.
+    unsafe { set::raw_slot(-1, |py| Ok(Borrowed::from_ptr(py, slf).cast_unchecked::<FrozenSet>().get().hash_value())) }
+}
+
+/// Raw `tp_iternext` of `FrozenSetIterator`.
+unsafe extern "C" fn frozenset_iter_next(slf: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    // SAFETY: CPython calls the slot attached with a live `FrozenSetIterator` (final type).
+    unsafe {
+        set::raw_slot(std::ptr::null_mut(), |py| {
+            let it = Borrowed::from_ptr(py, slf).cast_unchecked::<FrozenSetIterator>();
+            Ok(it.get().next(py).map_or(std::ptr::null_mut(), Py::into_ptr))
+        })
+    }
+}
+
+impl FrozenSetIterator {
+    fn next(&self, py: Python<'_>) -> Option<Py<PyAny>> {
+        let table = &self.set.get().table;
+        let mut pos = self.pos.load(Ordering::Relaxed);
+        loop {
+            let found = table.next_live(pos)?;
+            match self.pos.compare_exchange_weak(pos, found + 1, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => {
+                    self.yielded.fetch_add(1, Ordering::Relaxed);
+                    return Some(table.key_object(py, found));
+                }
+                Err(now) => pos = now,
+            }
+        }
+    }
+}
+
+/// `FrozenSet`'s `METH_O` predicates (see `set::install_meth_o`).
+mod meth_o {
+    use super::*;
+
+    unsafe fn call(
+        py: Python<'_>,
+        slf: *mut ffi::PyObject,
+        arg: *mut ffi::PyObject,
+        f: fn(&Bound<'_, FrozenSet>, &Bound<'_, PyAny>) -> PyResult<bool>,
+    ) -> PyResult<*mut ffi::PyObject> {
+        // SAFETY: called by the `METH_O` trampoline: `slf` is a live `FrozenSet` (the method
+        // descriptor checks the type) and `arg` a live object.
+        let (this, other) =
+            unsafe { (Borrowed::from_ptr(py, slf).cast_unchecked::<FrozenSet>(), Borrowed::from_ptr(py, arg)) };
+        Ok(pyo3::types::PyBool::new(py, f(&this, &other)?).to_owned().into_any().into_ptr())
+    }
+
+    pub(super) unsafe fn isdisjoint(
+        py: Python<'_>,
+        slf: *mut ffi::PyObject,
+        arg: *mut ffi::PyObject,
+    ) -> PyResult<*mut ffi::PyObject> {
+        // SAFETY: forwarded.
+        unsafe { call(py, slf, arg, |a, b| FrozenSet::isdisjoint(a, b)) }
+    }
+
+    pub(super) unsafe fn issubset(
+        py: Python<'_>,
+        slf: *mut ffi::PyObject,
+        arg: *mut ffi::PyObject,
+    ) -> PyResult<*mut ffi::PyObject> {
+        // SAFETY: forwarded.
+        unsafe { call(py, slf, arg, |a, b| FrozenSet::issubset(a, b)) }
+    }
+
+    pub(super) unsafe fn issuperset(
+        py: Python<'_>,
+        slf: *mut ffi::PyObject,
+        arg: *mut ffi::PyObject,
+    ) -> PyResult<*mut ffi::PyObject> {
+        // SAFETY: forwarded.
+        unsafe { call(py, slf, arg, |a, b| FrozenSet::issuperset(a, b)) }
     }
 }
 
@@ -455,7 +562,32 @@ fn install_new(ty: &Bound<'_, PyType>) -> PyResult<()> {
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FrozenSet>()?;
     m.add_class::<FrozenSetIterator>()?;
+    set::install_iternext(&m.py().get_type::<FrozenSetIterator>(), frozenset_iter_next);
     let ty = m.py().get_type::<FrozenSet>();
     set::install_vectorcall(&ty, frozenset_vectorcall);
+    set::install_len_contains(&ty, frozenset_len_slot, frozenset_contains_slot);
+    set::install_meth_o(
+        &ty,
+        c"isdisjoint",
+        c"isdisjoint($self, other, /)\n--\n\nReturn True if two sets have a null intersection.",
+        pyo3::get_trampoline_function!(binaryfunc, meth_o::isdisjoint),
+    )?;
+    set::install_meth_o(
+        &ty,
+        c"issubset",
+        c"issubset($self, other, /)\n--\n\nReport whether another set contains this set.",
+        pyo3::get_trampoline_function!(binaryfunc, meth_o::issubset),
+    )?;
+    set::install_meth_o(
+        &ty,
+        c"issuperset",
+        c"issuperset($self, other, /)\n--\n\nReport whether this set contains another set.",
+        pyo3::get_trampoline_function!(binaryfunc, meth_o::issuperset),
+    )?;
+    // SAFETY: patched at module initialisation like the slots above.
+    unsafe {
+        (*ty.as_type_ptr()).tp_hash = Some(frozenset_hash_slot);
+        ffi::PyType_Modified(ty.as_type_ptr());
+    }
     install_new(&ty)
 }
