@@ -809,21 +809,27 @@ def run_time_worker() -> None:
 
     def add_cmdline_args(cmd: list[str], args: argparse.Namespace) -> None:
         cmd.append("_time_worker")
-        for name in ("type", "storage", "op", "group", "size", "shard", "impls"):
+        for name in ("type", "storage", "op", "group", "size", "shard", "impls", "status_file"):
             value = getattr(args, name)
             if value:
-                cmd.extend((f"--{name}", value))
+                cmd.extend((f"--{name.replace('_', '-')}", value))
 
     runner = pyperf.Runner(add_cmdline_args=add_cmdline_args, metadata={"rustique_build": metadata("time")["build"]})
     add_filters(runner.argparser)
     runner.argparser.add_argument("--shard")
     runner.argparser.add_argument("--impls", default="rustique")
+    runner.argparser.add_argument("--status-file")
     # pyperf appends `add_cmdline_args` after its own worker options, so the marker can be
     # anywhere in argv.
     args = runner.parse_args([a for a in sys.argv[1:] if a != "_time_worker"])
     cells = select(all_cells(), args)
     impls = ["builtin"] + [i for i in args.impls.split(",") if i in ("rustique", "enabled")]
-    statuses: dict[str, tuple[str, str]] = {}
+    # pyperf numbers benchmarks by registration order, so master and workers must register
+    # exactly the same ones: the skip decision comes from one precomputed status file.
+    statuses: dict[str, list[str]] = {}
+    if args.status_file:
+        with open(args.status_file) as f:
+            statuses = json.load(f)
     for cell in cells:
         for impl in impls:
             name = f"{cell.key}/{impl}"
@@ -850,15 +856,26 @@ def run_time_worker() -> None:
                 continue
             if impl == "enabled" and getattr(rs, "enable", None) is None:
                 continue
-            if impl == "rustique" and not runner.args.worker:
-                statuses[cell.key] = verify(cell)
-            if impl == "rustique" and statuses.get(cell.key, ("ok",))[0] in ("missing", "error"):
+            if impl == "rustique" and statuses.get(cell.key, ["ok"])[0] in ("missing", "error"):
                 continue
             runner.bench_time_func(name, time_func, inner_loops=cell.op.inner)
-    if not runner.args.worker and statuses:
-        side = (runner.args.output or "scoreboard-time.json") + ".status.json"
-        with open(side, "w") as f:
-            json.dump({k: list(v) for k, v in statuses.items()}, f)
+
+
+def small_variant(cell: Cell) -> Cell:
+    """The same cell at the largest applicable size <= 100: errors and missing types do not
+    depend on the size, and verifying 1M-element inputs would dominate the run."""
+    if cell.n <= 100:
+        return cell
+    for n in reversed(SMALL_SIZES):
+        if cell.op.applies(cell.type, cell.storage, n):
+            return Cell(cell.type, cell.op, cell.storage, n)
+    return cell
+
+
+def write_statuses(cells: list[Cell], path: str) -> None:
+    statuses = {c.key: list(verify(small_variant(c))) for c in cells}
+    with open(path, "w") as f:
+        json.dump(statuses, f)
 
 
 def run_time(args: argparse.Namespace) -> None:
@@ -867,6 +884,8 @@ def run_time(args: argparse.Namespace) -> None:
     for stale in glob.glob(glob.escape(args.output) + "*"):
         if stale == args.output or stale.startswith(args.output + ".shard") or stale.endswith(".status.json"):
             os.remove(stale)
+    args.status_file = args.output + ".status.json"
+    write_statuses(select(all_cells(), args), args.status_file)
     if shards == 1 and args.affinity is None:
         os.execv(sys.executable, [sys.executable, os.path.abspath(__file__), "_time_worker", *time_cli(args, None)])
     procs, outs = [], []
@@ -888,6 +907,8 @@ def time_cli(args: argparse.Namespace, shard: str | None, out: str | None = None
     cmd = filter_cli(args)
     if shard:
         cmd.extend(("--shard", shard))
+    if getattr(args, "status_file", None):
+        cmd.extend(("--status-file", args.status_file))
     cmd.extend(("-o", out or args.output, "-p", str(args.processes), "-n", str(args.values), "-w", "1",
                 "--min-time", str(args.min_time), "--quiet"))
     return cmd
