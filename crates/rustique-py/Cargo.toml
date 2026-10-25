@@ -1,0 +1,23 @@
+[package]
+name = "rustique-py"
+description = "Python bindings for Rustique"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "rustique_py"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rustique-core.workspace = true
+pyo3.workspace = true
+compact_str.workspace = true
+hashbrown.workspace = true
+foldhash.workspace = true
+parking_lot.workspace = true
+
+[lints]
+workspace = true

@@ -1,5 +1,119 @@
-RUSTFLAGS="--cfg Py_3_13" maturin develop --uv --release
+# Rustique
 
+**Python's data model, Rust's memory.**
 
-1. Add slicing to list
-2. Add nested lists and nested typings
+Rustique gives you `list`, `dict` and `set` with the Python behaviour you know, backed by
+typed, unboxed Rust storage. Data is validated once at the boundary and then lives in
+native memory, where bulk operations run as single Rust calls, exportable zero-copy to
+`memoryview`/NumPy. It runs safely on free-threaded Python.
+
+```python
+import rustique as rs
+from rustique import List, Dict, Set, X
+
+nums = List[int](range(1_000_000))     # Vec<i64> inside, built natively from the range
+nums.sum(), nums.max()                  # one Rust call each
+evens = nums.filter(X % 2 == 0)         # vectorised expression, no Python lambda
+scaled = nums.map(X * 3 + 1)            # -> List[int]
+nums.sort(reverse=True)                 # native stable sort
+
+List[int]([1, "x"])                     # TypeError: List[int] expects int, got str at index 1
+List[rs.u8]([1, 2, 300])                # OverflowError: List[u8]: 300 is out of range for u8 at index 2
+List[int] is List[int]                  # True — aliases are cached
+isinstance(nums, List[int])             # True
+
+import numpy as np
+np.asarray(List[float]([1.5, 2.5]))     # zero-copy view of the Rust buffer
+```
+
+## Why
+
+The original Rustique experiments (see [`docs/ARCHAEOLOGY.md`](docs/ARCHAEOLOGY.md))
+wrapped Python objects in Rust and were 1.4–17× *slower* than the builtins: they paid the
+Python↔Rust boundary cost on every element and never gained a layout advantage. This
+rewrite stores data natively and pays per *operation* instead of per *element*.
+
+## Features
+
+- **Typed containers** — `List[T]`, `Dict[K, V]`, `Set[T]` with schemas compiled from
+  ordinary type expressions: `int`, `float`, `bool`, `str`, `int | None`, unions,
+  `List[List[int]]`, `dict[str, list[float]]`, `Annotated`, PEP 695 aliases, any class.
+  Full builtin parity: slicing (incl. extended slice assignment), live iterators,
+  comparisons, `sort(key=, reverse=)`, views, set algebra, pickling.
+- **Adaptive storage strategies** — an untyped `List([1, 2, 3])` stores `Vec<i64>`; append
+  `"x"` and it transparently becomes object storage (PyPy-style list strategies). Inspect
+  with `.strategy`.
+- **Vectorised expressions** — `X` builds expression trees (`X * 2 + 1`, `(X > 0) & (X < 10)`,
+  `X.cast(float)`, `X.is_nan()`) evaluated column-at-a-time in Rust, multi-threaded for
+  large inputs, with exact Python semantics (floor division, true division, int/float
+  comparisons, `ZeroDivisionError`; overflow on Python `int` data falls back to exact
+  big-int evaluation).
+- **Rust fixed-width scalars** — `rs.i8 … rs.u64`, `rs.f32`, `rs.f64`: arithmetic keeps the
+  type and raises `OverflowError`, or pick Rust semantics by name
+  (`wrapping_add`, `checked_mul`, `saturating_sub`, `overflowing_shl`, `rotate_left`,
+  `to_le_bytes`, …). Hashes match the equal Python number; `f32` reprs are shortest
+  round-trip.
+- **Zero-copy interop** — numeric lists export read-only buffers (`memoryview`, NumPy);
+  while an export is alive the list is frozen (`BufferError` on mutation). Lists ingest
+  buffers (`array.array`, NumPy) by `memcpy`.
+- **Rust interop for other extensions** — a versioned C-API capsule
+  (`rustique._rustique._C_API`, like NumPy's) and the `rustique-api` crate let any PyO3
+  extension return real `rustique.List[...]` objects from Rust slices with one `memcpy`, and
+  borrow a list's native data zero-copy (the list is frozen while borrowed). See
+  `examples/rust_extension`: returning 10M-sieve primes costs 0.8 ms of conversion instead
+  of 12.6 ms through PyO3's `Vec<i64> → list`, and summing 10M floats from a borrowed list
+  takes 7 ms instead of 119 ms through `Vec<f64>` extraction.
+- **Free-threading ready** — every container is a frozen PyO3 class with interior locking;
+  no Python code ever runs while a Rustique lock is held. Tested on CPython 3.15t with the
+  GIL disabled.
+
+## Performance
+
+Measured on CPython 3.15.1, release build, 1M elements; ratio = rustique time ÷ builtin
+time (lower is faster), every result verified against the builtin. Full report:
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
+| Bulk operations (one Rust call) | Ratio | | Per-element access from Python | Ratio |
+|---|---|---|---|---|
+| `lst.sort()` ints / floats / strs | 0.02 / 0.03 / 0.07 | | `List(list_of_ints)` | 0.93 |
+| `x in lst` | 0.04 | | `List(list_of_floats)` | 0.75 |
+| `lst.min()` / `lst.max()` | 0.05 | | `lst[i]`, random, 1M | 0.59 |
+| `List(range(n))` | 0.05 | | `lst[i]`, random, 100k | 1.05 |
+| `lst.map(X * 2 + 1)` vs comprehension | 0.06 | | `for v in lst` | 1.52 |
+| `lst.filter(X % 3 == 0)` vs comprehension | 0.10 | | `List(list_of_strs)` | 1.97 |
+| `lst.sum()` ints / floats (bit-exact) | 0.12 / 0.26 | | `lst.append(v)` loop | 3.60 (`array.array`: 3.56) |
+| `lst[::3]` | 0.25 | | `Dict` lookup, int / str keys | 1.34 / 1.75 |
+| `Set` union | 0.84 | | `Dict` build | ~2.0 |
+
+Bulk work runs at NumPy speed with Python semantics (`map` ≈ NumPy's 0.04, `sort` beats
+`numpy.sort`). Element-at-a-time code from Python pays a Python object per read and a lock
+per call, in line with `array.array`. Use Rustique where data stays in Rust between
+operations.
+
+## Install & develop
+
+Requires Rust 1.99.1 (pinned in `rust-toolchain.toml`) and CPython ≥ 3.14
+(3.15.1 / 3.15.1t are the primary targets; 3.14 and 3.14t are tested too).
+
+```bash
+uv venv --python 3.15.1 .venv
+uv pip install --python .venv/bin/python maturin pytest hypothesis numpy
+.venv/bin/maturin develop --uv --profile dev-release
+.venv/bin/python -m pytest
+cargo test --workspace
+```
+
+Free-threaded build: `uv venv --python 3.15.1t .venv-ft` and
+`VIRTUAL_ENV=$PWD/.venv-ft CARGO_TARGET_DIR=target-ft .venv-ft/bin/maturin develop --uv`.
+
+## Layout
+
+```
+crates/rustique-core   pure Rust: columns, slices, kernels, expression engine, hash index,
+                       CPython-compatible hashing and float repr (no Python dependency)
+crates/rustique-py     PyO3 bindings → rustique._rustique (incl. the C-API capsule)
+crates/rustique-api    safe Rust client of the capsule, for downstream PyO3 extensions
+examples/rust_extension  a downstream extension built on rustique-api
+python/rustique        Python package and type stubs
+docs/                  ARCHITECTURE.md (contract), ARCHAEOLOGY.md, ROADMAP.md
+```

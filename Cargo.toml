@@ -1,15 +1,42 @@
-[package]
-name = "rustique"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+resolver = "3"
+members = ["crates/rustique-core", "crates/rustique-py", "crates/rustique-api"]
+# A standalone downstream extension (its own Cargo package), built with maturin.
+exclude = ["examples/rust_extension"]
+# A bare `cargo test` exercises the pure-Rust core; use `--workspace` for everything.
+default-members = ["crates/rustique-core"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-[lib]
-name = "rustique"
-crate-type = ["cdylib"]
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.99"
+repository = "https://github.com/philipsolarz/rustique"
 
-[dependencies]
-pyo3 = { version = "0.23.3", features = ["extension-module", "py-clone", "num-bigint"] }
-rug = "1.26.1"
-num-bigint = "*"
-rayon = "1.8"
+[workspace.dependencies]
+rustique-core = { path = "crates/rustique-core" }
+pyo3 = "0.30.1"
+compact_str = "0.10.0"
+hashbrown = "0.17.1"
+foldhash = "0.2.0"
+rayon = "1.12.0"
+parking_lot = "0.13.0"
+proptest = "1.12.0"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "allow"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+
+# Optimised but quick to build: `maturin develop --profile dev-release` for benchmarks.
+[profile.dev-release]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+incremental = true
