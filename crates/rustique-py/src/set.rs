@@ -1170,6 +1170,36 @@ pub(crate) fn richcompare(
     if !is_set_operand(other) {
         return Ok(py.NotImplemented());
     }
+    let boolean = |b: bool| pyo3::types::PyBool::new(py, b).to_owned().into_any().unbind();
+    // Two rustique sets: sizes and native contents decided under one pair of read locks.
+    let rustique = match other.cast::<Set>() {
+        Ok(s) => Some(Operand::Set(s.clone())),
+        Err(_) => other.cast::<FrozenSet>().ok().map(|f| Operand::Frozen(f.clone())),
+    };
+    if let Some(theirs) = &rustique {
+        let differ_by_hash = match (theirs, my_hash) {
+            (Operand::Frozen(f), Some(h)) => f.get().cached_hash().is_some_and(|t| t != h),
+            _ => false,
+        };
+        if me.same_object(theirs) {
+            return Ok(boolean(matches!(op, CompareOp::Eq | CompareOp::Le | CompareOp::Ge)));
+        }
+        let decided = with_tables(py, me, theirs, |a, b| {
+            let (mine, n) = (a.len(), b.len());
+            match op {
+                CompareOp::Eq | CompareOp::Ne if mine != n || differ_by_hash => Some(matches!(op, CompareOp::Ne)),
+                CompareOp::Lt if mine >= n => Some(false),
+                CompareOp::Gt if mine <= n => Some(false),
+                CompareOp::Eq => table_subset(py, a, b),
+                CompareOp::Ne => table_subset(py, a, b).map(|sub| !sub),
+                CompareOp::Le | CompareOp::Lt => table_subset(py, a, b),
+                CompareOp::Ge | CompareOp::Gt => table_subset(py, b, a),
+            }
+        });
+        if let Some(result) = decided {
+            return Ok(boolean(result));
+        }
+    }
     let mine = me.len(py);
     // Decided by the sizes alone (a builtin set is then never read).
     if is_builtin_set(other) {
@@ -1190,7 +1220,10 @@ pub(crate) fn richcompare(
             return Ok(pyo3::types::PyBool::new(py, result).to_owned().into_any().unbind());
         }
     }
-    let operand = Operand::new(other)?;
+    let operand = match rustique {
+        Some(operand) => operand,
+        None => Operand::new(other)?,
+    };
     let theirs = operand.len(py);
     let result = match op {
         CompareOp::Eq | CompareOp::Ne => {
