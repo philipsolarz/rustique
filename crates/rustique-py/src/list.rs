@@ -9,7 +9,6 @@
 
 use std::ffi::{CStr, c_int, c_void};
 use std::ops::{Deref, DerefMut};
-use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -17,7 +16,7 @@ use pyo3::exceptions::{PyBufferError, PyIndexError, PyMemoryError, PyRuntimeErro
 use pyo3::gc::PyVisit;
 use pyo3::prelude::*;
 use pyo3::pyclass::CompareOp;
-use pyo3::types::{PyBool, PyList, PyString, PyTuple, PyType};
+use pyo3::types::{PyBool, PyDict, PyList, PyString, PyTuple, PyType};
 use pyo3::{PyTraverseError, ffi, intern};
 use rustique_core::kernels::{self, CmpOp, KernelError, Sum};
 use rustique_core::slice::{SliceError, SliceIndices, clamp_insert_index, normalize_index};
@@ -28,8 +27,6 @@ use crate::schema::{self, Coerced, Schema};
 use crate::storage::Storage;
 use crate::sync::{MutationCounter, MutexGuard, PyMutex, PyRwLock, ReadGuard, WriteGuard, read_both};
 
-/// Elements snapshotted per lock acquisition when comparing with Python `==`.
-const CHUNK: usize = 256;
 /// Native kernels on at least this many elements run detached from the interpreter.
 const DETACH_THRESHOLD: usize = 1 << 16;
 /// Sorting goes parallel (rayon) from this size: always detach then.
@@ -38,7 +35,7 @@ const SORT_DETACH_THRESHOLD: usize = 1 << 14;
 const MAX_RETRIES: usize = 64;
 
 /// A list with Python `list` semantics and native, adaptive storage.
-#[pyclass(module = "rustique", frozen, sequence)]
+#[pyclass(module = "rustique", frozen, sequence, subclass, immutable_type)]
 pub struct List {
     schema: Arc<Schema>,
     data: PyRwLock<Storage>,
@@ -215,18 +212,17 @@ fn clamp_bound(v: isize, len: usize) -> usize {
     if v < 0 { v.saturating_add(len as isize).max(0) as usize } else { v as usize }
 }
 
-/// Whether `obj` is a builtin scalar (`int`, `float`, `bool`, `str`, `bytes`, `None`):
-/// comparing two of them runs no Python code, so it cannot mutate a list.
-fn is_builtin_scalar(obj: &Bound<'_, PyAny>) -> bool {
-    let p = obj.as_ptr();
-    // SAFETY: type pointer reads and comparisons on a valid object.
+/// Whether comparing `p` with another such object runs no Python code: an exact `int`,
+/// `float`, `str` or `bool`, or `None` (`bytes` is left out: `bytes == str` may warn).
+#[inline]
+fn is_scalar(p: *mut ffi::PyObject) -> bool {
+    // SAFETY: a type pointer read and comparisons on a live object.
     unsafe {
         let ty = ffi::Py_TYPE(p);
         ty == &raw mut ffi::PyLong_Type
             || ty == &raw mut ffi::PyUnicode_Type
             || ty == &raw mut ffi::PyFloat_Type
             || ty == &raw mut ffi::PyBool_Type
-            || ty == &raw mut ffi::PyBytes_Type
             || p == ffi::Py_None()
     }
 }
@@ -234,21 +230,33 @@ fn is_builtin_scalar(obj: &Bound<'_, PyAny>) -> bool {
 /// Element equality for searches and list comparison: identity, then NaN equals NaN
 /// (the documented List semantics, identical for every strategy), then Python `==`.
 fn elements_equal(item: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<bool> {
-    if item.is(value) {
-        return Ok(true);
+    // SAFETY: valid objects, attached.
+    match unsafe { elements_equal_ptr(item.as_ptr(), value.as_ptr()) } {
+        -1 => Err(PyErr::fetch(item.py())),
+        r => Ok(r == 1),
     }
-    // SAFETY: exact type checks and value reads on valid objects.
+}
+
+/// [`elements_equal`] on raw pointers: 1 if equal, 0 if not, -1 with an exception set.
+///
+/// # Safety
+/// `a` and `b` must be live objects; the caller must be attached.
+#[inline]
+unsafe fn elements_equal_ptr(a: *mut ffi::PyObject, b: *mut ffi::PyObject) -> c_int {
+    // SAFETY: exact type checks and value reads on live objects.
     unsafe {
-        let (a, b) = (item.as_ptr(), value.as_ptr());
+        if a == b {
+            return 1;
+        }
         if ffi::PyFloat_CheckExact(a) != 0
             && ffi::PyFloat_CheckExact(b) != 0
             && ffi::PyFloat_AS_DOUBLE(a).is_nan()
             && ffi::PyFloat_AS_DOUBLE(b).is_nan()
         {
-            return Ok(true);
+            return 1;
         }
+        ffi::PyObject_RichCompareBool(a, b, ffi::Py_EQ)
     }
-    compare_bool(item, value, ffi::Py_EQ)
 }
 
 /// `PyObject_RichCompareBool(a, b, op)`: identity implies equality.
@@ -300,40 +308,28 @@ fn buffer_format(dtype: DType) -> &'static CStr {
     }
 }
 
-/// One side of a Python-level comparison: a rustique `List` (read in chunks) or a
-/// snapshot of a builtin `list`.
-enum Side<'a> {
+/// One side of a Python-level comparison: a rustique `List` or a builtin `list` (or
+/// subclass, read through its item array like CPython's `list_richcompare`), both read live.
+enum Side<'a, 'py> {
     List(&'a List),
-    Items(Vec<Py<PyAny>>),
+    Builtin(&'a Bound<'py, PyList>),
 }
 
-impl Side<'_> {
-    fn chunk(&self, py: Python<'_>, start: usize) -> Chunk {
+impl<'py> Side<'_, 'py> {
+    fn len(&self) -> usize {
         match self {
-            Side::List(list) => list.chunk(py, start, usize::MAX),
-            Side::Items(items) => {
-                let end = items.len().min(start.saturating_add(CHUNK));
-                let chunk = items.get(start..end).unwrap_or(&[]).iter().map(|o| o.clone_ref(py)).collect();
-                Chunk { items: chunk, len: items.len(), version: 0 }
-            }
+            Side::List(list) => list.len(),
+            Side::Builtin(list) => list.len(),
         }
     }
 
-    /// Whether this side changed since a chunk was read from it at `version`.
-    fn changed(&self, version: u64) -> bool {
+    /// New reference to element `i` of the current contents, or `None` past the end.
+    fn get(&self, py: Python<'py>, i: usize) -> Option<Bound<'py, PyAny>> {
         match self {
-            Side::List(list) => list.version.get() != version,
-            Side::Items(_) => false,
+            Side::List(list) => list.get_ref(py, i),
+            Side::Builtin(list) => (i < list.len()).then(|| list.get_item(i).ok()).flatten(),
         }
     }
-}
-
-/// Elements read under one lock acquisition, with the list's length and mutation counter
-/// at that moment.
-struct Chunk {
-    items: Vec<Py<PyAny>>,
-    len: usize,
-    version: u64,
 }
 
 impl List {
@@ -415,6 +411,23 @@ impl List {
         self.data.read(py)
     }
 
+    /// The write guard for a fast-path mutation, `None` while a buffer export exists (the
+    /// caller then takes the general path, which raises). The caller publishes the change
+    /// (`publish_len`, or `version.bump_exclusive` when the length is unchanged).
+    #[inline(always)]
+    fn write_fast(&self, py: Python<'_>) -> Option<WriteGuard<'_, Storage>> {
+        let guard = self.data.write(py);
+        (self.exports.load(Ordering::Acquire) == 0).then_some(guard)
+    }
+
+    /// Publish a mutation made through `write_fast` that changed the length (still under
+    /// the write guard).
+    #[inline(always)]
+    fn publish_len(&self, len: usize) {
+        self.len.store(len, Ordering::Release);
+        self.version.bump_exclusive();
+    }
+
     #[inline]
     fn mutate(&self, py: Python<'_>) -> PyResult<Mutation<'_>> {
         let guard = self.data.write(py);
@@ -443,13 +456,12 @@ impl List {
         self.schema.coerce(obj).map_err(|e| e.into_pyerr(&self.container(), None))
     }
 
-    /// Python objects for `self[start..min(start + CHUNK, stop, len)]`.
-    fn chunk(&self, py: Python<'_>, start: usize, stop: usize) -> Chunk {
+    /// New reference to element `i` of the current list, or `None` past the end.
+    #[inline]
+    fn get_ref<'py>(&self, py: Python<'py>, i: usize) -> Option<Bound<'py, PyAny>> {
         let data = self.read(py);
-        let len = data.len();
-        let end = stop.min(len).min(start.saturating_add(CHUNK));
-        let items = if start < end { data.objects(py, start..end) } else { Vec::new() };
-        Chunk { items, len, version: self.version.get() }
+        // SAFETY: `item_ptr` returns a new reference.
+        (i < data.len()).then(|| unsafe { Bound::from_owned_ptr(py, data.item_ptr(py, i)) })
     }
 
     /// First index in `start..stop` whose element equals `value`.
@@ -472,14 +484,7 @@ impl List {
         Ok(self.find_python(py, value, start, stop)?.map(|(i, _)| i))
     }
 
-    /// Python-level search, comparing outside the lock. Returns the index and the element
-    /// that compared equal.
-    ///
-    /// Like CPython, a comparison that runs Python code (`__eq__`) is followed by the
-    /// *current* list: if the list changed meanwhile, the rest of the chunk read ahead is
-    /// abandoned and the search continues at the next index of the live list. Comparisons
-    /// of builtin scalars run no Python code (in CPython they are atomic with the scan), so
-    /// they keep using the chunk, which is a consistent snapshot.
+    /// Python-level search. Returns the index and the element that compared equal.
     fn find_python(
         &self,
         py: Python<'_>,
@@ -487,24 +492,72 @@ impl List {
         start: usize,
         stop: usize,
     ) -> PyResult<Option<(usize, Py<PyAny>)>> {
-        let builtin_value = is_builtin_scalar(value);
+        let mut found = None;
+        self.scan_equal(py, value, start, stop, |i, item| {
+            // SAFETY: a live element (borrowed under the lock, or owned by the caller).
+            found = Some((i, unsafe { Bound::from_borrowed_ptr(py, item) }.unbind()));
+            true
+        })?;
+        Ok(found)
+    }
+
+    /// Compare `self[start..stop]` with `value` by Python equality (identity, NaN, `==`),
+    /// calling `on_equal(index, item)` for each equal element until it returns `true`.
+    ///
+    /// Pairs of builtin scalars (`int`, `float`, `str`, `bool`, `None`) are compared under
+    /// the read lock: such comparisons run no Python code, so a scan over them is atomic
+    /// with respect to other threads' mutations (like CPython's `list.remove`, which holds
+    /// the list's critical section). Any other comparison runs unlocked on a reference to
+    /// the element, and the scan then continues at the next index of the *current* list (a
+    /// comparison may run Python code that changes it; CPython re-reads `ob_item[i]`).
+    /// `on_equal` must not run Python code. Runs no `Py` drop (raw-slot safe).
+    fn scan_equal(
+        &self,
+        py: Python<'_>,
+        value: &Bound<'_, PyAny>,
+        start: usize,
+        stop: usize,
+        mut on_equal: impl FnMut(usize, *mut ffi::PyObject) -> bool,
+    ) -> PyResult<()> {
+        let v = value.as_ptr();
+        let scalar = is_scalar(v);
         let mut i = start;
         loop {
-            let chunk = self.chunk(py, i, stop);
-            if chunk.items.is_empty() {
-                return Ok(None);
-            }
-            for item in chunk.items {
-                let item_ref = item.bind(py);
-                let ran_python = !(builtin_value && is_builtin_scalar(item_ref));
-                if elements_equal(item_ref, value)? {
-                    return Ok(Some((i, item)));
+            let pending = {
+                let data = self.read(py);
+                let end = stop.min(data.len());
+                loop {
+                    if i >= end {
+                        return Ok(());
+                    }
+                    match &*data {
+                        Storage::Object(objects) if scalar && is_scalar(objects[i].as_ptr()) => {
+                            let p = objects[i].as_ptr();
+                            // SAFETY: live objects; scalar comparisons run no Python code.
+                            match unsafe { elements_equal_ptr(p, v) } {
+                                0 => {}
+                                1 => {
+                                    if on_equal(i, p) {
+                                        return Ok(());
+                                    }
+                                }
+                                _ => {
+                                    drop(data);
+                                    return Err(PyErr::fetch(py));
+                                }
+                            }
+                            i += 1;
+                        }
+                        _ => break data.item_ptr(py, i),
+                    }
                 }
-                i += 1;
-                if ran_python && self.version.get() != chunk.version {
-                    break;
-                }
+            };
+            // SAFETY: `item_ptr` returned a new reference.
+            let item = unsafe { Bound::from_owned_ptr(py, pending) };
+            if elements_equal(&item, value)? && on_equal(i, item.as_ptr()) {
+                return Ok(());
             }
+            i += 1;
         }
     }
 
@@ -524,26 +577,12 @@ impl List {
                 _ => {}
             }
         }
-        // Live semantics as in `find_python`.
-        let builtin_value = is_builtin_scalar(value);
-        let (mut i, mut count) = (0, 0);
-        loop {
-            let chunk = self.chunk(py, i, usize::MAX);
-            if chunk.items.is_empty() {
-                return Ok(count);
-            }
-            for item in &chunk.items {
-                let item = item.bind(py);
-                let ran_python = !(builtin_value && is_builtin_scalar(item));
-                if elements_equal(item, value)? {
-                    count += 1;
-                }
-                i += 1;
-                if ran_python && self.version.get() != chunk.version {
-                    break;
-                }
-            }
-        }
+        let mut count = 0;
+        self.scan_equal(py, value, 0, usize::MAX, |_, _| {
+            count += 1;
+            false
+        })?;
+        Ok(count)
     }
 
     /// A new builtin `list` with the current elements.
@@ -582,8 +621,7 @@ impl List {
     }
 
     /// `repr` of the elements as `[a, b, …]`. Like CPython's `list_repr`, each element is
-    /// taken from the current list: an element's `__repr__` may change the list, and the
-    /// rest of the chunk read ahead is then abandoned (as in `find_python`). Native
+    /// taken from the current list (an element's `__repr__` may change it). Native
     /// elements' reprs run no Python code.
     fn repr_items<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyString>> {
         if !matches!(&*self.read(py), Storage::Object(_)) {
@@ -591,19 +629,9 @@ impl List {
         }
         let mut parts = Vec::new();
         let mut i = 0;
-        loop {
-            let chunk = self.chunk(py, i, usize::MAX);
-            if chunk.items.is_empty() {
-                break;
-            }
-            for item in chunk.items {
-                let item = item.into_bound(py);
-                parts.push(item.repr()?);
-                i += 1;
-                if !is_builtin_scalar(&item) && self.version.get() != chunk.version {
-                    break;
-                }
-            }
+        while let Some(item) = self.get_ref(py, i) {
+            parts.push(item.repr()?);
+            i += 1;
         }
         let body = PyString::new(py, ", ").call_method1(intern!(py, "join"), (parts,))?;
         PyString::new(py, "[").add(body)?.add("]")?.cast_into::<PyString>().map_err(Into::into)
@@ -611,35 +639,70 @@ impl List {
 
     /// Python-level comparison (CPython's `list_richcompare`): find the first index where
     /// the elements differ (identity implies equality), comparing outside the locks. Each
-    /// comparison sees the current lists (see `find_python`).
-    fn richcompare_python(py: Python<'_>, a: Side<'_>, b: Side<'_>, op: CompareOp) -> PyResult<Py<PyAny>> {
-        let mut i = 0;
-        loop {
-            let (ca, cb) = (a.chunk(py, i), b.chunk(py, i));
-            if i == 0 && ca.len != cb.len && matches!(op, CompareOp::Eq | CompareOp::Ne) {
-                return Ok(PyBool::new(py, matches!(op, CompareOp::Ne)).to_owned().into_any().unbind());
-            }
-            let m = ca.items.len().min(cb.items.len());
-            if m == 0 {
-                // One side is exhausted: the (current) lengths decide.
-                return Ok(PyBool::new(py, compare_lengths(ca.len, cb.len, op)).to_owned().into_any().unbind());
-            }
-            for (x, y) in ca.items.iter().zip(&cb.items) {
-                let (x, y) = (x.bind(py), y.bind(py));
-                if !elements_equal(x, y)? {
-                    return match op {
-                        CompareOp::Eq => Ok(PyBool::new(py, false).to_owned().into_any().unbind()),
-                        CompareOp::Ne => Ok(PyBool::new(py, true).to_owned().into_any().unbind()),
-                        _ => Ok(x.rich_compare(y, op)?.unbind()),
-                    };
-                }
-                i += 1;
-                let ran_python = !(is_builtin_scalar(x) && is_builtin_scalar(y));
-                if ran_python && (a.changed(ca.version) || b.changed(cb.version)) {
-                    break;
-                }
-            }
+    /// step reads the current lists (a comparison may run Python code that changes them).
+    fn richcompare_python(py: Python<'_>, a: Side<'_, '_>, b: Side<'_, '_>, op: CompareOp) -> PyResult<Py<PyAny>> {
+        let result = |v: bool| Ok(PyBool::new(py, v).to_owned().into_any().unbind());
+        if a.len() != b.len() && matches!(op, CompareOp::Eq | CompareOp::Ne) {
+            return result(matches!(op, CompareOp::Ne));
         }
+        let mut i = 0;
+        while let Some((x, y)) = Self::next_pair(py, &a, &b, &mut i)? {
+            if !elements_equal(&x, &y)? {
+                return match op {
+                    CompareOp::Eq => result(false),
+                    CompareOp::Ne => result(true),
+                    _ => Ok(x.rich_compare(&y, op)?.unbind()),
+                };
+            }
+            i += 1;
+        }
+        // No more items to compare: the (current) lengths decide.
+        result(compare_lengths(a.len(), b.len(), op))
+    }
+
+    /// The pair of elements at index `*i` (new references), or `None` once either side is
+    /// exhausted. Between two rustique lists, pairs of identical objects or equal builtin
+    /// scalars are skipped under both read locks (no Python code runs, so that part of the
+    /// comparison is atomic, like CPython's critical section on both lists).
+    fn next_pair<'py>(
+        py: Python<'py>,
+        a: &Side<'_, 'py>,
+        b: &Side<'_, 'py>,
+        i: &mut usize,
+    ) -> PyResult<Option<(Bound<'py, PyAny>, Bound<'py, PyAny>)>> {
+        if let (Side::List(la), Side::List(lb)) = (a, b)
+            && !std::ptr::eq(*la, *lb)
+        {
+            let (da, db) = read_both(py, &la.data, &lb.data);
+            if let (Storage::Object(oa), Storage::Object(ob)) = (&*da, &*db) {
+                while *i < oa.len() && *i < ob.len() {
+                    let (p, q) = (oa[*i].as_ptr(), ob[*i].as_ptr());
+                    if p != q && !(is_scalar(p) && is_scalar(q)) {
+                        break;
+                    }
+                    // SAFETY: live objects; identical or scalar comparisons run no Python code.
+                    match unsafe { elements_equal_ptr(p, q) } {
+                        1 => *i += 1,
+                        0 => break,
+                        _ => {
+                            drop((da, db));
+                            return Err(PyErr::fetch(py));
+                        }
+                    }
+                }
+            }
+            if *i >= da.len() || *i >= db.len() {
+                return Ok(None);
+            }
+            // SAFETY: `item_ptr` returns new references.
+            return Ok(Some(unsafe {
+                (Bound::from_owned_ptr(py, da.item_ptr(py, *i)), Bound::from_owned_ptr(py, db.item_ptr(py, *i)))
+            }));
+        }
+        Ok(match (a.get(py, *i), b.get(py, *i)) {
+            (Some(x), Some(y)) => Some((x, y)),
+            _ => None,
+        })
     }
 
     /// Stable permutation that sorts `keys` with Python `<` (`reverse` keeps equal
@@ -834,16 +897,13 @@ fn sort_storage(
 
 #[pymethods]
 impl List {
+    /// `List.__new__` creates an empty list and `__init__` fills it, like `list` (so
+    /// subclasses and `x.__init__(iterable)` behave like the builtin). `List(iterable)`
+    /// itself takes a vectorcall fast path doing both at once (see `slots`).
     #[new]
-    #[pyo3(signature = (*args), text_signature = "(iterable=(), /)")]
-    fn py_new(py: Python<'_>, args: &Bound<'_, PyTuple>) -> PyResult<Self> {
-        let schema = schema::any();
-        let storage = match args.len() {
-            0 => Storage::Empty,
-            1 => convert::ingest(py, &schema, &args.get_item(0)?)?,
-            n => return Err(PyTypeError::new_err(format!("List expected at most 1 argument, got {n}"))),
-        };
-        Ok(List::new_with(schema, storage))
+    #[pyo3(signature = (*_args, **_kwargs), text_signature = "(iterable=(), /)")]
+    fn py_new(_args: &Bound<'_, PyTuple>, _kwargs: Option<&Bound<'_, PyDict>>) -> Self {
+        List::new_with(schema::any(), Storage::Empty)
     }
 
     #[classmethod]
@@ -976,14 +1036,12 @@ impl List {
         Ok(self.find(py, value, 0, usize::MAX)?.is_some())
     }
 
-    fn __iter__(slf: &Bound<'_, Self>) -> ListIterator {
-        ListIterator { list: ListRef::new(slf), state: PyMutex::new(IterState::new(slf.clone().unbind(), 0)) }
+    fn __iter__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        iter::new_iterator(slf.py(), slf, true)
     }
 
-    fn __reversed__(slf: &Bound<'_, Self>) -> ListReverseIterator {
-        let len = slf.get().len();
-        let next = if len == 0 { EXHAUSTED } else { len - 1 };
-        ListReverseIterator { list: ListRef::new(slf), state: PyMutex::new(IterState::new(slf.clone().unbind(), next)) }
+    fn __reversed__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        iter::new_iterator(slf.py(), slf, false)
     }
 
     fn __richcmp__(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<Py<PyAny>> {
@@ -1012,24 +1070,23 @@ impl List {
         if unsafe { ffi::PyList_Check(other.as_ptr()) } == 0 {
             return Ok(py.NotImplemented());
         }
-        // A builtin list: classify it like an untyped List; compare natively if possible.
-        let theirs = convert::ingest(py, &schema::any(), other)?;
-        if let Storage::Native(cb) = &theirs {
-            let data = this.read(py);
-            match &*data {
-                Storage::Native(ca) => {
-                    if let Some(r) = native_compare(ca, cb, op) {
-                        return result(r);
-                    }
-                }
-                Storage::Empty => return result(compare_lengths(0, cb.len(), op)),
-                Storage::Object(_) => {}
+        // SAFETY: checked above.
+        let theirs = unsafe { other.cast_unchecked::<PyList>() };
+        // An exact builtin list of native-classifiable items whose length allows equality:
+        // classify it like an untyped List and compare natively.
+        // SAFETY: type check on a valid object.
+        let exact = unsafe { ffi::PyList_CheckExact(other.as_ptr()) } != 0;
+        let worth = !matches!(op, CompareOp::Eq | CompareOp::Ne) || theirs.len() == this.len();
+        if exact && worth && matches!(&*this.read(py), Storage::Native(_)) {
+            let converted = convert::ingest(py, &schema::any(), other)?;
+            if let Storage::Native(cb) = &converted
+                && let Storage::Native(ca) = &*this.read(py)
+                && let Some(r) = native_compare(ca, cb, op)
+            {
+                return result(r);
             }
         }
-        if theirs.is_empty() {
-            return result(compare_lengths(this.len(), 0, op));
-        }
-        List::richcompare_python(py, Side::List(this), Side::Items(theirs.into_objects(py)), op)
+        List::richcompare_python(py, Side::List(this), Side::Builtin(theirs), op)
     }
 
     fn __repr__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
@@ -1535,6 +1592,23 @@ impl List {
 }
 
 impl List {
+    /// `list.__init__`: clear, then extend with the optional iterable (keeping the schema).
+    fn init(&self, py: Python<'_>, args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
+        if kwargs.is_some_and(|k| !k.is_empty()) {
+            return Err(PyTypeError::new_err("List() takes no keyword arguments"));
+        }
+        let iterable = match args.len() {
+            0 => None,
+            1 => Some(args.get_item(0)?),
+            n => return Err(PyTypeError::new_err(format!("List expected at most 1 argument, got {n}"))),
+        };
+        self.clear(py)?;
+        match iterable {
+            Some(iterable) => self.extend(py, &iterable),
+            None => Ok(()),
+        }
+    }
+
     fn extreme<'py>(&self, py: Python<'py>, max: bool) -> PyResult<Bound<'py, PyAny>> {
         let name = if max { "max" } else { "min" };
         {
@@ -1559,229 +1633,86 @@ impl List {
     }
 }
 
-/// Marks an exhausted iterator.
-const EXHAUSTED: usize = usize::MAX;
-/// Elements an iterator materialises per visit of the list (grows from 8 to this).
-const MAX_BATCH: usize = 64;
-
-/// Iterator position plus a batch of elements read ahead under one lock acquisition. The
-/// batch is only used while the list's mutation counter is unchanged, so iteration stays
-/// exactly as live as CPython's (any mutation makes the next step re-read the list).
+/// Iterator position (CPython's `listiterobject`/`listreviterobject`): the list and the
+/// index of the next element, `-1` once exhausted. The list is released when the iterator
+/// is exhausted, like CPython on GIL builds (free-threaded CPython keeps it; here the state
+/// lock makes releasing it safe on both builds).
 struct IterState {
-    /// The list; dropped once the iterator is exhausted (like CPython's `it_seq = NULL`).
     list: Option<Py<List>>,
-    /// Index of the next element to yield, or `EXHAUSTED`.
-    next: usize,
-    /// Upcoming elements in reverse yield order (popped from the end).
-    batch: Vec<Py<PyAny>>,
-    /// Mutation counter value the batch was read at.
-    version: u64,
-    /// Size of the next batch.
-    batch_size: usize,
+    index: isize,
 }
 
-impl IterState {
-    fn new(list: Py<List>, next: usize) -> Self {
-        IterState { list: Some(list), next, batch: Vec::new(), version: 0, batch_size: 8 }
-    }
-
-    /// The next element from the read-ahead batch while it is current (the hot path: no
-    /// list access, no allocation).
-    #[inline]
-    fn pop_current(&mut self, list: ListRef, forward: bool) -> Option<Py<PyAny>> {
-        if self.batch.is_empty() {
-            return None;
+/// The next element as a new reference, or null once exhausted (no exception set). Runs no
+/// Python code and drops no `Py` handle while not exhausted (raw-slot safe, see `slots`).
+#[inline]
+fn iter_next_ptr(py: Python<'_>, state: &PyMutex<IterState>, forward: bool) -> *mut ffi::PyObject {
+    let mut st = state.lock(py);
+    let item = match &st.list {
+        Some(list) if st.index >= 0 => {
+            let data = list.get().read(py);
+            let i = st.index as usize;
+            (i < data.len()).then(|| data.item_ptr(py, i))
         }
-        // SAFETY: a non-empty batch means the iterator is not exhausted, so `self.list`
-        // still holds a strong reference to the list `list` points to; both change only
-        // under the state lock, which the caller holds.
-        let version = unsafe { list.0.as_ref() }.version.get();
-        if self.version != version {
-            return None;
+        Some(_) => None,
+        None => return std::ptr::null_mut(),
+    };
+    match item {
+        Some(p) => {
+            st.index += if forward { 1 } else { -1 };
+            p
         }
-        let item = self.batch.pop();
-        self.advance(forward);
-        item
-    }
-
-    /// Re-read the list into the batch (it is used up or stale) and yield the next element.
-    /// Takes the guard so that stale elements, and the list once exhausted, are dropped
-    /// only after unlocking.
-    #[inline(never)]
-    fn refill_and_pop<'py>(
-        py: Python<'py>,
-        mut guard: MutexGuard<'_, IterState>,
-        forward: bool,
-    ) -> Option<Bound<'py, PyAny>> {
-        let state = &mut *guard;
-        let stale = std::mem::take(&mut state.batch);
-        let mut item = None;
-        if state.next != EXHAUSTED
-            && let Some(list) = &state.list
-        {
-            let list = list.get();
-            let data = list.read(py);
-            let len = data.len();
-            if state.next >= len {
-                state.next = EXHAUSTED;
-            } else {
-                let next = state.next;
-                let range = if forward {
-                    next..len.min(next + state.batch_size)
-                } else {
-                    (next + 1).saturating_sub(state.batch_size)..next + 1
-                };
-                // The batch is popped from the end: store forward batches reversed.
-                data.extend_objects(py, range, forward, &mut state.batch);
-                state.version = list.version.get();
-                drop(data);
-                state.batch_size = (state.batch_size * 2).min(MAX_BATCH);
-                item = state.batch.pop();
-                state.advance(forward);
-            }
-        }
-        let finished = if state.next == EXHAUSTED { state.list.take() } else { None };
-        drop(guard);
-        drop(stale);
-        drop(finished);
-        item.map(|o| o.into_bound(py))
-    }
-
-    /// Yield the next element (`forward` selects the direction).
-    #[inline]
-    fn next<'py>(
-        py: Python<'py>,
-        state: &PyMutex<IterState>,
-        list: ListRef,
-        forward: bool,
-    ) -> Option<Bound<'py, PyAny>> {
-        let mut guard = state.lock(py);
-        match guard.pop_current(list, forward) {
-            Some(item) => {
-                drop(guard);
-                Some(item.into_bound(py))
-            }
-            None => IterState::refill_and_pop(py, guard, forward),
-        }
-    }
-
-    fn advance(&mut self, forward: bool) {
-        self.next = match (forward, self.next) {
-            (true, n) => n + 1,
-            (false, 0) => EXHAUSTED,
-            (false, n) => n - 1,
-        };
-    }
-
-    /// Elements left: `remaining(next, len)` while the iterator is live.
-    fn length_hint(&self, remaining: impl Fn(usize, usize) -> usize) -> usize {
-        match (&self.list, self.next) {
-            (Some(list), next) if next != EXHAUSTED => remaining(next, list.get().len()),
-            _ => 0,
-        }
-    }
-
-    fn traverse(&self, visit: &PyVisit<'_>) -> Result<(), PyTraverseError> {
-        if let Some(list) = &self.list {
-            visit.call(list)?;
-        }
-        for o in &self.batch {
-            visit.call(o)?;
-        }
-        Ok(())
-    }
-
-    /// `tp_clear`: everything this iterator references, to be dropped unlocked.
-    fn take_references(&mut self) -> (Option<Py<List>>, Vec<Py<PyAny>>) {
-        (self.list.take(), std::mem::take(&mut self.batch))
+        None => iter_exhausted(py, st),
     }
 }
 
-/// The iterated list, for reading its mutation counter on the hot path without a second
-/// dependent load after taking the state lock. Never owns a reference: it is dereferenced
-/// only while the iterator state's `list` holds one (see [`IterState::pop_current`]).
-#[derive(Clone, Copy)]
-struct ListRef(NonNull<List>);
-
-// SAFETY: a pointer to a frozen `Sync` pyclass value, dereferenced only under the
-// conditions documented on `ListRef`.
-unsafe impl Send for ListRef {}
-// SAFETY: as above.
-unsafe impl Sync for ListRef {}
-
-impl ListRef {
-    fn new(list: &Bound<'_, List>) -> Self {
-        ListRef(NonNull::from(list.get()))
-    }
+#[cold]
+#[inline(never)]
+fn iter_exhausted(py: Python<'_>, mut st: MutexGuard<'_, IterState>) -> *mut ffi::PyObject {
+    st.index = -1;
+    let finished = st.list.take();
+    drop(st);
+    // Dropped through `Bound`: an immediate decref even in raw slots.
+    drop(finished.map(|list| list.into_bound(py)));
+    std::ptr::null_mut()
 }
 
-/// Live iterator over a `List` (CPython `list_iterator` semantics: sees appends, stops
-/// when the index passes the current length, stays exhausted).
-#[pyclass(module = "rustique", frozen, name = "ListIterator")]
-pub struct ListIterator {
-    list: ListRef,
-    state: PyMutex<IterState>,
-}
-
-#[pymethods]
-impl ListIterator {
-    fn __iter__(slf: Bound<'_, Self>) -> Bound<'_, Self> {
-        slf
-    }
-
-    fn __next__<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyAny>> {
-        IterState::next(py, &self.state, self.list, true)
-    }
-
-    fn __length_hint__(&self, py: Python<'_>) -> usize {
-        self.state.lock(py).length_hint(|next, len| len.saturating_sub(next))
-    }
-
-    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        match self.state.try_lock() {
-            Some(state) => state.traverse(&visit),
-            None => Ok(()),
+/// `__reduce__` of a list iterator: `(iter, (list,), index)` / `(reversed, (list,), index)`
+/// while it can still yield, `(iter, (List(),))` once exhausted (CPython uses an empty
+/// builtin list there).
+fn iter_reduce<'py>(py: Python<'py>, state: &PyMutex<IterState>, forward: bool) -> PyResult<Bound<'py, PyTuple>> {
+    let builtins = py.import(intern!(py, "builtins"))?;
+    let (list, index) = {
+        let st = state.lock(py);
+        (st.list.as_ref().map(|l| l.clone_ref(py)), st.index)
+    };
+    match list {
+        Some(list) if index >= 0 || !forward => {
+            let f = builtins.getattr(if forward { intern!(py, "iter") } else { intern!(py, "reversed") })?;
+            (f, (list,), index).into_pyobject(py)
+        }
+        _ => {
+            let empty = Bound::new(py, List::new_with(schema::any(), Storage::Empty))?;
+            (builtins.getattr(intern!(py, "iter"))?, (empty,)).into_pyobject(py)
         }
     }
-
-    fn __clear__(&self) {
-        let references = Python::attach(|py| self.state.lock(py).take_references());
-        drop(references);
-    }
 }
 
-/// Live reverse iterator (CPython `list_reverseiterator` semantics).
-#[pyclass(module = "rustique", frozen, name = "ListReverseIterator")]
-pub struct ListReverseIterator {
-    list: ListRef,
-    state: PyMutex<IterState>,
-}
-
-#[pymethods]
-impl ListReverseIterator {
-    fn __iter__(slf: Bound<'_, Self>) -> Bound<'_, Self> {
-        slf
+/// `__setstate__` of a list iterator: the index, clamped like CPython's.
+fn iter_setstate(py: Python<'_>, state: &PyMutex<IterState>, index: &Bound<'_, PyAny>, forward: bool) -> PyResult<()> {
+    // SAFETY: valid object; -1 with an exception set signals an error.
+    let mut index = unsafe { ffi::PyLong_AsSsize_t(index.as_ptr()) };
+    if index == -1
+        && let Some(e) = PyErr::take(py)
+    {
+        return Err(e);
     }
-
-    fn __next__<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyAny>> {
-        IterState::next(py, &self.state, self.list, false)
+    let mut st = state.lock(py);
+    if let Some(list) = &st.list {
+        let len = list.get().len() as isize;
+        index = if forward { index.clamp(0, len) } else { index.clamp(-1, len - 1) };
+        st.index = index;
     }
-
-    fn __length_hint__(&self, py: Python<'_>) -> usize {
-        self.state.lock(py).length_hint(|next, len| if next < len { next + 1 } else { 0 })
-    }
-
-    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        match self.state.try_lock() {
-            Some(state) => state.traverse(&visit),
-            None => Ok(()),
-        }
-    }
-
-    fn __clear__(&self) {
-        let references = Python::attach(|py| self.state.lock(py).take_references());
-        drop(references);
-    }
+    Ok(())
 }
 
 /// `arange(start, stop=None, step=1, dtype=int)`: a typed `List` generated natively, like
@@ -1902,8 +1833,13 @@ fn arange_dtype(py: Python<'_>, dtype: Option<&Bound<'_, PyAny>>) -> PyResult<(A
     )))
 }
 
+mod iter;
+mod slots;
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<List>()?;
+    iter::install(m.py())?;
+    slots::install(m.py())?;
     // PyO3 names the type `rustique.List` at the C level; CPython messages that use
     // `tp_name` (e.g. "unhashable type: 'List'") should read like the builtin's. `__module__`
     // and `__qualname__` (repr, pickling) are unaffected.

@@ -147,9 +147,14 @@ impl Storage {
     fn adopt(&self, obj: &Bound<'_, PyAny>) -> Coerced {
         match self {
             Storage::Object(_) => Coerced::Object(obj.clone().unbind()),
+            // A value that would demote native storage is stored as the original object.
+            // (`classify` already returns the object itself for non-native values: reuse it,
+            // so no `Py` is dropped here — raw slots must not drop `Py` handles, see
+            // `list::slots`.)
             _ => match convert::classify(obj) {
                 value if self.fits(&value) => value,
-                _ => Coerced::Object(obj.clone().unbind()),
+                Coerced::Native(_) => Coerced::Object(obj.clone().unbind()),
+                object => object,
             },
         }
     }
@@ -201,6 +206,22 @@ impl Storage {
         match self {
             Storage::Native(column) => column_item(py, column, index),
             Storage::Object(objects) => objects[index].bind(py).clone(),
+            Storage::Empty => unreachable!("index checked against an empty storage"),
+        }
+    }
+
+    /// A new reference to the element at `index` (must be in range): the stored object, or
+    /// the native value materialised. Runs no Python code.
+    #[inline]
+    pub fn item_ptr(&self, py: Python<'_>, index: usize) -> *mut pyo3::ffi::PyObject {
+        match self {
+            Storage::Object(objects) => {
+                let p = objects[index].as_ptr();
+                // SAFETY: a live object owned by this storage; the new reference is returned.
+                unsafe { pyo3::ffi::Py_INCREF(p) };
+                p
+            }
+            Storage::Native(column) => column_item(py, column, index).into_ptr(),
             Storage::Empty => unreachable!("index checked against an empty storage"),
         }
     }
