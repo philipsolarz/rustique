@@ -299,9 +299,12 @@ Call overhead: the hottest entry points bypass pyo3's generic wrappers. `in`, `l
 identity hits, clean misses) without pyo3's trampoline and run the general path attached
 through pyo3; `add`/`discard`/`remove`/`issubset`/`issuperset`/`isdisjoint` are `METH_O`
 method descriptors (the interpreter specialises them to `CALL_METHOD_DESCRIPTOR_O`, like
-`set.add`); both types are immutable types with a `tp_vectorcall` constructor
-(`CALL_BUILTIN_CLASS`). The `__contains__`/`__len__`/`__next__` methods keep pyo3's
-implementations and behave identically.
+`set.add`) and the varargs methods (`union`, `update`, …) are `METH_FASTCALL` (no argument
+tuple), both run through pyo3's own trampolines; both types are immutable types with a
+`tp_vectorcall` constructor (`CALL_BUILTIN_CLASS`). The `__contains__`/`__len__`/`__next__`
+methods keep pyo3's implementations and behave identically. In object tables, `in`,
+`discard` and `remove` decide identity hits, clean misses and equal builtin scalars inline;
+only keys that need Python equality take the classified lookup.
 
 ### 4.3a `FrozenSet`
 `FrozenSet(iterable=(), /)`, `FrozenSet[T](...)`: the immutable, hashable counterpart of
