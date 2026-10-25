@@ -122,6 +122,9 @@ impl DictInner {
     /// they are stored without lookups (like `dict(d)`). `None` when a key's hash might run
     /// Python code (the general path handles it).
     fn from_builtin(py: Python<'_>, src: &Bound<'_, PyDict>) -> Option<DictInner> {
+        if src.is_empty() {
+            return Some(DictInner::new(&Schema::Any, &Schema::Any));
+        }
         with_critical_section(src.as_any(), || {
             // SAFETY: inside the critical section no Python code runs (only pure hashes, see
             // `pure_hash`), so the iteration state and the borrowed items stay valid.

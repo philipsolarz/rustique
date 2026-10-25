@@ -36,6 +36,8 @@ use super::{Dict, DictIterator};
 
 /// The PyO3 implementations the fast paths fall back to.
 struct Originals {
+    /// The `Dict` type object (a static heap type: alive for the life of the process).
+    dict_type: usize,
     subscript: ffi::binaryfunc,
     ass_subscript: ffi::objobjargproc,
     contains: ffi::objobjproc,
@@ -378,7 +380,7 @@ unsafe extern "C" fn vectorcall(
     unsafe {
         let py = Python::assume_attached();
         let nargs = ffi::PyVectorcall_NARGS(nargsf);
-        if kwnames.is_null() && nargs <= 1 && callable == py.get_type::<Dict>().as_ptr() {
+        if kwnames.is_null() && nargs <= 1 && callable as usize == originals().dict_type {
             let fast = attempt_mut(|| {
                 let arg = (nargs == 1).then(|| Borrowed::from_ptr(py, *args).to_owned());
                 let built = super::Dict::build(py, crate::schema::any(), crate::schema::any(), arg.as_ref(), None)
@@ -439,8 +441,7 @@ unsafe extern "C" fn vectorcall(
 unsafe extern "C" fn from_builtin(cls: *mut ffi::PyObject, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: CPython passes the class (`METH_CLASS`) and one live argument (`METH_O`).
     unsafe {
-        let py = Python::assume_attached();
-        if cls == py.get_type::<Dict>().as_ptr() {
+        if cls as usize == originals().dict_type {
             return vectorcall(cls, &raw const arg, 1, std::ptr::null_mut());
         }
         ffi::PyObject_CallOneArg(cls, arg)
@@ -521,6 +522,7 @@ pub(super) fn install(py: Python<'_>) -> PyResult<()> {
         }
         let missing = || pyo3::exceptions::PySystemError::new_err("rustique: Dict slot missing");
         let originals = Originals {
+            dict_type: tp as usize,
             subscript: (*mapping).mp_subscript.ok_or_else(missing)?,
             ass_subscript: (*mapping).mp_ass_subscript.ok_or_else(missing)?,
             contains: (*sequence).sq_contains.ok_or_else(missing)?,
