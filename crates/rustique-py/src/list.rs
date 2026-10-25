@@ -1515,7 +1515,9 @@ impl List {
         // Take the elements out, leaving an empty list of the same strategy.
         let (elements, version) = {
             let mut data = self.mutate(py)?;
-            if data.is_empty() {
+            // Without a key, fewer than two elements need no comparison (with a key,
+            // `list.sort` still calls it once per element).
+            if data.is_empty() || (key.is_none() && data.len() < 2) {
                 return Ok(());
             }
             let placeholder = data.empty_like();

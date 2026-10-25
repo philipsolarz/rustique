@@ -689,6 +689,68 @@ unsafe extern "C" fn nb_multiply(a: Obj, b: Obj) -> Obj {
     })
 }
 
+/// `x.clear()`.
+unsafe extern "C" fn clear(slf: Obj, _: Obj) -> Obj {
+    shield(ptr::null_mut(), || {
+        let py = py();
+        // SAFETY: see above.
+        let list = unsafe { this(slf) };
+        let displaced = match list.mutate(py) {
+            Ok(mut data) => {
+                if data.is_empty() {
+                    return none();
+                }
+                data.clear()
+            }
+            Err(e) => {
+                restore(e);
+                return ptr::null_mut();
+            }
+        };
+        // Released unlocked, through `Bound` (an immediate decref).
+        convert::drop_objects(py, displaced);
+        none()
+    })
+}
+
+/// `x.reverse()`.
+unsafe extern "C" fn reverse(slf: Obj, _: Obj) -> Obj {
+    shield(ptr::null_mut(), || {
+        let py = py();
+        // SAFETY: see above.
+        let list = unsafe { this(slf) };
+        match list.mutate(py) {
+            Ok(mut data) => {
+                if data.len() > 1 {
+                    data.reverse();
+                }
+                none()
+            }
+            Err(e) => {
+                restore(e);
+                ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// `x.count(value)`.
+unsafe extern "C" fn count(slf: Obj, value: Obj) -> Obj {
+    shield(ptr::null_mut(), || {
+        let py = py();
+        // SAFETY: see above; `value` is live.
+        let (list, value) = unsafe { (this(slf), any(py, value)) };
+        match list.count_of(py, &value) {
+            // SAFETY: a new reference or null with an exception set.
+            Ok(n) => unsafe { ffi::PyLong_FromSize_t(n) },
+            Err(e) => {
+                restore(e);
+                ptr::null_mut()
+            }
+        }
+    })
+}
+
 /// `x.copy()`.
 unsafe extern "C" fn copy(slf: Obj, _: Obj) -> Obj {
     shield(ptr::null_mut(), || {
@@ -938,6 +1000,27 @@ static mut COPY_DEF: ffi::PyMethodDef = ffi::PyMethodDef {
     ml_doc: c"Return a shallow copy of the list.".as_ptr(),
 };
 
+static mut CLEAR_DEF: ffi::PyMethodDef = ffi::PyMethodDef {
+    ml_name: c"clear".as_ptr(),
+    ml_meth: ffi::PyMethodDefPointer { PyCFunction: clear },
+    ml_flags: ffi::METH_NOARGS,
+    ml_doc: c"Remove all items from list.".as_ptr(),
+};
+
+static mut REVERSE_DEF: ffi::PyMethodDef = ffi::PyMethodDef {
+    ml_name: c"reverse".as_ptr(),
+    ml_meth: ffi::PyMethodDefPointer { PyCFunction: reverse },
+    ml_flags: ffi::METH_NOARGS,
+    ml_doc: c"Reverse *IN PLACE*.".as_ptr(),
+};
+
+static mut COUNT_DEF: ffi::PyMethodDef = ffi::PyMethodDef {
+    ml_name: c"count".as_ptr(),
+    ml_meth: ffi::PyMethodDefPointer { PyCFunction: count },
+    ml_flags: ffi::METH_O,
+    ml_doc: c"Return number of occurrences of value.".as_ptr(),
+};
+
 static mut INSERT_DEF: ffi::PyMethodDef = ffi::PyMethodDef {
     ml_name: c"insert".as_ptr(),
     ml_meth: ffi::PyMethodDefPointer { PyCFunctionFast: insert },
@@ -1047,6 +1130,9 @@ pub(super) fn install(py: Python<'_>) -> PyResult<()> {
         set_method(py, ty, &dict, &raw mut POP_DEF)?;
         set_method(py, ty, &dict, &raw mut INSERT_DEF)?;
         set_method(py, ty, &dict, &raw mut COPY_DEF)?;
+        set_method(py, ty, &dict, &raw mut CLEAR_DEF)?;
+        set_method(py, ty, &dict, &raw mut REVERSE_DEF)?;
+        set_method(py, ty, &dict, &raw mut COUNT_DEF)?;
 
         let seq = (*ty).tp_as_sequence;
         (*seq).sq_length = Some(sq_length);
