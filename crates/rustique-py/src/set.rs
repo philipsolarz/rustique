@@ -674,8 +674,19 @@ fn native_op<K: Hash + Eq + Clone + Default>(
 ) -> KeyIndex<K> {
     match op {
         Algebra::Union => {
-            let mut out = a.clone();
-            out.reserve(b.len());
+            // Small results: one allocation sized for both operands (cloning `a` and growing
+            // it reallocates every part); large ones: a bulk copy of `a`, then growth.
+            let mut out = if a.len() + b.len() <= 64 {
+                let mut out = KeyIndex::with_capacity_and_hasher(a.len() + b.len(), a.hasher().clone());
+                for (pos, k) in a.iter() {
+                    out.push_hashed(stored_hash(a, pos, k), k.clone());
+                }
+                out
+            } else {
+                let mut out = a.clone();
+                out.reserve(b.len());
+                out
+            };
             for (_, k) in b.iter() {
                 let h = a.hash_key(k);
                 if a.find_hashed(h, |x| x == k).is_none() {
@@ -718,7 +729,7 @@ fn native_op<K: Hash + Eq + Clone + Default>(
             out
         }
         Algebra::SymmetricDifference => {
-            let mut out = KeyIndex::with_capacity_and_hasher(a.len(), a.hasher().clone());
+            let mut out = KeyIndex::with_capacity_and_hasher(a.len() + b.len(), a.hasher().clone());
             for (pos, k) in a.iter() {
                 if !b.contains(k) {
                     out.push_hashed(stored_hash(a, pos, k), k.clone());
