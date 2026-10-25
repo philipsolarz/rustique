@@ -165,6 +165,7 @@ pub(crate) fn quick_contains(
     }
     let found = read(&|t: &KeyTable| match t.store() {
         KeyStore::Object(ki) => find_object_inline(elem.py(), ki, elem, hash).map(|pos| pos.is_some()),
+        KeyStore::Empty => Some(false),
         _ => None,
     });
     found.ok_or(Some(hash))
@@ -1593,34 +1594,55 @@ impl Set {
     /// Remove `elem`; returns whether it was present.
     fn discard_elem(&self, py: Python<'_>, elem: &Bound<'_, PyAny>) -> PyResult<bool> {
         let mut displaced = Vec::new();
-        if keys::quick(elem).is_none()
-            && let Ok(hash) = elem.hash()
-        {
-            // Object tables: decided inline when no Python comparison is needed.
+        let quick = keys::quick(elem);
+        let hash = {
             let mut inner = self.inner.write(py);
-            let fast = match inner.table.store() {
-                KeyStore::Object(ki) => find_object_inline(py, ki, elem, hash),
+            // Native probes of native tables: one probe.
+            let found = quick.as_ref().and_then(|probe| inner.table.find_quick(probe));
+            let hash = match (&found, &quick) {
+                (Some(_), _) => None,
+                (None, Some(keys::Quick::Int(v))) => Some(keys::py_hash_i64(*v)),
+                // Hashing a `str` runs no Python code (and caches the hash in the object).
+                (None, _) => {
+                    // SAFETY: `elem` is a live object; a failing hash is cleared and raised
+                    // again by the full lookup below.
+                    let h = unsafe { ffi::PyObject_Hash(elem.as_ptr()) };
+                    if h == -1 {
+                        // SAFETY: attached; clears the error `PyObject_Hash` set.
+                        unsafe { ffi::PyErr_Clear() };
+                    }
+                    (h != -1).then_some(h)
+                }
+            };
+            // Object tables: decided inline when no Python comparison is needed.
+            let decided = match (found, hash, inner.table.store()) {
+                (Some(pos), _, _) => Some(pos),
+                (None, Some(h), KeyStore::Object(ki)) => find_object_inline(py, ki, elem, h),
+                (None, Some(_), KeyStore::Empty) => Some(None),
                 _ => None,
             };
-            if let Some(found) = fast {
-                if let Some(pos) = found {
+            if let Some(pos) = decided {
+                if let Some(pos) = pos {
                     inner.remove_at(py, pos, &mut displaced);
                 }
                 drop(inner);
                 drop(displaced);
-                return Ok(found.is_some());
+                return Ok(pos.is_some());
             }
-            drop(inner);
-            let key = Key::with_hash(elem.clone(), hash)?;
-            let found = keys::with_entry_mut(py, &self.inner, &key, |inner, pos| {
+            hash
+        };
+        let found = match hash {
+            Some(hash) => {
+                let key = Key::with_hash(elem.clone(), hash)?;
+                keys::with_entry_mut(py, &self.inner, &key, |inner, pos| {
+                    pos.map(|p| inner.remove_at(py, p, &mut displaced)).is_some()
+                })?
+            }
+            // Unhashable: a set probe or an error (raised again here).
+            None => keys::lookup_mut(py, &self.inner, elem, probe, |inner, pos| {
                 pos.map(|p| inner.remove_at(py, p, &mut displaced)).is_some()
-            })?;
-            drop(displaced);
-            return Ok(found);
-        }
-        let found = keys::lookup_mut(py, &self.inner, elem, probe, |inner, pos| {
-            pos.map(|p| inner.remove_at(py, p, &mut displaced)).is_some()
-        })?;
+            })?,
+        };
         drop(displaced);
         Ok(found)
     }
