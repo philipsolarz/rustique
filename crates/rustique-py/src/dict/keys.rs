@@ -241,11 +241,13 @@ pub(crate) unsafe fn exact_str_hash(obj: *mut ffi::PyObject) -> isize {
 }
 
 /// A probe that can be looked up without classification and without running Python code:
-/// an exact `int` fitting i64, or an exact `str` with its hash.
+/// an exact `int` fitting i64, an exact `str` with its hash, or another object whose hash
+/// and comparisons with builtin keys run no Python code (`Obj`, see [`FastKey::of`]).
 #[derive(Clone, Copy)]
 pub(crate) enum FastKey {
     Int(i64, *mut ffi::PyObject),
     Str(*mut ffi::PyObject, isize),
+    Obj(*mut ffi::PyObject, isize),
 }
 
 impl FastKey {
@@ -261,7 +263,76 @@ impl FastKey {
             } else if ty == &raw mut ffi::PyUnicode_Type {
                 Some(FastKey::Str(key, exact_str_hash(key)))
             } else {
-                None
+                FastKey::object(key)
+            }
+        }
+    }
+
+    /// `Obj` probes: exact `float`, `bool`, `None`, `tuple`, `frozenset` and instances of
+    /// classes that keep `object`'s hash and identity comparison — objects whose hash runs no
+    /// Python code and whose comparison with a builtin key never runs Python code of theirs.
+    ///
+    /// # Safety
+    /// `key` must be a live object.
+    #[cold]
+    #[inline(never)]
+    unsafe fn object(key: *mut ffi::PyObject) -> Option<FastKey> {
+        // SAFETY: `key` is live; hashing objects that pass `pure_hash` runs no Python code.
+        unsafe {
+            let ty = ffi::Py_TYPE(key);
+            let accepted = ty == &raw mut ffi::PyFloat_Type
+                || ty == &raw mut ffi::PyBool_Type
+                || key == ffi::Py_None()
+                || ty == &raw mut ffi::PyTuple_Type
+                || ty == &raw mut ffi::PyFrozenSet_Type
+                || ((*ty).tp_richcompare.map(|f| f as usize)
+                    == ffi::PyBaseObject_Type.tp_richcompare.map(|f| f as usize)
+                    && (*ty).tp_hash.map(|f| f as usize) == ffi::PyBaseObject_Type.tp_hash.map(|f| f as usize));
+            if !accepted || !pure_hash(key, 0) {
+                return None;
+            }
+            let hash = ffi::PyObject_Hash(key);
+            if hash == -1 {
+                ffi::PyErr_Clear();
+                return None;
+            }
+            Some(FastKey::Obj(key, hash))
+        }
+    }
+
+    /// The value of a numeric `Obj` probe that equals an int (`True`, `1.0`).
+    ///
+    /// # Safety
+    /// The probe object must be live.
+    #[inline]
+    unsafe fn as_int(&self) -> Option<i64> {
+        // SAFETY: the probe object is live; reads match the checked exact type.
+        unsafe {
+            match *self {
+                FastKey::Int(v, _) => Some(v),
+                FastKey::Obj(p, _) if ffi::Py_TYPE(p) == &raw mut ffi::PyBool_Type => Some(i64::from(p == ffi::Py_True())),
+                FastKey::Obj(p, _) if ffi::Py_TYPE(p) == &raw mut ffi::PyFloat_Type => {
+                    integral_float(ffi::PyFloat_AS_DOUBLE(p))
+                }
+                _ => None,
+            }
+        }
+    }
+
+    /// Whether the probe is a number (`bool`/`float`, which may equal ints).
+    ///
+    /// # Safety
+    /// The probe object must be live.
+    #[inline]
+    unsafe fn is_number(&self) -> bool {
+        // SAFETY: the probe object is live.
+        unsafe {
+            match *self {
+                FastKey::Int(..) => true,
+                FastKey::Str(..) => false,
+                FastKey::Obj(p, _) => {
+                    ffi::Py_TYPE(p) == &raw mut ffi::PyBool_Type || ffi::Py_TYPE(p) == &raw mut ffi::PyFloat_Type
+                }
             }
         }
     }
@@ -271,14 +342,14 @@ impl FastKey {
     pub(crate) fn py_hash(&self) -> isize {
         match *self {
             FastKey::Int(v, _) => rustique_core::index::py_hash_i64(v) as isize,
-            FastKey::Str(_, h) => h,
+            FastKey::Str(_, h) | FastKey::Obj(_, h) => h,
         }
     }
 
     #[inline(always)]
     pub(crate) fn ptr(&self) -> *mut ffi::PyObject {
         match *self {
-            FastKey::Int(_, p) | FastKey::Str(p, _) => p,
+            FastKey::Int(_, p) | FastKey::Str(p, _) | FastKey::Obj(p, _) => p,
         }
     }
 }
@@ -316,6 +387,55 @@ unsafe fn decide_eq(stored: *mut ffi::PyObject, probe: &FastKey) -> Option<bool>
                 } else {
                     None
                 }
+            }
+            FastKey::Obj(p, _) => {
+                let pty = ffi::Py_TYPE(p);
+                let stored_number = is(&raw mut ffi::PyLong_Type) || is(&raw mut ffi::PyFloat_Type) || is(&raw mut ffi::PyBool_Type);
+                if probe.is_number() {
+                    if is(&raw mut ffi::PyFloat_Type) && pty == &raw mut ffi::PyFloat_Type {
+                        return Some(ffi::PyFloat_AS_DOUBLE(stored) == ffi::PyFloat_AS_DOUBLE(p));
+                    }
+                    if stored_number {
+                        // Both are numbers: decide through an exact int value when both have
+                        // one (a float beyond i64 range or a big int: leave it to Python).
+                        let theirs = if is(&raw mut ffi::PyLong_Type) {
+                            exact_int_value(stored)
+                        } else if is(&raw mut ffi::PyBool_Type) {
+                            Some(i64::from(stored == ffi::Py_True()))
+                        } else {
+                            integral_float(ffi::PyFloat_AS_DOUBLE(stored))
+                        };
+                        return match (theirs, probe.as_int()) {
+                            (Some(a), Some(b)) => Some(a == b),
+                            // One side has no integral value: equal only if the other
+                            // has none either and they are the same float (handled above).
+                            (Some(_), None) | (None, Some(_)) if pty == &raw mut ffi::PyFloat_Type || is(&raw mut ffi::PyFloat_Type) => {
+                                Some(false)
+                            }
+                            _ => None,
+                        };
+                    }
+                    // A number never equals a `str`, `tuple`, `bytes`, `frozenset` or `None`.
+                    return (is(&raw mut ffi::PyUnicode_Type)
+                        || is(&raw mut ffi::PyTuple_Type)
+                        || is(&raw mut ffi::PyBytes_Type)
+                        || is(&raw mut ffi::PyFrozenSet_Type)
+                        || stored == ffi::Py_None())
+                    .then_some(false);
+                }
+                // `None`, tuples, frozensets and identity-compared instances: never equal to a
+                // builtin key of another type (`bytes` is excluded: comparing it with `str`
+                // may warn).
+                if ty != pty
+                    && (stored_number || is(&raw mut ffi::PyUnicode_Type) || is(&raw mut ffi::PyTuple_Type) || stored == ffi::Py_None())
+                {
+                    return Some(false);
+                }
+                // Same type: identity-compared objects and `None` differ unless identical.
+                if ty == pty && pty != &raw mut ffi::PyTuple_Type && pty != &raw mut ffi::PyFrozenSet_Type {
+                    return Some(false);
+                }
+                None
             }
         }
     }
@@ -1152,6 +1272,13 @@ impl KeyTable {
                 Some(ki.get(text))
             }
             (KeyStore::Object(ki), probe) => object_find(ki, probe),
+            // Other objects: `True`/`1.0` find the int 1; nothing else equals an int or a
+            // native `str`.
+            (KeyStore::Int(ki), probe @ FastKey::Obj(..)) => {
+                // SAFETY: the probe object is live for the duration of the lookup.
+                Some(unsafe { probe.as_int() }.and_then(|v| ki.get(&v)))
+            }
+            (KeyStore::Str(_), FastKey::Obj(..)) => Some(None),
         }
     }
 
@@ -1178,6 +1305,10 @@ impl KeyTable {
             }
             (KeyStore::Empty, FastKey::Str(..)) if self.kind == KeyKind::Adaptive && self.str_objects => {
                 self.set_str_store();
+                self.upsert_fast_key(py, probe)
+            }
+            (KeyStore::Empty, FastKey::Obj(..)) if self.kind == KeyKind::Adaptive && self.str_objects => {
+                self.set_store(KeyStore::Object(KeyIndex::with_hasher(())));
                 self.upsert_fast_key(py, probe)
             }
             _ => None,

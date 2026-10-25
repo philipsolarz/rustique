@@ -8,10 +8,10 @@ pub(crate) mod keys;
 
 use std::cell::RefCell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use pyo3::Borrowed;
-use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyKeyError, PyTypeError, PyValueError};
 use pyo3::gc::PyVisit;
 use pyo3::prelude::*;
 use pyo3::pyclass::CompareOp;
@@ -1073,12 +1073,21 @@ impl Dict {
 
     fn iter_of(slf: &Bound<'_, Self>, kind: ItemKind, reverse: bool) -> DictIterator {
         let py = slf.py();
-        let inner = slf.get().inner.read(py);
-        let len = inner.table.len();
-        let pos = if reverse { inner.table.entries() } else { 0 };
-        let state = IterState { pos, expected: len, remaining: len, exhausted: false };
-        drop(inner);
-        DictIterator { dict: slf.clone().unbind(), kind, reverse, state: Locked::new(state) }
+        let (len, entries) = {
+            let inner = slf.get().inner.read(py);
+            (inner.table.len(), inner.table.entries())
+        };
+        let state = IterState {
+            pos: AtomicUsize::new(if reverse { entries } else { 0 }),
+            expected: AtomicUsize::new(len),
+            remaining: AtomicUsize::new(len),
+            exhausted: AtomicBool::new(false),
+        };
+        // Items iteration recycles its result tuple (see `DictIterator::item`).
+        let result = (kind == ItemKind::Items).then(|| {
+            PyTuple::new(py, [py.None(), py.None()]).map_or_else(|_| py.None(), |t| t.into_any().unbind())
+        });
+        DictIterator { dict: slf.clone().unbind(), kind, reverse, state, result }
     }
 }
 
@@ -1130,60 +1139,134 @@ impl Dict {
         release_all(moved);
         Some(())
     }
+
+    /// `del self[key]` for a fast key (raw slot); `None`: use the general path (a miss,
+    /// which raises, or an undecidable comparison).
+    #[inline(always)]
+    fn del_fast(&self, py: Python<'_>, probe: &FastKey) -> Option<()> {
+        let mut displaced = Vec::new();
+        let value = {
+            let mut inner = self.inner.write(py);
+            let pos = inner.table.find_fast(probe)??;
+            inner.remove_entry(py, pos, &mut displaced)
+        };
+        release(Some(value));
+        release_all(displaced);
+        Some(())
+    }
+
+    /// `self.setdefault(key, default)` for an untyped dict and a fast key (raw method): the
+    /// value as a new reference; `None`: use the general path.
+    #[inline(always)]
+    fn setdefault_fast(&self, py: Python<'_>, probe: &FastKey, default: Borrowed<'_, '_, PyAny>) -> Option<*mut ffi::PyObject> {
+        if !(self.key_schema.is_any() && self.value_schema.is_any()) {
+            return None;
+        }
+        let mut moved = Vec::new();
+        let value = {
+            let mut inner = self.inner.write(py);
+            let (pos, inserted) = inner.table.upsert_fast_key(py, probe)?;
+            if inserted {
+                match &mut inner.values {
+                    Storage::Object(objs) => objs.push(default.to_owned().unbind()),
+                    values => values.push_any(py, &default),
+                }
+                let value = inner.value_ptr(py, pos);
+                inner.inserted(&mut moved);
+                value
+            } else {
+                inner.value_ptr(py, pos)
+            }
+        };
+        release_all(moved);
+        value
+    }
 }
 
 impl DictIterator {
-    /// `next(self)` for the raw `tp_iternext`: a new reference, or NULL when exhausted
-    /// (with an exception set only if building an item tuple failed); `None` defers to
-    /// `__next__` (size changes, which raise). The state advances only on success.
+    /// `next(self)`: a new reference; NULL with an exception set on error, NULL without
+    /// one when exhausted (the `tp_iternext` convention).
     #[inline(always)]
-    fn next_fast(&self, py: Python<'_>) -> Option<*mut ffi::PyObject> {
+    fn next_ptr(&self, py: Python<'_>) -> *mut ffi::PyObject {
         let (key, value) = {
-            let mut st = self.state.write(py);
-            if st.exhausted {
-                return Some(std::ptr::null_mut());
-            }
             let inner = self.dict.get().inner.read(py);
-            if inner.table.len() != st.expected {
-                return None;
-            }
-            let next = if self.reverse { inner.table.prev_live(st.pos) } else { inner.table.next_live(st.pos) };
-            let Some(pos) = next else {
-                st.exhausted = true;
-                return Some(std::ptr::null_mut());
-            };
-            if st.remaining == 0 && !self.reverse {
-                return None;
-            }
-            let value = match self.kind {
-                ItemKind::Keys => std::ptr::null_mut(),
-                _ => inner.value_ptr(py, pos)?,
+            let pos = match self.state.step(&inner.table, self.reverse) {
+                Step::Item(pos) => pos,
+                Step::Done => return std::ptr::null_mut(),
+                Step::Changed(message) => {
+                    drop(inner);
+                    // SAFETY: attached; the message is a static NUL-terminated string.
+                    unsafe { ffi::PyErr_SetString(ffi::PyExc_RuntimeError, message.as_ptr()) };
+                    return std::ptr::null_mut();
+                }
             };
             let key = match self.kind {
                 ItemKind::Values => std::ptr::null_mut(),
                 _ => inner.table.key_object(py, pos).into_ptr(),
             };
-            st.remaining = st.remaining.saturating_sub(1);
-            st.pos = if self.reverse { pos } else { pos + 1 };
+            let value = match self.kind {
+                ItemKind::Keys => std::ptr::null_mut(),
+                _ => inner.value_ptr(py, pos).unwrap_or_else(|| py.None().into_ptr()),
+            };
             (key, value)
         };
-        Some(match self.kind {
+        match self.kind {
             ItemKind::Keys => key,
             ItemKind::Values => value,
-            // SAFETY: attached; the tuple steals both references (released on failure).
-            ItemKind::Items => unsafe {
-                let tuple = ffi::PyTuple_New(2);
-                if tuple.is_null() {
-                    ffi::Py_DECREF(key);
-                    ffi::Py_DECREF(value);
-                } else {
-                    ffi::PyTuple_SET_ITEM(tuple, 0, key);
-                    ffi::PyTuple_SET_ITEM(tuple, 1, value);
-                }
-                tuple
-            },
-        })
+            // SAFETY: attached; `key` and `value` are new references handed over.
+            ItemKind::Items => unsafe { self.item(key, value) },
+        }
     }
+
+    /// The `(key, value)` tuple for items iteration, stealing both references. Like
+    /// CPython's `dictiter_iternextitem`, the previous result tuple is reused when nobody
+    /// else references it any more.
+    ///
+    /// # Safety
+    /// Attached to the interpreter; `key` and `value` are owned references.
+    #[inline(always)]
+    unsafe fn item(&self, key: *mut ffi::PyObject, value: *mut ffi::PyObject) -> *mut ffi::PyObject {
+        // SAFETY: guaranteed by the caller; the cached tuple is a live 2-tuple we own.
+        unsafe {
+            if let Some(result) = &self.result {
+                let t = result.as_ptr();
+                if uniquely_referenced(t) {
+                    ffi::Py_INCREF(t);
+                    let (old_key, old_value) = (ffi::PyTuple_GET_ITEM(t, 0), ffi::PyTuple_GET_ITEM(t, 1));
+                    ffi::PyTuple_SET_ITEM(t, 0, key);
+                    ffi::PyTuple_SET_ITEM(t, 1, value);
+                    ffi::Py_DECREF(old_key);
+                    ffi::Py_DECREF(old_value);
+                    // The GC may have untracked the tuple while it held only untracked items.
+                    if ffi::PyObject_GC_IsTracked(t) == 0 {
+                        ffi::PyObject_GC_Track(t.cast());
+                    }
+                    return t;
+                }
+            }
+            let t = ffi::PyTuple_New(2);
+            if t.is_null() {
+                ffi::Py_DECREF(key);
+                ffi::Py_DECREF(value);
+            } else {
+                ffi::PyTuple_SET_ITEM(t, 0, key);
+                ffi::PyTuple_SET_ITEM(t, 1, value);
+            }
+            t
+        }
+    }
+}
+
+/// Whether we hold the only reference to `obj` (and, on free-threaded builds, this thread
+/// owns it), so it can be reused in place.
+///
+/// # Safety
+/// `obj` must be a live object.
+#[inline(always)]
+unsafe fn uniquely_referenced(obj: *mut ffi::PyObject) -> bool {
+    // SAFETY: `obj` is live. (CPython 3.14+: a reference count of one on GIL builds; on
+    // free-threaded builds it also requires that this thread owns the object.)
+    unsafe { ffi::PyUnstable_Object_IsUniquelyReferenced(obj) != 0 }
 }
 
 fn keys_len(keys: &NativeKeys) -> usize {
@@ -1591,15 +1674,54 @@ enum ItemKind {
 
 /// CPython's `dictiterobject` state. Positions are entry positions, which move only when
 /// the table grows (as in CPython), so iteration over a dict mutated at constant size
-/// behaves like `dict`'s.
+/// behaves like `dict`'s. The fields are relaxed atomics read and written under the
+/// dict's read lock, like CPython's free-threaded build: threads sharing one iterator may
+/// see an item twice or not at all, but never anything inconsistent.
 struct IterState {
     /// Next position to examine (forward), or one past it (reverse).
-    pos: usize,
+    pos: AtomicUsize,
     /// The size at creation; `usize::MAX` once a size change was reported (sticky).
-    expected: usize,
+    expected: AtomicUsize,
     /// Keys left to yield; finding more (forward) means the keys changed.
-    remaining: usize,
-    exhausted: bool,
+    remaining: AtomicUsize,
+    exhausted: AtomicBool,
+}
+
+/// Outcome of one iteration step.
+enum Step {
+    Item(usize),
+    Done,
+    Changed(&'static std::ffi::CStr),
+}
+
+impl IterState {
+    /// One step of `dictiter_iternextkey` over `table`.
+    #[inline(always)]
+    fn step(&self, table: &KeyTable, reverse: bool) -> Step {
+        const R: Ordering = Ordering::Relaxed;
+        if self.exhausted.load(R) {
+            return Step::Done;
+        }
+        if table.len() != self.expected.load(R) {
+            self.expected.store(usize::MAX, R);
+            return Step::Changed(c"dictionary changed size during iteration");
+        }
+        let at = self.pos.load(R);
+        let next = if reverse { table.prev_live(at) } else { table.next_live(at) };
+        let Some(pos) = next else {
+            self.exhausted.store(true, R);
+            return Step::Done;
+        };
+        let remaining = self.remaining.load(R);
+        // CPython checks this for forward iteration only.
+        if remaining == 0 && !reverse {
+            self.exhausted.store(true, R);
+            return Step::Changed(c"dictionary keys changed during iteration");
+        }
+        self.remaining.store(remaining.saturating_sub(1), R);
+        self.pos.store(if reverse { pos } else { pos + 1 }, R);
+        Step::Item(pos)
+    }
 }
 
 /// Live iterator over a `Dict`'s keys, values or items.
@@ -1608,7 +1730,9 @@ pub struct DictIterator {
     dict: Py<Dict>,
     kind: ItemKind,
     reverse: bool,
-    state: Locked<IterState>,
+    state: IterState,
+    /// Items iteration: the result tuple, recycled while nobody else references it.
+    result: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -1618,48 +1742,30 @@ impl DictIterator {
     }
 
     fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let (key, value) = {
-            let mut st = self.state.write(py);
-            if st.exhausted {
-                return Ok(None);
-            }
-            let inner = self.dict.get().inner.read(py);
-            if inner.table.len() != st.expected {
-                st.expected = usize::MAX;
-                return Err(PyRuntimeError::new_err("dictionary changed size during iteration"));
-            }
-            let next = if self.reverse { inner.table.prev_live(st.pos) } else { inner.table.next_live(st.pos) };
-            let Some(pos) = next else {
-                st.exhausted = true;
-                return Ok(None);
+        let item = self.next_ptr(py);
+        if item.is_null() {
+            return match PyErr::take(py) {
+                Some(err) => Err(err),
+                None => Ok(None),
             };
-            // CPython checks this for forward iteration only.
-            if st.remaining == 0 && !self.reverse {
-                st.exhausted = true;
-                return Err(PyRuntimeError::new_err("dictionary keys changed during iteration"));
-            }
-            st.remaining = st.remaining.saturating_sub(1);
-            st.pos = if self.reverse { pos } else { pos + 1 };
-            let key = (self.kind != ItemKind::Values).then(|| inner.table.key_object(py, pos));
-            let value = (self.kind != ItemKind::Keys).then(|| inner.value(py, pos));
-            (key, value)
-        };
-        Ok(Some(match (key, value) {
-            (Some(k), Some(v)) => PyTuple::new(py, [k, v])?.into_any().unbind(),
-            (Some(k), None) => k,
-            (None, Some(v)) => v,
-            (None, None) => py.None(),
-        }))
+        }
+        // SAFETY: `next_ptr` returned a new reference.
+        Ok(Some(unsafe { Bound::from_owned_ptr(py, item) }.unbind()))
     }
 
     fn __length_hint__(&self, py: Python<'_>) -> usize {
-        let st = self.state.read(py);
-        let unchanged = !st.exhausted && self.dict.get().len(py) == st.expected;
-        if unchanged { st.remaining } else { 0 }
+        let st = &self.state;
+        let expected = st.expected.load(Ordering::Relaxed);
+        let unchanged = !st.exhausted.load(Ordering::Relaxed) && self.dict.get().len(py) == expected;
+        if unchanged { st.remaining.load(Ordering::Relaxed) } else { 0 }
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        visit.call(&self.dict)
+        visit.call(&self.dict)?;
+        if let Some(result) = &self.result {
+            visit.call(result)?;
+        }
+        Ok(())
     }
 }
 
