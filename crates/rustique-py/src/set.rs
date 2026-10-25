@@ -884,31 +884,34 @@ fn table_op(
 }
 
 /// Raw positions `0..n` in a scrambled order: blocks of 8 consecutive positions (one cache
-/// line of `i64` keys) visited with a stride coprime to the number of blocks, each position
-/// exactly once. Early-exit predicates (`isdisjoint`, `<=`) then sample the table the way
+/// line of `i64` keys) visited with an odd stride over a power-of-two block count, each
+/// position exactly once. Early-exit predicates (`isdisjoint`, `<=`) then sample the table the way
 /// CPython's hash-ordered iteration does, instead of scanning it in insertion order (which
 /// meets an overlapping tail only at the end: O(n) where `set` stops after a few probes).
 fn scrambled(n: usize) -> impl Iterator<Item = usize> {
     const BLOCK: usize = 8;
     let blocks = n.div_ceil(BLOCK);
-    let gcd = |mut a: usize, mut b: usize| {
-        while b != 0 {
-            (a, b) = (b, a % b);
-        }
-        a
-    };
-    let mut stride = (blocks.saturating_mul(5) / 8).max(1);
-    while blocks > 0 && gcd(stride, blocks) != 1 {
-        stride += 1;
-    }
-    (0..blocks).flat_map(move |i| {
-        let block = (i * stride) % blocks;
-        block * BLOCK..((block + 1) * BLOCK).min(n)
-    })
+    // An odd stride over a power-of-two count of (virtual) blocks visits each exactly once,
+    // with a mask instead of divisions; virtual blocks past the end are skipped.
+    let slots = blocks.next_power_of_two();
+    let stride = (slots / 8 * 5) | 1;
+    (0..slots)
+        .filter_map(move |i| {
+            let block = i.wrapping_mul(stride) & (slots - 1);
+            (block < blocks).then(|| block * BLOCK..((block + 1) * BLOCK).min(n))
+        })
+        .flatten()
 }
+
+/// Tables up to this many positions are scanned in order (too small for the order to
+/// matter more than the iteration overhead).
+const SCRAMBLE_ABOVE: usize = 64;
 
 /// Whether some live key of `x` (visited in [`scrambled`] order) satisfies `f`.
 fn any_scrambled<K: Hash + Eq>(x: &KeyIndex<K>, mut f: impl FnMut(&K) -> bool) -> bool {
+    if x.entries() <= SCRAMBLE_ABOVE {
+        return x.iter().any(|(_, k)| f(k));
+    }
     scrambled(x.entries()).any(|pos| x.get_at(pos).is_some_and(&mut f))
 }
 
@@ -918,6 +921,9 @@ fn find_scrambled_object<R>(
     x: &ObjectIndex,
     mut f: impl FnMut(&Bound<'_, PyAny>, u64) -> Option<R>,
 ) -> Option<R> {
+    if x.entries() <= SCRAMBLE_ABOVE {
+        return object_entries(py, x).find_map(|(_, obj, h)| f(obj, h));
+    }
     let index = x.index();
     scrambled(x.entries()).find_map(|pos| index.hash_at(pos).and_then(|h| f(x.raw_keys()[pos].bind(py), h)))
 }
