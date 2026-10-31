@@ -306,7 +306,8 @@ OPS: list[Op] = [
     Op("extend", ("list",), "c = C()\nc.extend(src)", result="c", group="build"),
     Op("x + y", SEQ, "x + y", group="build"),
     Op("x * 2", SEQ, "x * 2", group="build"),
-    Op("[*x, *y]", SEQ, "[*x, *y]", "C((*x, *y))", max_n=10_000, group="build"),
+    Op("[*x, *y]", ("list",), "[*x, *y]", "C((*x, *y))", max_n=10_000, group="build"),
+    Op("(*x, *y)", ("tuple",), "(*x, *y)", "C((*x, *y))", max_n=10_000, group="build"),
     Op("{**x, **t}", ("dict",), "{**x, **t}", "C({**x, **t})", max_n=10_000, group="build"),
     Op("x | t", ("dict",), "x | t", group="build"),
     # --- access ---------------------------------------------------------------------------
