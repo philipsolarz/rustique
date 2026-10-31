@@ -13,6 +13,7 @@ from __future__ import annotations
 import builtins
 import dis
 import inspect
+import opcode
 import math
 import pickle
 import pydoc
@@ -646,6 +647,9 @@ def test_identity_keyed_compiler_paths_still_apply() -> None:
     # against the original builtin plus an inlined loop: the check must keep passing.
     code = compile("any(v for v in x), all(v for v in x)", "<test>", "eval")
     consts = [i.argval for i in dis.get_instructions(code) if i.opname == "LOAD_COMMON_CONSTANT"]
+    # `dis` resolves the common constants on 3.15; 3.14 reports their table indices.
+    table = getattr(opcode, "_common_constants", [])
+    consts = [table[c] if type(c) is int and 0 <= c < len(table) else c for c in consts]
     _builtins.install()
     try:
         assert builtins.any is ORIG["any"] and builtins.all is ORIG["all"]
