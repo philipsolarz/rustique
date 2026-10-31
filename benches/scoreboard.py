@@ -620,7 +620,10 @@ def icount_module_dir() -> str:
         with open(c_file, "w") as f:
             f.write(ICOUNT_C)
         include = sysconfig.get_paths()["include"]
-        subprocess.check_call(["cc", "-O2", "-shared", "-fPIC", f"-I{include}", "-o", target, c_file])
+        # Build under a private name and rename: concurrent workers never see a partial file.
+        tmp = f"{target}.{os.getpid()}.tmp"
+        subprocess.check_call(["cc", "-O2", "-shared", "-fPIC", f"-I{include}", "-o", tmp, c_file])
+        os.replace(tmp, target)
     return cache
 
 
@@ -724,6 +727,7 @@ def run_instr(args: argparse.Namespace) -> None:
         args.size = ",".join(map(str, SMALL_SIZES))
     wanted = [i.strip() for i in args.impls.split(",") if i.strip()]
     groups = [["builtin"]] + [[i] for i in ("rustique", "enabled") if i in wanted]
+    icount_module_dir()  # build the client-request helper once, before any worker starts
     keys = [c.key for c in select(all_cells(), args)]
     chunks = [keys[i : i + args.chunk] for i in range(0, len(keys), args.chunk)]
     jobs = [(g, group, k, chunk) for g, group in enumerate(groups) for k, chunk in enumerate(chunks)]
