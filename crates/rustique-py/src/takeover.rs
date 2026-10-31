@@ -42,7 +42,8 @@ use pyo3::types::{PyDict, PyList, PySet, PyString, PyTuple};
 /// Free-threaded build: the object header carries thread id and shared refcount fields.
 const FREE_THREADED: bool = size_of::<ffi::PyObject>() > 2 * size_of::<usize>();
 
-type FastFn = unsafe extern "C" fn(*mut ffi::PyObject, *const *mut ffi::PyObject, ffi::Py_ssize_t) -> *mut ffi::PyObject;
+type FastFn =
+    unsafe extern "C" fn(*mut ffi::PyObject, *const *mut ffi::PyObject, ffi::Py_ssize_t) -> *mut ffi::PyObject;
 type FastKwFn = unsafe extern "C" fn(
     *mut ffi::PyObject,
     *const *mut ffi::PyObject,
@@ -333,7 +334,12 @@ const DELEGATE_BEFORE: isize = 16;
 trait Driver {
     /// # Safety
     /// `needle` is live; attached thread; `fast` runs no Python code.
-    unsafe fn run(&self, needle: *mut ffi::PyObject, mode: Scan, fast: impl Fn(*mut ffi::PyObject) -> Option<bool>) -> Outcome;
+    unsafe fn run(
+        &self,
+        needle: *mut ffi::PyObject,
+        mode: Scan,
+        fast: impl Fn(*mut ffi::PyObject) -> Option<bool>,
+    ) -> Outcome;
 }
 
 /// What one element contributes to a scan.
@@ -370,7 +376,12 @@ struct Direct<G>(G);
 
 impl<G: Fn(isize) -> *mut ffi::PyObject> Driver for Direct<G> {
     #[inline(always)]
-    unsafe fn run(&self, needle: *mut ffi::PyObject, mode: Scan, fast: impl Fn(*mut ffi::PyObject) -> Option<bool>) -> Outcome {
+    unsafe fn run(
+        &self,
+        needle: *mut ffi::PyObject,
+        mode: Scan,
+        fast: impl Fn(*mut ffi::PyObject) -> Option<bool>,
+    ) -> Outcome {
         let (mut i, mut count, mut ran_python) = (0isize, 0isize, false);
         loop {
             let item = (self.0)(i);
@@ -408,7 +419,12 @@ struct Owned(*mut ffi::PyObject);
 
 impl Driver for Owned {
     #[inline(always)]
-    unsafe fn run(&self, needle: *mut ffi::PyObject, mode: Scan, fast: impl Fn(*mut ffi::PyObject) -> Option<bool>) -> Outcome {
+    unsafe fn run(
+        &self,
+        needle: *mut ffi::PyObject,
+        mode: Scan,
+        fast: impl Fn(*mut ffi::PyObject) -> Option<bool>,
+    ) -> Outcome {
         // SAFETY: forwarded.
         unsafe { owned_scan(self.0, needle, mode, 0, 0, false, fast) }
     }
@@ -483,7 +499,12 @@ struct Locked(*mut ffi::PyObject);
 
 impl Driver for Locked {
     #[inline(always)]
-    unsafe fn run(&self, needle: *mut ffi::PyObject, mode: Scan, fast: impl Fn(*mut ffi::PyObject) -> Option<bool>) -> Outcome {
+    unsafe fn run(
+        &self,
+        needle: *mut ffi::PyObject,
+        mode: Scan,
+        fast: impl Fn(*mut ffi::PyObject) -> Option<bool>,
+    ) -> Outcome {
         enum Step {
             End,
             Hit,
@@ -646,7 +667,10 @@ unsafe fn scan_for(driver: impl Driver, needle: *mut ffi::PyObject, mode: Scan) 
                     }
                     // Canonical representation: equal strings have equal kinds and bytes.
                     let (kind, data) = str_kind_data(item, layout);
-                    Some(kind == np.kind && std::slice::from_raw_parts(data, nbytes) == std::slice::from_raw_parts(np.data, nbytes))
+                    Some(
+                        kind == np.kind
+                            && std::slice::from_raw_parts(data, nbytes) == std::slice::from_raw_parts(np.data, nbytes),
+                    )
                 } else if t == long_type() || t == bool_type() || t == float_type() || item == none {
                     Some(false)
                 } else {
@@ -657,7 +681,11 @@ unsafe fn scan_for(driver: impl Driver, needle: *mut ffi::PyObject, mode: Scan) 
         if needle == none {
             return driver.run(needle, mode, |item| {
                 let t = ffi::Py_TYPE(item);
-                if t == long_type() || t == bool_type() || t == float_type() || t == str_type() { Some(false) } else { None }
+                if t == long_type() || t == bool_type() || t == float_type() || t == str_type() {
+                    Some(false)
+                } else {
+                    None
+                }
             });
         }
         Outcome::Delegate
@@ -741,7 +769,8 @@ unsafe fn ft_prelude(list: *mut ffi::PyObject, needle: *mut ffi::PyObject, mode:
             return None;
         }
         let t = std::ptr::read_volatile(&raw const (*first).ob_type);
-        let scalar = t == long_type() || t == float_type() || t == str_type() || t == bool_type() || first == ffi::Py_None();
+        let scalar =
+            t == long_type() || t == float_type() || t == str_type() || t == bool_type() || first == ffi::Py_None();
         if scalar { None } else { Some(Outcome::Delegate) }
     }
 }
@@ -853,7 +882,12 @@ fn guard<R>(on_panic: R, body: impl FnOnce() -> R) -> R {
 /// # Safety
 /// `items` points at `n` live items; `needle` is live.
 #[inline(always)]
-unsafe fn prelude(items: *const *mut ffi::PyObject, n: isize, needle: *mut ffi::PyObject, mode: Scan) -> Option<Outcome> {
+unsafe fn prelude(
+    items: *const *mut ffi::PyObject,
+    n: isize,
+    needle: *mut ffi::PyObject,
+    mode: Scan,
+) -> Option<Outcome> {
     if n == 0 {
         return Some(Outcome::Done(Ok(if mode == Scan::First { None } else { Some(0) })));
     }
@@ -892,7 +926,9 @@ unsafe fn list_prelude(list: *mut ffi::PyObject, needle: *mut ffi::PyObject, mod
 #[inline(always)]
 unsafe fn tuple_prelude(tuple: *mut ffi::PyObject, needle: *mut ffi::PyObject, mode: Scan) -> Option<Outcome> {
     // SAFETY: immutable tuple items.
-    unsafe { prelude((*tuple.cast::<ffi::PyTupleObject>()).ob_item.as_ptr(), ffi::PyTuple_GET_SIZE(tuple), needle, mode) }
+    unsafe {
+        prelude((*tuple.cast::<ffi::PyTupleObject>()).ob_item.as_ptr(), ffi::PyTuple_GET_SIZE(tuple), needle, mode)
+    }
 }
 
 /// The scans proper, out of line so that the delegation path of the kernels stays small.
@@ -1008,7 +1044,8 @@ unsafe extern "C" fn k_list_index(
     if nargs == 1 {
         // SAFETY: METH_FASTCALL guarantees `nargs` valid argument pointers.
         // SAFETY: as above.
-        let outcome = unsafe { list_prelude(slf, *args, Scan::First).unwrap_or_else(|| scan_list_slow(slf, *args, Scan::First)) };
+        let outcome =
+            unsafe { list_prelude(slf, *args, Scan::First).unwrap_or_else(|| scan_list_slow(slf, *args, Scan::First)) };
         if let Outcome::Done(r) = outcome {
             // SAFETY: attached thread.
             return unsafe { index_result(r, &o.list_index_msg) };
@@ -1027,7 +1064,9 @@ unsafe extern "C" fn k_tuple_index(
     if nargs == 1 {
         // SAFETY: METH_FASTCALL guarantees `nargs` valid argument pointers.
         // SAFETY: as above.
-        let outcome = unsafe { tuple_prelude(slf, *args, Scan::First).unwrap_or_else(|| scan_tuple_slow(slf, *args, Scan::First)) };
+        let outcome = unsafe {
+            tuple_prelude(slf, *args, Scan::First).unwrap_or_else(|| scan_tuple_slow(slf, *args, Scan::First))
+        };
         if let Outcome::Done(r) = outcome {
             // SAFETY: attached thread.
             return unsafe { index_result(r, &o.tuple_index_msg) };
@@ -1061,7 +1100,8 @@ unsafe extern "C" fn k_list_count(slf: *mut ffi::PyObject, value: *mut ffi::PyOb
 
 unsafe extern "C" fn k_tuple_count(slf: *mut ffi::PyObject, value: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: METH_O: `slf` is a tuple, `value` a live object.
-    match unsafe { tuple_prelude(slf, value, Scan::Count).unwrap_or_else(|| scan_tuple_slow(slf, value, Scan::Count)) } {
+    match unsafe { tuple_prelude(slf, value, Scan::Count).unwrap_or_else(|| scan_tuple_slow(slf, value, Scan::Count)) }
+    {
         // SAFETY: attached thread.
         Outcome::Done(r) => unsafe { count_result(r) },
         // SAFETY: same arguments to the original METH_O function.
@@ -1088,7 +1128,11 @@ unsafe fn kw_is(name: *mut ffi::PyObject, s: &CStr) -> bool {
 ///
 /// # Safety
 /// Vectorcall arguments as received by a METH_FASTCALL|METH_KEYWORDS function.
-unsafe fn sort_args(args: *const *mut ffi::PyObject, nargs: ffi::Py_ssize_t, kwnames: *mut ffi::PyObject) -> Option<bool> {
+unsafe fn sort_args(
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> Option<bool> {
     if nargs != 0 {
         return None;
     }
@@ -1171,24 +1215,34 @@ unsafe fn try_sort(list: *mut ffi::PyObject, reverse: bool) -> Option<()> {
         let items = std::slice::from_raw_parts_mut((*list.cast::<ffi::PyListObject>()).ob_item, n);
         let t0 = ffi::Py_TYPE(items[0]);
         if t0 == long_type() || t0 == bool_type() {
-            sort_by_keys(items, reverse, |p| {
-                let t = ffi::Py_TYPE(p);
-                if t != long_type() && t != bool_type() {
-                    return None;
-                }
-                int_value(p)
-            }, i64::cmp)
+            sort_by_keys(
+                items,
+                reverse,
+                |p| {
+                    let t = ffi::Py_TYPE(p);
+                    if t != long_type() && t != bool_type() {
+                        return None;
+                    }
+                    int_value(p)
+                },
+                i64::cmp,
+            )
         } else if t0 == float_type() {
             // No NaN: `<` is a strict weak order (-0.0 and 0.0 are equivalent and keep
             // their order, like CPython; `total_cmp` would separate them). With NaNs
             // CPython's order is algorithm-specific: not handled.
-            sort_by_keys(items, reverse, |p| {
-                if ffi::Py_TYPE(p) != float_type() {
-                    return None;
-                }
-                let v = float_value(p);
-                if v.is_nan() { None } else { Some(v) }
-            }, |a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+            sort_by_keys(
+                items,
+                reverse,
+                |p| {
+                    if ffi::Py_TYPE(p) != float_type() {
+                        return None;
+                    }
+                    let v = float_value(p);
+                    if v.is_nan() { None } else { Some(v) }
+                },
+                |a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal),
+            )
         } else if t0 == str_type() {
             let mut latin = true;
             for &p in items.iter() {
@@ -1199,10 +1253,15 @@ unsafe fn try_sort(list: *mut ffi::PyObject, reverse: bool) -> Option<()> {
                     latin = false;
                 }
             }
-            sort_by_keys(items, reverse, |p| {
-                let parts = str_parts(p);
-                Some((str_prefix(&parts, latin), parts))
-            }, |a, b| a.0.cmp(&b.0).then_with(|| str_cmp(&a.1, &b.1)))
+            sort_by_keys(
+                items,
+                reverse,
+                |p| {
+                    let parts = str_parts(p);
+                    Some((str_prefix(&parts, latin), parts))
+                },
+                |a, b| a.0.cmp(&b.0).then_with(|| str_cmp(&a.1, &b.1)),
+            )
         } else {
             None
         }
@@ -1227,7 +1286,8 @@ unsafe fn sort_by_keys<K: Copy>(
 ) -> Option<()> {
     let n = items.len();
     let mut heap: Vec<(K, *mut ffi::PyObject)> = Vec::new();
-    let mut stack: [std::mem::MaybeUninit<(K, *mut ffi::PyObject)>; STACK_SORT] = [const { std::mem::MaybeUninit::uninit() }; STACK_SORT];
+    let mut stack: [std::mem::MaybeUninit<(K, *mut ffi::PyObject)>; STACK_SORT] =
+        [const { std::mem::MaybeUninit::uninit() }; STACK_SORT];
     let pairs: &mut [(K, *mut ffi::PyObject)] = if n <= STACK_SORT {
         for (slot, &p) in stack.iter_mut().zip(items.iter()) {
             slot.write((key(p)?, p));
@@ -1423,10 +1483,22 @@ fn install(py: Python<'_>) -> PyResult<Vec<&'static str>> {
     let defs = unsafe {
         [
             ("list.sort", method_def(&list_t.getattr("sort")?, c"sort", fast_kw), k_list_sort as FastKwFn as usize),
-            ("list.index", method_def(&list_t.getattr("index")?, c"index", ffi::METH_FASTCALL), k_list_index as FastFn as usize),
+            (
+                "list.index",
+                method_def(&list_t.getattr("index")?, c"index", ffi::METH_FASTCALL),
+                k_list_index as FastFn as usize,
+            ),
             ("list.count", method_def(&list_t.getattr("count")?, c"count", ffi::METH_O), k_list_count as OFn as usize),
-            ("tuple.index", method_def(&tuple_t.getattr("index")?, c"index", ffi::METH_FASTCALL), k_tuple_index as FastFn as usize),
-            ("tuple.count", method_def(&tuple_t.getattr("count")?, c"count", ffi::METH_O), k_tuple_count as OFn as usize),
+            (
+                "tuple.index",
+                method_def(&tuple_t.getattr("index")?, c"index", ffi::METH_FASTCALL),
+                k_tuple_index as FastFn as usize,
+            ),
+            (
+                "tuple.count",
+                method_def(&tuple_t.getattr("count")?, c"count", ffi::METH_O),
+                k_tuple_count as OFn as usize,
+            ),
         ]
     };
     // SAFETY: ready static types.
@@ -1460,7 +1532,9 @@ fn install(py: Python<'_>) -> PyResult<Vec<&'static str>> {
     if sites.len() != expected.len() {
         let found: Vec<_> = sites.iter().map(|s| s.name).collect();
         let missing: Vec<_> = expected.iter().filter(|n| !found.contains(n)).collect();
-        return Err(PyRuntimeError::new_err(format!("rustique takeover: cannot patch {missing:?} on this interpreter")));
+        return Err(PyRuntimeError::new_err(format!(
+            "rustique takeover: cannot patch {missing:?} on this interpreter"
+        )));
     }
     if ORIGINALS.get().is_none() {
         let orig = |name: &str| sites.iter().find(|s| s.name == name).map(|s| s.original).unwrap_or(0);

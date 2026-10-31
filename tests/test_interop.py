@@ -31,6 +31,7 @@ SCALARS = ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"]
 
 def test_public_api() -> None:
     expected = {"List", "Tuple", "Dict", "Set", "ListType", "DictType", "SetType", "X", "Expr", "arange", "__version__", *SCALARS}
+    expected |= {"FrozenSet", "FrozenSetType"}
     assert set(rs.__all__) == expected
     for name in expected:
         assert hasattr(rs, name), name
@@ -44,6 +45,8 @@ def test_public_api() -> None:
     assert type(List[int]) is rs.ListType
     assert type(Dict[str, int]) is rs.DictType
     assert type(Set[int]) is rs.SetType
+    assert type(rs.FrozenSet[int]) is rs.FrozenSetType
+    assert rs.FrozenSet.__module__ == "rustique"
 
 
 def test_abc_registration() -> None:
@@ -56,6 +59,10 @@ def test_abc_registration() -> None:
         assert isinstance(s, abc), abc
     for obj in (lst, d, s):
         assert not isinstance(obj, cabc.Hashable)
+    fs = rs.FrozenSet([1])
+    for abc in (cabc.Set, cabc.Collection, cabc.Hashable):
+        assert isinstance(fs, abc), abc
+    assert not isinstance(fs, cabc.MutableSet)
     assert not isinstance(lst, cabc.Mapping)
     assert issubclass(List, cabc.MutableSequence)
 

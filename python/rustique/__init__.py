@@ -1,16 +1,19 @@
 """Rustique: Python's data model, Rust's memory.
 
-Typed, natively stored ``List``/``Dict``/``Set`` containers with builtin-compatible
+Typed, natively stored ``List``/``Dict``/``Set``/``FrozenSet`` containers with builtin-compatible
 semantics, vectorised expressions over the element placeholder ``X``, and fixed-width
 scalar types. See ``docs/ARCHITECTURE.md``.
 """
 
 from collections.abc import MutableMapping, MutableSequence, MutableSet, Sequence
+from collections.abc import Set as AbstractSet
 
 from rustique._rustique import (
     Dict,
     DictType,
     Expr,
+    FrozenSet,
+    FrozenSetType,
     List,
     ListType,
     Set,
@@ -39,6 +42,8 @@ __all__ = [
     "Dict",
     "DictType",
     "Expr",
+    "FrozenSet",
+    "FrozenSetType",
     "List",
     "ListType",
     "Set",
@@ -65,3 +70,4 @@ MutableSequence.register(List)
 MutableMapping.register(Dict)
 MutableSet.register(Set)
 Sequence.register(Tuple)
+AbstractSet.register(FrozenSet)

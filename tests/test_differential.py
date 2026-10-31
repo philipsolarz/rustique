@@ -1128,6 +1128,8 @@ def build_set_machine(subject_kind: str, kk: KeyKind) -> type[RuleBasedStateMach
             return frozenset(items)
         if form == "list":
             return list(items)
+        if form == "rsfrozen":
+            return rs.FrozenSet(items) if rs is not None else frozenset(items)
         return make(items)
 
     def check_set(ctx: str, got: Any, expected: set[Any], lenient: bool) -> None:
@@ -1194,14 +1196,14 @@ def build_set_machine(subject_kind: str, kk: KeyKind) -> type[RuleBasedStateMach
         def clear(self) -> None:
             self.mutate("clear()", lambda m: m.clear(), lambda s: s.clear())
 
-        @rule(xs=st.lists(valid, max_size=5), name=st.sampled_from(SET_UPDATES), form=st.sampled_from(["set", "list", "subject", "frozenset"]))
+        @rule(xs=st.lists(valid, max_size=5), name=st.sampled_from(SET_UPDATES), form=st.sampled_from(["set", "list", "subject", "frozenset", "rsfrozen"]))
         def update_method(self, xs: list[Any], name: str, form: str) -> None:
             cx = [co(x) for x in xs]
             operand = as_operand(xs, form)
             # Which of two equal-but-differently-typed items survives an intersection is a
             # CPython implementation detail (it depends on operand sizes).
             lenient = name == "intersection_update" and cross_type_equal(list(self.model) + cx)
-            if form in ("set", "frozenset", "subject"):
+            if form in ("set", "frozenset", "subject", "rsfrozen"):
                 lenient = lenient or cross_type_equal(xs)
             self.mutate(f"{name}({form} {xs!r})", lambda m: getattr(m, name)(cx), lambda s: getattr(s, name)(operand))
             self.resync_if_lenient(lenient)
@@ -1210,7 +1212,7 @@ def build_set_machine(subject_kind: str, kk: KeyKind) -> type[RuleBasedStateMach
         def update_with_invalid(self, x: Any, name: str) -> None:
             self.mutate(f"{name}([{x!r}])", lambda m: getattr(m, name)([co(x)]), lambda s: getattr(s, name)([x]))
 
-        @rule(xs=st.lists(valid, max_size=5), op=st.sampled_from(sorted(SET_IOPS)), form=st.sampled_from(["set", "subject", "frozenset"]))
+        @rule(xs=st.lists(valid, max_size=5), op=st.sampled_from(sorted(SET_IOPS)), form=st.sampled_from(["set", "subject", "frozenset", "rsfrozen"]))
         def inplace_operator(self, xs: list[Any], op: str, form: str) -> None:
             cx = [co(x) for x in xs]
             lenient = cross_type_equal(xs) or (op == "&=" and cross_type_equal(list(self.model) + cx))
@@ -1221,7 +1223,7 @@ def build_set_machine(subject_kind: str, kk: KeyKind) -> type[RuleBasedStateMach
             assert self.subject is before, f"{op} must update in place"
             self.resync_if_lenient(lenient)
 
-        @rule(xs=st.lists(valid, max_size=5), op=st.sampled_from(sorted(SET_OPS)), form=st.sampled_from(["set", "subject", "frozenset"]), reflected=st.booleans())
+        @rule(xs=st.lists(valid, max_size=5), op=st.sampled_from(sorted(SET_OPS)), form=st.sampled_from(["set", "subject", "frozenset", "rsfrozen"]), reflected=st.booleans())
         def binary_operator(self, xs: list[Any], op: str, form: str, reflected: bool) -> None:
             cx = set(co(x) for x in xs)
             f = SET_OPS[op]
@@ -1238,9 +1240,13 @@ def build_set_machine(subject_kind: str, kk: KeyKind) -> type[RuleBasedStateMach
             lenient = cross_type_equal(list(self.model) + list(xs)) or (typed and form != "subject")
             check_set(op, got[0], expected, lenient)
             if subject_kind != "builtin":
-                assert type(got[0]) is type(self.subject), f"{op}: result type {type(got[0])}"
+                # The left operand's kind decides: a (rustique or builtin) frozen set on the
+                # left gives a `FrozenSet`.
+                frozen_left = reflected and form in ("frozenset", "rsfrozen")
+                want = rs.FrozenSet if frozen_left else type(self.subject)
+                assert type(got[0]) is want, f"{op}: result type {type(got[0])}"
 
-        @rule(xs=st.lists(valid, max_size=5), name=st.sampled_from(SET_METHODS), form=st.sampled_from(["set", "list", "subject"]), n_args=st.integers(0, 2))
+        @rule(xs=st.lists(valid, max_size=5), name=st.sampled_from(SET_METHODS), form=st.sampled_from(["set", "list", "subject", "rsfrozen"]), n_args=st.integers(0, 2))
         def method(self, xs: list[Any], name: str, form: str, n_args: int) -> None:
             if name == "symmetric_difference":
                 n_args = 1  # takes exactly one argument
@@ -1252,12 +1258,12 @@ def build_set_machine(subject_kind: str, kk: KeyKind) -> type[RuleBasedStateMach
             check_set(name, got, expected, cross_type_equal(list(self.model) + list(xs)) or (typed and form != "subject"))
             assert type(got) is type(self.subject)
 
-        @rule(xs=st.lists(valid, max_size=5), name=st.sampled_from(SET_PREDICATES), form=st.sampled_from(["set", "list", "subject"]))
+        @rule(xs=st.lists(valid, max_size=5), name=st.sampled_from(SET_PREDICATES), form=st.sampled_from(["set", "list", "subject", "rsfrozen"]))
         def predicate(self, xs: list[Any], name: str, form: str) -> None:
             cx = [co(x) for x in xs]
             assert_same_outcome(name, outcome(lambda: getattr(self.model, name)(cx)), outcome(lambda: getattr(self.subject, name)(as_operand(xs, form))))
 
-        @rule(variant=st.sampled_from(["copy", "subset", "superset", "random"]), xs=st.lists(valid, max_size=3), form=st.sampled_from(["set", "frozenset", "subject"]))
+        @rule(variant=st.sampled_from(["copy", "subset", "superset", "random"]), xs=st.lists(valid, max_size=3), form=st.sampled_from(["set", "frozenset", "subject", "rsfrozen"]))
         def compare(self, variant: str, xs: list[Any], form: str) -> None:
             cx = [co(x) for x in xs]
             if variant == "copy":
