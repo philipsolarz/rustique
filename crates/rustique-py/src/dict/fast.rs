@@ -493,6 +493,23 @@ static SETDEFAULT_DEF: MethodDef = MethodDef(ffi::PyMethodDef {
     ml_doc: SETDEFAULT_DOC.as_ptr(),
 });
 
+/// `tp_flags |= f` for both layouts (`c_ulong`, an atomic on free-threaded builds).
+trait OrFlags {
+    fn or_flags(&mut self, f: std::ffi::c_ulong);
+}
+
+impl OrFlags for std::ffi::c_ulong {
+    fn or_flags(&mut self, f: std::ffi::c_ulong) {
+        *self |= f;
+    }
+}
+
+impl OrFlags for std::sync::atomic::AtomicU64 {
+    fn or_flags(&mut self, f: std::ffi::c_ulong) {
+        self.fetch_or(u64::from(f), Ordering::Relaxed);
+    }
+}
+
 /// Install the fast paths on `Dict` and `DictIterator`. Called once from module init.
 pub(super) fn install(py: Python<'_>) -> PyResult<()> {
     if ORIGINALS.get().is_some() {
@@ -561,7 +578,7 @@ pub(super) fn install(py: Python<'_>) -> PyResult<()> {
         (*tp).tp_vectorcall = Some(vectorcall);
         // `match d: case {...}` needs the mapping flag. `MutableMapping.register` cannot set
         // it on an immutable type, so it is set here (subclasses inherit it).
-        (*tp).tp_flags |= ffi::Py_TPFLAGS_MAPPING;
+        OrFlags::or_flags(&mut (*tp).tp_flags, ffi::Py_TPFLAGS_MAPPING);
         ffi::PyType_Modified(tp);
     }
     Ok(())
