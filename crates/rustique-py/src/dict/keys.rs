@@ -644,6 +644,10 @@ fn str_class(obj: &Bound<'_, PyAny>, exact: bool, hash: impl FnOnce() -> PyResul
 
 /// The value of an `int` (or `int` subclass) if it fits in i64. Runs no Python code.
 fn int_value(obj: &Bound<'_, PyAny>) -> Option<i64> {
+    if obj.is_exact_instance_of::<PyInt>() {
+        // SAFETY: `obj` is a live exact `int` (compact values are read inline).
+        return unsafe { exact_int_value(obj.as_ptr()) };
+    }
     let mut overflow = 0;
     // SAFETY: `obj` is a live `int` instance (checked by the caller), so this reads its value
     // without calling `__index__`; on overflow no exception is set and `overflow` is nonzero.
