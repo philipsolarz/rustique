@@ -1,14 +1,34 @@
 # Rustique
 
-**Python's data model, Rust's memory.**
+**Python's builtin containers, powered by Rust.**
 
-Rustique gives you `list`, `dict` and `set` with the Python behaviour you know, backed by
-typed, unboxed Rust storage. Data is validated once at the boundary and then lives in
-native memory, where bulk operations run as single Rust calls, exportable zero-copy to
-`memoryview`/NumPy. It runs safely on free-threaded Python.
+Two ways to use it:
+
+1. **`rustique.enable()`** makes existing code faster without changing it. `list`, `tuple`,
+   `dict`, `set` and `frozenset` stay the exact builtin types (every interpreter fast path,
+   C extension and `isinstance` check keeps working), while `list.sort`/`sorted`,
+   `index`/`count`/`in` on lists and tuples, and the builtins `sum`, `min`, `max`, `any`,
+   `all` run Rust kernels wherever they provably compute CPython's result, and CPython's own
+   code everywhere else.
+2. **Rustique's own containers** (`List`, `Tuple`, `Dict`, `Set`, `FrozenSet`) store
+   homogeneous data unboxed in Rust (`Vec<i64>`, `Vec<f64>`, strings…), for typed data,
+   bulk kernels, vectorised expressions and zero-copy export. Use them explicitly, or let
+   `rs.enable(native="mypkg.*")` build them from the literals of opted-in modules.
 
 ```python
+import random
 import rustique as rs
+
+rs.enable()                                # from here on, the builtins run Rust kernels
+
+floats = [random.random() for _ in range(1_000_000)]
+ints = [random.randrange(10**9) for _ in range(1_000_000)]
+max(floats), min(ints)                     # ~6-7x faster than plain CPython
+ints.sort(); 42 in ints; ints.count(7)     # ~5x, ~4x, ~4x faster
+type(ints) is list                         # True: same objects, same results
+```
+
+```python
 from rustique import List, Dict, Set, X
 
 nums = List[int](range(1_000_000))     # Vec<i64> inside, built natively from the range
@@ -35,7 +55,17 @@ rewrite stores data natively and pays per *operation* instead of per *element*.
 
 ## Features
 
-- **Typed containers** — `List[T]`, `Dict[K, V]`, `Set[T]` with schemas compiled from
+- **In-place acceleration of the builtins** — `rustique.enable()` swaps the C entry points
+  CPython calls for `list.sort`, `list`/`tuple` `index`/`count`/`__contains__` and the
+  builtin functions `sum`/`min`/`max`/`sorted`/`any`/`all`; nothing else changes (same
+  types, identity, `repr`, pickling, specializer and JIT paths). Process-wide, reversible
+  (`rustique.disable()`), and decided by measurement: see
+  [`docs/DECISIONS.md`](docs/DECISIONS.md) and [`docs/TAKEOVER.md`](docs/TAKEOVER.md).
+- **Opt-in native tier** — `rs.enable(native="pkg.*")`, `python -m rustique --native
+  'pkg.*' app.py` or `@rs.native` rewrite the literals, displays, comprehensions and
+  `list()`/`dict()`/`set()` calls of chosen modules to Rustique containers.
+- **Typed containers** — `List[T]`, `Dict[K, V]`, `Set[T]`, `FrozenSet[T]` (plus an
+  immutable, hash-compatible `Tuple`) with schemas compiled from
   ordinary type expressions: `int`, `float`, `bool`, `str`, `int | None`, unions,
   `List[List[int]]`, `dict[str, list[float]]`, `Annotated`, PEP 695 aliases, any class.
   Full builtin parity: slicing (incl. extended slice assignment), live iterators,
@@ -69,26 +99,37 @@ rewrite stores data natively and pays per *operation* instead of per *element*.
 
 ## Performance
 
-Measured on CPython 3.15.1, release build, 1M elements; ratio = rustique time ÷ builtin
-time (lower is faster), every result verified against the builtin. Full report:
-[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+Measured on a dedicated AWS c7a.8xlarge, CPython 3.15.1 and 3.15.1t (GIL disabled), release
+builds; ratio = Rustique ÷ CPython (lower is faster), every result verified against
+CPython's. Full report: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
-| Bulk operations (one Rust call) | Ratio | | Per-element access from Python | Ratio |
-|---|---|---|---|---|
-| `lst.sort()` ints / floats / strs | 0.02 / 0.03 / 0.07 | | `List(list_of_ints)` | 0.93 |
-| `x in lst` | 0.04 | | `List(list_of_floats)` | 0.75 |
-| `lst.min()` / `lst.max()` | 0.05 | | `lst[i]`, random, 1M | 0.59 |
-| `List(range(n))` | 0.05 | | `lst[i]`, random, 100k | 1.05 |
-| `lst.map(X * 2 + 1)` vs comprehension | 0.06 | | `for v in lst` | 1.52 |
-| `lst.filter(X % 3 == 0)` vs comprehension | 0.10 | | `List(list_of_strs)` | 1.97 |
-| `lst.sum()` ints / floats (bit-exact) | 0.12 / 0.26 | | `lst.append(v)` loop | 3.60 (`array.array`: 3.56) |
-| `lst[::3]` | 0.25 | | `Dict` lookup, int / str keys | 1.34 / 1.75 |
-| `Set` union | 0.84 | | `Dict` build | ~2.0 |
+**`rustique.enable()` against plain CPython** (3.15.1 — 3.15.1t):
 
-Bulk work runs at NumPy speed with Python semantics (`map` ≈ NumPy's 0.04, `sort` beats
-`numpy.sort`). Element-at-a-time code from Python pays a Python object per read and a lock
-per call, in line with `array.array`. Use Rustique where data stays in Rust between
-operations.
+| | |
+|---|---|
+| pyperformance (~120 benchmarks), geometric mean | 1.00× — 1.01× |
+| pyflakes lint / csv→json pipeline / networkx graph (whole processes) | 0.963 / 0.987 / 1.005 — 0.998 / 0.993 / 1.006 |
+| scoreboard, 0–100 elements: cells within 1.05 (instructions) | 3810/3814 — 3814/3814 (every result identical) |
+| scoreboard, 10k/1M elements: geometric mean (wall time) | 0.88 — 0.88 (kernel paths 0.46 — 0.48; untouched code 1.00) |
+| 1M elements: `max(floats)`, `min(ints)`, `ints.sort()`, `x in ints`, `ints.count(v)` | 0.13, 0.17, 0.18, 0.26, 0.25 — 0.21, 0.21, 0.15, 0.33, 0.33 |
+| process startup (`import rustique; rustique.enable()`) | +1.7 ms (1.17×) — +2.2 ms (1.18×) |
+
+**Rustique's own containers against the builtins**, geometric mean over every operation
+of the scoreboard (3.15.1):
+
+| | 0–100 elements | 10k/1M elements |
+|---|---|---|
+| `List` | 1.21 | 0.75 |
+| `Tuple` | 1.32 | 0.95 |
+| `Dict` | 1.70 | 1.18 |
+| `Set` | 1.63 | 0.89 |
+| `FrozenSet` | 1.49 | 0.95 |
+
+Bulk operations run as single Rust calls: `lst.sort()` of ints 0.02–0.03, `x in lst` 0.04,
+`lst.min()` 0.05, `lst.map(X * 2 + 1)` 0.06 vs a comprehension. Per-element operations on
+Rustique containers cannot reach 1.00 on CPython: the interpreter only fast-paths exact
+builtins (an empty subclass of `list` already costs 2.4× for `x[i]`), which is why
+`rustique.enable()` keeps the builtins and accelerates them in place.
 
 ## Install & develop
 
@@ -115,5 +156,6 @@ crates/rustique-py     PyO3 bindings → rustique._rustique (incl. the C-API cap
 crates/rustique-api    safe Rust client of the capsule, for downstream PyO3 extensions
 examples/rust_extension  a downstream extension built on rustique-api
 python/rustique        Python package and type stubs
-docs/                  ARCHITECTURE.md (contract), ARCHAEOLOGY.md, ROADMAP.md
+docs/                  ARCHITECTURE.md (contract), DECISIONS.md, TAKEOVER.md, BENCHMARKS.md,
+                       ROADMAP.md, ARCHAEOLOGY.md
 ```

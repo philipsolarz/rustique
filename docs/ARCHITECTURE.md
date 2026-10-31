@@ -104,7 +104,8 @@ python/rustique/
 tests/                        # pytest (parity, typing, strategies, expr, threads, buffer)
 benches/                      # honest benchmark harness
 examples/                     # runnable examples; rust_extension/ is a downstream crate
-docs/                         # ARCHITECTURE.md (this), ARCHAEOLOGY.md, ROADMAP.md
+docs/                         # ARCHITECTURE.md (this), DECISIONS.md, TAKEOVER.md, BENCHMARKS.md,
+                              # ROADMAP.md, ARCHAEOLOGY.md; scoreboard/ (full parity matrices)
 ```
 
 ---
