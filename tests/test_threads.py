@@ -168,7 +168,8 @@ def test_readers_during_appends(impl: ListImpl) -> None:
     def reader() -> int:
         reads = 0
         domain = writers * k + 1
-        while not done.is_set():
+        # At least one pass, even if the (fast) writers finish before this thread starts.
+        while reads == 0 or not done.is_set():
             n = len(lst)
             assert n >= 1
             x = lst[n - 1]  # never shrinks: index n-1 stays valid

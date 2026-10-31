@@ -18,6 +18,7 @@ pub mod set;
 pub mod storage;
 pub mod sync;
 pub mod takeover;
+pub mod tuple;
 pub mod typing;
 
 #[pymodule]
@@ -26,6 +27,7 @@ fn _rustique(m: &Bound<'_, PyModule>) -> PyResult<()> {
     scalars::register(m)?;
     typing::register(m)?;
     list::register(m)?;
+    tuple::register(m)?;
     dict::register(m)?;
     set::register(m)?;
     frozenset::register(m)?;

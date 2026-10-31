@@ -512,6 +512,7 @@ dependencies = [
  "hashbrown",
  "parking_lot",
  "pyo3",
+ "pyo3-build-config",
  "rustique-core",
 ]
 
