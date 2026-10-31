@@ -1090,6 +1090,42 @@ def report(args: argparse.Namespace) -> None:
         sys.stdout.write(text)
 
 
+def summary(args: argparse.Namespace) -> None:
+    """Per type and build: cells, cells at parity and geometric-mean ratio, before -> after."""
+    import math
+
+    def stats(files: list[str], impl: str) -> dict[tuple[str, str], tuple[int, int, float, int]]:
+        cells, _ = load_results(files)
+        by_key = {c.key: c for c in all_cells()}
+        acc: dict[tuple[str, str], list[Any]] = {}
+        for (build, key), e in cells.items():
+            cell = by_key.get(key)
+            if cell is None or (args.size and cell.n not in SMALL_SIZES):
+                continue
+            r, st, _ = cell_ratio(e, impl, cell.n)
+            slot = acc.setdefault((build, cell.type), [0, 0, 0.0, 0])
+            if st in ("missing",):
+                continue
+            slot[0] += 1
+            if r is not None and r > 0 and st not in ("error", "mismatch"):
+                slot[2] += math.log(r)
+                slot[3] += 1
+                if r <= 1.05:
+                    slot[1] += 1
+        return {k: (v[0], v[1], math.exp(v[2] / v[3]) if v[3] else float("nan"), v[3]) for k, v in acc.items()}
+
+    before = stats(args.before, args.impl) if args.before else {}
+    after = stats(args.after, args.impl)
+    print(f"| build | type | cells | at parity before | at parity after | geomean before | geomean after |")
+    print("|---|---|---:|---:|---:|---:|---:|")
+    for (build, t) in sorted(after, key=lambda k: (k[0], TYPES.index(k[1]))):
+        n, p, g, _ = after[(build, t)]
+        b = before.get((build, t))
+        bp = f"{b[1]}/{b[0]}" if b else "—"
+        bg = f"{b[2]:.2f}" if b and b[3] else "—"
+        print(f"| {build} | {t} | {n} | {bp} | {p}/{n} | {bg} | {g:.2f} |")
+
+
 # --------------------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------------------
@@ -1133,6 +1169,11 @@ def main() -> None:
     rp.add_argument("files", nargs="+")
     rp.add_argument("-o", "--output")
     rp.add_argument("--impl", default="rustique", choices=("rustique", "enabled"))
+    sp = sub.add_parser("summary", help="parity counts and geometric means, before -> after")
+    sp.add_argument("--before", nargs="*", default=[])
+    sp.add_argument("--after", nargs="+", required=True)
+    sp.add_argument("--impl", default="rustique", choices=("rustique", "enabled"))
+    sp.add_argument("--size", action="store_true", help="only sizes 0-100 (instruction counts)")
     args = p.parse_args()
 
     if args.cmd == "list":
@@ -1154,6 +1195,8 @@ def main() -> None:
         run_time(args)
     elif args.cmd == "report":
         report(args)
+    elif args.cmd == "summary":
+        summary(args)
 
 
 if __name__ == "__main__":
