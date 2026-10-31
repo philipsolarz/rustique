@@ -695,6 +695,20 @@ fn native_values_equal(a: &Column, i: usize, b: &Column, j: usize) -> Option<boo
     Some(keys::values_equal(&a.get(i)?, &b.get(j)?))
 }
 
+/// INTERFACE: a `Dict`'s keys borrowed under its read lock (see [`Dict::with_keys`]). Each
+/// variant is a [`KeyIndex`](rustique_core::index::KeyIndex): `iter()` yields the live
+/// `(position, key)` pairs in insertion order (tombstoned slots are skipped).
+pub enum DictKeysRef<'a> {
+    /// No keys yet (an untyped dict before its first key).
+    Empty,
+    /// Native `int` keys (each read back as a new `int`).
+    Int(&'a rustique_core::index::KeyIndex<i64>),
+    /// Native `str` keys (set-style tables only; dicts keep `str` keys as objects).
+    NativeStr(&'a rustique_core::index::KeyIndex<rustique_core::CompactString>),
+    /// Key objects, including exact `str` keys (the stored objects themselves).
+    Object(&'a rustique_core::index::KeyIndex<Py<PyAny>, ()>),
+}
+
 /// An insertion-ordered mapping with native key and value storage.
 #[pyclass(module = "rustique", frozen, mapping, subclass, immutable_type)]
 pub struct Dict {
@@ -720,6 +734,19 @@ impl Dict {
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, Dict>> {
         Bound::new(py, Dict::build(py, key_schema, value_schema, arg, kwargs)?)
+    }
+
+    /// INTERFACE (builtins kernels): run `f` on the keys under the read lock, without boxing.
+    /// `f` must not run Python code (no `__eq__`/`__hash__`/`__lt__`, no decref of objects
+    /// that may have finalizers, no allocation of GC-tracked objects).
+    pub fn with_keys<R>(&self, py: Python<'_>, f: impl FnOnce(DictKeysRef<'_>) -> R) -> R {
+        let inner = self.inner.read(py);
+        f(match inner.table.store() {
+            KeyStore::Empty => DictKeysRef::Empty,
+            KeyStore::Int(ki) => DictKeysRef::Int(ki),
+            KeyStore::Str(ki) => DictKeysRef::NativeStr(ki),
+            KeyStore::Object(ki) => DictKeysRef::Object(ki),
+        })
     }
 
     /// INTERFACE.
