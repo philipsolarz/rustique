@@ -397,6 +397,27 @@ impl Hashed {
         }
     }
 
+    /// Whether the kernels pay off for this container (measured on 1k..1M elements, ratio vs
+    /// CPython's builtin): dict keys always do (0.38-0.89); a `set`/`frozenset` walks its
+    /// whole table in hash order, which only pays off for numbers (int/float 0.37-0.90,
+    /// while str reaches 1.02 and tuples 1.17-1.20 at 1M), so sets go to the kernels only
+    /// when their first element is an exact `int` or `float`.
+    ///
+    /// # Safety
+    /// As [`Hashed::with_keys`].
+    unsafe fn kernels_pay_off(self, py: Python<'_>, obj: *mut ffi::PyObject) -> bool {
+        // SAFETY: forwarded; only the first key's type is read.
+        self == Hashed::Dict
+            || unsafe {
+                self.with_keys(py, obj, |keys| {
+                    keys.next().is_none_or(|k| {
+                        let t = type_of(k);
+                        t == long_type() || t == float_type()
+                    })
+                })
+            }
+    }
+
     /// Run `f` on the container's keys (see [`Seq::with_items`] for the rules on `f`).
     ///
     /// # Safety
@@ -791,6 +812,9 @@ unsafe fn sum_seq(py: Python<'_>, seq: Seq, start: *mut ffi::PyObject) -> Out {
 unsafe fn sum_hashed(py: Python<'_>, kind: Hashed, obj: *mut ffi::PyObject, start: *mut ffi::PyObject) -> Out {
     // SAFETY: forwarded requirements; the scan runs no Python code.
     unsafe {
+        if !kind.kernels_pay_off(py, obj) {
+            return Out::Fallback;
+        }
         let Some(mut state) = SumState::new(py, start) else {
             return Out::Fallback;
         };
@@ -1254,6 +1278,9 @@ unsafe fn minmax_hashed(
 ) -> Out {
     // SAFETY: as in `minmax_seq`.
     unsafe {
+        if !kind.kernels_pay_off(py, obj) {
+            return Out::Fallback;
+        }
         let (scan, best) = kind.with_keys(py, obj, |keys| {
             let mut best = None;
             let scan = minmax_scan(keys, op, &mut best);
@@ -1345,6 +1372,12 @@ unsafe fn truth_seq(py: Python<'_>, seq: Seq, stop: bool) -> *mut ffi::PyObject 
 /// # Safety
 /// Attached thread; live container of kind `kind`.
 unsafe fn truth_hashed(py: Python<'_>, kind: Hashed, obj: *mut ffi::PyObject, stop: bool) -> Out {
+    // Measured against CPython's builtin: `all` over a set walks the whole table in hash
+    // order and loses from 100k elements (1.10-1.31); `any` over a dict nearly always stops
+    // at its first key, so there is nothing to win (noise-level 0.9-1.1). Both use CPython.
+    if (kind == Hashed::Dict) == stop {
+        return Out::Fallback;
+    }
     // SAFETY: forwarded; the scan runs no Python code.
     unsafe {
         match kind.with_keys(py, obj, |keys| truth_scan(keys, stop)) {
