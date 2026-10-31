@@ -82,13 +82,77 @@ impl ToPython for f32 {
 impl ToPython for CompactString {
     #[inline]
     fn to_python<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
+        let bytes = self.as_bytes();
         // SAFETY: the bytes are valid UTF-8 of the given length; returns a new reference.
+        // ASCII text is copied straight into a new compact ASCII string (its data follows
+        // the `PyASCIIObject` header), skipping the UTF-8 decoder.
         unsafe {
+            if fast_unicode() && bytes.len() <= 64 && bytes.is_ascii() {
+                let s = ffi::PyUnicode_New(bytes.len() as ffi::Py_ssize_t, 127);
+                if !s.is_null() {
+                    std::ptr::copy_nonoverlapping(
+                        bytes.as_ptr(),
+                        s.cast::<ffi::PyASCIIObject>().add(1).cast::<u8>(),
+                        bytes.len(),
+                    );
+                }
+                return Bound::from_owned_ptr(py, s);
+            }
             Bound::from_owned_ptr(
                 py,
-                ffi::PyUnicode_FromStringAndSize(self.as_ptr().cast(), self.len() as ffi::Py_ssize_t),
+                ffi::PyUnicode_FromStringAndSize(bytes.as_ptr().cast(), bytes.len() as ffi::Py_ssize_t),
             )
         }
+    }
+}
+
+/// Bits of `PyASCIIObject.state` (CPython 3.12+) marking a compact ASCII string: the data
+/// then follows the `PyASCIIObject` header. The bitfield layout differs between GIL and
+/// free-threaded builds; [`init_fast_unicode`] verifies it at start-up.
+#[cfg(not(Py_GIL_DISABLED))]
+const COMPACT_ASCII: u32 = (1 << 5) | (1 << 6);
+#[cfg(Py_GIL_DISABLED)]
+const COMPACT_ASCII: u32 = (1 << 11) | (1 << 12);
+
+static FAST_UNICODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[inline(always)]
+fn fast_unicode() -> bool {
+    FAST_UNICODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether `p` (a live `str`) is a compact ASCII string, read from its state bits.
+///
+/// # Safety
+/// `p` must point to a live `str`, and [`fast_unicode`] must hold.
+#[inline(always)]
+unsafe fn is_compact_ascii(p: *mut ffi::PyObject) -> bool {
+    // SAFETY: see above.
+    unsafe { (*p.cast::<ffi::PyASCIIObject>()).state & COMPACT_ASCII == COMPACT_ASCII }
+}
+
+/// Enable the direct reads of `str` internals if the state bits decode as expected on
+/// this interpreter (checked against `PyUnicode_KIND`/`PyUnicode_DATA` on samples).
+pub fn init_fast_unicode(py: Python<'_>) {
+    let check = || -> Option<bool> {
+        let ascii = pyo3::types::PyString::new(py, "rustique");
+        let latin1 = pyo3::types::PyString::new(py, "caf\u{e9}");
+        let wide = pyo3::types::PyString::new(py, "\u{3b1}\u{3b2}");
+        // SAFETY: live `str` objects; reading their headers and data.
+        unsafe {
+            let data_ok =
+                ffi::PyUnicode_DATA(ascii.as_ptr()) == ascii.as_ptr().cast::<ffi::PyASCIIObject>().add(1).cast();
+            Some(
+                data_ok
+                    && is_compact_ascii(ascii.as_ptr())
+                    && !is_compact_ascii(latin1.as_ptr())
+                    && !is_compact_ascii(wide.as_ptr())
+                    && ffi::PyUnicode_KIND(ascii.as_ptr()) == ffi::PyUnicode_1BYTE_KIND,
+            )
+        }
+    };
+    if check() == Some(true) {
+        FAST_UNICODE.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -266,6 +330,10 @@ unsafe fn str_utf8(p: *mut ffi::PyObject) -> Option<CompactString> {
         if len == 0 {
             return Some(CompactString::default());
         }
+        if fast_unicode() && is_compact_ascii(p) {
+            let bytes = std::slice::from_raw_parts(p.cast::<ffi::PyASCIIObject>().add(1).cast::<u8>(), len);
+            return Some(CompactString::from(std::str::from_utf8_unchecked(bytes)));
+        }
         let data = ffi::PyUnicode_DATA(p);
         let kind = ffi::PyUnicode_KIND(p);
         if kind == ffi::PyUnicode_1BYTE_KIND {
@@ -326,6 +394,42 @@ fn encode_utf8(chars: impl Iterator<Item = Option<char>>, max_bytes: usize) -> O
     Some(CompactString::from(s))
 }
 
+/// The value of an `int` whose magnitude fits one 30-bit digit, read from its digits
+/// (CPython 3.12+ layout: `lv_tag` holds the sign in bits 0-1 and the digit count from
+/// bit 3); `None` for larger ints.
+///
+/// # Safety
+/// `p` must point to a live `int` (exact or subclass).
+#[inline(always)]
+pub unsafe fn compact_int_value(p: *mut ffi::PyObject) -> Option<i64> {
+    // SAFETY: see above.
+    unsafe {
+        let value = p.cast::<u8>().add(size_of::<ffi::PyObject>()).cast::<usize>();
+        let tag = *value;
+        if tag >= (2 << 3) {
+            return None;
+        }
+        let sign = 1 - (tag & 3) as i64;
+        Some(sign * i64::from(*value.add(1).cast::<u32>()))
+    }
+}
+
+/// An exact `int` as `i64` (compact ints read inline), `None` on overflow.
+///
+/// # Safety
+/// `p` must point to a live exact `int`.
+#[inline(always)]
+pub unsafe fn exact_int_i64(p: *mut ffi::PyObject) -> Option<i64> {
+    // SAFETY: see above.
+    unsafe {
+        compact_int_value(p).or_else(|| {
+            let mut overflow = 0;
+            let v = ffi::PyLong_AsLongLongAndOverflow(p, &mut overflow);
+            (overflow == 0).then_some(v)
+        })
+    }
+}
+
 /// Exact-type classification for untyped containers (§3.3): exact `int` fitting i64,
 /// `float`, `bool`, `str` without lone surrogates are stored natively, anything else as an
 /// object. Runs no Python code.
@@ -347,9 +451,7 @@ unsafe fn classify_ptr(p: *mut ffi::PyObject) -> Option<Value> {
     unsafe {
         let ty = ffi::Py_TYPE(p);
         if ty == &raw mut ffi::PyLong_Type {
-            let mut overflow = 0;
-            let v = ffi::PyLong_AsLongLongAndOverflow(p, &mut overflow);
-            (overflow == 0).then_some(Value::I64(v))
+            exact_int_i64(p).map(Value::I64)
         } else if ty == &raw mut ffi::PyFloat_Type {
             Some(Value::F64(ffi::PyFloat_AS_DOUBLE(p)))
         } else if ty == &raw mut ffi::PyBool_Type {
@@ -437,25 +539,120 @@ type Partial = (Vec<Py<PyAny>>, PyErr);
 /// Collect the items of any iterable as strong references. On an exception from the
 /// iterator, returns the items collected so far with the error.
 fn collect(obj: &Bound<'_, PyAny>) -> Result<Vec<Py<PyAny>>, Partial> {
+    let py = obj.py();
     let iter = obj.try_iter().map_err(|e| (Vec::new(), e))?;
-    let mut items = Vec::new();
-    for item in iter {
-        match item {
-            Ok(item) => items.push(item.unbind()),
-            Err(e) => return Err((items, e)),
+    // Preallocate from `len()`/`__length_hint__` like `list(iterable)` (a failing hint is
+    // ignored, as by `PyObject_LengthHint` callers that pass a default).
+    // SAFETY: a live object; may run `__length_hint__` (no lock is held).
+    let hint = unsafe { ffi::PyObject_LengthHint(obj.as_ptr(), 0) };
+    let hint = if hint < 0 {
+        drop(PyErr::take(py));
+        0
+    } else {
+        hint as usize
+    };
+    let mut items = Vec::with_capacity(hint.min(1 << 20));
+    let it = iter.as_ptr();
+    // SAFETY: `it` is a live iterator (`tp_iternext` is set for anything `iter()` returns).
+    let next = unsafe { (*ffi::Py_TYPE(it)).tp_iternext };
+    let Some(next) = next else {
+        return Err((items, pyo3::exceptions::PyTypeError::new_err("iter() returned non-iterator")));
+    };
+    loop {
+        // SAFETY: calling the iterator's own `tp_iternext`; a new reference or null.
+        let item = unsafe { next(it) };
+        if item.is_null() {
+            // SAFETY: attached; checking and clearing the iterator's error state.
+            unsafe {
+                if !ffi::PyErr_Occurred().is_null() {
+                    if ffi::PyErr_ExceptionMatches(ffi::PyExc_StopIteration) == 0 {
+                        return Err((items, PyErr::fetch(py)));
+                    }
+                    ffi::PyErr_Clear();
+                }
+            }
+            return Ok(items);
         }
+        // SAFETY: a new reference.
+        items.push(unsafe { Bound::from_owned_ptr(py, item) }.unbind());
     }
-    Ok(items)
+}
+
+/// Release owned objects without PyO3's per-handle attach check (the caller is attached).
+pub fn drop_objects(py: Python<'_>, objects: Vec<Py<PyAny>>) {
+    for o in objects {
+        drop(o.into_bound(py));
+    }
 }
 
 /// Untyped storage for owned objects: a native column if they classify homogeneously,
 /// otherwise object storage holding the objects themselves.
-fn any_from_objects(items: Vec<Py<PyAny>>) -> Storage {
+fn any_from_objects(py: Python<'_>, items: Vec<Py<PyAny>>) -> Storage {
     // SAFETY: `items` holds strong references for the duration of the call.
     match unsafe { any_column(&items) } {
-        Some(column) => Storage::Native(column),
+        Some(column) => {
+            drop_objects(py, items);
+            Storage::Native(column)
+        }
         None if items.is_empty() => Storage::Empty,
         None => Storage::Object(items),
+    }
+}
+
+/// Untyped storage for an exact `list` or `tuple` (any other object: `None`): a native
+/// column if the items classify homogeneously, else object storage holding the items
+/// themselves. Runs no Python code and drops no `Py` handle (raw-slot safe).
+pub fn ingest_exact_seq_any(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Option<Storage> {
+    let p = obj.as_ptr();
+    // SAFETY: exact type checks on a live object.
+    unsafe {
+        if ffi::PyTuple_CheckExact(p) != 0 {
+            let n = ffi::PyTuple_GET_SIZE(p) as usize;
+            let items = if n == 0 {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts((*p.cast::<ffi::PyTupleObject>()).ob_item.as_ptr(), n)
+            };
+            return Some(any_items(py, items));
+        }
+        if ffi::PyList_CheckExact(p) == 0 {
+            return None;
+        }
+    }
+    Some(with_critical_section(obj, || {
+        // SAFETY: we hold the list's critical section; `ob_item` has `size` valid borrowed
+        // pointers until the list is mutated, which cannot happen while it is held.
+        unsafe {
+            let n = ffi::PyList_GET_SIZE(p) as usize;
+            let items =
+                if n == 0 { &[][..] } else { std::slice::from_raw_parts((*p.cast::<ffi::PyListObject>()).ob_item, n) };
+            any_items(py, items)
+        }
+    }))
+}
+
+/// Untyped storage taken from a builtin `list` that nobody else references (the caller
+/// guarantees it, see `List::from_temporary_list`): native items are converted; otherwise
+/// the item references are *moved* out (no reference counting) and the list is left empty.
+///
+/// # Safety
+/// `list` must be an exact builtin list referenced only by the caller.
+pub unsafe fn take_temporary_list(py: Python<'_>, list: &Bound<'_, PyList>) -> Storage {
+    let p = list.as_ptr();
+    // SAFETY: an exact, unshared list (caller contract): its items are live, and emptying
+    // it cannot be observed by anyone else.
+    unsafe {
+        let n = ffi::PyList_GET_SIZE(p) as usize;
+        if n == 0 {
+            return Storage::Empty;
+        }
+        let items = std::slice::from_raw_parts((*p.cast::<ffi::PyListObject>()).ob_item, n);
+        if let Some(column) = any_column(items) {
+            return Storage::Native(column);
+        }
+        let moved = items.iter().map(|&o| Bound::from_owned_ptr(py, o).unbind()).collect();
+        (*p.cast::<ffi::PyVarObject>()).ob_size = 0;
+        Storage::Object(moved)
     }
 }
 
@@ -495,8 +692,8 @@ fn ingest_iter(py: Python<'_>, schema: &Arc<Schema>, obj: &Bound<'_, PyAny>) -> 
         // Collect first, then classify in one pass: no per-element demotion, and mixed
         // contents keep the original objects.
         return match collect(obj) {
-            Ok(items) => Ok(any_from_objects(items)),
-            Err((items, error)) => Err(IngestError { error, partial: Some(any_from_objects(items)) }),
+            Ok(items) => Ok(any_from_objects(py, items)),
+            Err((items, error)) => Err(IngestError { error, partial: Some(any_from_objects(py, items)) }),
         };
     }
     let iter = obj.try_iter()?;
@@ -606,9 +803,7 @@ unsafe fn fast_items(py: Python<'_>, schema: &Schema, items: &[*mut ffi::PyObjec
             Schema::Int => typed_items(py, schema, items, |p| {
                 let ty = ffi::Py_TYPE(p);
                 if ty == &raw mut ffi::PyLong_Type {
-                    let mut overflow = 0;
-                    let v = ffi::PyLong_AsLongLongAndOverflow(p, &mut overflow);
-                    (overflow == 0).then_some(v)
+                    exact_int_i64(p)
                 } else if ty == &raw mut ffi::PyBool_Type {
                     Some(i64::from(p == ffi::Py_True()))
                 } else {
@@ -772,12 +967,7 @@ unsafe fn any_column<T: ObjectPtr>(items: &[T]) -> Option<Column> {
                 if !same(p) {
                     return None;
                 }
-                let mut overflow = 0;
-                let v = ffi::PyLong_AsLongLongAndOverflow(p.ptr(), &mut overflow);
-                if overflow != 0 {
-                    return None;
-                }
-                out.push(v);
+                out.push(exact_int_i64(p.ptr())?);
             }
             Some(Column::I64(out))
         } else if ty == &raw mut ffi::PyFloat_Type {
@@ -1180,6 +1370,9 @@ pub fn probe(obj: &Bound<'_, PyAny>) -> Probe {
         } else if ty == &raw mut ffi::PyUnicode_Type {
             exact_str(p).map_or(Probe::Never, |s| Probe::Native(Value::Str(s)))
         } else if ty == &raw mut ffi::PyLong_Type {
+            if let Some(v) = compact_int_value(p) {
+                return Probe::Native(Value::I64(v));
+            }
             match long_as_i128(obj) {
                 Ok(Some(v)) => match i64::try_from(v) {
                     Ok(v) => Probe::Native(Value::I64(v)),

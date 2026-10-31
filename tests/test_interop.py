@@ -30,7 +30,7 @@ SCALARS = ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"]
 
 
 def test_public_api() -> None:
-    expected = {"List", "Dict", "Set", "ListType", "DictType", "SetType", "X", "Expr", "arange", "__version__", *SCALARS}
+    expected = {"List", "Tuple", "Dict", "Set", "ListType", "DictType", "SetType", "X", "Expr", "arange", "__version__", *SCALARS}
     expected |= {"FrozenSet", "FrozenSetType"}
     assert set(rs.__all__) == expected
     for name in expected:
