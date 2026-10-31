@@ -5,8 +5,11 @@ semantics, vectorised expressions over the element placeholder ``X``, and fixed-
 scalar types. See ``docs/ARCHITECTURE.md``.
 """
 
-from collections.abc import MutableMapping, MutableSequence, MutableSet, Sequence
-from collections.abc import Set as AbstractSet
+# `_collections_abc` holds the classes `collections.abc` re-exports. The interpreter has
+# imported it by the time `site` runs, while `collections.abc` would load the whole
+# `collections` package (~1 ms of startup).
+from _collections_abc import MutableMapping, MutableSequence, MutableSet, Sequence
+from _collections_abc import Set as AbstractSet
 
 from rustique._rustique import (
     Dict,

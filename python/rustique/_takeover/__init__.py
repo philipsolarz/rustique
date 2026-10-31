@@ -20,7 +20,7 @@ Two tiers:
 """
 
 import sys
-from collections.abc import Iterable
+from _collections_abc import Iterable  # = collections.abc.Iterable, without importing `collections`
 
 from rustique import _rustique
 

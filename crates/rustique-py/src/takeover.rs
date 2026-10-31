@@ -39,6 +39,8 @@ use pyo3::prelude::*;
 use pyo3::sync::critical_section::with_critical_section;
 use pyo3::types::{PyDict, PyList, PySet, PyString, PyTuple};
 
+use crate::patch::writable;
+
 /// Free-threaded build: the object header carries thread id and shared refcount fields.
 const FREE_THREADED: bool = size_of::<ffi::PyObject>() > 2 * size_of::<usize>();
 
@@ -1343,26 +1345,6 @@ unsafe extern "C" fn k_list_sort(
 // ---------------------------------------------------------------------------------------
 // Installation.
 // ---------------------------------------------------------------------------------------
-
-/// Is `[addr, addr + len)` inside a writable mapping of this process? (Linux: from
-/// `/proc/self/maps`; elsewhere the static method tables of CPython are writable data.)
-fn writable(addr: usize, len: usize) -> bool {
-    if cfg!(target_os = "linux") {
-        let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else { return false };
-        for line in maps.lines() {
-            let mut parts = line.split_whitespace();
-            let (Some(range), Some(perm)) = (parts.next(), parts.next()) else { continue };
-            let Some((lo, hi)) = range.split_once('-') else { continue };
-            let (Ok(lo), Ok(hi)) = (usize::from_str_radix(lo, 16), usize::from_str_radix(hi, 16)) else { continue };
-            if lo <= addr && addr + len <= hi {
-                return perm.as_bytes().get(1) == Some(&b'w');
-            }
-        }
-        false
-    } else {
-        true
-    }
-}
 
 /// The static `PyMethodDef` behind a method descriptor or builtin function, checked for the
 /// expected name and calling convention.

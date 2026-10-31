@@ -12,6 +12,7 @@ pub mod expr;
 pub mod frozenset;
 pub mod list;
 pub mod objsort;
+pub mod patch;
 pub mod scalars;
 pub mod schema;
 pub mod set;

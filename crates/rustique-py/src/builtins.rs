@@ -79,6 +79,7 @@ use crate::dict::{Dict, DictKeysRef};
 use crate::frozenset::FrozenSet;
 use crate::list::List;
 use crate::objsort;
+use crate::patch::writable;
 use crate::set::{Set, SetElements};
 use crate::storage::Storage;
 use crate::tuple::Tuple;
@@ -2502,30 +2503,6 @@ struct Captured {
 }
 
 static STATE: Mutex<Option<Captured>> = Mutex::new(None);
-
-/// Is `[addr, addr + len)` inside a writable mapping of this process? (Linux: from
-/// `/proc/self/maps`; elsewhere CPython's static method tables are writable data.)
-fn writable(addr: usize, len: usize) -> bool {
-    if !cfg!(target_os = "linux") {
-        return true;
-    }
-    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
-        return false;
-    };
-    maps.lines().any(|line| {
-        let mut parts = line.split_whitespace();
-        let (Some(range), Some(perm)) = (parts.next(), parts.next()) else {
-            return false;
-        };
-        let Some((lo, hi)) = range.split_once('-') else {
-            return false;
-        };
-        let (Ok(lo), Ok(hi)) = (usize::from_str_radix(lo, 16), usize::from_str_radix(hi, 16)) else {
-            return false;
-        };
-        lo <= addr && addr + len <= hi && perm.as_bytes().get(1) == Some(&b'w')
-    })
-}
 
 /// The `ml_meth` field of a method table entry, as an atomic.
 ///
