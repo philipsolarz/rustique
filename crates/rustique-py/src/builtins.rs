@@ -397,17 +397,20 @@ impl Hashed {
         }
     }
 
-    /// Whether the kernels pay off for this container (measured on 1k..1M elements, ratio vs
-    /// CPython's builtin): dict keys always do (0.38-0.89); a `set`/`frozenset` walks its
-    /// whole table in hash order, which only pays off for numbers (int/float 0.37-0.90,
-    /// while str reaches 1.02 and tuples 1.17-1.20 at 1M), so sets go to the kernels only
-    /// when their first element is an exact `int` or `float`.
+    /// Whether `sum`/`min`/`max` kernels pay off for this container (measured, ratio vs
+    /// CPython's builtin): dict keys always do (0.38-0.89), and so does every set up to a
+    /// thousand elements (0.31-0.92). A large `set`/`frozenset` walks its whole table in hash
+    /// order, which only pays off for numbers (int/float 0.62-0.90 at 100k-1M, while str
+    /// reaches 1.02 and tuples 1.17-1.20 at 1M), so above [`LARGE_SET`] elements sets go to
+    /// the kernels only when their first element is an exact `int` or `float`.
     ///
     /// # Safety
     /// As [`Hashed::with_keys`].
     unsafe fn kernels_pay_off(self, py: Python<'_>, obj: *mut ffi::PyObject) -> bool {
-        // SAFETY: forwarded; only the first key's type is read.
+        // SAFETY: forwarded; only the size (atomically on free-threaded builds) and the
+        // first key's type are read.
         self == Hashed::Dict
+            || unsafe { ffi::PySet_GET_SIZE(obj) as usize } < LARGE_SET
             || unsafe {
                 self.with_keys(py, obj, |keys| {
                     keys.next().is_none_or(|k| {
@@ -439,6 +442,11 @@ impl Hashed {
         }
     }
 }
+
+/// From this size on, a builtin set's table no longer stays cache-resident and walking it in
+/// hash order loses to CPython's iteration for some element kinds (see
+/// [`Hashed::kernels_pay_off`]): measured wins at 1k elements, losses from 100k.
+const LARGE_SET: usize = 1 << 11;
 
 /// How a scan without Python code ended.
 enum Scan<T> {
@@ -1372,10 +1380,12 @@ unsafe fn truth_seq(py: Python<'_>, seq: Seq, stop: bool) -> *mut ffi::PyObject 
 /// # Safety
 /// Attached thread; live container of kind `kind`.
 unsafe fn truth_hashed(py: Python<'_>, kind: Hashed, obj: *mut ffi::PyObject, stop: bool) -> Out {
-    // Measured against CPython's builtin: `all` over a set walks the whole table in hash
-    // order and loses from 100k elements (1.10-1.31); `any` over a dict nearly always stops
-    // at its first key, so there is nothing to win (noise-level 0.9-1.1). Both use CPython.
-    if (kind == Hashed::Dict) == stop {
+    // Measured against CPython's builtin: `all` over a large set walks the whole table in
+    // hash order and loses from 100k elements (1.10-1.31; small sets win, 0.50-0.81), so
+    // large sets use CPython. (`any` over a dict never gets here, see `rq_any`.)
+    // SAFETY: a live set or frozenset (an atomic read of its size on free-threaded builds).
+    let large_set = kind != Hashed::Dict && unsafe { ffi::PySet_GET_SIZE(obj) as usize } >= LARGE_SET;
+    if !stop && large_set {
         return Out::Fallback;
     }
     // SAFETY: forwarded; the scan runs no Python code.
@@ -2367,11 +2377,12 @@ unsafe fn rs_sorted(
 
 unsafe extern "C" fn rq_any(slf: *mut ffi::PyObject, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: METH_O call from CPython.
-    // `any` over a Rustique Set nearly always stops at its first element; snapshotting
-    // the Set (all there is without a native view of its keys) would cost every element.
+    // `any` over a dict or a Rustique Set/Dict/FrozenSet nearly always stops at its first
+    // key: nothing to win, and any extra step before CPython's loop shows (measured: an
+    // in-kernel fallback cost 1.07-1.12 on `any(dict)`). Those go straight to CPython.
     unsafe {
         let t = type_of(arg);
-        if candidate(t) && !is_rustique_hashed(t) {
+        if candidate(t) && !is_rustique_hashed(t) && t != &raw mut ffi::PyDict_Type {
             truth_entry(slf, arg, Which::Any)
         } else {
             original_o(Which::Any, arg)
