@@ -1198,6 +1198,13 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         (*ty).tp_iter = Some(tp_iter);
         (*ty).tp_hash = Some(tp_hash);
         (*ty).tp_richcompare = Some(tp_richcompare);
+        // Sequence patterns (`match t: case (a, b)`), as for `List`.
+        #[cfg(not(Py_GIL_DISABLED))]
+        {
+            (*ty).tp_flags |= ffi::Py_TPFLAGS_SEQUENCE;
+        }
+        #[cfg(Py_GIL_DISABLED)]
+        (*ty).tp_flags.fetch_or(ffi::Py_TPFLAGS_SEQUENCE, std::sync::atomic::Ordering::Relaxed);
         let num = (*ty).tp_as_number;
         if let (Some(add), Some(mul)) = ((*num).nb_add, (*num).nb_multiply) {
             PYO3_NB_ADD.store(add as *mut (), Ordering::Relaxed);

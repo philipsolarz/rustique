@@ -423,6 +423,21 @@ impl List {
         }
     }
 
+    /// INTERFACE (WS5). Run `f` on the storage under the read lock, without a snapshot.
+    /// `f` must not run Python code (no `__eq__`/`__bool__`, no decref that may finalize):
+    /// another thread's mutation would wait for the lock, and this thread's own mutation
+    /// would never get it.
+    pub fn with_storage<R>(&self, py: Python<'_>, f: impl FnOnce(&Storage) -> R) -> R {
+        f(&self.read(py))
+    }
+
+    /// INTERFACE (WS5). New reference to element `i` of the *current* list, or `None` past
+    /// the end: a live, lock-scoped read for lazy scans (`any`/`all`) that run Python code
+    /// between elements, like CPython's `list_get_item_ref`.
+    pub fn get_item<'py>(&self, py: Python<'py>, i: usize) -> Option<Bound<'py, PyAny>> {
+        self.get_ref(py, i)
+    }
+
     /// An owned copy of the storage (native: column copy; object: increfs).
     pub fn snapshot(&self, py: Python<'_>) -> Storage {
         self.read(py).clone_ref(py)
@@ -896,56 +911,6 @@ fn merge_sort(v: &mut [usize], mut lt: impl FnMut(usize, usize) -> PyResult<bool
     Ok(())
 }
 
-/// Sort Python objects with CPython's own `list.sort` (timsort, `key`/`reverse`, exact
-/// comparison and exception semantics): the references move into a temporary builtin list,
-/// are sorted there and move back (no reference counting per element).
-///
-/// INTERFACE HOOK (WS5): `objsort::sort_objects` implements the same contract for the
-/// builtins workstream; when it lands, this function can delegate to it.
-///
-/// Returns the objects (sorted, or in the permutation `list.sort` left them in when it
-/// raised) and the result.
-fn sort_objects(
-    py: Python<'_>,
-    objects: Vec<Py<PyAny>>,
-    key: Option<&Bound<'_, PyAny>>,
-    reverse: bool,
-) -> (Vec<Py<PyAny>>, PyResult<()>) {
-    let n = objects.len();
-    // SAFETY: a new list of `n` empty slots, each filled once with a reference moved out
-    // of `objects`; nobody else can reach the list.
-    let list = match unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyList_New(n as ffi::Py_ssize_t)) } {
-        Ok(list) => list,
-        Err(e) => return (objects, Err(e)),
-    };
-    for (i, o) in objects.into_iter().enumerate() {
-        // SAFETY: see above.
-        unsafe { ffi::PyList_SET_ITEM(list.as_ptr(), i as ffi::Py_ssize_t, o.into_ptr()) };
-    }
-    let result = (|| {
-        let kwargs = PyDict::new(py);
-        if let Some(key) = key {
-            kwargs.set_item(intern!(py, "key"), key)?;
-        }
-        if reverse {
-            kwargs.set_item(intern!(py, "reverse"), true)?;
-        }
-        list.call_method(intern!(py, "sort"), (), Some(&kwargs)).map(drop)
-    })();
-    // Move the references back out and leave the temporary empty (its deallocation then
-    // releases nothing). `list.sort` keeps every element whether or not it raised.
-    // SAFETY: the list is private; its size is read after the sort finished.
-    let objects = unsafe {
-        let p = list.as_ptr();
-        let len = ffi::PyList_GET_SIZE(p) as usize;
-        let items = (*p.cast::<ffi::PyListObject>()).ob_item;
-        let out = (0..len).map(|i| Bound::from_owned_ptr(py, *items.add(i)).unbind()).collect::<Vec<_>>();
-        (*p.cast::<ffi::PyVarObject>()).ob_size = 0;
-        out
-    };
-    (objects, result)
-}
-
 /// Sort taken-out list elements with Python semantics (`key` calls, Python `<` unless the
 /// keys compare natively). Returns the sorted storage, or the elements in their original
 /// order (or, for object storage, the permutation `list.sort` left) together with the
@@ -956,12 +921,15 @@ fn sort_storage(
     key: Option<&Bound<'_, PyAny>>,
     reverse: bool,
 ) -> (Storage, PyResult<()>) {
+    // Object storage sorts with CPython's own `list.sort` (type-specialised timsort) on a
+    // temporary builtin list, unless no key is given and the elements compare natively
+    // (`NativeKeys`, below). Like CPython, a failed sort leaves a permutation.
     let elements = match elements {
-        Storage::Object(objects) => {
-            let (objects, result) = sort_objects(py, objects, key, reverse);
+        Storage::Object(mut objects) if key.is_some() || NativeKeys::classify(py, &objects).is_none() => {
+            let result = crate::objsort::sort_objects(py, &mut objects, key, reverse);
             return (Storage::Object(objects), result);
         }
-        other => other,
+        elements => elements,
     };
     let perm = {
         let materialised = match &elements {

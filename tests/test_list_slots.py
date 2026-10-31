@@ -598,3 +598,16 @@ def test_list_pickling_paths(proto: int) -> None:
     s.tag = "t"
     w = pickle.loads(pickle.dumps(s, proto))
     assert type(w) is PickledList and list(w) == [1, 2] and w.tag == "t"
+
+
+def test_sequence_patterns() -> None:
+    match List([1, 2, 3]):
+        case [a, *rest]:
+            assert a == 1 and rest == [2, 3]
+        case _:
+            raise AssertionError("no match")
+    match rs.Tuple((1, 2)):
+        case (x, y):
+            assert (x, y) == (1, 2)
+        case _:
+            raise AssertionError("no match")

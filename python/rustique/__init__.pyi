@@ -878,3 +878,18 @@ def arange[S: (i8, i16, i32, i64, u8, u16, u32, u64)](start: SupportsIndex, stop
 def arange[S: (i8, i16, i32, i64, u8, u16, u32, u64)](
     start: SupportsIndex, stop: SupportsIndex | None = None, step: SupportsIndex = 1, *, dtype: type[S]
 ) -> List[S]: ...
+
+# --- the takeover (docs/TAKEOVER.md) -------------------------------------------------------
+
+def enable(*, native: str | Iterable[str] | None = None, builtins: bool = True) -> dict[str, Any]:
+    """Accelerate the builtin containers in place, process-wide (safe tier); optionally opt
+    modules matching ``native`` patterns into the native tier."""
+
+def disable() -> dict[str, Any]:
+    """Undo :func:`enable`."""
+
+@overload
+def native[F: Callable[..., Any]](obj: F, /) -> F:
+    """Rewrite a function, or the methods of a class, to build Rustique containers."""
+@overload
+def native(obj: None = None, /) -> Callable[[Any], Any]: ...

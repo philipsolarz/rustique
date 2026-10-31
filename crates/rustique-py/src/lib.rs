@@ -4,16 +4,19 @@
 
 use pyo3::prelude::*;
 
+pub mod builtins;
 pub mod capi;
 pub mod convert;
 pub mod dict;
 pub mod expr;
 pub mod list;
+pub mod objsort;
 pub mod scalars;
 pub mod schema;
 pub mod set;
 pub mod storage;
 pub mod sync;
+pub mod takeover;
 pub mod tuple;
 pub mod typing;
 
@@ -28,5 +31,7 @@ fn _rustique(m: &Bound<'_, PyModule>) -> PyResult<()> {
     set::register(m)?;
     expr::register(m)?;
     capi::register(m)?;
+    builtins::register(m)?;
+    takeover::register(m)?;
     Ok(())
 }

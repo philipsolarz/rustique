@@ -1184,6 +1184,14 @@ pub(super) fn install(py: Python<'_>) -> PyResult<()> {
         (*ty).tp_iter = Some(tp_iter);
         (*ty).tp_richcompare = Some(tp_richcompare);
         (*ty).tp_init = Some(tp_init);
+        // `match x: case [a, *rest]` needs the sequence flag (ABC registration cannot set
+        // it on an immutable type); subclasses inherit it.
+        #[cfg(not(Py_GIL_DISABLED))]
+        {
+            (*ty).tp_flags |= ffi::Py_TPFLAGS_SEQUENCE;
+        }
+        #[cfg(Py_GIL_DISABLED)]
+        (*ty).tp_flags.fetch_or(ffi::Py_TPFLAGS_SEQUENCE, std::sync::atomic::Ordering::Relaxed);
         (*ty).tp_vectorcall = Some(tp_vectorcall);
         #[cfg(Py_3_15)]
         {
