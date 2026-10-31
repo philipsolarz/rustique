@@ -84,6 +84,8 @@ crates/
     src/list/alloc.rs         # raw allocation/deallocation of PyO3 instances (§6.1)
     src/tuple.rs              # Tuple pyclass + TupleIterator (§4.6)
     src/dict.rs               # Dict pyclass + views/iterators
+    src/dict/keys.rs          # key tables shared by Dict and Set (strategies, lookups, locking)
+    src/dict/fast.rs          # Dict's raw CPython slots (hot paths without PyO3 trampolines)
     src/set.rs                # Set pyclass + iterator; set algebra shared with FrozenSet
     src/frozenset.rs          # FrozenSet pyclass (immutable, hashable, lock-free) + iterator
     src/scalars.rs            # i8..u64, f32, f64 scalar pyclasses
@@ -249,24 +251,80 @@ were the same object), matching the common `x in [x]` case for builtin lists.
 
 ### 4.2 `Dict`
 `Dict(mapping_or_iterable=(), /, **kwargs)`, `Dict[K, V](...)`. Insertion-ordered.
-Native key strategies: `I64`, `Str` (plus `Bool` folded into int keys per Python
-equality `True == 1`); values use any `Storage` strategy. Object keys use Python
-`__hash__`/`__eq__`.
-API parity with `dict`: `__getitem__` (`KeyError`), `__setitem__`, `__delitem__`,
-`__contains__`, `__len__`, `__iter__` (live, following CPython's `dictiter_iternextkey`:
-sticky `RuntimeError: dictionary changed size during iteration`, "keys changed" only for
-forward iteration, CPython's `__length_hint__`), `__eq__` (vs `Dict` or `dict`), `__repr__` (`Dict[str, int]({'a': 1})`),
-`__or__`, `__ror__`, `__ior__`, `keys()`, `values()`, `items()` (view objects with `len`,
-`iter`, `contains`; keys/items views support set operators), `get`, `pop`, `popitem`
-(LIFO, `KeyError` when empty), `setdefault`, `update`, `clear`, `copy`, `fromkeys`
-(classmethod), `to_dict()`, `__hash__ = None`.
-Entry storage compacts on growth with CPython's policy (`USABLE_FRACTION`, `GROWTH_RATE`);
-deletions leave tombstones until the next growing insert. Untyped dicts keep each key's
-original type (`Dict({True: 1})` keeps `True`, switching to object keys); typed
-`Dict[int, V]` normalises per the schema.
-Lookup with a key that cannot be converted to the key schema is a miss (`KeyError` /
-`False`), never `TypeError` — except unhashable keys, which raise `TypeError` like `dict`.
-Numeric key equivalence follows Python: `1`, `1.0`, `True` are the same key.
+API parity with `dict`: `__getitem__` (`KeyError`; `__missing__` of subclasses),
+`__setitem__`, `__delitem__`, `__contains__`, `__len__`, `__iter__` (live, following
+CPython's `dictiter_iternextkey`: sticky `RuntimeError: dictionary changed size during
+iteration`, "keys changed" only for forward iteration, CPython's `__length_hint__`),
+`__eq__` (vs `Dict` or `dict`), `__repr__` (`Dict[str, int]({'a': 1})`; subclasses show
+their class name), `__or__`, `__ror__`, `__ior__`, `keys()`, `values()`, `items()` (view
+objects with `len`, `iter`, `contains`; keys/items views support set operators), `get`,
+`pop`, `popitem` (LIFO, `KeyError` when empty), `setdefault`, `update`, `clear`, `copy`,
+`fromkeys` (classmethod), `to_dict()`, `__hash__ = None`. `Dict` is subclassable like
+`dict`: `__new__` of a subclass creates an empty dict and `__init__` (`dict.__init__`
+semantics, i.e. `update`) fills it; `fromkeys` calls `cls()` then `d[k] = v`; subclasses
+copy and pickle like `dict` subclasses (`copyreg.__newobj__`, instance `__dict__`, items).
+`Dict._from_builtin(d)` builds from a fresh builtin `dict` (the native tier's rewriter
+hook, TAKEOVER.md §9).
+
+**Layout.** Keys live in a `KeyTable` over the CPython-compact index of
+`rustique_core::index`: a power-of-two table of positions whose width adapts to its
+size (`u8`/`u16`/`u32`/`u64`), CPython's probe recurrence (`perturb`), `USABLE_FRACTION`
+(2/3) fill and `GROWTH_RATE` (3 × live entries) regrowth, stored hashes compared before
+keys (the same index serves `Set`). Values live in a parallel `Storage` (same positions).
+
+- Key strategies: exact `int` keys that fit i64 are stored natively (`i64`), hashed with
+  Python's own `hash()`, so probe sequences are CPython's and demotion needs no rehash.
+  Exact `str` keys are stored as the `str` objects (like CPython's unicode-keyed tables):
+  lookups read the cached `str` hash, compare identity first, then `PyUnicode_Equal`;
+  iteration hands out the stored objects. Anything else is an object key with its Python
+  hash. The first key decides; a key that does not fit demotes the table to object keys
+  once (`_key_strategy` reports `"empty"`, `"i64"`, `"str"` or `"object"`).
+- Values: untyped dicts store the value objects (reads are increfs, identity preserved,
+  NaN values compare like `dict`'s); typed dicts store natively per the value schema.
+- Entry storage compacts on growth with CPython's policy; deletions leave tombstones until
+  the next growing insert. Untyped dicts keep each key's original type (`Dict({True: 1})`
+  keeps `True`, switching to object keys); typed `Dict[int, V]` normalises per the schema.
+- Lookup with a key that cannot be converted to the key schema is a miss (`KeyError` /
+  `False`), never `TypeError` — except unhashable keys, which raise `TypeError` like
+  `dict`. Numeric key equivalence follows Python: `1`, `1.0`, `True` are the same key.
+
+**Raw slots** (`dict/fast.rs`). `d[k]`, `k in d`, `d[k] = v`, `del d[k]`, `len(d)`,
+`iter(d)`, `next(it)`, `d.get`, `d.setdefault`, `d.pop`, `d.popitem`, `Dict(...)`
+(`tp_vectorcall`; `Dict` is an immutable type, so calls specialise to
+`CALL_BUILTIN_CLASS`) and `__init__` are `extern "C"` CPython slots instead of PyO3
+trampolines. They handle probes
+whose hash and comparisons run no Python code (exact `int`/`str`, and `float`, `bool`,
+`None`, `tuple`, `frozenset`, identity-compared instances when every candidate can be
+compared without Python code) and hand everything else to the original PyO3 methods, so
+semantics are defined in one place. They run attached but without PyO3's attach count:
+they never drop a `Py<T>` (only raw decrefs after unlocking) and use the lock API of §6
+like every other method. A panic in a read-only fast path falls back to the PyO3 method;
+in a mutating one it raises `SystemError`. Python subclasses inherit the slots, and
+defining the dunder in Python overrides them as usual.
+
+**Bulk paths.** `Dict(d)` for an exact builtin `dict` adopts its (pairwise distinct) keys
+without lookups in one pass inside the source's critical section; other untyped
+constructors, `fromkeys` and `|` fill a private table without locking; `update(d)` with a
+builtin `dict` or an exact `Dict` merges under one write lock while no Python code is
+needed. `==` pairs values by key under the read locks and decides builtin scalars in place
+(identity, or a pure-C comparison); only other values are compared outside the locks.
+`keys() & other` follows `_PyDictView_Intersect`.
+
+**Concurrency.** The dict state is behind its `PyRwLock` (§6). `len()` reads a relaxed
+atomic mirror of the entry count, updated under the write lock after every change (like
+CPython's `ma_used`). Iterator state (`DictIterator`) is relaxed atomics read and written
+under the dict's read lock: threads sharing one iterator may see an item twice or skip
+one, and may get "dictionary keys changed during iteration" — exactly CPython's
+free-threaded behaviour — but never anything inconsistent. Items iteration recycles its
+result tuple while nobody else references it (`PyUnstable_Object_IsUniquelyReferenced`,
+which on free-threaded builds also requires the current thread to own the tuple).
+
+Deviations kept: `repr` (`Dict({...})`, existing public API); native `int` keys and native
+(typed) values have no identity (`next(iter(Dict({10**6: 0}))) is k` is false), and native
+float values compare NaN as equal to NaN; `json.dumps` and other C code that requires a
+real `dict` reject `Dict` (it is not a `dict` subclass, §TAKEOVER R2); `==` pairs all
+values by key before comparing them, so a value `__eq__` that mutates either dict sees the
+pairs, not the live dicts.
 
 ### 4.3 `Set`
 `Set(iterable=(), /)`, `Set[T](...)`. API parity with `set`: `add`, `discard`, `remove`,

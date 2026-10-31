@@ -691,9 +691,8 @@ class List[T](MutableSequence[T]):
 # Dict (§4.2)
 # ---------------------------------------------------------------------------------------
 
-@final
 class Dict[K, V](MutableMapping[K, V]):
-    """An insertion-ordered `dict` with native key/value storage."""
+    """An insertion-ordered `dict` with native key/value storage (subclassable like `dict`)."""
 
     __hash__: ClassVar[None]  # type: ignore[assignment]
     @overload
@@ -760,6 +759,8 @@ class Dict[K, V](MutableMapping[K, V]):
     @overload
     def fromkeys[T, S](cls, iterable: Iterable[T], value: S, /) -> Dict[T, S]: ...
     def to_dict(self) -> dict[K, V]: ...
+    @classmethod
+    def _from_builtin(cls, d: dict[K, V], /) -> Dict[K, V]: ...
 
 # ---------------------------------------------------------------------------------------
 # Tuple

@@ -292,12 +292,20 @@ def test_strategies_and_demotion_preserve_order():
 
 
 def test_value_strategies():
-    assert Dict({"a": 1})._value_strategy == "i64"
-    assert Dict({"a": 1.5})._value_strategy == "f64"
-    d = Dict({"a": 1})
-    d["b"] = "x"
+    # Untyped dicts keep the value objects (reads are increfs, identity is preserved);
+    # typed dicts store values natively per their schema.
+    big, f = 10**6 + 1, 1.5
+    d = Dict({"a": big, "b": f})
     assert d._value_strategy == "object"
-    check_same(d, {"a": 1, "b": "x"})
+    assert d["a"] is big and d.get("b") is f and next(iter(d.values())) is big
+    d["c"] = "x"
+    check_same(d, {"a": big, "b": f, "c": "x"})
+    assert Dict[str, int]({"a": 1})._value_strategy == "i64"
+    assert Dict[str, float]({"a": 1.5})._value_strategy == "f64"
+    t = Dict[str, int]({"a": 1})
+    t["b"] = 2
+    assert t._value_strategy == "i64"
+    check_same(t, {"a": 1, "b": 2})
 
 
 # --- order, deletion, churn -----------------------------------------------------------
@@ -760,7 +768,11 @@ def test_native_equality_with_builtin_dict_follows_python():
     assert Dict({1: 1, 2: 2}) != {1: 1, 3: 2}
     assert Dict({1: [1]}) == {1: [1]}
     assert Dict({"x": 0.0}) == {"x": -0.0}
-    assert Dict({"k": NAN}) == {"k": float("nan")}  # native floats have no identity
+    # Untyped dicts keep value objects: a different NaN object is unequal, like `dict`.
+    assert (Dict({"k": NAN}) == {"k": float("nan")}) is False
+    assert Dict({"k": NAN}) == {"k": NAN} == Dict({"k": NAN})
+    # Native float values have no identity: NaN equals NaN (documented deviation).
+    assert Dict[str, float]({"k": NAN}) == {"k": float("nan")}
 
 
 def test_untyped_values_keep_identity_in_object_storage():
