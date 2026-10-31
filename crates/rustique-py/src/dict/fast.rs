@@ -110,7 +110,9 @@ fn attempt_mut<R>(f: impl FnOnce() -> Option<R>) -> Fast<R> {
 #[cold]
 unsafe fn panicked() {
     // SAFETY: attached; static NUL-terminated message.
-    unsafe { ffi::PyErr_SetString(ffi::PyExc_SystemError, c"rustique: internal error (panic) in a Dict fast path".as_ptr()) }
+    unsafe {
+        ffi::PyErr_SetString(ffi::PyExc_SystemError, c"rustique: internal error (panic) in a Dict fast path".as_ptr())
+    }
 }
 
 /// `d[k]`.
@@ -298,7 +300,11 @@ unsafe fn call_original(
 }
 
 /// `d.pop(k[, default])` (`METH_FASTCALL`).
-unsafe extern "C" fn pop(slf: *mut ffi::PyObject, args: *mut *mut ffi::PyObject, nargs: ffi::Py_ssize_t) -> *mut ffi::PyObject {
+unsafe extern "C" fn pop(
+    slf: *mut ffi::PyObject,
+    args: *mut *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+) -> *mut ffi::PyObject {
     // SAFETY: as for `get`.
     unsafe {
         let py = Python::assume_attached();
@@ -454,7 +460,8 @@ struct MethodDef(ffi::PyMethodDef);
 // SAFETY: the definition is immutable after construction and only read by CPython.
 unsafe impl Sync for MethodDef {}
 
-static GET_DOC: &CStr = c"get($self, key, default=None, /)\n--\n\nReturn the value for key if key is in the dictionary, else default.";
+static GET_DOC: &CStr =
+    c"get($self, key, default=None, /)\n--\n\nReturn the value for key if key is in the dictionary, else default.";
 
 static GET_DEF: MethodDef = MethodDef(ffi::PyMethodDef {
     ml_name: c"get".as_ptr(),
@@ -467,7 +474,8 @@ static FROM_BUILTIN_DEF: MethodDef = MethodDef(ffi::PyMethodDef {
     ml_name: c"_from_builtin".as_ptr(),
     ml_meth: ffi::PyMethodDefPointer { PyCFunction: from_builtin },
     ml_flags: ffi::METH_O | ffi::METH_CLASS,
-    ml_doc: c"_from_builtin($cls, d, /)\n--\n\nA Dict with the items of the builtin dict d (a fresh temporary).".as_ptr(),
+    ml_doc: c"_from_builtin($cls, d, /)\n--\n\nA Dict with the items of the builtin dict d (a fresh temporary)."
+        .as_ptr(),
 });
 
 static POP_DEF: MethodDef = MethodDef(ffi::PyMethodDef {
@@ -506,7 +514,7 @@ impl OrFlags for std::ffi::c_ulong {
 
 impl OrFlags for std::sync::atomic::AtomicU64 {
     fn or_flags(&mut self, f: std::ffi::c_ulong) {
-        self.fetch_or(u64::from(f), Ordering::Relaxed);
+        self.fetch_or(f, Ordering::Relaxed);
     }
 }
 
@@ -567,9 +575,12 @@ pub(super) fn install(py: Python<'_>) -> PyResult<()> {
         (*tp).tp_iter = Some(iter);
 
         let tp_dict = Borrowed::from_ptr(py, (*tp).tp_dict).cast_unchecked::<pyo3::types::PyDict>();
-        for (name, def) in
-            [(get_name, &GET_DEF), (setdefault_name, &SETDEFAULT_DEF), (pop_name, &POP_DEF), (popitem_name, &POPITEM_DEF)]
-        {
+        for (name, def) in [
+            (get_name, &GET_DEF),
+            (setdefault_name, &SETDEFAULT_DEF),
+            (pop_name, &POP_DEF),
+            (popitem_name, &POPITEM_DEF),
+        ] {
             let descr = ffi::PyDescr_NewMethod(tp, std::ptr::from_ref(&def.0).cast_mut());
             tp_dict.set_item(name, Bound::from_owned_ptr_or_err(py, descr)?)?;
         }

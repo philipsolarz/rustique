@@ -1112,9 +1112,7 @@ impl Dict {
             match b.table.find_fast(&probe)? {
                 None => return Some(Err(())),
                 Some(j) => {
-                    if !native
-                        && let (Storage::Object(x), Storage::Object(y)) = (&a.values, &b.values)
-                    {
+                    if !native && let (Storage::Object(x), Storage::Object(y)) = (&a.values, &b.values) {
                         // SAFETY: both values are live while the read locks are held.
                         match unsafe { settle(x[pos].as_ptr(), y[j].as_ptr()) } {
                             Some(true) => continue,
@@ -1320,9 +1318,8 @@ impl Dict {
             exhausted: AtomicBool::new(false),
         };
         // Items iteration recycles its result tuple (see `DictIterator::item`).
-        let result = (kind == ItemKind::Items).then(|| {
-            PyTuple::new(py, [py.None(), py.None()]).map_or_else(|_| py.None(), |t| t.into_any().unbind())
-        });
+        let result = (kind == ItemKind::Items)
+            .then(|| PyTuple::new(py, [py.None(), py.None()]).map_or_else(|_| py.None(), |t| t.into_any().unbind()));
         DictIterator { dict: slf.clone().unbind(), kind, reverse, state, result }
     }
 }
@@ -1380,7 +1377,12 @@ impl Dict {
     /// # Safety
     /// `key` must be a live object.
     #[inline(never)]
-    unsafe fn insert_fast(&self, py: Python<'_>, key: *mut ffi::PyObject, value: Borrowed<'_, '_, PyAny>) -> Option<()> {
+    unsafe fn insert_fast(
+        &self,
+        py: Python<'_>,
+        key: *mut ffi::PyObject,
+        value: Borrowed<'_, '_, PyAny>,
+    ) -> Option<()> {
         let mut replaced = None;
         let mut moved = Vec::new();
         {
@@ -1428,7 +1430,12 @@ impl Dict {
     /// `self.pop(key[, default])` for a fast key (raw method): the value or the default as a
     /// new reference; `None`: use the general path (a miss without default, which raises).
     #[inline(always)]
-    fn pop_fast(&self, py: Python<'_>, key: *mut ffi::PyObject, default: Option<*mut ffi::PyObject>) -> Option<*mut ffi::PyObject> {
+    fn pop_fast(
+        &self,
+        py: Python<'_>,
+        key: *mut ffi::PyObject,
+        default: Option<*mut ffi::PyObject>,
+    ) -> Option<*mut ffi::PyObject> {
         let mut displaced = Vec::new();
         let value = {
             let mut inner = self.inner.write(py);
@@ -1477,7 +1484,12 @@ impl Dict {
     /// `self.setdefault(key, default)` for an untyped dict and a fast key (raw method): the
     /// value as a new reference; `None`: use the general path.
     #[inline(always)]
-    fn setdefault_fast(&self, py: Python<'_>, probe: &FastKey, default: Borrowed<'_, '_, PyAny>) -> Option<*mut ffi::PyObject> {
+    fn setdefault_fast(
+        &self,
+        py: Python<'_>,
+        probe: &FastKey,
+        default: Borrowed<'_, '_, PyAny>,
+    ) -> Option<*mut ffi::PyObject> {
         if !(self.key_schema.is_any() && self.value_schema.is_any()) {
             return None;
         }
@@ -1634,7 +1646,6 @@ enum MergeKey {
 /// Values paired by key, and whether either side stores values natively.
 type Paired = (Vec<(Py<PyAny>, Py<PyAny>)>, bool);
 
-
 /// The optional single positional argument of `Dict(...)` / `Dict.__init__`.
 fn single_arg<'py>(args: &Bound<'py, PyTuple>) -> PyResult<Option<Bound<'py, PyAny>>> {
     match args.len() {
@@ -1776,7 +1787,8 @@ impl Dict {
     fn __repr__(slf: &Bound<'_, Self>) -> PyResult<String> {
         let py = slf.py();
         let this = slf.get();
-        let name = if slf.is_exact_instance_of::<Dict>() { this.type_name() } else { slf.get_type().name()?.to_string() };
+        let name =
+            if slf.is_exact_instance_of::<Dict>() { this.type_name() } else { slf.get_type().name()?.to_string() };
         let Some(_guard) = ReprGuard::enter(slf.as_any())? else {
             return Ok(format!("{name}({{...}})"));
         };

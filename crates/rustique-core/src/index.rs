@@ -178,7 +178,12 @@ impl Probe {
 
 /// Position of the live entry with `hash` for which `eq` holds (`lookdict` / `do_lookup`).
 #[inline(always)]
-fn probe_find<W: SlotWidth>(slots: &[W], hashes: &[u64], hash: u64, mut eq: impl FnMut(usize) -> bool) -> Option<usize> {
+fn probe_find<W: SlotWidth>(
+    slots: &[W],
+    hashes: &[u64],
+    hash: u64,
+    mut eq: impl FnMut(usize) -> bool,
+) -> Option<usize> {
     let mut p = Probe::new(hash, slots.len() - 1);
     loop {
         let s = slots[p.i];
@@ -842,7 +847,6 @@ impl Remap {
     }
 }
 
-
 /// The default hasher for native keys (see [`PyHasher`]).
 pub type DefaultHasher = PyHashState;
 
@@ -1450,7 +1454,20 @@ mod tests {
             assert_eq!(ki.index().hash_at(pos), Some(crate::pyhash::hash_i64(k) as u64));
         }
         assert_eq!(ki.get(&1), None);
-        for v in [0i64, 1, -1, -2, (1 << 61) - 2, (1 << 61) - 1, 1 << 61, -(1 << 61) + 2, -(1 << 61) + 1, -(1 << 61), i64::MAX, i64::MIN] {
+        for v in [
+            0i64,
+            1,
+            -1,
+            -2,
+            (1 << 61) - 2,
+            (1 << 61) - 1,
+            1 << 61,
+            -(1 << 61) + 2,
+            -(1 << 61) + 1,
+            -(1 << 61),
+            i64::MAX,
+            i64::MIN,
+        ] {
             assert_eq!(py_hash_i64(v), crate::pyhash::hash_i64(v) as u64, "{v}");
         }
         assert_eq!(ki.hash_key(&-1i64), crate::pyhash::hash_i64(-1) as u64);

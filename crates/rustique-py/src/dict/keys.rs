@@ -334,7 +334,9 @@ impl FastKey {
         unsafe {
             match *self {
                 FastKey::Int(v, _) => Some(v),
-                FastKey::Obj(p, _) if ffi::Py_TYPE(p) == &raw mut ffi::PyBool_Type => Some(i64::from(p == ffi::Py_True())),
+                FastKey::Obj(p, _) if ffi::Py_TYPE(p) == &raw mut ffi::PyBool_Type => {
+                    Some(i64::from(p == ffi::Py_True()))
+                }
                 FastKey::Obj(p, _) if ffi::Py_TYPE(p) == &raw mut ffi::PyFloat_Type => {
                     integral_float(ffi::PyFloat_AS_DOUBLE(p))
                 }
@@ -393,7 +395,10 @@ unsafe fn decide_eq(stored: *mut ffi::PyObject, probe: &FastKey) -> Option<bool>
             FastKey::Str(p, _) => {
                 if is(&raw mut ffi::PyUnicode_Type) {
                     Some(ffi::PyUnicode_Equal(stored, p) == 1)
-                } else if is(&raw mut ffi::PyLong_Type) || is(&raw mut ffi::PyFloat_Type) || is(&raw mut ffi::PyBool_Type) {
+                } else if is(&raw mut ffi::PyLong_Type)
+                    || is(&raw mut ffi::PyFloat_Type)
+                    || is(&raw mut ffi::PyBool_Type)
+                {
                     Some(false)
                 } else {
                     None
@@ -414,7 +419,8 @@ unsafe fn decide_eq(stored: *mut ffi::PyObject, probe: &FastKey) -> Option<bool>
             }
             FastKey::Obj(p, _) => {
                 let pty = ffi::Py_TYPE(p);
-                let stored_number = is(&raw mut ffi::PyLong_Type) || is(&raw mut ffi::PyFloat_Type) || is(&raw mut ffi::PyBool_Type);
+                let stored_number =
+                    is(&raw mut ffi::PyLong_Type) || is(&raw mut ffi::PyFloat_Type) || is(&raw mut ffi::PyBool_Type);
                 if probe.is_number() {
                     if is(&raw mut ffi::PyFloat_Type) && pty == &raw mut ffi::PyFloat_Type {
                         return Some(ffi::PyFloat_AS_DOUBLE(stored) == ffi::PyFloat_AS_DOUBLE(p));
@@ -433,7 +439,9 @@ unsafe fn decide_eq(stored: *mut ffi::PyObject, probe: &FastKey) -> Option<bool>
                             (Some(a), Some(b)) => Some(a == b),
                             // One side has no integral value: equal only if the other
                             // has none either and they are the same float (handled above).
-                            (Some(_), None) | (None, Some(_)) if pty == &raw mut ffi::PyFloat_Type || is(&raw mut ffi::PyFloat_Type) => {
+                            (Some(_), None) | (None, Some(_))
+                                if pty == &raw mut ffi::PyFloat_Type || is(&raw mut ffi::PyFloat_Type) =>
+                            {
                                 Some(false)
                             }
                             _ => None,
@@ -451,7 +459,10 @@ unsafe fn decide_eq(stored: *mut ffi::PyObject, probe: &FastKey) -> Option<bool>
                 // builtin key of another type (`bytes` is excluded: comparing it with `str`
                 // may warn).
                 if ty != pty
-                    && (stored_number || is(&raw mut ffi::PyUnicode_Type) || is(&raw mut ffi::PyTuple_Type) || stored == ffi::Py_None())
+                    && (stored_number
+                        || is(&raw mut ffi::PyUnicode_Type)
+                        || is(&raw mut ffi::PyTuple_Type)
+                        || stored == ffi::Py_None())
                 {
                     return Some(false);
                 }
@@ -1024,14 +1035,20 @@ impl KeyTable {
         debug_assert!(keys.iter().zip(&hashes).all(|(&k, &h)| rustique_core::index::py_hash_i64(k) == h as u64));
         let index = HashIndex::from_hashes(hashes.into_iter().map(mix));
         let usable = (index.slots() * 2 / 3).max(MIN_USABLE);
-        let mut table = KeyTable::with_store(kind, KeyStore::Int(KeyIndex::from_parts(keys, index, Default::default())), true);
+        let mut table =
+            KeyTable::with_store(kind, KeyStore::Int(KeyIndex::from_parts(keys, index, Default::default())), true);
         table.usable = usable;
         table
     }
 
     /// A dict table over pairwise-distinct object keys with their Python hashes (bulk
     /// construction). `str_only`: every key is an exact `str`.
-    pub(crate) fn dict_from_objects(kind: KeyKind, keys: Vec<Py<PyAny>>, hashes: Vec<isize>, str_only: bool) -> KeyTable {
+    pub(crate) fn dict_from_objects(
+        kind: KeyKind,
+        keys: Vec<Py<PyAny>>,
+        hashes: Vec<isize>,
+        str_only: bool,
+    ) -> KeyTable {
         let index = HashIndex::from_hashes(hashes.into_iter().map(mix));
         let usable = (index.slots() * 2 / 3).max(MIN_USABLE);
         let mut table = KeyTable::with_store(kind, KeyStore::Object(KeyIndex::from_parts(keys, index, ())), true);
@@ -1353,7 +1370,8 @@ impl KeyTable {
                     return Some(None);
                 }
                 // SAFETY: CPython returned `size` bytes of valid UTF-8 owned by `p`.
-                let text = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(data.cast(), size as usize)) };
+                let text =
+                    unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(data.cast(), size as usize)) };
                 Some(ki.get(text))
             }
             (KeyStore::Object(ki), probe) => object_find(ki, probe),

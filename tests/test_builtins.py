@@ -88,7 +88,7 @@ def check(name: str, *args: Any, identity: bool | None = None, **kwargs: Any) ->
     unless an argument is a Rustique container, whose native storage creates new objects).
     """
     if identity is None:
-        identity = not any(isinstance(a, (rs.List, rs.Set, rs.Dict)) for a in args)
+        identity = not any(isinstance(a, (rs.List, rs.Tuple, rs.Set, rs.FrozenSet, rs.Dict)) for a in args)
     expected = outcome(ORIG[name], *args, **kwargs)
     got = outcome(REPL[name], *args, **kwargs)
     assert got[0] == expected[0], (name, args, kwargs, expected, got)
@@ -112,13 +112,14 @@ def check_fresh(name: str, make: Callable[[], Any], **kwargs: Any) -> None:
 
 def containers(values: list[Any]) -> list[Any]:
     """The same values in every container kind that can hold them."""
-    out: list[Any] = [list(values), tuple(values), rs.List(values)]
+    out: list[Any] = [list(values), tuple(values), rs.List(values), rs.Tuple(values)]
     try:
         hashed = set(values)
     except TypeError:
         return out
     if len(hashed) == len(values):  # duplicates would change sums
-        out += [hashed, frozenset(values), dict.fromkeys(values), rs.Set(values), rs.Dict(dict.fromkeys(values))]
+        out += [hashed, frozenset(values), dict.fromkeys(values), rs.Set(values), rs.FrozenSet(values)]
+        out += [rs.Dict(dict.fromkeys(values))]
     return out
 
 

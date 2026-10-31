@@ -57,6 +57,7 @@
 //! ARCHITECTURE.md). Install and uninstall are thread-safe; a call racing with them sees
 //! either function.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::ffi::{CStr, c_int};
 use std::panic::{self, AssertUnwindSafe};
@@ -74,10 +75,13 @@ use rustique_core::kernels::{self, Sum};
 use rustique_core::{Column, with_column};
 
 use crate::convert::{self, ToPython};
+use crate::dict::{Dict, DictKeysRef};
+use crate::frozenset::FrozenSet;
 use crate::list::List;
 use crate::objsort;
-use crate::set::Set;
+use crate::set::{Set, SetElements};
 use crate::storage::Storage;
+use crate::tuple::Tuple;
 
 /// Native kernels on at least this many elements run detached from the interpreter.
 const DETACH_THRESHOLD: usize = 1 << 16;
@@ -86,6 +90,9 @@ const SORT_DETACH_THRESHOLD: usize = 1 << 14;
 /// `any`/`all` snapshot a Rustique container's elements (no lazy element access exists
 /// yet) only up to this size; larger ones are iterated lazily by the original builtin.
 const SNAPSHOT_TRUTH_MAX: usize = 32;
+/// `sorted` of a non-List Rustique container sorts a `str` column natively below this size
+/// (above it, sorting the boxed objects with `list.sort` is cheaper).
+const NATIVE_STR_SORT_MAX: usize = 32;
 
 // =======================================================================================
 // Raw object access (exact builtin types only)
@@ -1559,9 +1566,12 @@ const KW_KEY: usize = 0;
 const KW_DEFAULT: usize = 1;
 const KW_START: usize = 2;
 const KW_REVERSE: usize = 3;
-/// Type objects of `rustique.List` and `rustique.Set`.
+/// Type objects of the Rustique containers.
 static RS_LIST: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(ptr::null_mut());
 static RS_SET: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(ptr::null_mut());
+static RS_FROZENSET: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(ptr::null_mut());
+static RS_DICT: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(ptr::null_mut());
+static RS_TUPLE: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(ptr::null_mut());
 
 /// Call the original METH_FASTCALL|METH_KEYWORDS builtin.
 ///
@@ -1655,7 +1665,133 @@ unsafe fn as_rs_list<'a>(py: Python<'_>, obj: *mut ffi::PyObject) -> Option<&'a 
 
 #[inline(always)]
 fn is_rustique(t: *mut ffi::PyTypeObject) -> bool {
-    t == RS_LIST.load(Atomic::Relaxed) || t == RS_SET.load(Atomic::Relaxed)
+    t == RS_LIST.load(Atomic::Relaxed)
+        || t == RS_SET.load(Atomic::Relaxed)
+        || t == RS_TUPLE.load(Atomic::Relaxed)
+        || t == RS_DICT.load(Atomic::Relaxed)
+        || t == RS_FROZENSET.load(Atomic::Relaxed)
+}
+
+/// Rustique containers whose elements are only reachable by a full snapshot, which `any`
+/// (nearly always stopping at the first element) should not pay for.
+#[inline(always)]
+fn is_rustique_hashed(t: *mut ffi::PyTypeObject) -> bool {
+    t == RS_SET.load(Atomic::Relaxed) || t == RS_DICT.load(Atomic::Relaxed) || t == RS_FROZENSET.load(Atomic::Relaxed)
+}
+
+/// The native column of the `rustique.Tuple` behind `obj`, if its storage is native.
+/// Tuples are immutable, so the column is read without a lock.
+///
+/// # Safety
+/// `obj` is a live object that outlives the returned reference.
+#[inline(always)]
+unsafe fn rs_tuple_column<'a>(py: Python<'_>, obj: *mut ffi::PyObject) -> Option<&'a Column> {
+    // SAFETY: exact type check; `Tuple` is a frozen pyclass whose storage never changes.
+    unsafe {
+        if type_of(obj) != RS_TUPLE.load(Atomic::Relaxed) {
+            return None;
+        }
+        let tuple = &*(Borrowed::from_ptr(py, obj).cast_unchecked::<Tuple>().get() as *const Tuple);
+        match tuple.storage() {
+            Storage::Native(column) => Some(column),
+            _ => None,
+        }
+    }
+}
+
+/// `len()` of a Rustique container (raw slots: no Python code runs).
+///
+/// # Safety
+/// `obj` is a live Rustique container.
+#[inline(always)]
+unsafe fn rs_len(obj: *mut ffi::PyObject) -> usize {
+    // SAFETY: forwarded.
+    unsafe { ffi::PyObject_Size(obj).max(0) as usize }
+}
+
+/// The elements of a Rustique container other than `List` (the keys, for a `Dict`), read in
+/// one lock-scoped pass. Only `int`/`str` objects are created and references taken under the
+/// lock, so no Python code runs while it is held.
+fn rs_objects(py: Python<'_>, it: &Borrowed<'_, '_, PyAny>) -> PyResult<Vec<Py<PyAny>>> {
+    if let Ok(set) = it.cast::<Set>() {
+        return Ok(set.get().element_objects(py));
+    }
+    if let Ok(frozen) = it.cast::<FrozenSet>() {
+        return Ok(frozen.get().table().key_objects(py));
+    }
+    if let Ok(tuple) = it.cast::<Tuple>() {
+        return Ok(match tuple.get().storage() {
+            Storage::Empty => Vec::new(),
+            Storage::Native(column) => convert::column_objects(py, column, 0..column.len()),
+            Storage::Object(items) => items.iter().map(|o| o.clone_ref(py)).collect(),
+        });
+    }
+    let dict = it.cast::<Dict>()?;
+    Ok(dict.get().with_keys(py, |keys| match keys {
+        DictKeysRef::Empty => Vec::new(),
+        DictKeysRef::Int(ki) => ki.iter().map(|(_, k)| k.to_python(py).unbind()).collect(),
+        DictKeysRef::NativeStr(ki) => {
+            ki.iter().map(|(_, k)| PyString::new(py, k.as_str()).into_any().unbind()).collect()
+        }
+        DictKeysRef::Object(ki) => ki.iter().map(|(_, k)| k.clone_ref(py)).collect(),
+    }))
+}
+
+/// The keys of a Rustique `Dict`/`Set`/`FrozenSet` with native `int`/`str` keys, copied
+/// unboxed into a column under the container's lock (no Python objects are created), so
+/// the column kernels apply. `None` for any other key storage.
+fn rs_key_column(py: Python<'_>, it: &Borrowed<'_, '_, PyAny>) -> Option<Column> {
+    fn ints(ki: &rustique_core::index::KeyIndex<i64>) -> Column {
+        Column::I64(ki.iter().map(|(_, &k)| k).collect())
+    }
+    fn strs(ki: &rustique_core::index::KeyIndex<rustique_core::CompactString>) -> Column {
+        Column::Str(ki.iter().map(|(_, k)| k.clone()).collect())
+    }
+    fn of_elements(elements: SetElements<'_>) -> Option<Column> {
+        match elements {
+            SetElements::Int(ki) => Some(ints(ki)),
+            SetElements::Str(ki) => Some(strs(ki)),
+            SetElements::Empty | SetElements::Object(_) => None,
+        }
+    }
+    if let Ok(set) = it.cast::<Set>() {
+        return set.get().with_elements(py, of_elements);
+    }
+    if let Ok(frozen) = it.cast::<FrozenSet>() {
+        return of_elements(frozen.get().elements());
+    }
+    let dict = it.cast::<Dict>().ok()?;
+    dict.get().with_keys(py, |keys| match keys {
+        DictKeysRef::Int(ki) => Some(ints(ki)),
+        DictKeysRef::NativeStr(ki) => Some(strs(ki)),
+        DictKeysRef::Empty | DictKeysRef::Object(_) => None,
+    })
+}
+
+/// Sort a column copied out of a container and return it as a builtin list, parsing
+/// `reverse` (whose truthiness may run Python code) after the copy, like `list.sort`.
+///
+/// # Safety
+/// `reverse` is NULL or a live object.
+unsafe fn sorted_column(
+    py: Python<'_>,
+    mut column: Column,
+    reverse: *mut ffi::PyObject,
+) -> PyResult<*mut ffi::PyObject> {
+    let reverse = !reverse.is_null() && {
+        // SAFETY: a live object, per the caller.
+        let r = unsafe { ffi::PyObject_IsTrue(reverse) };
+        if r < 0 {
+            return Err(PyErr::fetch(py));
+        }
+        r == 1
+    };
+    if column.len() >= SORT_DETACH_THRESHOLD {
+        py.detach(|| kernels::sort(&mut column, reverse));
+    } else {
+        kernels::sort(&mut column, reverse);
+    }
+    column_to_pylist(py, &column).map(Bound::into_ptr)
 }
 
 // =======================================================================================
@@ -1817,8 +1953,18 @@ unsafe fn rs_sum(
                 }
                 storage => storage.into_objects(py),
             }
+        } else if let Some(column) = rs_tuple_column(py, it.as_ptr()) {
+            return match native_start.and_then(|ns| column_sum(py, column, ns)) {
+                Some(result) => result.map(Bound::into_ptr),
+                None => fallback(),
+            };
+        } else if let Some(column) = rs_key_column(py, &it) {
+            return match native_start.and_then(|ns| column_sum(py, &column, ns)) {
+                Some(result) => result.map(Bound::into_ptr),
+                None => fallback(),
+            };
         } else {
-            it.cast::<Set>()?.get().element_objects(py)
+            rs_objects(py, &it)?
         };
         match sum_items(py, raw(&objects), start) {
             Some(r) if r.is_null() => Err(PyErr::fetch(py)),
@@ -2035,8 +2181,18 @@ unsafe fn rs_minmax(
                     if r.is_null() { Err(PyErr::fetch(py)) } else { Ok(r) }
                 }
             };
+        } else if let Some(column) =
+            rs_tuple_column(py, it.as_ptr()).map(Cow::Borrowed).or_else(|| rs_key_column(py, &it).map(Cow::Owned))
+        {
+            return match native(&column) {
+                Some(value) => Ok(convert::value_to_python(py, &value).into_ptr()),
+                None => {
+                    let r = minmax_result(None, default, op);
+                    if r.is_null() { Err(PyErr::fetch(py)) } else { Ok(r) }
+                }
+            };
         } else {
-            it.cast::<Set>()?.get().element_objects(py)
+            rs_objects(py, &it)?
         };
         finish_items(py, &objects, default, op, args, nargs, kwnames, which)
     }
@@ -2137,11 +2293,24 @@ unsafe fn rs_sorted(
             }
             return column_to_pylist(py, &column).map(Bound::into_ptr);
         }
+        // Native numeric keys of a Dict/Set/FrozenSet, or a native numeric Tuple: sorted
+        // natively (no NaNs in key columns; a Tuple column never holds one). Larger `str`
+        // columns take the object path below: boxing every string afresh costs more than
+        // sorting the existing objects with `list.sort` (measured, sorted ratio vs builtin:
+        // native 1.44 / 1.35, objects 1.78 / 1.12 at 8 / 100 elements).
+        if plain
+            && key_none
+            && list.is_none()
+            && let Some(column) = rs_tuple_column(py, it.as_ptr()).cloned().or_else(|| rs_key_column(py, &it))
+            && (!matches!(column, Column::Str(_)) || column.len() < NATIVE_STR_SORT_MAX)
+        {
+            return sorted_column(py, column, reverse);
+        }
         // `list(x)` then `list.sort(**kwargs)`, like CPython's `sorted`, with the copy made
         // in one read of the container instead of an iteration.
         let objects = match list {
             Some(list) => list.get().snapshot(py).into_objects(py),
-            None => it.cast::<Set>()?.get().element_objects(py),
+            None => rs_objects(py, &it)?,
         };
         let newlist = objects_to_pylist(py, objects)?;
         let descriptor = objsort::list_sort_descriptor(py)?;
@@ -2168,7 +2337,7 @@ unsafe extern "C" fn rq_any(slf: *mut ffi::PyObject, arg: *mut ffi::PyObject) ->
     // the Set (all there is without a native view of its keys) would cost every element.
     unsafe {
         let t = type_of(arg);
-        if candidate(t) && t != RS_SET.load(Atomic::Relaxed) {
+        if candidate(t) && !is_rustique_hashed(t) {
             truth_entry(slf, arg, Which::Any)
         } else {
             original_o(Which::Any, arg)
@@ -2206,10 +2375,14 @@ unsafe fn truth_entry(slf: *mut ffi::PyObject, it: *mut ffi::PyObject, which: Wh
                         return original_o(which, it);
                     }
                 }
-                // A Set (`any` never gets here): snapshot only small ones.
+                // Another Rustique container (`any` reaches here only for a Tuple): a native
+                // Tuple column is scanned in place, anything else snapshotted only when small.
                 None => {
-                    let set = Borrowed::from_ptr(py, it).cast_unchecked::<Set>();
-                    if stop || set.get().len(py) > SNAPSHOT_TRUTH_MAX {
+                    if let Some(column) = rs_tuple_column(py, it) {
+                        return bool_result(column_truth(column, stop), stop);
+                    }
+                    // Hashed containers may have native keys (copied unboxed in `rs_truth`).
+                    if rs_len(it) > SNAPSHOT_TRUTH_MAX && !is_rustique_hashed(t) {
                         return original_o(which, it);
                     }
                 }
@@ -2272,11 +2445,16 @@ unsafe fn rs_truth(py: Python<'_>, it: *mut ffi::PyObject, which: Which) -> PyRe
                 storage => storage.into_objects(py),
             }
         } else {
-            let set = obj.cast::<Set>()?.get();
-            if set.len(py) > SNAPSHOT_TRUTH_MAX {
+            if let Some(column) = rs_tuple_column(py, it) {
+                return Ok(bool_result(column_truth(column, stop), stop));
+            }
+            if let Some(column) = rs_key_column(py, &obj) {
+                return Ok(bool_result(column_truth(&column, stop), stop));
+            }
+            if rs_len(it) > SNAPSHOT_TRUTH_MAX {
                 return Ok(original_o(which, it));
             }
-            set.element_objects(py)
+            rs_objects(py, &obj)?
         };
         match truth_scan(raw(&objects).iter().copied(), stop) {
             Scan::Done(found) => Ok(bool_result(found, stop)),
@@ -2463,6 +2641,9 @@ fn init_statics(py: Python<'_>) -> PyResult<()> {
     }
     RS_LIST.store(py.get_type::<List>().as_type_ptr(), Atomic::Relaxed);
     RS_SET.store(py.get_type::<Set>().as_type_ptr(), Atomic::Relaxed);
+    RS_FROZENSET.store(py.get_type::<FrozenSet>().as_type_ptr(), Atomic::Relaxed);
+    RS_DICT.store(py.get_type::<Dict>().as_type_ptr(), Atomic::Relaxed);
+    RS_TUPLE.store(py.get_type::<Tuple>().as_type_ptr(), Atomic::Relaxed);
     objsort::list_sort_descriptor(py)?;
     Ok(())
 }

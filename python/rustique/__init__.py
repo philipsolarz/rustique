@@ -34,8 +34,8 @@ from rustique._rustique import (
     u64,
 )
 
-# The takeover (docs/TAKEOVER.md). Not in `__all__` yet: tests/test_interop.py pins it and
-# other workstreams extend it in parallel; the lead adds these names at integration.
+# The takeover (docs/TAKEOVER.md): `enable()` accelerates the builtin containers and
+# functions in place; `native` opts modules into Rustique containers for their literals.
 from rustique._takeover import disable, enable, native
 
 __all__ = [
@@ -52,12 +52,15 @@ __all__ = [
     "X",
     "__version__",
     "arange",
+    "disable",
+    "enable",
     "f32",
     "f64",
     "i8",
     "i16",
     "i32",
     "i64",
+    "native",
     "u8",
     "u16",
     "u32",
