@@ -1109,10 +1109,13 @@ def test_sort_incomparable_raises(uimpl: ListImpl) -> None:
     lst = uimpl.new(data)
     with pytest.raises(TypeError):
         lst.sort()
-    if uimpl.is_builtin:
-        assert multiset(lst) == multiset(data)  # CPython: "some permutation"
-    else:
-        uimpl.check(lst, data)  # rustique: a failed sort leaves the list unchanged
+    # CPython leaves "some permutation"; object storage sorts with CPython's own `list.sort`
+    # (objsort), so it is the very same permutation.
+    ref = list(data)
+    with pytest.raises(TypeError):
+        ref.sort()
+    assert multiset(lst) == multiset(data)
+    uimpl.check(lst, ref)
 
 
 def test_sort_key_raises_leaves_list_intact(impl: ListImpl) -> None:

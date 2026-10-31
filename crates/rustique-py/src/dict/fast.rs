@@ -559,6 +559,9 @@ pub(super) fn install(py: Python<'_>) -> PyResult<()> {
         let descr = ffi::PyDescr_NewClassMethod(tp, std::ptr::from_ref(&FROM_BUILTIN_DEF.0).cast_mut());
         tp_dict.set_item(pyo3::intern!(py, "_from_builtin"), Bound::from_owned_ptr_or_err(py, descr)?)?;
         (*tp).tp_vectorcall = Some(vectorcall);
+        // `match d: case {...}` needs the mapping flag. `MutableMapping.register` cannot set
+        // it on an immutable type, so it is set here (subclasses inherit it).
+        (*tp).tp_flags |= ffi::Py_TPFLAGS_MAPPING;
         ffi::PyType_Modified(tp);
     }
     Ok(())

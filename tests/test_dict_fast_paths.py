@@ -291,3 +291,17 @@ def test_python_overrides_win_over_raw_slots():
     o = Overrides({1: 2})
     assert o[1] == "overridden" and 5 in o and len(o) == 42
     assert rs.Dict.__getitem__(o, 1) == 2 and rs.Dict.__len__(o) == 1
+
+
+def test_mapping_patterns_match_dict_and_subclasses():
+    for d in (rs.Dict({"a": 1, "b": 2}), Sub({"a": 1, "b": 2})):
+        match d:
+            case {"a": v, **rest}:
+                assert v == 1 and rest == {"b": 2}
+            case _:
+                raise AssertionError("mapping pattern did not match")
+    match rs.Dict({"b": 1}):
+        case {"a": _}:
+            raise AssertionError("matched a missing key")
+        case {}:
+            pass

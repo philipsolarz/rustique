@@ -82,13 +82,20 @@ crates/
     src/dict.rs               # Dict pyclass + views/iterators
     src/dict/keys.rs          # key tables shared by Dict and Set (strategies, lookups, locking)
     src/dict/fast.rs          # Dict's raw CPython slots (hot paths without PyO3 trampolines)
-    src/set.rs                # Set pyclass + iterator
+    src/set.rs                # Set pyclass + iterator; set algebra shared with FrozenSet
+    src/frozenset.rs          # FrozenSet pyclass (immutable, hashable, lock-free) + iterator
     src/scalars.rs            # i8..u64, f32, f64 scalar pyclasses
     src/expr.rs               # Python-facing expression builder `X`
     src/capi.rs               # versioned C-API capsule `rustique._rustique._C_API` (§5.1)
+    src/builtins.rs           # accelerated builtins sum/min/max/sorted/any/all (§4.6)
+    src/objsort.rs            # object-pointer sort via CPython's list.sort (§4.6)
+    src/takeover.rs           # safe-tier kernels behind builtin list/tuple methods (§8)
 python/rustique/
   __init__.py                 # public re-exports
+  __main__.py                 # `python -m rustique` runner (§8)
+  _takeover/                  # enable()/disable(), native-tier rewriter and import hook (§8)
   __init__.pyi                # hand-written, precise type stubs
+  _builtins.py                # install()/uninstall() of the accelerated builtins (§4.6)
   py.typed
 tests/                        # pytest (parity, typing, strategies, expr, threads, buffer)
 benches/                      # honest benchmark harness
@@ -160,6 +167,7 @@ expression and cached:
 | `List[T]`, `list[T]`                           | `List(T)`       | `Object` of rustique `List` objects | rustique `List` of identical schema, or any iterable → converted to `List[T]` |
 | `Dict[K, V]`, `dict[K, V]`                     | `Dict(K, V)`    | `Object` of rustique `Dict` | analogous |
 | `Set[T]`, `set[T]`                             | `Set(T)`        | `Object` of rustique `Set` | analogous |
+| `FrozenSet[T]`, `rs.FrozenSet`                 | `FrozenSet(T)`  | `Object` of rustique `FrozenSet` | a `FrozenSet` of identical schema is shared as is, any iterable → `FrozenSet[T]` (builtin `frozenset` stays a class check) |
 | any other class `C`                            | `Class(C)`      | `Object` | `isinstance(x, C)` |
 | `Annotated[T, ...]`                            | schema of `T`   | | |
 | PEP 695 `type Alias = T`                       | schema of `T`   | | |
@@ -305,11 +313,81 @@ pairs, not the live dicts.
 
 ### 4.3 `Set`
 `Set(iterable=(), /)`, `Set[T](...)`. API parity with `set`: `add`, `discard`, `remove`,
-`pop`, `clear`, `copy`, `__contains__`, `__len__`, `__iter__`, `__eq__` (vs `Set`/`set`/
-`frozenset`), `__le__`/`__lt__`/`__ge__`/`__gt__`, `union`/`intersection`/`difference`/
-`symmetric_difference` (+ operators and in-place variants), `update` variants,
+`pop`, `clear`, `copy`, `__contains__`, `__len__`, `__iter__`, `__eq__` (vs `Set`/
+`FrozenSet`/`set`/`frozenset`), `__le__`/`__lt__`/`__ge__`/`__gt__`, `union`/`intersection`/
+`difference`/`symmetric_difference` (+ operators and in-place variants), `update` variants,
 `issubset`/`issuperset`/`isdisjoint`, `to_set()`, `__repr__` (`Set[int]({1, 2})`),
-`__hash__ = None`.
+`__hash__ = None`, `__init__` (re-initialises like `set.__init__`: clear, then update),
+weak references, subclassing (`class S(rs.Set)`: instances start empty in `__new__` and
+are filled by `__init__`, like `set`; `Set` itself is filled by its vectorcall
+constructor, so construction never pays for a second pass), pickling of iterators
+(`(iter, (remaining,))`, like CPython).
+
+Set semantics follow `setobject.c`:
+- A `Set` or `set` used as an element probe (`in`, `discard`, `remove`) is looked up as
+  the equivalent frozenset (hash = CPython's `frozenset_hash` of its elements, compared by
+  `==`), so `Set("ab") in {frozenset("ab")}`-style lookups work.
+- Algebra: an intersection iterates the smaller operand (the right one on ties, always an
+  iterable argument) and keeps its elements; unions and differences keep the left
+  operand's elements; a symmetric difference keeps each side's own. The result type is
+  the left operand's: `Set op x` → `Set`, `FrozenSet op x` → `FrozenSet`; a builtin left
+  operand (reflected operators) gives the rustique counterpart of its type
+  (`set | Set` → `Set`, `frozenset | Set` → `FrozenSet`). Results are typed only when every
+  operand is a rustique set of the same schema.
+- Comparisons and `isdisjoint` stop at the first deciding element; `issubset` exits early on
+  length.
+- Builtin `set`/`frozenset` sources and operands (subclasses included) are read from their
+  table directly, inside one critical section, with stored hashes (CPython's `set_merge`;
+  an overridden `__iter__` is not consulted).
+- Equal elements of different types: the first inserted wins (`Set([1, 1.0])` keeps `1`).
+
+When both operands store native keys of one kind, or objects that compare without Python
+code (builtin scalars, tuples of them, identity-compared instances), algebra and
+comparisons run on the borrowed tables — read locks for a `Set`, nothing for a
+`FrozenSet` — reusing stored hashes and creating no Python objects. Otherwise elements are
+compared with Python `==` on private snapshots, outside every lock.
+
+Documented deviations: `repr` is `Set({...})`/`FrozenSet({...})` (public API); `Set` and
+`FrozenSet` instances have no `__dict__`, exactly like `set`/`frozenset` (subclass instances
+do; CPython's `test_pickling` assumes any non-builtin set type has one — measured cost of a
+`#[pyclass(dict)]`: +47 instructions per construction (+4%), +4 per method call, +8 bytes
+per object, and it would let `rs.Set` accept attributes `set` rejects, so it is declined);
+building from a `dict` calls `__hash__` again for keys whose hash is user-defined (CPython
+reuses the dict's stored hashes through `_PyDict_Next`, which is not exported);
+`s.intersection(it)`/`issuperset(it)` consume the whole iterable (CPython may stop early);
+iteration order is insertion order (so which shared element `isdisjoint` meets first
+differs from `set`'s hash order).
+
+Call overhead: the hottest entry points bypass pyo3's generic wrappers. `in`, `len()`/
+`bool()` and `next()` are raw type slots that answer the common cases (native probes,
+identity hits, clean misses) without pyo3's trampoline and run the general path attached
+through pyo3; `add`/`discard`/`remove`/`issubset`/`issuperset`/`isdisjoint` are `METH_O`
+method descriptors (the interpreter specialises them to `CALL_METHOD_DESCRIPTOR_O`, like
+`set.add`) and the varargs methods (`union`, `update`, …) are `METH_FASTCALL` (no argument
+tuple), both run through pyo3's own trampolines; both types are immutable types with a
+`tp_vectorcall` constructor (`CALL_BUILTIN_CLASS`). The `__contains__`/`__len__`/`__next__`
+methods keep pyo3's implementations and behave identically. In object tables, `in`,
+`discard` and `remove` decide identity hits, clean misses and equal builtin scalars inline;
+only keys that need Python equality take the classified lookup.
+
+### 4.3a `FrozenSet`
+`FrozenSet(iterable=(), /)`, `FrozenSet[T](...)`: the immutable, hashable counterpart of
+`Set`, with `frozenset`'s API (`copy`, algebra methods and operators, comparisons,
+`issubset`/`issuperset`/`isdisjoint`, `__hash__`, pickling, weak references, subclassing).
+- `hash()` is bit-identical to `hash(frozenset(...))` of equal contents (CPython's
+  `frozenset_hash` with its shuffle bits, over the elements' Python hashes: native `int`s
+  hash like `int`, native `str`s like `str` via `Py_HashBuffer` of their PEP 393 form,
+  objects reuse their stored hash). It is computed on first use and cached; equality
+  short-circuits on two cached hashes that differ.
+- `FrozenSet(fs)` and `FrozenSet[T](fs)` return `fs` itself when it is an exact `FrozenSet`
+  of that schema; `copy()`/`copy.copy` return the set itself.
+- No lock: the table never changes after construction. Lookups compare against it
+  directly (Python `__eq__` running meanwhile cannot change it) and iterators advance an
+  atomic position (each element is yielded once even when threads share an iterator).
+  There is no `__clear__` (like `tuple`, a frozen set cannot form a cycle that some mutable
+  member does not break).
+- Equal frozen sets of any kind (`FrozenSet`, `frozenset`) are interchangeable as dict keys
+  and set elements.
 
 ### 4.4 Fixed-width scalars
 `rs.i8, i16, i32, i64, u8, u16, u32, u64, f32, f64`.
@@ -362,6 +440,93 @@ column-at-a-time in Rust.
   for signals once per element).
 - Expressions are DAGs: shared subexpressions are planned and evaluated once (memoised by
   node). An expression may contain at most 100 000 nodes (`ValueError` beyond).
+
+### 4.6 Builtin functions: `rustique._builtins`
+
+`rustique._builtins.install()` accelerates `sum`, `min`, `max`, `sorted`, `any` and `all`
+(`uninstall()` restores them, `installed()` lists them; `rs.enable()` calls `install()`).
+Nothing changes until it is called. Code: `crates/rustique-py/src/builtins.rs`,
+`python/rustique/_builtins.py`.
+
+**In place, identity kept.** `install()` swaps the `ml_meth` entry point of the six
+entries of CPython's static `builtins` method table (`PyModule_GetDef(builtins)->
+m_methods`, non-const static data, checked writable) for the Rust kernels; `uninstall()`
+swaps them back (compare-and-swap, so an entry changed by someone else meanwhile is left
+alone). The builtin function objects are unchanged: same identity, name, docstring,
+`__text_signature__`, `inspect.signature`, `help()`, `repr`, pickling by reference, flags
+(so `CALL_BUILTIN_FAST_WITH_KEYWORDS` / `CALL_BUILTIN_O` specialise as before), and
+references taken before `install()` (`from builtins import sum`, C extensions) are
+accelerated too. Identity matters: CPython 3.14+ compiles `any(<genexpr>)` and
+`all(<genexpr>)` into an identity check against the original builtin followed by an
+inlined loop; putting a different function object into `builtins` defeated that and made
+`any(genexpr)` cost 1.19x the instructions (measured). Every caller reads `ml_meth` at
+call time, so the swap applies everywhere at once; it is one aligned pointer store, so a
+concurrent call runs either version. The table is process-global (all interpreters).
+
+**Dispatch.** The kernels are raw `extern "C"` functions (no PyO3 argument extraction;
+Rustique containers are handled inside PyO3's trampoline). They look at the argument
+types; anything not handled calls the original C function (the entry point saved at
+install) with the original arguments, so every error message and corner case of a
+fallback is CPython's own. Fast paths:
+
+| input | `sum` | `min`/`max` (no `key`) | `any`/`all` | `sorted` |
+|---|---|---|---|---|
+| builtin `list`/`tuple`, `min(a, b, ...)` | scan + continuation | scan + continuation | scan + continuation | original (its `list.sort`) |
+| builtin `set`/`frozenset`/`dict` (keys) | scan, else original | scan, else original | scan, else original | original |
+| `rustique.List`, native storage | kernel | kernel | native | native sort, boxed |
+| `rustique.List`, object storage / `rustique.Set` | snapshot scan, else original | snapshot scan, else original | up to 32 elements: snapshot scan, else original (`any(Set)`: original) | copy + `list.sort` |
+| anything else (`Dict`, iterators, subclasses, ...) | original | original | original | original |
+
+- A *scan* reads the item array directly (a builtin list inside its critical section)
+  while each item has an exact type whose handling runs no Python code: `int`, `bool`,
+  `float`, `str` (plus `None`, `tuple`, `list`, `bytes` for truthiness; `None` and exact
+  tuples compared element-wise for `min`/`max`). It stops at the first item that would
+  need Python code. Nothing observable happened during the scan, so for a list/tuple the
+  computation *continues* from that index exactly like CPython's loop (items fetched one
+  at a time from the live list like `listiter`, Python code allowed, state carried over):
+  results, the order of Python-level calls (`__radd__`, `__lt__`, `__bool__`) and the
+  reaction to mutation are CPython's. For hashed containers and Rustique snapshots the
+  original builtin is called from scratch instead (at most one extra pure pass).
+- Rustique containers have no lock-scoped element view yet, so object storage and `Set`s
+  are scanned on a snapshot (every element increfed or boxed). That pays off for `sum`,
+  `min`, `max` and `sorted`, which visit every element anyway, but not for `any`/`all`,
+  which CPython usually ends early: those snapshot only up to 32 elements and otherwise
+  iterate lazily through the original (`any(Set)` always does).
+- `sum` is a state machine following `builtin_sum_impl` (3.12+): exact `int` accumulation
+  in a C long, then CPython's compensated (Neumaier) float summation, then compensated
+  complex, then generic `+`; transitions happen at the same items, so float sums are
+  bit-identical and C-long overflow switches to exact big-int addition at the same point.
+  Native columns use `rustique-core`'s `kernels::sum` (exact, same compensated algorithm)
+  for the default start, and an element-wise version of the state machine for an exact
+  `int`/`float` start; any other start calls the original.
+- `min`/`max` keep the first extreme and replace it only when `item < best` (`>`), with
+  exact `int`/`float` comparisons, so the returned *object* is CPython's
+  (`min([1, 1.0]) is` the `1`). `key=` (other than `None`) always calls the original.
+- `sorted(List)` copies the column under the read lock, then evaluates `reverse` (like
+  `list.sort`'s argument parsing, after the copy), sorts natively and boxes into a new
+  builtin list. Float columns holding a NaN, a `key`, object storage and `Set`s build the
+  builtin list in one read and call `list.sort` on it (what `sorted` does after `list(x)`).
+- Builtin inputs to `sorted` go to the original, whose `list.sort` is the takeover tier's.
+
+**Not replaced: `enumerate`, `zip`, `reversed`.** They are types: a replacement would
+break `isinstance(x, enumerate)` for iterators created by the original type (by C code or
+before `install()`), `type(it) is enumerate`, subclassing, and pickling of their iterators
+(`__reduce__` names the type). There is also nothing to gain: the interpreter does not
+specialise iteration over them (`FOR_ITER` specialises lists, tuples, ranges and
+generators only), their C implementations already reuse result tuples, and over a
+Rustique container they call its `tp_iternext` once per item, so speeding up
+`enumerate(List)` means speeding up the List's own iterator (§4.1).
+
+**Object-storage sort (`objsort`).** `List.sort` on object storage (unless no `key` is
+given and every element compares natively, the existing native-key path) moves the
+`PyObject*` pointers into a temporary builtin list (no incref), calls `list.sort` through
+the method descriptor, and moves them back (no decref): CPython's timsort with its
+type-specialised compares, `key` called once per element, stability and `reverse`
+semantics. A failed sort leaves CPython's permutation (not the original order). The list
+appears empty while the sort runs and changes made meanwhile raise `ValueError("list
+modified during sort")` and are discarded, as before. Rust API (`objsort.rs`):
+`sort_objects(py, &mut Vec<Py<PyAny>>, key, reverse)`, `sort_slice` and the raw
+`unsafe fn sort_raw(py, *mut *mut PyObject, len, key, reverse)`.
 
 ---
 
@@ -501,6 +666,15 @@ cost of a borrow/release pair is about 0.1 µs.
   code collects strong references first and runs afterwards.
 - GC support (`__traverse__`) never blocks: it uses `try_lock` (GC is stop-the-world on
   free-threaded builds).
+- Builtin `set`/`frozenset` sources are read with CPython's exported `_PySet_NextEntry`
+  (borrowed keys and stored hashes) inside the set's critical section; only exact
+  `int`/`str` keys are converted there, everything else is collected with a strong
+  reference and its stored hash. `Set` and `FrozenSet` install a `tp_vectorcall` on their
+  type objects (constructor fast path; never inherited by subclasses) and `FrozenSet` wraps
+  pyo3's `tp_new` to return an exact `FrozenSet` argument as is.
+- Set algebra between two rustique sets may hold both read locks (taken with `read_both`,
+  never in a fixed order) while comparing stored objects of builtin scalar types with `==`
+  — the same inline comparisons a lookup makes under its lock, which run no Python code.
 - Buffer exports freeze the container (see §4.1).
 - No `unsafe` outside small, commented FFI fast paths (e.g. reading `PyListObject` items,
   which must not be used for list subclasses). Every `unsafe` block carries a `// SAFETY:`
@@ -523,3 +697,22 @@ cost of a borrow/release pair is about 0.1 µs.
     stress; skipped where meaningless).
 - `benches/bench.py` — fresh inputs per repetition, result verification, reports
   rustique/builtin ratios.
+
+---
+
+## 8. Takeover (`rustique.enable()`)
+
+Decision record and measurements: [`docs/TAKEOVER.md`](TAKEOVER.md). In short:
+
+- **Safe tier (default, process-wide).** Containers stay exact builtins; `enable()` swaps
+  the `ml_meth` pointers of CPython's static `PyMethodDef`s of `list.sort`/`index`/`count`
+  and `tuple.index`/`count`, and the `sq_contains` slots of `list`/`tuple`, for
+  exact-semantics Rust kernels (`takeover.rs`) that fall back to the saved originals; the
+  replacement builtin functions come from `rustique._builtins`. No type object is
+  modified.
+- **Native tier (opt-in, per module).** An import hook / runner / decorator rewrites
+  displays, comprehensions and `list()`/`dict()`/`set()` calls of selected modules to
+  `List`/`Dict`/`Set`.
+- **Layout rule.** A Rustique type with native storage must not subclass a builtin
+  container (C code reads the builtin layout after non-exact type checks).
+

@@ -524,6 +524,26 @@ fn decide_slow(stored: *mut ffi::PyObject, probe: &FastKey) -> Option<bool> {
     unsafe { decide_eq(stored, probe) }
 }
 
+/// A lookup probe that needs no Python objects (set tables with native keys; see also
+/// [`FastKey`]).
+pub(crate) enum Quick<'a> {
+    Int(i64),
+    Str(&'a str),
+}
+
+/// The probe for an exact `int` (fitting i64) or exact `str` object.
+#[inline]
+pub(crate) fn quick<'a>(obj: &'a Bound<'_, PyAny>) -> Option<Quick<'a>> {
+    if obj.is_exact_instance_of::<PyInt>() {
+        // SAFETY: `obj` is a live exact `int`.
+        return unsafe { exact_int_value(obj.as_ptr()) }.map(Quick::Int);
+    }
+    if let Ok(s) = obj.cast_exact::<PyString>() {
+        return s.to_str().ok().map(Quick::Str);
+    }
+    None
+}
+
 /// The native form of an exact `int`/`str` key under a key `schema` (`None` when it needs
 /// classification or conversion). Runs no Python code and takes no reference, so it is safe
 /// on borrowed items inside a critical section of their container.
@@ -1264,6 +1284,21 @@ impl KeyTable {
 
     /// Look up a fast probe without running Python code: `Some(position or None)`, or
     /// `None` when deciding needs the general path (a stored key's `__eq__` may run).
+    /// Look up a native probe; `None` when the table stores objects (use [`scan`]).
+    ///
+    /// [`scan`]: Self::scan
+    #[inline]
+    pub(crate) fn find_quick(&self, probe: &Quick<'_>) -> Option<Option<usize>> {
+        match (&self.store, probe) {
+            (KeyStore::Empty, _) => Some(None),
+            (KeyStore::Int(ki), Quick::Int(v)) => Some(ki.get(v)),
+            (KeyStore::Str(ki), Quick::Str(s)) => Some(ki.get(*s)),
+            // A `str` never equals an `int` and vice versa.
+            (KeyStore::Int(_), Quick::Str(_)) | (KeyStore::Str(_), Quick::Int(_)) => Some(None),
+            (KeyStore::Object(_), _) => None,
+        }
+    }
+
     /// Look up any key object without running Python code (`None`: use the general path).
     /// Exact `str` and `int` keys take dedicated paths.
     ///
