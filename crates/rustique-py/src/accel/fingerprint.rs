@@ -39,11 +39,10 @@ impl Fast {
     }
     fn bytes(&mut self, b: &[u8]) {
         self.word(b.len() as u64);
-        let mut chunks = b.chunks_exact(8);
-        for c in &mut chunks {
-            self.word(u64::from_le_bytes(c.try_into().unwrap_or([0; 8])));
+        let (words, rest) = b.as_chunks::<8>();
+        for c in words {
+            self.word(u64::from_le_bytes(*c));
         }
-        let rest = chunks.remainder();
         if !rest.is_empty() {
             let mut w = [0u8; 8];
             w[..rest.len()].copy_from_slice(rest);

@@ -552,19 +552,22 @@ pub fn watcher_id() -> PyResult<c_int> {
 
 /// The dict's slot, watching the dict when it is new.
 fn dict_slot<'t>(py: Python<'_>, t: &'t mut Tables, dict: &Bound<'_, PyAny>) -> PyResult<&'t mut DictSlot> {
-    let a = dict.as_ptr() as usize;
-    if !t.dicts.contains_key(&a) {
-        let id = dict_watcher_id()?;
-        // SAFETY: attached thread; live dict.
-        if unsafe { ffi::PyDict_Watch(id, dict.as_ptr()) } < 0 {
-            return Err(PyErr::fetch(py));
+    match t.dicts.entry(dict.as_ptr() as usize) {
+        std::collections::hash_map::Entry::Occupied(e) => Ok(e.into_mut()),
+        std::collections::hash_map::Entry::Vacant(e) => {
+            let id = dict_watcher_id()?;
+            // SAFETY: attached thread; live dict.
+            if unsafe { ffi::PyDict_Watch(id, dict.as_ptr()) } < 0 {
+                return Err(PyErr::fetch(py));
+            }
+            Ok(e.insert(DictSlot {
+                dict: dict.clone().into_ptr() as usize,
+                keys: Vec::new(),
+                snaps: Vec::new(),
+                gens: Vec::new(),
+            }))
         }
-        t.dicts.insert(
-            a,
-            DictSlot { dict: dict.clone().into_ptr() as usize, keys: Vec::new(), snaps: Vec::new(), gens: Vec::new() },
-        );
     }
-    Ok(t.dicts.get_mut(&a).expect("just inserted"))
 }
 
 /// Generation watch: bump `gen` (relaxed) whenever `dict[key]` is added, replaced or
