@@ -141,7 +141,7 @@ pub struct St {
     pub keep_alive: O,
     pub reconstruct: O,
     /// (function, code, defaults) for each helper the kernel emulates; checked before use.
-    pub helpers: [(O, O, O); 8],
+    pub helpers: [(O, O, O); 9],
     // copyreg
     pub newobj: O,
     pub newobj_code: O,
@@ -205,6 +205,7 @@ pub const H_METHOD: usize = 4;
 pub const H_KEEP_ALIVE: usize = 5;
 pub const H_RECONSTRUCT: usize = 6;
 pub const H_NEWOBJ: usize = 7;
+pub const H_SLOTNAMES: usize = 8;
 
 /// Is helper `i` still the function the kernel emulates (same code and defaults, no tool
 /// listening locally on its code)?
@@ -566,6 +567,9 @@ pub unsafe fn raise_obj(exc: O) -> R<O> {
     }
 }
 
+static RET_SELF1: [AtomicPtr<ffi::PyObject>; 8] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 8];
+static RET_SELF2: [AtomicPtr<ffi::PyObject>; 8] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 8];
+
 /// Is `f` a Python function whose code is exactly `return self` with `n` positional
 /// parameters (`Enum.__deepcopy__`, `Enum.__copy__`, `Pattern`-like no-op hooks written
 /// in Python)? Calling it has no effect besides its frame.
@@ -582,11 +586,18 @@ pub unsafe fn is_return_self(st: &St, f: O, n: c_int) -> bool {
         let code = (*f.cast::<ffi::PyFunctionObject>()).func_code;
         let rc = code.cast::<crate::accel::version::RawCode>();
         let (want, flags) = if n == 2 { st.ret_self2 } else { st.ret_self1 };
+        if !crate::accel::guard::code_locally_quiet(code) {
+            return false;
+        }
+        // Code objects are immutable: remember the ones already verified.
+        let cache = if n == 2 { &RET_SELF2 } else { &RET_SELF1 };
+        if cache.iter().any(|c| c.load(Relaxed) == code) {
+            return true;
+        }
         if (*rc).co_argcount != n
             || (*rc).co_kwonlyargcount != 0
             || (*rc).co_flags != flags
             || (*rc).co_nlocalsplus != n
-            || !crate::accel::guard::code_locally_quiet(code)
         {
             return false;
         }
@@ -598,6 +609,15 @@ pub unsafe fn is_return_self(st: &St, f: O, n: c_int) -> bool {
         }
         let same = ffi::PyObject_RichCompareBool(cc, want, ffi::Py_EQ) == 1;
         decref(cc);
+        if same {
+            for c in cache {
+                // A strong reference, kept for the process (at most a few code objects).
+                if c.compare_exchange(std::ptr::null_mut(), code, Relaxed, Relaxed).is_ok() {
+                    incref(code);
+                    break;
+                }
+            }
+        }
         same
     }
 }

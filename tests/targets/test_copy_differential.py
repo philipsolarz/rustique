@@ -772,3 +772,12 @@ def test_plain_reduce_variants(make, fn):
         return x, {"x": x}
 
     S.compare(fn, source)
+
+
+def test_replace_instance_shadows_fields():
+    def source():
+        p = DC(1, [2])
+        p.__dict__["__dataclass_fields__"] = ["not", "a", "dict"]
+        return p, {"p": p}
+
+    S.compare(lambda cp, dc, r: dc.replace(r, x=2), source)

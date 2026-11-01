@@ -174,6 +174,7 @@ pub mod fp {
     pub const DEEPCOPY_METHOD: Fingerprints = &[(3, 14, "f8003d8e1e6a1386"), (3, 15, "a85c9c3946dab55a")];
     pub const KEEP_ALIVE: Fingerprints = &[(3, 14, "421fc8f79248786d"), (3, 15, "968491e533d8ab2b")];
     pub const RECONSTRUCT: Fingerprints = &[(3, 14, "389ff8af1279cb19"), (3, 15, "1365ac6436d0273d")];
+    pub const SLOTNAMES: Fingerprints = &[(3, 14, "de21d08840b8fc73"), (3, 15, "2e5497602f72e1e0")];
     pub const NEWOBJ: Fingerprints = &[(3, 14, "59d84e3426e38a01"), (3, 15, "f3dc1dde05b828a4")];
 }
 
@@ -387,6 +388,8 @@ pub fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyMod
     let keep_alive = get("_keep_alive")?;
     let reconstruct = get("_reconstruct")?;
     let newobj = dget(&rd, "__newobj__")?;
+    let slotnames = dget(&rd, "_slotnames")?;
+    cx.fingerprint_code(&slotnames, fp::SLOTNAMES)?;
     cx.fingerprint_code(&h_list, fp::DEEPCOPY_LIST)?;
     cx.fingerprint_code(&h_tuple, fp::DEEPCOPY_TUPLE)?;
     cx.fingerprint_code(&h_dict, fp::DEEPCOPY_DICT)?;
@@ -432,6 +435,7 @@ pub fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyMod
         func3(&keep_alive)?,
         func3(&reconstruct)?,
         func3(&newobj)?,
+        func3(&slotnames)?,
     ];
     let (_, deepcopy_code, deepcopy_defaults) = func3(&deepcopy)?;
     let (_, copy_code, _) = func3(&copy_fn)?;
@@ -541,6 +545,7 @@ fn pin_deps(cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>) -> Result<(), Refu
     }
     let copyreg = cx.loaded_module("copyreg")?;
     cx.pin(&copyreg.dict(), "__newobj__", &DEPS_COPY)?;
+    cx.pin(&copyreg.dict(), "_slotnames", &DEPS_COPY)?;
     let modules = cx.loaded_module("sys")?.dict();
     let modules = cx.get(&modules, "modules")?.cast_into::<PyDict>().map_err(PyErr::from)?;
     cx.pin(&modules, "copyreg", &DEPS_COPY)?;

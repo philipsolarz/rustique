@@ -369,6 +369,16 @@ impl Engine {
                 return call1(reductor.get(), x);
             }
             drop(reductor);
+            if (cls == &raw mut ffi::PySet_Type || cls == &raw mut ffi::PyFrozenSet_Type) && self.helper(H_SLOTNAMES) {
+                // `object.__reduce_ex__` -> `set.__reduce__` (exact set/frozenset):
+                // `(type(x), (list(x),), state)`, where `state` is `None` after
+                // `_PyType_GetSlotNames` called `copyreg._slotnames(cls)` (which returns [] and
+                // fails to cache it on the static type): only that frame's depth check remains.
+                let keys = Own::new(ffi::PySequence_List(x))?;
+                self.depth.touch()?;
+                let args = Own::new(ffi::PyTuple_Pack(1, keys.get()))?;
+                return nn(ffi::PyTuple_Pack(3, cls.cast::<ffi::PyObject>(), args.get(), ffi::Py_None()));
+            }
             if let Some(rv) = super::reduce::plain_reduce(st, x, cls)? {
                 return Ok(rv);
             }

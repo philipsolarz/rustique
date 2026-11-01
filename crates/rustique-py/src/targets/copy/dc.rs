@@ -101,6 +101,7 @@ pub struct DcSt {
     field_initvar: O,
     missing: O,
     s_field_type: O,
+    s_values: O,
     s_name: O,
     s_init: O,
     s_default: O,
@@ -230,6 +231,7 @@ fn ensure_dc(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         field_initvar: super::dget(&g, "_FIELD_INITVAR")?.into_ptr(),
         missing: super::dget(&g, "MISSING")?.into_ptr(),
         s_field_type: PyString::intern(py, "_field_type").into_ptr(),
+        s_values: PyString::intern(py, "values").into_ptr(),
         s_name: PyString::intern(py, "name").into_ptr(),
         s_init: PyString::intern(py, "init").into_ptr(),
         s_default: PyString::intern(py, "default").into_ptr(),
@@ -363,24 +365,59 @@ impl Cx {
         let d = self.d;
         // SAFETY: live objects.
         unsafe {
-            if !intact(d.fields, false) {
+            // With generic attribute access the lookup below cannot fail (the class has
+            // `__dataclass_fields__`); anything else (and its `raise ... from None`) is
+            // left to CPython's `fields`.
+            let generic = (*ty(obj)).tp_getattro.map(|f| f as usize)
+                == (*(&raw mut ffi::PyBaseObject_Type)).tp_getattro.map(|f| f as usize);
+            if !generic || !intact(d.fields, false) {
                 return call1(d.fields.0, obj);
             }
             self.depth.push()?;
             let r = (|| {
-                let fs = getattr_opt(obj, d.s_fields)?;
+                let fs = ffi::PyObject_GetAttr(obj, d.s_fields);
                 if fs.is_null() {
                     // `except AttributeError: raise TypeError(...) from None`
-                    ffi::PyErr_SetString(
-                        ffi::PyExc_TypeError,
-                        c"must be called with a dataclass type or instance".as_ptr(),
-                    );
+                    if ffi::PyErr_ExceptionMatches(ffi::PyExc_AttributeError) == 0 {
+                        return Err(());
+                    }
+                    let ctx = ffi::PyErr_GetRaisedException();
+                    let msg = c"must be called with a dataclass type or instance";
+                    let m = Own::new(ffi::PyUnicode_FromString(msg.as_ptr()))?;
+                    let te = ffi::PyObject_CallOneArg(ffi::PyExc_TypeError, m.get());
+                    if te.is_null() {
+                        xdecref(ctx);
+                        return Err(());
+                    }
+                    ffi::PyException_SetContext(te, ctx);
+                    ffi::PyException_SetCause(te, null_mut());
+                    ffi::PyErr_SetRaisedException(te);
                     return Err(());
                 }
                 let fs = Own(fs);
                 if ty(fs.get()) != &raw mut ffi::PyDict_Type {
-                    // Not a dict: leave the whole call to CPython's `fields`.
-                    return Err(());
+                    // `fields.values()` of something else: the generic protocol.
+                    let vals = Own::new(call_method0(fs.get(), d.s_values)?)?;
+                    let it = Own::new(ffi::PyObject_GetIter(vals.get()))?;
+                    let out = Own::new(ffi::PyList_New(0))?;
+                    self.depth.touch()?;
+                    loop {
+                        self.depth.push()?;
+                        let step = (|| -> R<bool> {
+                            let Some(v) = iter_next(it.get())? else { return Ok(false) };
+                            let v = Own(v);
+                            let ft = Own::new(ffi::PyObject_GetAttr(v.get(), d.s_field_type))?;
+                            if ft.get() == d.field && ffi::PyList_Append(out.get(), v.get()) < 0 {
+                                return Err(());
+                            }
+                            Ok(true)
+                        })();
+                        self.depth.pop();
+                        if !step? {
+                            break;
+                        }
+                    }
+                    return nn(ffi::PyList_AsTuple(out.get()));
                 }
                 let out = Own::new(ffi::PyList_New(0))?;
                 // The generator expression: created, then resumed by tuple().
@@ -406,9 +443,6 @@ impl Cx {
                 nn(ffi::PyList_AsTuple(out.get()))
             })();
             self.depth.pop();
-            if r.is_err() && ffi::PyErr_Occurred().is_null() {
-                return call1(d.fields.0, obj);
-            }
             r
         }
     }
@@ -802,7 +836,10 @@ impl Cx {
         unsafe {
             let fs = Own::new(ffi::PyObject_GetAttr(obj, d.s_fields))?;
             if ty(fs.get()) != &raw mut ffi::PyDict_Type {
-                return Err(()); // checked by the caller before anything ran
+                // Shadowed by the instance with something else: everything so far was a
+                // pure lookup, so CPython's `_replace` can do the whole loop.
+                let args = Own::new(ffi::PyTuple_Pack(1, obj))?;
+                return nn(ffi::PyObject_Call(d.replace_inner.0, args.get(), changes));
             }
             let mut it = DictIt::new(fs.get());
             while let Some((k, f)) = it.next()? {
