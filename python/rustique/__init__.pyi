@@ -48,12 +48,14 @@ __all__ = [
     "FrozenSetType",
     "List",
     "ListType",
+    "RustiqueCheckError",
     "Set",
     "SetType",
     "Tuple",
     "X",
     "__version__",
     "arange",
+    "check",
     "disable",
     "enable",
     "f32",
@@ -975,6 +977,16 @@ def status() -> dict[str, Any]:
 
 def stats(enabled: bool | None = None, reset: bool = False) -> dict[str, dict[str, Any]]:
     """Per-target counters ``{name: {"hits": n, "fallback": {reason: n}}}``."""
+
+class RustiqueCheckError(Exception):
+    """Check mode ``"raise"``: a fast path returned something else than CPython's original."""
+
+@overload
+def check() -> str | None:
+    """The current check mode (``"warn"``, ``"raise"`` or ``"off"``)."""
+@overload
+def check(mode: Literal["warn", "raise", "off"] | bool | None, /) -> str | None:
+    """Set the check mode; returns the previous one."""
 
 @overload
 def native[F: Callable[..., Any]](obj: F, /) -> F:

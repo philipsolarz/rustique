@@ -274,14 +274,20 @@ def test_plugin_kill_switch(plain_suite):
 
 
 REFUSE = """
-import rustique._takeover as fw
-_status = fw.status
-def status():
-    st = _status()
-    st["targets"].append({{"name": "fake.target", "group": "fake", "state": "refused", "reason": "test",
-                          "refusal": {refusal!r}, "sites": [], "versions": []}})
-    return st
-fw.status = status
+import rustique
+
+class Accel:
+    def __init__(self, inner):
+        self._inner = inner
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+    def status(self):
+        st = self._inner.status()
+        st["targets"].append({{"name": "fake.target", "group": "fake", "state": "refused", "reason": "test",
+                              "refusal": {refusal!r}, "sites": [], "versions": []}})
+        return st
+
+rustique._accel = Accel(rustique._accel)
 """
 
 
@@ -310,13 +316,19 @@ def test_plugin_check_mode(plain_suite):
 
 
 MISMATCH = """
-import rustique._takeover as fw
-_stats = fw.stats
-def stats(enabled=None, reset=False):
-    out = _stats(enabled=enabled, reset=reset)
-    out["list.sort"] = {"hits": 3, "fallback": {"check": 2}}
-    return out
-fw.stats = stats
+import rustique
+
+class Accel:
+    def __init__(self, inner):
+        self._inner = inner
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+    def stats(self, enabled=None, reset=False):
+        out = self._inner.stats(enabled, reset)
+        out["list.sort"] = {"hits": 3, "fallback": {"check": 2}}
+        return out
+
+rustique._accel = Accel(rustique._accel)
 """
 
 

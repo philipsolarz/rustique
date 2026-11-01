@@ -136,7 +136,8 @@ def main(argv: list[str]) -> int:
     import statistics
     import tempfile
 
-    from rustique import _report, _switch
+    import rustique
+    from rustique import _report
     from rustique._cli import NO_RECORDS, read_records, resolve_command, split_command
 
     opts_argv, cmd = split_command(argv)
@@ -155,7 +156,7 @@ def main(argv: list[str]) -> int:
     opts = p.parse_args(opts_argv)
     if not cmd:
         p.error("missing command (python -m rustique diff -- <command...>)")
-    if _switch.killed():
+    if rustique._killed():
         sys.stderr.write("rustique diff: RUSTIQUE=0 (kill switch) is set; unset it to compare.\n")
         return 2
     cmd = resolve_command(cmd)

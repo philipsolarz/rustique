@@ -14,7 +14,7 @@ future ``_rustique_startup.start`` file will name; it is idempotent.
 
 Values of ``RUSTIQUE``: ``1``/``true``/``yes``/``on`` enable at startup; empty and
 ``0``/``false``/``no``/``off`` do nothing here (``0`` also turns every later
-``rustique.enable()`` into a no-op: the kill switch, see ``rustique._switch``). Like the
+``rustique.enable()`` into a no-op: the kill switch, see ``rustique``). Like the
 ``PYTHON*`` variables, the ``RUSTIQUE*`` variables are ignored under ``-E`` and ``-I``.
 
 PYTEST_DONT_REWRITE: pytest marks every module of a distribution that has a ``pytest11``
@@ -48,12 +48,12 @@ def start():
         sys.stderr.write(f"rustique: ignoring RUSTIQUE={value!r} (expected 1 or 0)\n")
         return
     try:
-        from rustique import _switch
+        import rustique
     except Exception as exc:  # e.g. no wheel for this interpreter, a partial install
         sys.stderr.write(f"rustique: RUSTIQUE={value} ignored: cannot import rustique: {exc}\n")
         return
     try:
-        _switch.startup()
+        rustique._startup()
     except Exception as exc:  # never break the interpreter's startup
         sys.stderr.write(f"rustique: RUSTIQUE={value} ignored: {type(exc).__name__}: {exc}\n")
 

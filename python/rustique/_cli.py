@@ -102,15 +102,14 @@ def _fresh_main(path: str | None):
 
 def run(argv: list[str]) -> None:
     opts, rest = _parse_run(argv)
-    from rustique import _switch
+    import rustique
 
-    if opts.report and _switch.report_target() is None:
-        _switch.report_to("stderr")
-    if (opts.check or opts.check_raise) and not _switch.killed():
-        _switch._fw.check("raise" if opts.check_raise else "warn")
-    _switch.enable(only=opts.only, exclude=opts.exclude, native=opts.native or None,
-                   builtins=not opts.no_builtins, _source="python -m rustique")
-    native_main = (bool(opts.native) or opts.native_main) and not _switch.killed()
+    if opts.report and rustique._report_target() is None:
+        rustique._report_to("stderr")
+    if (opts.check or opts.check_raise) and not rustique._killed():
+        rustique.check("raise" if opts.check_raise else "warn")
+    rustique._enable(opts.only, opts.exclude, opts.native or None, not opts.no_builtins, source="python -m rustique")
+    native_main = (bool(opts.native) or opts.native_main) and not rustique._killed()
     if native_main:
         from rustique._takeover import _rewrite
 
@@ -180,9 +179,10 @@ def status_cmd(argv: list[str]) -> int:
     p.add_argument("--json", action="store_true", help="print rustique.status() as JSON")
     opts = p.parse_args(argv)
     import rustique
-    from rustique import _report, _switch
+    from rustique import _report
 
-    st = _switch.enable(_source="python -m rustique status")
+    rustique._enable(source="python -m rustique status")
+    st = rustique.status()
     hooks = startup_files()
     if opts.json:
         import json
@@ -277,9 +277,10 @@ def report_cmd(argv: list[str]) -> int:
     opts = p.parse_args(opts_argv)
     if not cmd:
         p.error("missing command (python -m rustique report -- <command...>)")
-    from rustique import _report, _switch
+    import rustique
+    from rustique import _report
 
-    if _switch.killed():
+    if rustique._killed():
         sys.stderr.write("rustique report: RUSTIQUE=0 (kill switch) is set; unset it to report.\n")
         return 2
     with tempfile.TemporaryDirectory(prefix="rustique-report-") as tmp:

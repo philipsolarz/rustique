@@ -1,7 +1,34 @@
 """Human-readable reports of ``rustique.status()`` and ``rustique.stats()`` (the report at
 exit, ``python -m rustique status|report``, the pytest plugin's summary)."""
 
+import os
+import sys
+
 STATES = ("installed", "pending-import", "refused", "disabled")
+
+
+def write(target: str, record) -> None:
+    """The report at exit (``RUSTIQUE_REPORT``): text on stderr (``"stderr"``), or appended
+    to a file, as text or (``*.json``) as one JSON record. Never fails the program's exit."""
+    try:
+        rec = record()
+        if target.endswith(".json"):
+            import json
+
+            text = json.dumps(rec, default=list) + "\n"
+        else:
+            text = render(rec)
+        if target == "stderr":
+            sys.stderr.write(text)
+            sys.stderr.flush()
+        else:
+            fd = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+            try:
+                os.write(fd, text.encode())
+            finally:
+                os.close(fd)
+    except Exception as exc:
+        sys.stderr.write(f"rustique: report failed: {type(exc).__name__}: {exc}\n")
 
 
 def merge(records: list[dict]) -> dict:

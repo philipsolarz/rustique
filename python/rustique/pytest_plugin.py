@@ -66,13 +66,13 @@ class _Session:
 def pytest_configure(config: pytest.Config) -> None:
     if not config.getoption("rustique"):
         return
-    from rustique import _switch
+    import rustique
 
-    _switch.stats(enabled=True)
-    if (config.getoption("rustique_check") or config.getoption("rustique_check_raise")) and not _switch.killed():
-        _switch._fw.check("raise" if config.getoption("rustique_check_raise") else "warn")
-    _switch.enable(only=config.getoption("rustique_only"), exclude=config.getoption("rustique_exclude"),
-                   _source="pytest --rustique")
+    rustique.stats(True)
+    if (config.getoption("rustique_check") or config.getoption("rustique_check_raise")) and not rustique._killed():
+        rustique.check("raise" if config.getoption("rustique_check_raise") else "warn")
+    rustique._enable(config.getoption("rustique_only"), config.getoption("rustique_exclude"),
+                     source="pytest --rustique")
     config.stash[_KEY] = _Session(config)
 
 
@@ -80,9 +80,9 @@ _KEY = pytest.StashKey[_Session]()
 
 
 def _record() -> dict:
-    from rustique import _switch
+    import rustique
 
-    return _switch.record()
+    return rustique._record()
 
 
 def _mismatches(rec: dict) -> dict[str, int]:
