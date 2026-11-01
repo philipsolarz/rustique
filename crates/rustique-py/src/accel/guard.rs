@@ -326,6 +326,14 @@ static TABLES: Mutex<Option<Tables>> = Mutex::new(None);
 /// The interpreter is finalizing: every flag is false and the watchers return at once
 /// (module dicts are being cleared; nothing is re-armed any more).
 static CLOSED: AtomicBool = AtomicBool::new(false);
+/// The registry is tearing down (exit hook): per-owner `deactivate`/`track` are skipped,
+/// [`teardown`] drops the whole tables at once (one pass instead of one per owner).
+static BULK: AtomicBool = AtomicBool::new(false);
+
+/// Start an exit teardown: see [`BULK`]. Ended by [`teardown`].
+pub(crate) fn begin_teardown() {
+    BULK.store(true, Ordering::Release);
+}
 static DICT_WATCHER: AtomicI32 = AtomicI32::new(-1);
 static TYPE_WATCHER: AtomicI32 = AtomicI32::new(-1);
 static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
@@ -811,6 +819,9 @@ pub(crate) fn activate(py: Python<'_>, pins: Vec<PendingPin>) -> PyResult<(u64, 
 
 /// Report flips of `flags` to the registry (deopt while unpinned), or stop.
 pub(crate) fn track(flags: &[&'static DepFlag], on: bool) {
+    if BULK.load(Ordering::Acquire) {
+        return;
+    }
     let mut guard = tables();
     let t = guard.get_or_insert_with(Tables::default);
     for f in flags {
@@ -826,6 +837,9 @@ pub(crate) fn track(flags: &[&'static DepFlag], on: bool) {
 /// Remove the pins of `owner`; key slots, dicts and types left without any interest are
 /// released and unwatched.
 pub(crate) fn deactivate(owner: u64) {
+    if BULK.load(Ordering::Acquire) {
+        return;
+    }
     let mut release: Vec<usize> = Vec::new();
     let mut unwatch_dicts: Vec<usize> = Vec::new();
     let mut types: Vec<usize> = Vec::new();
@@ -921,7 +935,9 @@ pub(crate) fn deactivate(owner: u64) {
 /// dict and type, and clear every flag that ever had a dep, so a kernel reached on a stale
 /// path falls back. A later activation starts from empty tables.
 pub(crate) fn teardown() {
-    let Some(t) = tables().take() else { return };
+    let taken = tables().take();
+    BULK.store(false, Ordering::Release);
+    let Some(t) = taken else { return };
     for &a in &t.all_flags {
         // SAFETY: flags are statics (addresses of `&'static DepFlag`).
         unsafe { &*(a as *const DepFlag) }.0.store(false, Ordering::Relaxed);
@@ -958,8 +974,9 @@ pub(crate) fn teardown() {
         }
         dicts.push(slot.dict);
     }
-    // SAFETY: attached thread (the registry calls this holding no lock); the tables' own
-    // strong references, released outside the tables lock (finalizers may run Python code).
+    // SAFETY: attached thread (the registry holds its lock, as for `deactivate`); the
+    // tables' own strong references, released outside the tables lock (finalizers may run
+    // Python code).
     unsafe {
         let did = DICT_WATCHER.load(Ordering::Acquire);
         for &d in &dicts {

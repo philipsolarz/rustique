@@ -973,6 +973,8 @@ pub fn teardown(py: Python<'_>) -> PyResult<()> {
     // Modules queued by the watcher meanwhile: dropped, not activated.
     let deferred = std::mem::take(&mut lazy().deferred);
     let mut ml = false;
+    // Pins are dropped all at once by `guard::teardown` below.
+    guard::begin_teardown();
     for i in 0..reg.rt.len() {
         ml |= deactivate(reg, i);
     }
@@ -980,6 +982,10 @@ pub fn teardown(py: Python<'_>) -> PyResult<()> {
     reg.exclude = Vec::new();
     refresh_pending(reg);
     NEED_RESYNC.store(false, Ordering::Release);
+    guard::unwatch_sys_modules();
+    // Under the registry lock, like `disable()`: no activation can add pins meanwhile.
+    guard::teardown();
+    prepare::teardown();
     drop(g);
     // SAFETY: attached thread; the strong references taken when the modules were queued.
     unsafe {
@@ -987,9 +993,6 @@ pub fn teardown(py: Python<'_>) -> PyResult<()> {
             ffi::Py_DECREF(p as *mut ffi::PyObject);
         }
     }
-    guard::unwatch_sys_modules();
-    guard::teardown();
-    prepare::teardown();
     let mut seen: Vec<usize> = Vec::new();
     for spec in all_specs() {
         if let Some(f) = spec.release
