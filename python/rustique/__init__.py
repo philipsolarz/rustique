@@ -7,16 +7,13 @@ below). Rustique's own containers (``List``/``Dict``/``Set``/``FrozenSet``/``Tup
 expression placeholder ``X``, fixed-width scalars) are created on first use
 (docs/ARCHITECTURE.md, docs/TAKEOVER.md).
 
-This module is the startup path of ``RUSTIQUE=1`` (with the extension, and nothing else):
-the ``_rustique_startup.pth`` line that ``site`` runs at every interpreter start imports it
-only when ``RUSTIQUE`` is set to something other than ``0``::
-
-    import os; os.environ.get('RUSTIQUE', '0') != '0' and __import__('rustique')._startup()
-
-It imports no other Python module at import or enable time and keeps its own code small
-(every code object is unmarshalled at each start): the common path (``RUSTIQUE=1`` or
-``enable()`` with no selection, no ``RUSTIQUE_ONLY``/``_EXCLUDE``/``_STATS``/``_REPORT``/
-``_CHECK``) is here; anything configured goes through ``rustique._switch``, imported then.
+The ``RUSTIQUE=1`` startup path does not import this package: the ``_rustique_startup.pth``
+line that ``site`` runs at every interpreter start loads only the extension and calls
+``_accel.startup()``, and only when ``RUSTIQUE`` is set to something other than ``0``
+(docs/targets/dx.md §1). The environment semantics have one implementation, in the
+extension (``_accel.switch_enable``, accel-core), used by the startup path and by
+:func:`enable` alike. This module imports no other Python module at import or enable time
+and keeps its own code small (every code object is unmarshalled at each import).
 
 Environment (read at every enable; all ignored under ``-E``/``-I``, like ``PYTHON*``):
 
@@ -101,34 +98,26 @@ def __dir__():
     return sorted(set(globals()) | _LAZY | {"RustiqueCheckError"})
 
 
-# --- the switch (docs/ACCELERATION.md §8; the configured paths: rustique._switch) ------------
+# --- the switch (docs/ACCELERATION.md §8; semantics in the extension: _accel.switch_enable) ----
 
-# How Rustique was turned on in this process, and what the last enable selected.
-_state: dict = {"source": None, "only": None, "exclude": (), "killed_calls": 0, "report": None}
 _UNSET = object()
-_CONFIG = ("RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_STATS", "RUSTIQUE_REPORT", "RUSTIQUE_CHECK")
 
 
 def _killed() -> bool:
     """``RUSTIQUE=0`` (or ``false``/``no``/``off``): every enable path is a no-op."""
-    v = None if sys.flags.ignore_environment else os.environ.get("RUSTIQUE")
-    return v is not None and v.strip().lower() in ("0", "false", "no", "off")
+    return _accel.killed()
 
 
 def _enable(only=None, exclude=None, native=None, builtins=True, source="rustique.enable()") -> None:
-    """``enable()`` without building the status (the quiet enable of the startup path)."""
-    if (only is not None or exclude is not None or native or not builtins
-            or (not sys.flags.ignore_environment and any(k in os.environ for k in _CONFIG))):
-        from rustique import _switch
+    """``enable()`` without building the status: the environment semantics (kill switch,
+    ``RUSTIQUE_ONLY``/``_EXCLUDE`` narrowing, ``_STATS``, ``_CHECK``, ``_REPORT``) run in the
+    extension; the native tier (Python) only when not killed."""
+    _accel.switch_enable(only, exclude, builtins, source)
+    if native and not _accel.killed():
+        from rustique._takeover import _hook
 
-        return _switch.enable(only, exclude, native, builtins, source)
-    if _killed():
-        _state["killed_calls"] += 1
-        return
-    _accel.enable(None, None, quiet=True)
-    if _state["source"] is None:
-        _state["source"] = source
-    _state["only"], _state["exclude"] = None, ()
+        _hook.install((native,) if isinstance(native, str) else tuple(native))
+        _accel._set_native(list(_hook.patterns()))
 
 
 def enable(*, only=None, exclude=None, native=None, builtins: bool = True) -> dict:
@@ -141,15 +130,14 @@ def enable(*, only=None, exclude=None, native=None, builtins: bool = True) -> di
     ``RUSTIQUE*`` variables apply (module docstring).
     """
     _enable(only, exclude, native, builtins)
-    return status()
+    return _accel.status()
 
 
 def disable() -> dict:
     """Restore every original entry point and stop rewriting imports (modules already
     rewritten by the native tier keep their code). Returns :func:`status`."""
     _accel.disable(quiet=True)
-    _state["source"] = None
-    return status()
+    return _accel.status()
 
 
 def status() -> dict:
@@ -158,13 +146,7 @@ def status() -> dict:
     ``"pending-import"``, ``"refused"`` (``reason``, ``refusal`` category) or
     ``"disabled"``. ``process["switch"]``: how Rustique was turned on, the kill switch, the
     selection and the ``RUSTIQUE*`` variables in effect."""
-    st = _accel.status()
-    proc = st["process"]
-    env = {} if sys.flags.ignore_environment else os.environ
-    proc["free_threaded"] = not getattr(sys, "_is_gil_enabled", lambda: True)()
-    proc["switch"] = dict(_state, killed=_killed(), stats=bool(proc.get("stats")), check=proc.get("check"),
-                          env={k: env[k] for k in ("RUSTIQUE", *_CONFIG) if k in env})
-    return st
+    return _accel.status()
 
 
 def stats(enabled: bool | None = None, reset: bool = False) -> dict:
@@ -189,23 +171,8 @@ def native(obj=None, /):
     """Decorator: rewrite one function (or every method of a class) so that its literals,
     displays, comprehensions and constructor calls build Rustique containers (needs the
     source; docs/TAKEOVER.md). Under ``RUSTIQUE=0`` it returns ``obj`` unchanged."""
-    if _killed():
+    if _accel.killed():
         return (lambda o: o) if obj is None else obj
     from rustique._takeover import _rewrite
 
     return _rewrite.rewrite_object if obj is None else _rewrite.rewrite_object(obj)
-
-
-def _startup() -> None:
-    """``RUSTIQUE=1`` at interpreter startup, called by the ``_rustique_startup.pth`` line.
-    ``1``/``true``/``yes``/``on`` enable; ``0``/``false``/``no``/``off``/empty do nothing;
-    anything else warns. Never raises: a failure prints one line and Python starts plain."""
-    value = None if sys.flags.ignore_environment else os.environ.get("RUSTIQUE")
-    v = "" if value is None else value.strip().lower()
-    if v in ("1", "true", "yes", "on"):
-        try:
-            _enable(source="RUSTIQUE=1")
-        except Exception as exc:
-            sys.stderr.write(f"rustique: RUSTIQUE={value} ignored: {type(exc).__name__}: {exc}\n")
-    elif v not in ("", "0", "false", "no", "off"):
-        sys.stderr.write(f"rustique: ignoring RUSTIQUE={value!r} (expected 1 or 0)\n")

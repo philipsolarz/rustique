@@ -284,10 +284,14 @@ def test_real_status_shape(real):
 
 @pytest.fixture
 def sitedir(tmp_path):
-    """A site directory holding what the wheel puts at the root of site-packages."""
+    """A site directory laid out like an installed wheel: the `.pth` line and
+    `rustique/_rustique<suffix>` (a link to the extension under test), so the startup line
+    takes its direct path (extension only, no package import)."""
     d = tmp_path / "site"
-    d.mkdir()
+    (d / "rustique").mkdir(parents=True)
     shutil.copy(os.path.join(PYSRC, "_rustique_startup.pth"), d / "_rustique_startup.pth")
+    ext = rustique._rustique.__file__
+    os.symlink(ext, d / "rustique" / os.path.basename(ext))
     return str(d)
 
 
@@ -296,11 +300,12 @@ import site, sys
 site.addsitedir(sys.argv[1])
 loaded = sorted(m for m in sys.modules if 'rustique' in m)
 out = {'loaded': loaded}
-if 'rustique' in sys.modules:
-    sw = sys.modules['rustique'].status()['process']['switch']
-    out['source'] = sw['source']
-    out['killed'] = sw['killed']
-    out['installed'] = sorted(t['name'] for t in sys.modules['rustique'].status()['targets'] if t['state'] == 'installed')
+ext = sys.modules.get('rustique._rustique')
+if ext is not None:
+    st = ext._accel.status()
+    out['source'] = st['process']['switch']['source']
+    out['killed'] = st['process']['switch']['killed']
+    out['installed'] = sorted(t['name'] for t in st['targets'] if t['state'] == 'installed')
 print(__import__('json').dumps(out))
 """
 
@@ -315,7 +320,12 @@ def test_pth_is_one_cheap_import_line():
     with open(os.path.join(PYSRC, "_rustique_startup.pth")) as f:
         lines = [ln for ln in f.read().splitlines() if ln.strip() and not ln.startswith("#")]
     assert len(lines) == 1 and lines[0].startswith("import ")  # site exec()s only `import ` lines
-    assert lines[0] == "import os; os.environ.get('RUSTIQUE', '0') != '0' and __import__('rustique')._startup()"
+    # the gate is the only code compiled when RUSTIQUE is unset or 0 (docs/targets/dx.md §1.3):
+    # the loader is a string literal that exec() compiles only when the gate passes
+    gate = "import os; os.environ.get('RUSTIQUE', '0') != '0' and exec("
+    assert lines[0].startswith(gate) and lines[0].endswith(")")
+    loader = __import__("ast").literal_eval(lines[0][len(gate):-1])
+    assert "_accel.startup()" in loader
     assert not os.path.exists(os.path.join(PYSRC, "_rustique_startup.start"))  # see docs/targets/dx.md
 
 
@@ -374,6 +384,9 @@ def test_kill_switch_ignored_under_E():
 
 
 def test_startup_survives_a_broken_install(sitedir, tmp_path):
+    # no extension next to the .pth (an editable layout): the line falls back to the package
+    for f in os.listdir(os.path.join(sitedir, "rustique")):
+        os.remove(os.path.join(sitedir, "rustique", f))
     broken = tmp_path / "broken" / "rustique"
     broken.mkdir(parents=True)
     (broken / "__init__.py").write_text("raise ImportError('no wheel for this interpreter')\n")
@@ -390,7 +403,11 @@ def test_startup_and_import_load_no_other_module(sitedir):
             "print(sorted(set(sys.modules) - before))")
     assert py(code).stdout.strip() == "['rustique', 'rustique._rustique']"
     out, err = probe(sitedir, RUSTIQUE="1")
-    assert set(out["loaded"]) <= {"rustique", "rustique._rustique"} and out["source"] == "RUSTIQUE=1", err
+    assert out["loaded"] == ["rustique._rustique"] and out["source"] == "RUSTIQUE=1", err  # no package import
+    r = py("import site, sys; site.addsitedir(sys.argv[1]); ext = sys.modules['rustique._rustique'];"
+           "import rustique; print(rustique._rustique is ext, rustique.status()['process']['switch']['source'],"
+           "type(rustique.List([1])).__name__)", sitedir, env=clean_env(RUSTIQUE="1"))
+    assert r.stdout.split() == ["True", "RUSTIQUE=1", "List"], r.stderr  # a later import reuses it
 
 
 # --- report at exit (subprocesses) --------------------------------------------------------

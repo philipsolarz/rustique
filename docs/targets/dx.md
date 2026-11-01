@@ -21,34 +21,56 @@ layer. Usage: [`docs/USAGE.md`](../USAGE.md). Every number is **M** (measured; h
 
 ### 1.1 Mechanism
 
-The wheel (and the sdist) puts one file at the root of site-packages, `_rustique_startup.pth`
-(maturin `include` with format `["sdist", "wheel"]`; `python/` is the python-source, so
-`python/X` lands at the wheel root). `site` runs its one import line at every interpreter
-start:
+The wheel and the sdist put one file at the root of site-packages: `_rustique_startup.pth`.
+It is a maturin `include` with format `["sdist", "wheel"]`; `python/` is the python-source,
+so `python/X` lands at the wheel root. `site` runs its single import line at every
+interpreter start. The loader below is accel-core's (ece21e2, tested in
+`tests/test_accel_startup.py`); the gate in front of it is dx's:
 
 ```
-import os; os.environ.get('RUSTIQUE', '0') != '0' and __import__('rustique')._startup()
+import os; os.environ.get('RUSTIQUE', '0') != '0' and exec("import sys,_imp;p=sitedir+'/rustique/_rustique'+_imp.extension_suffixes()[0];sys.flags.ignore_environment or (sys.modules['_frozen_importlib']._load(sys.modules['_frozen_importlib_external'].spec_from_file_location('rustique._rustique',p)) if os.path.isfile(p) else __import__('rustique._rustique')._rustique)._accel.startup()")
 ```
 
-- `RUSTIQUE` unset or `0`: nothing is imported (`os` is already loaded by `site`).
-- Otherwise `rustique` is imported and `rustique._startup()` runs. It honours `-E`/`-I`
-  (`sys.flags.ignore_environment`) and parses `RUSTIQUE`:
-  - `1`/`true`/`yes`/`on`: the quiet enable (`_accel.enable(..., quiet=True)`: no status
-    dict is built);
-  - `false`/`no`/`off`/empty: nothing;
-  - anything else: a one-line warning.
+What each `RUSTIQUE` value does:
 
-  It never raises. If the extension cannot be imported (no wheel for this interpreter, a
-  broken install), `site` prints the failing line with its traceback and the interpreter
-  starts plain. This is tested with a `rustique` package that raises on import.
-- History: the first version imported a separate top-level `_rustique_startup` module,
-  which took the decision with only `os`/`sys`. It was dropped at the lead's request
-  (startup budget, §1.3): the `.pth` line already does the cheap test, and the module cost
-  ~0.3M Ir (~0.75%) on the `RUSTIQUE=1` path.
+| `RUSTIQUE` | effect | cost |
+|---|---|---|
+| unset or `0` | nothing is loaded | only the gate is compiled; the loader is a string literal, tokenised, never parsed |
+| set, under `-E`/`-I` | nothing is loaded | gate + loader compile |
+| `1`/`true`/`yes`/`on` | `_accel.startup()` runs the quiet enable | extension load + enable |
+| `off`/`false`/`no`, empty | `_accel.startup()` enables nothing | extension load (accel-core: checking these values in the loader string cost +~120k Ir on every `RUSTIQUE=1` start) |
+| anything else | `_accel.startup()` warns on one line, enables nothing | extension load |
+
+When RUSTIQUE is set, the loader:
+
+1. loads `sitedir/rustique/_rustique<ABI suffix>` with importlib's own `_load(spec)`;
+2. registers it as `sys.modules['rustique._rustique']` **without importing the
+   `rustique` package**. A later `import rustique` reuses that module;
+3. calls `_accel.startup()`.
+
+The environment semantics (§2) have one implementation, in the extension
+(`crates/rustique-py/src/accel/switch.rs`, accel-core). The startup path and
+`rustique.enable()` (`_accel.switch_enable`) both use it. `rustique/__init__.py` is a thin
+layer: the lazy opt-in API, plus `enable`/`disable`/`status`/`stats`/`check`/`native` over
+`_accel`.
+
+- **Broken install**: if `rustique/_rustique<suffix>` is not next to the `.pth` (editable
+  layouts), the loader imports `rustique._rustique` through the package instead. If that
+  fails (no wheel for this interpreter, a broken install), `site` prints the failing line
+  with its traceback and the interpreter starts plain. Tested with a `rustique` package
+  that raises on import.
+- **History**, each step measured, §1.3–1.4:
+  1. A top-level `_rustique_startup` module took the decision with `os`/`sys` only.
+  2. The line imported the `rustique` package and called `rustique._startup()`, with the
+     semantics in Python.
+  3. The extension-only line with the semantics in Rust. The startup budget made each
+     Python module (~0.3M Ir) and the package import (~0.25M Ir plus `__init__` code) too
+     expensive.
 
 `maturin develop` (editable) does not install `include` files, so development venvs have no
 startup file and `RUSTIQUE=1` does nothing there (`python -m rustique status` says so). The
-tests exercise the shipped line through `site.addsitedir(<copy>)` in subprocesses.
+tests exercise the shipped line in subprocesses through `site.addsitedir(<dir>)`, where
+`<dir>` holds the `.pth` and a link to the extension under test.
 
 ### 1.2 Why no PEP 829 `.start` file (yet) — an upstream issue to file
 
