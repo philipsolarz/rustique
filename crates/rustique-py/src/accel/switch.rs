@@ -3,8 +3,9 @@
 //! (`_accel.startup()`, called by the `.pth` line after loading only this extension) and
 //! for explicit `rustique.enable()` (`_accel.switch_enable(...)`).
 //!
-//! Variables (ignored under `-E`/`-I`, read at every call): `RUSTIQUE` (1: enable at
-//! startup; 0: kill switch for every enable path), `RUSTIQUE_ONLY`, `RUSTIQUE_EXCLUDE`,
+//! Variables (ignored under `-E`/`-I`, read at every call): `RUSTIQUE` (1/true/yes/on:
+//! enable at startup; 0/false/no/off or empty: kill switch for every enable path, and the
+//! `.pth` line loads nothing; anything else: a warning, nothing enabled), `RUSTIQUE_ONLY`, `RUSTIQUE_EXCLUDE`,
 //! `RUSTIQUE_STATS`, `RUSTIQUE_CHECK`, `RUSTIQUE_REPORT`. Warnings are single lines on
 //! `sys.stderr`; parsing never raises.
 
@@ -120,9 +121,16 @@ fn known(py: Python<'_>, var: &str, names: Vec<String>) -> Vec<String> {
     names.into_iter().filter(|n| is_known(n)).collect()
 }
 
-/// The kill switch: `RUSTIQUE` set to an OFF value.
+/// `RUSTIQUE` set to an OFF value or empty: exactly like `0` (kill switch; the `.pth`
+/// line loads nothing).
+fn is_off(value: &str) -> bool {
+    let v = value.trim().to_lowercase();
+    v.is_empty() || OFF.contains(&v.as_str())
+}
+
+/// The kill switch: `RUSTIQUE` set to an OFF value or empty.
 fn is_killed(py: Python<'_>) -> bool {
-    env(py, "RUSTIQUE").is_some_and(|v| flag(&v) == Some(false))
+    env(py, "RUSTIQUE").is_some_and(|v| is_off(&v))
 }
 
 /// What `RUSTIQUE_CHECK` asks for: `Some("warn"|"raise"|"off")`, or None.
@@ -332,10 +340,10 @@ pub fn describe(py: Python<'_>, process: &Bound<'_, PyDict>) -> PyResult<()> {
 #[pyfunction]
 pub fn startup(py: Python<'_>) {
     let Some(raw) = env(py, "RUSTIQUE") else { return };
-    let v = raw.trim().to_lowercase();
-    if v.is_empty() || OFF.contains(&v.as_str()) {
+    if is_off(&raw) {
         return;
     }
+    let v = raw.trim().to_lowercase();
     if !ON.contains(&v.as_str()) {
         warn(py, &format!("rustique: ignoring RUSTIQUE={} (expected 1 or 0)", py_repr(py, &raw)));
         return;

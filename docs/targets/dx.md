@@ -28,7 +28,7 @@ interpreter start. The loader below is accel-core's (ece21e2, tested in
 `tests/test_accel_startup.py`); the gate in front of it is dx's:
 
 ```
-import os; os.environ.get('RUSTIQUE', '0') != '0' and exec("import sys,_imp;p=sitedir+'/rustique/_rustique'+_imp.extension_suffixes()[0];sys.flags.ignore_environment or (sys.modules['_frozen_importlib']._load(sys.modules['_frozen_importlib_external'].spec_from_file_location('rustique._rustique',p)) if os.path.isfile(p) else __import__('rustique._rustique')._rustique)._accel.startup()")
+import os; os.environ.get('RUSTIQUE', '0') != '0' and exec("import sys,_imp;p=sitedir+'/rustique/_rustique'+_imp.extension_suffixes()[0];os.environ['RUSTIQUE'].strip().lower() in ('', 'off', 'false', 'no') or sys.flags.ignore_environment or (sys.modules['_frozen_importlib']._load(sys.modules['_frozen_importlib_external'].spec_from_file_location('rustique._rustique',p)) if os.path.isfile(p) else __import__('rustique._rustique')._rustique)._accel.startup()")
 ```
 
 What each `RUSTIQUE` value does:
@@ -38,7 +38,7 @@ What each `RUSTIQUE` value does:
 | unset or `0` | nothing is loaded | only the gate is compiled; the loader is a string literal, tokenised, never parsed |
 | set, under `-E`/`-I` | nothing is loaded | gate + loader compile |
 | `1`/`true`/`yes`/`on` | `_accel.startup()` runs the quiet enable | extension load + enable |
-| `off`/`false`/`no`, empty | `_accel.startup()` enables nothing | extension load (accel-core: checking these values in the loader string cost +~120k Ir on every `RUSTIQUE=1` start) |
+| `off`/`false`/`no`, empty (any case, spaces) | nothing is loaded: the kill switch, like `0` (lead's ruling) | gate + loader compile; the OFF test sits at the head of the exec'd loader, not in the gate, because the gate is compiled on every start (+97k Ir there, accel-core f189e6c) |
 | anything else | `_accel.startup()` warns on one line, enables nothing | extension load |
 
 When RUSTIQUE is set, the loader:
@@ -260,7 +260,8 @@ Decisions:
   installed extra (never an exception at startup); from code → `ValueError` (accel-core).
 - **`-E`/`-I`**: all `RUSTIQUE*` variables are ignored, like `PYTHON*` ones (so
   `python -I` helpers in CI do not start Rustique).
-- **Values**: `1/true/yes/on`, `0/false/no/off`, case-insensitive; anything else warns.
+- **Values**: `1/true/yes/on` (on), `0/false/no/off` or empty (the kill switch),
+  case-insensitive with surrounding spaces ignored; anything else warns and enables nothing.
 - **Per-project config** (`[tool.rustique]` in pyproject.toml): not added. Reading it would
   mean locating and parsing a TOML file at every enable (I: `tomllib` import alone is
   ~1 ms), the environment and `enable()` arguments cover every case met in §7, and a file

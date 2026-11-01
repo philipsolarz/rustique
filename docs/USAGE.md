@@ -62,7 +62,7 @@ means more calls are accelerated.
 
 ## Turn it off, or turn parts of it off
 
-- **`RUSTIQUE=0` is the kill switch.** Every way of turning Rustique on becomes a no-op:
+- **`RUSTIQUE=0` is the kill switch** (so are `off`, `false`, `no` and an empty value). Every way of turning Rustique on becomes a no-op:
   the startup switch, `python -m rustique`, `pytest --rustique`, and also a
   `rustique.enable()` written in the program. `rustique.native` returns functions
   unchanged. The process runs as plain CPython, so if you suspect Rustique, set
@@ -215,8 +215,8 @@ containing `--rustique`.
 | variable | values | effect |
 |---|---|---|
 | `RUSTIQUE` | `1`/`true`/`yes`/`on` | enable at interpreter startup (through `_rustique_startup.pth`) |
-| | `0`/`false`/`no`/`off` | kill switch: every enable path is a no-op. Prefer `0`: at startup it loads nothing, while the other off values load the extension and enable nothing |
-| | unset or empty | nothing at startup; explicit `enable()` works |
+| | `0`/`false`/`no`/`off`/empty | kill switch: every enable path is a no-op, and nothing is loaded at startup |
+| | unset | nothing at startup; explicit `enable()` works |
 | `RUSTIQUE_ONLY` | `json,copy` (groups or targets) | narrow every enable path to these |
 | `RUSTIQUE_EXCLUDE` | `re,json.loads` | leave these out of every enable path |
 | `RUSTIQUE_STATS` | `1` | counters on when Rustique is enabled |

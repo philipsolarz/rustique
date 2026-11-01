@@ -56,17 +56,22 @@ def real(monkeypatch):
         rustique.enable()
 
 
+# Assertions look at the wave-0 groups only: target groups whose module is already imported
+# (pytest imports logging, json, ...) also install on a bare enable().
+WAVE0 = {"containers", "builtins"}
+
+
 def installed(st=None) -> set[str]:
     st = st or rustique.status()
-    return {t["name"] for t in st["targets"] if t["state"] == "installed"}
+    return {t["name"] for t in st["targets"] if t["state"] == "installed" and t["group"] in WAVE0}
 
 
 def groups(st=None) -> set[str]:
     st = st or rustique.status()
-    return {t["group"] for t in st["targets"] if t["state"] == "installed"}
+    return {t["group"] for t in st["targets"] if t["state"] == "installed" and t["group"] in WAVE0}
 
 
-@pytest.mark.parametrize("value", ["0", "false", "OFF", "no", " 0 "])
+@pytest.mark.parametrize("value", ["0", "false", "OFF", "no", " 0 ", ""])
 def test_kill_switch_makes_enable_a_noop(real, monkeypatch, value):
     rustique.disable()
     monkeypatch.setenv("RUSTIQUE", value)
@@ -90,7 +95,7 @@ def test_kill_switch_native_returns_the_object(real, monkeypatch):
     assert rustique.native()(f) is f
 
 
-@pytest.mark.parametrize("value", ["1", "", "yes", "anything"])
+@pytest.mark.parametrize("value", ["1", "yes", "anything"])
 def test_only_off_values_kill(real, monkeypatch, value):
     monkeypatch.setenv("RUSTIQUE", value)
     assert installed(rustique.enable()) >= CONTAINERS
@@ -347,10 +352,11 @@ def test_startup_kill_switch_imports_nothing(sitedir):
     assert out["loaded"] == [] and err == ""
 
 
-@pytest.mark.parametrize("value", ["off", "false", ""])
-def test_startup_other_off_values_do_not_enable(sitedir, value):
+@pytest.mark.parametrize("value", ["off", "FALSE", "no", "", " Off "])
+def test_startup_off_values_load_nothing(sitedir, value):
+    """Every OFF value is the kill switch, like 0: the startup line loads nothing."""
     out, err = probe(sitedir, RUSTIQUE=value)
-    assert out.get("source") is None and not out.get("installed") and err == ""
+    assert out["loaded"] == [] and err == ""
 
 
 @pytest.mark.parametrize("value", ["1", "true", "ON"])
