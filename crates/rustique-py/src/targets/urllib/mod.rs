@@ -26,7 +26,9 @@ use pyo3::types::{PyList, PyString};
 use rustique_core::urlparse as up;
 
 use crate::accel::{self, Prepare, Reason, Refusal, TargetSpec};
-use crate::targets::utils_kit::{Guard, O, bind, call_original, int_value, interned, is_type, keep, nargs, pin_globals};
+use crate::targets::utils_kit::{
+    Guard, O, bind, call_original, int_value, interned, is_type, keep, nargs, pin_globals,
+};
 
 const R: Ordering = Ordering::Relaxed;
 
@@ -65,14 +67,22 @@ unsafe fn ucs4(s: O) -> Option<Vec<u32>> {
 unsafe fn str_from_ucs4(v: &[u32]) -> O {
     // SAFETY: valid buffer.
     unsafe {
-        ffi::PyUnicode_FromKindAndData(ffi::PyUnicode_4BYTE_KIND as c_int, v.as_ptr().cast(), v.len() as ffi::Py_ssize_t)
+        ffi::PyUnicode_FromKindAndData(
+            ffi::PyUnicode_4BYTE_KIND as c_int,
+            v.as_ptr().cast(),
+            v.len() as ffi::Py_ssize_t,
+        )
     }
 }
 
 unsafe fn str_from_ascii(v: &[u8]) -> O {
     // SAFETY: ASCII bytes.
     unsafe {
-        ffi::PyUnicode_FromKindAndData(ffi::PyUnicode_1BYTE_KIND as c_int, v.as_ptr().cast(), v.len() as ffi::Py_ssize_t)
+        ffi::PyUnicode_FromKindAndData(
+            ffi::PyUnicode_1BYTE_KIND as c_int,
+            v.as_ptr().cast(),
+            v.len() as ffi::Py_ssize_t,
+        )
     }
 }
 
@@ -152,14 +162,18 @@ unsafe fn quote_input(string: O, encoding: O, errors: O) -> Option<Vec<u8>> {
     unsafe {
         let none = ffi::Py_None();
         if exact_str(string) {
-            let enc_ok = encoding.is_null() || encoding == none || str_is(encoding, "utf-8") || str_is(encoding, "utf8");
+            let enc_ok =
+                encoding.is_null() || encoding == none || str_is(encoding, "utf-8") || str_is(encoding, "utf8");
             let err_ok = errors.is_null() || errors == none || str_is(errors, "strict");
             if !(enc_ok && err_ok) {
                 return None;
             }
             return utf8(&ucs4(string)?);
         }
-        if is_type(string, &raw mut ffi::PyBytes_Type) && (encoding.is_null() || encoding == none) && (errors.is_null() || errors == none) {
+        if is_type(string, &raw mut ffi::PyBytes_Type)
+            && (encoding.is_null() || encoding == none)
+            && (errors.is_null() || errors == none)
+        {
             let p = ffi::PyBytes_AS_STRING(string).cast::<u8>();
             return Some(std::slice::from_raw_parts(p, ffi::PyBytes_Size(string) as usize).to_vec());
         }
@@ -186,7 +200,15 @@ unsafe fn safe_of(safe: O, extra: Option<u32>) -> Option<[bool; 256]> {
 
 /// `quote(string, safe, encoding, errors)`; `space_to_plus`: `quote_plus`'s
 /// `quote(string, safe + ' ', ...).replace(' ', '+')` when the input has a space.
-unsafe fn quote_kernel(g: &Guard, spec: &'static TargetSpec, plus: bool, func: O, args: *const O, nargsf: usize, kw: O) -> O {
+unsafe fn quote_kernel(
+    g: &Guard,
+    spec: &'static TargetSpec,
+    plus: bool,
+    func: O,
+    args: *const O,
+    nargsf: usize,
+    kw: O,
+) -> O {
     // SAFETY: vectorcall arguments.
     unsafe {
         let names = [ld(&S_STRING), ld(&S_SAFE), ld(&S_ENCODING), ld(&S_ERRORS)];
@@ -294,7 +316,8 @@ unsafe fn unquote_cps(v: &[u32], errors: &CStr) -> Option<Vec<u32>> {
             if bytes.is_ascii() {
                 out.extend(bytes.iter().map(|&b| u32::from(b)));
             } else {
-                let d = ffi::PyUnicode_DecodeUTF8(bytes.as_ptr().cast(), bytes.len() as ffi::Py_ssize_t, errors.as_ptr());
+                let d =
+                    ffi::PyUnicode_DecodeUTF8(bytes.as_ptr().cast(), bytes.len() as ffi::Py_ssize_t, errors.as_ptr());
                 if d.is_null() {
                     ffi::PyErr_Clear();
                     return None;
@@ -327,7 +350,15 @@ unsafe fn unquote_obj(s: O, plus: bool, errors: &CStr) -> Option<O> {
     }
 }
 
-unsafe fn unquote_kernel(g: &Guard, spec: &'static TargetSpec, plus: bool, func: O, args: *const O, nargsf: usize, kw: O) -> O {
+unsafe fn unquote_kernel(
+    g: &Guard,
+    spec: &'static TargetSpec,
+    plus: bool,
+    func: O,
+    args: *const O,
+    nargsf: usize,
+    kw: O,
+) -> O {
     // SAFETY: vectorcall arguments.
     unsafe {
         let names = [ld(&S_STRING), ld(&S_ENCODING), ld(&S_ERRORS)];
@@ -367,7 +398,16 @@ unsafe extern "C" fn vc_unquote_plus(func: O, args: *const O, nargsf: usize, kw:
 unsafe fn parse_pairs(args: *const O, nargsf: usize, kw: O, with_stacklevel: bool) -> Option<Vec<(O, O)>> {
     // SAFETY: vectorcall arguments.
     unsafe {
-        let names = [ld(&S_QS), ld(&S_KEEP), ld(&S_STRICT), ld(&S_ENCODING), ld(&S_ERRORS), ld(&S_MAXF), ld(&S_SEP), ld(&S_STACKLEVEL)];
+        let names = [
+            ld(&S_QS),
+            ld(&S_KEEP),
+            ld(&S_STRICT),
+            ld(&S_ENCODING),
+            ld(&S_ERRORS),
+            ld(&S_MAXF),
+            ld(&S_SEP),
+            ld(&S_STACKLEVEL),
+        ];
         let npos = nargs(nargsf);
         if npos > 7 {
             return None;
@@ -788,11 +828,11 @@ macro_rules! target {
 target!(QUOTE, prep_quote, "urllib.parse.quote", "quote", vc_quote, G_QUOTE,
     &[(3, 14, "c0eec3251faa8f65"), (3, 15, "28fb43c847e3128d")],
     globals: ["quote_from_bytes", "_ALWAYS_SAFE_BYTES", "_byte_quoter_factory"],
-    builtins: ["isinstance", "str", "bytes", "bytearray", "len", "map", "TypeError"]);
+    builtins: ["isinstance", "str", "bytes", "bytearray", "len", "map"]);
 target!(QUOTE_PLUS, prep_quote_plus, "urllib.parse.quote_plus", "quote_plus", vc_quote_plus, G_QUOTE_PLUS,
     &[(3, 14, "31fa3e8740c97d84"), (3, 15, "5e99e96821629047")],
     globals: ["quote", "quote_from_bytes", "_ALWAYS_SAFE_BYTES", "_byte_quoter_factory"],
-    builtins: ["isinstance", "str", "bytes", "bytearray", "len", "map", "TypeError"]);
+    builtins: ["isinstance", "str", "bytes", "bytearray", "len", "map"]);
 target!(UNQUOTE, prep_unquote, "urllib.parse.unquote", "unquote", vc_unquote, G_UNQUOTE,
     &[(3, 14, "8335b8b597cc081b"), (3, 15, "151b56169fb3adb6")],
     globals: ["_unquote_impl", "_generate_unquoted_parts", "_asciire"],
@@ -804,15 +844,15 @@ target!(UNQUOTE_PLUS, prep_unquote_plus, "urllib.parse.unquote_plus", "unquote_p
 target!(PARSE_QSL, prep_parse_qsl, "urllib.parse.parse_qsl", "parse_qsl", vc_parse_qsl, G_PARSE_QSL,
     &[(3, 14, "915a90e9b788d0e4"), (3, 15, "4f00b22b44dedc4a")],
     globals: ["unquote_plus", "unquote", "_unquote_impl", "_generate_unquoted_parts", "_asciire"],
-    builtins: ["isinstance", "str", "bytes", "memoryview", "ValueError", "TypeError"]);
+    builtins: ["isinstance", "str"]);
 target!(PARSE_QS, prep_parse_qs, "urllib.parse.parse_qs", "parse_qs", vc_parse_qs, G_PARSE_QS,
     &[(3, 14, "f876395b877d6f40"), (3, 15, "2fa235c162ad2fb6")],
     globals: ["parse_qsl", "unquote_plus", "unquote", "_unquote_impl", "_generate_unquoted_parts", "_asciire"],
-    builtins: ["isinstance", "str", "bytes", "memoryview", "ValueError", "TypeError"]);
+    builtins: ["isinstance", "str"]);
 target!(URLSPLIT, prep_urlsplit, "urllib.parse._urlsplit", "_urlsplit", vc_urlsplit, G_URLSPLIT,
     &[(3, 14, "ef653b971587fb22"), (3, 15, "6e615fdb83c29cf5")],
     globals: ["_WHATWG_C0_CONTROL_OR_SPACE", "_UNSAFE_URL_BYTES_TO_REMOVE", "scheme_chars", "_splitnetloc",
               "_check_bracketed_netloc", "_checknetloc"],
-    builtins: ["bool", "len", "min", "ValueError"]);
+    builtins: ["bool", "len", "min"]);
 
 pub static TARGETS: &[&TargetSpec] = &[&QUOTE, &QUOTE_PLUS, &UNQUOTE, &UNQUOTE_PLUS, &PARSE_QSL, &PARSE_QS, &URLSPLIT];

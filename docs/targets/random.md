@@ -97,12 +97,13 @@ replaced dependency (`deps`, see §3); a tool listening (`tools`).
 
 ## 3. Dependencies (pinned)
 
-Module globals and builtins the originals read at call time, pinned with
-`cx.pin`/`cx.pin_global` (LOAD_GLOBAL semantics: a module global shadowing the builtin
-counts): `_index` (randint, randrange), `_ONE` (randrange), `len` (choice, shuffle,
-sample, choices), `range`/`reversed` (shuffle), `_Sequence`, `_ceil`, `_log`,
-`_accumulate`, `_bisect`, `isinstance`, `list`, `set`, `int` (sample), `_floor`, `_repeat`,
-`_accumulate`, `_bisect`, `_isfinite` (choices), plus the error-path builtins. The class
+Module globals and builtins the originals read at call time on the accepted inputs,
+pinned with `cx.pin`/`cx.pin_global` (LOAD_GLOBAL semantics: a module global shadowing
+the builtin counts): `_index` (randint, randrange), `_ONE` (randrange), `len` (choice,
+shuffle, sample, choices), `range`/`reversed` (shuffle), `_Sequence`, `_ceil`, `_log`,
+`isinstance`, `list`, `set`, `range` (sample), `_floor`, `_repeat`, `_accumulate`,
+`_bisect`, `_isfinite`, `list` (choices). Names read only on paths the kernels never take
+(error messages, `counts=`) are not pinned. The class
 attributes (`_randbelow`, `getrandbits`, `random`) are not pinned: they are resolved per
 call through the type-version cache, so patching them changes the path, not the result.
 Each function's `__code__`, `__defaults__` and `__kwdefaults__` are compared per call

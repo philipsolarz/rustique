@@ -191,7 +191,8 @@ pub fn fix_sentence_endings(text: &[u32], chunks: &mut [Chunk]) {
         let punct = |x: u32| matches!(x, 0x2e | 0x21 | 0x3f);
         let quote = |x: u32| matches!(x, 0x22 | 0x27);
         let n = c.len();
-        (n >= 2 && lower(c[n - 2]) && punct(c[n - 1])) || (n >= 3 && lower(c[n - 3]) && punct(c[n - 2]) && quote(c[n - 1]))
+        (n >= 2 && lower(c[n - 2]) && punct(c[n - 1]))
+            || (n >= 3 && lower(c[n - 3]) && punct(c[n - 2]) && quote(c[n - 1]))
     };
     let mut i = 0;
     while i + 1 < chunks.len() {
@@ -256,7 +257,12 @@ fn lstrip<'s>(s: &'s [u32], cls: &impl Classes) -> &'s [u32] {
 }
 
 /// `TextWrapper._wrap_chunks(chunks)`: the lines as code points.
-pub fn wrap_chunks(text: &[u32], chunks: Vec<Chunk>, o: &WrapOpts<'_>, cls: &impl Classes) -> Result<Vec<Vec<u32>>, WrapError> {
+pub fn wrap_chunks(
+    text: &[u32],
+    chunks: Vec<Chunk>,
+    o: &WrapOpts<'_>,
+    cls: &impl Classes,
+) -> Result<Vec<Vec<u32>>, WrapError> {
     let mut lines: Vec<Vec<u32>> = Vec::new();
     if o.width <= 0 {
         return Err(WrapError::InvalidWidth);
@@ -531,7 +537,10 @@ mod tests {
     fn doc_example() {
         assert_eq!(
             chunks("Hello there -- you goof-ball, use the -b option!"),
-            ["Hello", " ", "there", " ", "--", " ", "you", " ", "goof-", "ball,", " ", "use", " ", "the", " ", "-b", " ", "option!"]
+            [
+                "Hello", " ", "there", " ", "--", " ", "you", " ", "goof-", "ball,", " ", "use", " ", "the", " ", "-b",
+                " ", "option!"
+            ]
         );
         assert_eq!(chunks("Look, goof-ball -- use the -b option!")[2..4], ["goof-".to_string(), "ball".to_string()]);
     }

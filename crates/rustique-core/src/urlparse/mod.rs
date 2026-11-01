@@ -9,13 +9,23 @@ pub fn always_safe(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b'~')
 }
 
+/// `_ALWAYS_SAFE` as a byte table.
+pub const ALWAYS_SAFE_TABLE: [bool; 256] = {
+    let mut t = [false; 256];
+    let mut b = 0;
+    while b < 256 {
+        let c = b as u8;
+        t[b] = c.is_ascii_alphanumeric() || c == b'_' || c == b'.' || c == b'-' || c == b'~';
+        b += 1;
+    }
+    t
+};
+
 /// The safe set of `quote_from_bytes(bs, safe)` for a `str` `safe`:
 /// `_ALWAYS_SAFE | safe.encode('ascii', 'ignore')`.
+#[inline]
 pub fn safe_table(safe: impl IntoIterator<Item = u32>) -> [bool; 256] {
-    let mut t = [false; 256];
-    for b in 0..=255u8 {
-        t[b as usize] = always_safe(b);
-    }
+    let mut t = ALWAYS_SAFE_TABLE;
     for c in safe {
         if c < 128 {
             t[c as usize] = true;

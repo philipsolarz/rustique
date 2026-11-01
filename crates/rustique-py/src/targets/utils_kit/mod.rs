@@ -12,7 +12,9 @@
 //! - small exact-type helpers (ints, critical sections, keyword binding).
 
 use std::ffi::{CStr, c_int};
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering, Ordering::Relaxed};
+use std::sync::atomic::{
+    AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering, Ordering::Relaxed,
+};
 
 use pyo3::ffi;
 use pyo3::prelude::*;

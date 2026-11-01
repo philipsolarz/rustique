@@ -65,11 +65,7 @@ pub fn decompose(x: f64) -> (bool, u64, i32) {
     let neg = bits >> 63 != 0;
     let exp = ((bits >> 52) & 0x7ff) as i32;
     let frac = bits & ((1u64 << 52) - 1);
-    if exp == 0 {
-        (neg, frac, -1074)
-    } else {
-        (neg, frac | (1u64 << 52), exp - 1075)
-    }
+    if exp == 0 { (neg, frac, -1074) } else { (neg, frac | (1u64 << 52), exp - 1075) }
 }
 
 /// The terms of one value for `Σx` (at `scale_x`) and `Σx²` (at `2·scale_x`):
@@ -103,7 +99,9 @@ mod tests {
     fn decompose_round_trips() {
         for x in [0.0, -0.0, 1.0, -2.5, 1e-310, 5e-324, f64::MAX, 0.1, -123456.789] {
             let (neg, m, e) = decompose(x);
-            let v = (m as f64) * 2f64.powi(e);
+            // Scale in two steps so subnormals do not underflow in 2^e.
+            let v =
+                if e < -500 { (m as f64) * 2f64.powi(e + 600) * 2f64.powi(-600) } else { (m as f64) * 2f64.powi(e) };
             assert_eq!(if neg { -v } else { v }, x);
         }
     }

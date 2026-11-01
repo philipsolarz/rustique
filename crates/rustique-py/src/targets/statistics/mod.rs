@@ -57,7 +57,10 @@ unsafe fn scan(data: O, squares: bool) -> Option<Sums> {
             let (n, items) = if list {
                 (ffi::PyList_GET_SIZE(data) as usize, (*data.cast::<ffi::PyListObject>()).ob_item as *const O)
             } else {
-                (ffi::PyTuple_GET_SIZE(data) as usize, (*data.cast::<ffi::PyTupleObject>()).ob_item.as_ptr() as *const O)
+                (
+                    ffi::PyTuple_GET_SIZE(data) as usize,
+                    (*data.cast::<ffi::PyTupleObject>()).ob_item.as_ptr() as *const O,
+                )
             };
             let mut any_float = false;
             for i in 0..n {
@@ -362,10 +365,12 @@ fn prepare_fn<'py>(
     cx.vectorcall(&func, kernel, &accel::FUNCTION_VECTORCALL)
 }
 
+/// Module globals read on the accelerated path (error-only names are not pinned: on the
+/// inputs the kernels accept, CPython never reads them).
 const COMMON_GLOBALS: &[&str] =
-    &["_sum", "_ss", "_convert", "_exact_ratio", "_coerce", "_isfinite", "Fraction", "Decimal", "StatisticsError", "groupby", "reduce", "math"];
-const SQRT_GLOBALS: &[&str] = &["_float_sqrt_of_frac", "_integer_sqrt_of_frac_rto", "_sqrt_bit_width", "_decimal_sqrt_of_frac"];
-const BUILTINS: &[&str] = &["map", "sum", "set", "type", "issubclass", "int", "float", "ValueError", "TypeError", "AttributeError"];
+    &["_sum", "_ss", "_convert", "_exact_ratio", "_coerce", "Fraction", "Decimal", "groupby", "reduce", "math"];
+const SQRT_GLOBALS: &[&str] = &["_float_sqrt_of_frac", "_integer_sqrt_of_frac_rto", "_sqrt_bit_width"];
+const BUILTINS: &[&str] = &["map", "sum", "set", "type", "issubclass"];
 
 macro_rules! target {
     ($spec:ident, $prep:ident, $name:literal, $attr:literal, $kernel:ident, $guard:ident, $fp:expr, $sqrt:expr) => {
@@ -390,14 +395,55 @@ macro_rules! target {
     };
 }
 
-target!(MEAN, prep_mean, "statistics.mean", "mean", vc_mean, G_MEAN, &[(3, 14, "f965edbb248560ec"), (3, 15, "2702a8b4e7589a40")], false);
-target!(VARIANCE, prep_variance, "statistics.variance", "variance", vc_variance, G_VARIANCE,
-    &[(3, 14, "da484ff53464c57d"), (3, 15, "d0173634ced8d9be")], false);
-target!(PVARIANCE, prep_pvariance, "statistics.pvariance", "pvariance", vc_pvariance, G_PVARIANCE,
-    &[(3, 14, "1133e4437cd927fc"), (3, 15, "c2ae9a2a763eba0a")], false);
-target!(STDEV, prep_stdev, "statistics.stdev", "stdev", vc_stdev, G_STDEV, &[(3, 14, "4e802c6e994da097"), (3, 15, "2d195d7de19fcfb4")], true);
-target!(PSTDEV, prep_pstdev, "statistics.pstdev", "pstdev", vc_pstdev, G_PSTDEV,
-    &[(3, 14, "0402f69b3138380d"), (3, 15, "7c048d821fae9703")], true);
+target!(
+    MEAN,
+    prep_mean,
+    "statistics.mean",
+    "mean",
+    vc_mean,
+    G_MEAN,
+    &[(3, 14, "f965edbb248560ec"), (3, 15, "2702a8b4e7589a40")],
+    false
+);
+target!(
+    VARIANCE,
+    prep_variance,
+    "statistics.variance",
+    "variance",
+    vc_variance,
+    G_VARIANCE,
+    &[(3, 14, "da484ff53464c57d"), (3, 15, "d0173634ced8d9be")],
+    false
+);
+target!(
+    PVARIANCE,
+    prep_pvariance,
+    "statistics.pvariance",
+    "pvariance",
+    vc_pvariance,
+    G_PVARIANCE,
+    &[(3, 14, "1133e4437cd927fc"), (3, 15, "c2ae9a2a763eba0a")],
+    false
+);
+target!(
+    STDEV,
+    prep_stdev,
+    "statistics.stdev",
+    "stdev",
+    vc_stdev,
+    G_STDEV,
+    &[(3, 14, "4e802c6e994da097"), (3, 15, "2d195d7de19fcfb4")],
+    true
+);
+target!(
+    PSTDEV,
+    prep_pstdev,
+    "statistics.pstdev",
+    "pstdev",
+    vc_pstdev,
+    G_PSTDEV,
+    &[(3, 14, "0402f69b3138380d"), (3, 15, "7c048d821fae9703")],
+    true
+);
 
 pub static TARGETS: &[&TargetSpec] = &[&MEAN, &VARIANCE, &PVARIANCE, &STDEV, &PSTDEV];
-

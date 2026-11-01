@@ -34,13 +34,13 @@ use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyTuple, PyType};
+use pyo3::types::{PyTuple, PyType};
 use rustique_core::random::{Mt, N};
 
 use crate::accel::{self, Prepare, Reason, Refusal, TargetSpec};
 use crate::targets::utils_kit::{
-    _PyType_Lookup, Guard, INST, O, TypeCache, version_tag, bind, call_original, generic_getattro, int_value, interned, is_type, keep,
-    long_from_i128, nargs, pin_globals, prepare_symbols, unshadowed, with_cs, with_cs2,
+    _PyType_Lookup, Guard, INST, O, TypeCache, bind, call_original, generic_getattro, int_value, interned, is_type,
+    keep, long_from_i128, nargs, pin_globals, prepare_symbols, unshadowed, version_tag, with_cs, with_cs2,
 };
 
 const R: Ordering = Ordering::Relaxed;
@@ -225,9 +225,7 @@ unsafe fn class_of(tp: *mut ffi::PyTypeObject) -> Option<Class> {
 #[inline(always)]
 unsafe fn instance_clean(slf: O, c: &Class) -> bool {
     // SAFETY: live object; `c` classified its type.
-    unsafe {
-        INST.clean(slf, c.keys, c.nentries)
-    }
+    unsafe { INST.clean(slf, c.keys, c.nentries) }
 }
 
 /// Does the instance have `name` in its `__dict__` (where the class attribute is
@@ -553,7 +551,7 @@ enum Seq {
     Other,
     /// A C-level sequence (`choice` only): `len()` and `[]` through the generic protocol,
     /// called exactly as CPython's `choice` calls them.
-    CSeq,
+    CLevel,
 }
 
 #[inline(always)]
@@ -565,7 +563,9 @@ unsafe fn seq_kind(o: O) -> Option<Seq> {
             Some(Seq::List)
         } else if t == &raw mut ffi::PyTuple_Type {
             Some(Seq::Tuple)
-        } else if t == &raw mut ffi::PyUnicode_Type || t == &raw mut ffi::PyRange_Type || t == &raw mut ffi::PyBytes_Type
+        } else if t == &raw mut ffi::PyUnicode_Type
+            || t == &raw mut ffi::PyRange_Type
+            || t == &raw mut ffi::PyBytes_Type
         {
             Some(Seq::Other)
         } else {
@@ -611,7 +611,7 @@ unsafe fn seq_len(o: O, kind: Seq) -> Option<usize> {
         let n = match kind {
             Seq::List => ffi::PyList_GET_SIZE(o),
             Seq::Tuple => ffi::PyTuple_GET_SIZE(o),
-            Seq::Other | Seq::CSeq => ffi::PyObject_Size(o),
+            Seq::Other | Seq::CLevel => ffi::PyObject_Size(o),
         };
         if n < 0 {
             ffi::PyErr_Clear();
@@ -629,7 +629,7 @@ unsafe fn seq_item(o: O, kind: Seq, i: usize) -> O {
         match kind {
             Seq::List => ffi::Py_NewRef(*(*o.cast::<ffi::PyListObject>()).ob_item.add(i)),
             Seq::Tuple => ffi::Py_NewRef(ffi::PyTuple_GET_ITEM(o, i as ffi::Py_ssize_t)),
-            Seq::Other | Seq::CSeq => ffi::PySequence_GetItem(o, i as ffi::Py_ssize_t),
+            Seq::Other | Seq::CLevel => ffi::PySequence_GetItem(o, i as ffi::Py_ssize_t),
         }
     }
 }
@@ -660,7 +660,7 @@ unsafe fn choice(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
             if slf.is_null() || seq.is_null() {
                 return None;
             }
-            let kind = seq_kind(seq).or_else(|| c_sequence(seq).then_some(Seq::CSeq))?;
+            let kind = seq_kind(seq).or_else(|| c_sequence(seq).then_some(Seq::CLevel))?;
             Some((slf, seq, kind))
         })();
         let Some((slf, seq, kind)) = parsed else {
@@ -674,7 +674,7 @@ unsafe fn choice(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
             g.counters.fallback_streak(Reason::Args);
             return None;
         };
-        if mode == Below::Native && kind != Seq::CSeq {
+        if mode == Below::Native && kind != Seq::CLevel {
             let r = with_cs2(slf, lock_of(seq, kind), || {
                 let n = seq_len(seq, kind)?;
                 if n == 0 {
@@ -696,7 +696,7 @@ unsafe fn choice(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
             return None;
         };
         g.counters.hit_streak();
-        let n2 = if kind == Seq::CSeq {
+        let n2 = if kind == Seq::CLevel {
             // The second `len(seq)`: CPython calls it, so do we.
             let m = ffi::PyObject_Size(seq);
             if m < 0 {
@@ -1025,7 +1025,8 @@ unsafe fn sample_generic(slf: O, pop: O, k: usize, mode: Below) -> O {
                         }
                     }
                 }
-                let item = if ffi::PySet_Add(selected, j) < 0 { std::ptr::null_mut() } else { ffi::PyObject_GetItem(pop, j) };
+                let item =
+                    if ffi::PySet_Add(selected, j) < 0 { std::ptr::null_mut() } else { ffi::PyObject_GetItem(pop, j) };
                 ffi::Py_DECREF(j);
                 if item.is_null() {
                     return fail(selected);
@@ -1333,9 +1334,13 @@ unsafe fn choices_generic(slf: O, pop: O, kind: Seq, k: i64, (w, cw): (O, O), cu
                         cum_list = cum_objects(w, cw);
                     }
                     let to = ffi::PyFloat_FromDouble(t);
-                    let x = if to.is_null() || cum_list.is_null() { std::ptr::null_mut() } else { ffi::PyNumber_Multiply(r, to) };
+                    let x = if to.is_null() || cum_list.is_null() {
+                        std::ptr::null_mut()
+                    } else {
+                        ffi::PyNumber_Multiply(r, to)
+                    };
                     ffi::Py_XDECREF(to);
-                    let v = if x.is_null() {
+                    if x.is_null() {
                         x
                     } else {
                         let lo = ffi::PyLong_FromLong(0);
@@ -1355,8 +1360,7 @@ unsafe fn choices_generic(slf: O, pop: O, kind: Seq, k: i64, (w, cw): (O, O), cu
                         ffi::Py_XDECREF(hi);
                         ffi::Py_DECREF(x);
                         v
-                    };
-                    v
+                    }
                 }
             };
             ffi::Py_DECREF(r);
@@ -1467,7 +1471,7 @@ fn prepare_common<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<Bound<'
     }
     MT_OFF.store(size_of::<ffi::PyObject>(), R);
     INST.calibrate(py)?;
-    probe_slots(py)?;
+    probe_slots(cx)?;
     cx.self_test("random generator layout and stream", |_py| self_test(&base, &c_getrandbits, &c_random, &c_getstate))?;
     keep(&RANDOM_CLS, cls.as_any());
     Ok(cls)
@@ -1478,30 +1482,31 @@ fn is_small_one(o: &Bound<'_, PyAny>) -> bool {
     unsafe { is_type(o.as_ptr(), &raw mut ffi::PyLong_Type) && int_value(o.as_ptr()) == Some(1) }
 }
 
-/// The `slot_*` functions CPython installs for Python-level `__len__`/`__getitem__`
-/// (read from a probe class created by calling `type`; no Python code runs).
-fn probe_slots(py: Python<'_>) -> PyResult<()> {
+/// The `slot_*` functions CPython installs for Python-level `__len__`/`__getitem__`, read
+/// from `os._Environ` (a Python class defining both; `os` is imported at startup), so no
+/// probe class is created.
+fn probe_slots(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if SLOT_SQ_LENGTH.load(R) != 0 {
         return Ok(());
     }
-    // SAFETY: C-level class creation; slot reads of the new heap type.
+    let os = cx.loaded_module("os")?;
+    let env = cx.get(&os.dict(), "_Environ")?.cast_into::<PyType>().map_err(PyErr::from)?;
+    // The class must define both in Python (its own `__dict__` entries are functions).
+    for n in ["__len__", "__getitem__"] {
+        let f = cx.type_attr(&env, n)?;
+        // SAFETY: type check of a live object.
+        if unsafe { !is_type(f.as_ptr(), &raw mut ffi::PyFunction_Type) } {
+            return Err(Refusal::new("os._Environ does not define __len__/__getitem__ in Python"));
+        }
+    }
+    // SAFETY: slot reads of a ready heap type.
     unsafe {
-        let ns = Bound::from_owned_ptr_or_err(py, ffi::PyDict_New())?;
-        // Any non-wrapper value makes `type` install the `slot_*` functions.
-        let v = Bound::from_owned_ptr_or_err(py, ffi::PyLong_FromLong(0))?;
-        let ns = ns.cast_into::<pyo3::types::PyDict>()?;
-        ns.set_item("__len__", &v)?;
-        ns.set_item("__getitem__", &v)?;
-        let ty = ffi::PyObject_CallFunction(
-            (&raw mut ffi::PyType_Type).cast(),
-            c"s()O".as_ptr(),
-            c"_rustique_seq_probe".as_ptr(),
-            ns.as_ptr(),
-        );
-        let ty = Bound::from_owned_ptr_or_err(py, ty)?;
-        let t = ty.as_ptr().cast::<ffi::PyTypeObject>();
+        let t = env.as_type_ptr();
         let sq = (*t).tp_as_sequence;
         let mp = (*t).tp_as_mapping;
+        if sq.is_null() || mp.is_null() {
+            return Err(Refusal::new("os._Environ has no sequence/mapping slots"));
+        }
         SLOT_SQ_LENGTH.store((*sq).sq_length.map_or(1, |f| f as usize), R);
         SLOT_SQ_ITEM.store((*sq).sq_item.map_or(1, |f| f as usize), R);
         SLOT_MP_LENGTH.store((*mp).mp_length.map_or(1, |f| f as usize), R);
@@ -1510,56 +1515,48 @@ fn probe_slots(py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 
-/// The `RandomObject` layout and the generator, on `_random.Random` probes (C only): the
-/// raw state equals `getstate()`, and 1400 words (two twists) and three `random()` values
-/// generated natively equal CPython's, leaving the same state.
+/// The `RandomObject` layout and the generator, on one `_random.Random` probe (C calls
+/// only): 40 words generated natively from a copy of its raw state (the first word twists
+/// the freshly seeded state) equal its `getrandbits(32 * 40)`, then one `random()` value.
+/// Kept small (install-cost budget); the algorithms are covered by `cargo test`
+/// (reference outputs) and the conformance runs.
 fn self_test(
     base: &Bound<'_, PyType>,
     getrandbits: &Bound<'_, PyAny>,
     random: &Bound<'_, PyAny>,
-    getstate: &Bound<'_, PyAny>,
+    _getstate: &Bound<'_, PyAny>,
 ) -> PyResult<bool> {
     const SEED: u64 = 20_261_101;
-    const WORDS: usize = 1400;
+    const WORDS: usize = 40;
     let a = base.call1((SEED,))?;
-    let b = base.call1((SEED,))?;
-    let st = getstate.call1((&a,))?;
-    let st = st.cast::<PyTuple>()?;
-    if st.len() != N + 1 {
-        return Ok(false);
-    }
     // SAFETY: probe object of the C class; nobody else knows it.
-    let raw_ok = unsafe {
+    let (mut idx, mut state) = unsafe {
         let g = mt(a.as_ptr());
-        let mut ok = i64::from(*g.index) == st.get_item(N)?.extract::<i64>()?;
-        for i in 0..N {
-            ok &= u64::from(g.mt[i]) == st.get_item(i)?.extract::<u64>()?;
-        }
-        ok
+        (*g.index, *g.mt)
     };
-    if !raw_ok {
+    let mut copy = Mt { index: &mut idx, mt: &mut state };
+    let big = getrandbits.call1((&a, 32 * WORDS))?;
+    let mut bytes = [0u8; 4 * WORDS];
+    // SAFETY: an exact int; little-endian unsigned copy.
+    let n = unsafe {
+        ffi::PyLong_AsNativeBytes(
+            big.as_ptr(),
+            bytes.as_mut_ptr().cast(),
+            bytes.len() as ffi::Py_ssize_t,
+            ffi::Py_ASNATIVEBYTES_LITTLE_ENDIAN | ffi::Py_ASNATIVEBYTES_UNSIGNED_BUFFER,
+        )
+    };
+    if n < 0 || n as usize > bytes.len() {
         return Ok(false);
     }
-    let big = getrandbits.call1((&b, 32 * WORDS))?;
-    let bytes = big.call_method1("to_bytes", (4 * WORDS, "little"))?;
-    let bytes = bytes.cast::<PyBytes>()?.as_bytes();
+    if !(0..WORDS).all(|i| copy.next_u32().to_le_bytes() == bytes[4 * i..4 * i + 4]) {
+        return Ok(false);
+    }
+    let want: f64 = random.call1((&a,))?.extract()?;
+    let got = copy.random();
     // SAFETY: as above.
-    let words_ok = unsafe {
-        let mut g = mt(a.as_ptr());
-        (0..WORDS).all(|i| g.next_u32().to_le_bytes() == bytes[4 * i..4 * i + 4])
-    };
-    if !words_ok {
-        return Ok(false);
-    }
-    for _ in 0..3 {
-        let want: f64 = random.call1((&b,))?.extract()?;
-        // SAFETY: as above.
-        let got = unsafe { mt(a.as_ptr()).random() };
-        if want.to_bits() != got.to_bits() {
-            return Ok(false);
-        }
-    }
-    getstate.call1((&a,))?.eq(getstate.call1((&b,))?)
+    let ia = unsafe { *mt(a.as_ptr()).index };
+    Ok(want.to_bits() == got.to_bits() && ia == *copy.index)
 }
 
 /// Shared tail of every target's `prepare`: fingerprint, pins, guard identity, site.
@@ -1611,23 +1608,23 @@ macro_rules! target {
 
 target!(RANDINT, prep_randint, "random.randint", "randint", vc_randint, G_RANDINT,
     &[(3, 14, "b27a71f673fed060"), (3, 15, "545e3e7cb98f48cd")],
-    globals: ["_index"], builtins: ["ValueError"]);
+    globals: ["_index"], builtins: []);
 target!(RANDRANGE, prep_randrange, "random.randrange", "randrange", vc_randrange, G_RANDRANGE,
     &[(3, 14, "8908f05589aa8f2e"), (3, 15, "1a9ec83028108206")],
-    globals: ["_index", "_ONE"], builtins: ["TypeError", "ValueError"]);
+    globals: ["_index", "_ONE"], builtins: []);
 target!(CHOICE, prep_choice, "random.choice", "choice", vc_choice, G_CHOICE,
     &[(3, 14, "27842dbf5347cdc8"), (3, 15, "0fe17a0dca4704ca")],
-    globals: [], builtins: ["len", "IndexError"]);
+    globals: [], builtins: ["len"]);
 target!(SHUFFLE, prep_shuffle, "random.shuffle", "shuffle", vc_shuffle, G_SHUFFLE,
     &[(3, 14, "427ad4e7b927876c"), (3, 15, "030048553c6487ba")],
     globals: [], builtins: ["len", "range", "reversed"]);
 target!(SAMPLE, prep_sample, "random.sample", "sample", vc_sample, G_SAMPLE,
     &[(3, 14, "f107f053e2e5804f"), (3, 15, "f9f0292868e437e0")],
-    globals: ["_Sequence", "_ceil", "_log", "_accumulate", "_bisect"],
-    builtins: ["isinstance", "len", "list", "set", "range", "int", "TypeError", "ValueError"]);
+    globals: ["_Sequence", "_ceil", "_log"],
+    builtins: ["isinstance", "len", "list", "set", "range"]);
 target!(CHOICES, prep_choices, "random.choices", "choices", vc_choices, G_CHOICES,
     &[(3, 14, "6b08a02ab968bfe1"), (3, 15, "a5cb98605af7c1a7")],
     globals: ["_floor", "_repeat", "_accumulate", "_bisect", "_isfinite"],
-    builtins: ["len", "list", "isinstance", "int", "TypeError", "ValueError"]);
+    builtins: ["len", "list"]);
 
 pub static TARGETS: &[&TargetSpec] = &[&RANDINT, &RANDRANGE, &CHOICE, &SHUFFLE, &SAMPLE, &CHOICES];

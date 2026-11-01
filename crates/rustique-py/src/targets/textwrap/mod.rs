@@ -101,7 +101,13 @@ unsafe fn ucs4(s: O) -> Option<Vec<u32>> {
 /// A new `str` from code points (canonical PEP 393 kind).
 unsafe fn new_str(v: &[u32]) -> O {
     // SAFETY: valid buffer.
-    unsafe { ffi::PyUnicode_FromKindAndData(ffi::PyUnicode_4BYTE_KIND as c_int, v.as_ptr().cast(), v.len() as ffi::Py_ssize_t) }
+    unsafe {
+        ffi::PyUnicode_FromKindAndData(
+            ffi::PyUnicode_4BYTE_KIND as c_int,
+            v.as_ptr().cast(),
+            v.len() as ffi::Py_ssize_t,
+        )
+    }
 }
 
 #[inline(always)]
@@ -316,6 +322,13 @@ static INIT_DEFAULTS: AtomicPtr<ffi::PyObject> = null!();
 static INIT_KWDEFAULTS: AtomicPtr<ffi::PyObject> = null!();
 static INIT_FUNC: AtomicPtr<ffi::PyObject> = null!();
 static TRANS: AtomicPtr<ffi::PyObject> = null!();
+static FILL_FUNC: AtomicPtr<ffi::PyObject> = null!();
+static NEW_OBJ: AtomicPtr<ffi::PyObject> = null!();
+static S_FILL: AtomicPtr<ffi::PyObject> = null!();
+static S_INIT: AtomicPtr<ffi::PyObject> = null!();
+static S_NEW: AtomicPtr<ffi::PyObject> = null!();
+/// `tp_version_tag` of `TextWrapper` when its attributes were last verified (0: never).
+static MOD_CLS_VER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static S_TEXT: AtomicPtr<ffi::PyObject> = null!();
 static S_PREFIX: AtomicPtr<ffi::PyObject> = null!();
 static S_PREDICATE: AtomicPtr<ffi::PyObject> = null!();
@@ -340,6 +353,35 @@ static METHODS: [AtomicPtr<ffi::PyObject>; 11] = [const { null!() }; 11];
 #[inline(always)]
 fn ld(p: &AtomicPtr<ffi::PyObject>) -> O {
     p.load(R)
+}
+
+/// `TextWrapper` (the class the module functions instantiate) still resolves every method
+/// and class attribute they use, `fill`, `__init__` and `__new__` to the originals and has
+/// metaclass `type`: verified once per class version (the tag changes on any modification
+/// of the class or a base, e.g. `mock.patch.object(TextWrapper, "_split", ...)`).
+#[inline]
+unsafe fn module_class_ok() -> bool {
+    // SAFETY: kept class; borrowed lookups only compared.
+    unsafe {
+        let tp = ld(&TW_CLS).cast::<ffi::PyTypeObject>();
+        let v = version_tag(tp);
+        if v != 0 && v == MOD_CLS_VER.load(R) {
+            return true;
+        }
+        if ffi::Py_TYPE(tp.cast()) != &raw mut ffi::PyType_Type {
+            return false;
+        }
+        let _ = _PyType_Lookup(tp, ld(&S_FILL));
+        let v0 = version_tag(tp);
+        let ok = (0..METHOD_NAMES.len()).all(|i| _PyType_Lookup(tp, ld(&S_METHODS[i])) == ld(&METHODS[i]))
+            && _PyType_Lookup(tp, ld(&S_FILL)) == ld(&FILL_FUNC)
+            && _PyType_Lookup(tp, ld(&S_INIT)) == ld(&INIT_FUNC)
+            && _PyType_Lookup(tp, ld(&S_NEW)) == ld(&NEW_OBJ);
+        if ok && v0 != 0 && version_tag(tp) == v0 {
+            MOD_CLS_VER.store(v0, R);
+        }
+        ok
+    }
 }
 
 /// `TextWrapper.__init__` still has the defaults validated at install, and the whitespace
@@ -470,7 +512,8 @@ unsafe fn module_kernel(g: &Guard, kind: Kind, func: O, args: *const O, nargsf: 
             if !g.ready(func) {
                 return call_original(func, args, nargsf, kw);
             }
-            if class_state_ok()
+            if module_class_ok()
+                && class_state_ok()
                 && let Some(t) = ucs4(text)
             {
                 let (src, is_input) = match kind {
@@ -605,8 +648,8 @@ unsafe fn instance_opts(slf: O) -> Option<Opts> {
             }
         }
         let mut o = Opts::defaults();
-        for i in 0..12 {
-            let v = ffi::PyObject_GenericGetAttr(slf, ld(&S_OPTS[i]));
+        for (i, name) in S_OPTS.iter().enumerate() {
+            let v = ffi::PyObject_GenericGetAttr(slf, ld(name));
             if v.is_null() {
                 ffi::PyErr_Clear();
                 return None;
@@ -668,7 +711,12 @@ unsafe extern "C" fn vc_dedent(func: O, args: *const O, nargsf: usize, kw: O) ->
         let g = &G_DEDENT;
         let text = match (nargs(nargsf), kw.is_null()) {
             (1, true) => *args,
-            (0, false) if ffi::PyTuple_GET_SIZE(kw) == 1 && ffi::PyUnicode_Compare(ffi::PyTuple_GET_ITEM(kw, 0), ld(&S_TEXT)) == 0 => *args,
+            (0, false)
+                if ffi::PyTuple_GET_SIZE(kw) == 1
+                    && ffi::PyUnicode_Compare(ffi::PyTuple_GET_ITEM(kw, 0), ld(&S_TEXT)) == 0 =>
+            {
+                *args
+            }
             _ => std::ptr::null_mut(),
         };
         if !text.is_null() && exact_str(text) {
@@ -747,6 +795,9 @@ fn prepare_common<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<Bound<'
         S_TEXT.store(interned(py, "text"), R);
         S_PREFIX.store(interned(py, "prefix"), R);
         S_PREDICATE.store(interned(py, "predicate"), R);
+        S_FILL.store(interned(py, "fill"), R);
+        S_INIT.store(interned(py, "__init__"), R);
+        S_NEW.store(interned(py, "__new__"), R);
         for (i, n) in OPT_NAMES.iter().enumerate() {
             S_OPTS[i].store(interned(py, n), R);
         }
@@ -760,9 +811,7 @@ fn prepare_common<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<Bound<'
     let init = cx.type_attr(&cls, "__init__")?;
     let defaults = init.getattr("__defaults__")?;
     let kwdefaults = init.getattr("__kwdefaults__")?;
-    let want = py.eval(c"(70, '', '', True, True, False, True, True, True, 8)", None, None)?;
-    let want_kw = py.eval(c"{'max_lines': None, 'placeholder': ' [...]'}", None, None)?;
-    if !defaults.eq(&want)? || !kwdefaults.eq(&want_kw)? {
+    if !defaults_ok(&defaults, &kwdefaults)? {
         return Err(Refusal::new("TextWrapper.__init__ defaults differ"));
     }
     // Every default must be of the exact type `Opts::defaults` assumes.
@@ -771,6 +820,10 @@ fn prepare_common<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<Bound<'
         return Err(Refusal::new("unicode_whitespace_trans is not a dict"));
     }
     keep(&INIT_FUNC, &init);
+    keep(&FILL_FUNC, &cx.type_attr(&cls, "fill")?);
+    let object = cx.loaded_module("builtins")?.dict().get_item("object")?.ok_or_else(|| Refusal::new("no object"))?;
+    let object = object.cast_into::<PyType>().map_err(PyErr::from)?;
+    keep(&NEW_OBJ, &cx.type_attr(&object, "__new__")?);
     keep(&INIT_DEFAULTS, &defaults);
     keep(&INIT_KWDEFAULTS, &kwdefaults);
     keep(&TRANS, &trans);
@@ -778,46 +831,65 @@ fn prepare_common<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<Bound<'
     if unsafe { !class_state_ok() } {
         return Err(Refusal::new("unicode_whitespace_trans differs"));
     }
-    cx.self_test("textwrap chunking", |py| self_test(py, &cls))?;
+    cx.self_test("textwrap patterns", |py| self_test(py, &cls))?;
     keep(&TW_CLS, cls.as_any());
     Ok(cls)
 }
 
-/// The chunking of the two patterns on probe strings equals `re.split` (C regex engine;
-/// no Python code runs: `Pattern.split` and `str` methods are C).
-fn self_test(py: Python<'_>, cls: &Bound<'_, PyType>) -> PyResult<bool> {
-    let wordsep = cls.getattr("wordsep_re")?;
-    let simple = cls.getattr("wordsep_simple_re")?;
-    for probe in [
-        "Hello there -- you goof-ball, use the -b option!",
-        "a-b-cd-ef --x x-- well--known ab-c 12-34 \u{e9}t\u{e9}-l\u{e0} x\u{2014}y \u{0663}\u{0664}-ab",
-        " \t lead and  trail \u{a0}nbsp\u{a0} ",
-    ] {
-        let v: Vec<u32> = probe.chars().map(u32::from).collect();
-        for (pat, chunks) in [(&wordsep, tw::split_words(&v, &Cls)), (&simple, tw::split_simple(&v))] {
-            let want: Vec<String> = pat.call_method1("split", (probe,))?.extract()?;
-            let want: Vec<String> = want.into_iter().filter(|s| !s.is_empty()).collect();
-            let got: Vec<String> = chunks
-                .iter()
-                .map(|c| match *c {
-                    Chunk::Text(a, b) => v[a..b].iter().filter_map(|&x| char::from_u32(x)).collect(),
-                    Chunk::TwoSpaces => "  ".to_string(),
-                })
-                .collect();
-            if got != want {
-                return Ok(false);
-            }
-        }
+/// `__init__`'s defaults are `(70, '', '', True, True, False, True, True, True, 8)` and
+/// `{'max_lines': None, 'placeholder': ' [...]'}`, with exactly these types (no Python
+/// code runs: exact-type reads).
+fn defaults_ok(defaults: &Bound<'_, PyAny>, kwdefaults: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let Ok(t) = defaults.cast::<pyo3::types::PyTuple>() else { return Ok(false) };
+    if t.len() != 10 {
+        return Ok(false);
     }
-    let _ = py;
-    Ok(true)
+    let int_is = |o: &Bound<'_, PyAny>, v: i64| -> bool {
+        // SAFETY: type check and value read of an int.
+        unsafe { is_type(o.as_ptr(), &raw mut ffi::PyLong_Type) && int_value(o.as_ptr()) == Some(v) }
+    };
+    let str_is = |o: &Bound<'_, PyAny>, v: &str| -> bool {
+        o.cast_exact::<pyo3::types::PyString>().is_ok_and(|s| s.to_cow().is_ok_and(|c| c == v))
+    };
+    let t_ = |o: &Bound<'_, PyAny>| o.is(pyo3::types::PyBool::new(o.py(), true));
+    let f_ = |o: &Bound<'_, PyAny>| o.is(pyo3::types::PyBool::new(o.py(), false));
+    let items: Vec<Bound<'_, PyAny>> = t.iter().collect();
+    let pos_ok = int_is(&items[0], 70)
+        && str_is(&items[1], "")
+        && str_is(&items[2], "")
+        && t_(&items[3])
+        && t_(&items[4])
+        && f_(&items[5])
+        && t_(&items[6])
+        && t_(&items[7])
+        && t_(&items[8])
+        && int_is(&items[9], 8);
+    let Ok(kw) = kwdefaults.cast::<PyDict>() else { return Ok(false) };
+    let kw_ok = kw.len() == 2
+        && kw.get_item("max_lines")?.is_some_and(|v| v.is_none())
+        && kw.get_item("placeholder")?.is_some_and(|v| str_is(&v, " [...]"));
+    Ok(pos_ok && kw_ok)
 }
 
-fn pin_class(cx: &mut Prepare<'_>, cls: &Bound<'_, PyType>, g: &'static Guard) -> Result<(), Refusal> {
-    for n in METHOD_NAMES.iter().copied().chain(["fill", "__init__", "__new__"]) {
-        cx.pin_attr(cls, n, &g.deps)?;
+/// FNV-1a of a compiled pattern's source and flags (the regex semantics `split_words` /
+/// `split_simple` / `fix_sentence_endings` replicate are those of exactly these patterns;
+/// the replication itself is covered by `cargo test`, the differential tests and
+/// test_textwrap — a pattern check keeps the install cheap).
+fn pattern_hash(p: &Bound<'_, PyAny>) -> PyResult<u64> {
+    let src: String = p.getattr("pattern")?.extract()?;
+    let flags: i64 = p.getattr("flags")?.extract()?;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in src.bytes().chain(flags.to_string().bytes()) {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    Ok(())
+    Ok(h)
+}
+
+fn self_test(_py: Python<'_>, cls: &Bound<'_, PyType>) -> PyResult<bool> {
+    Ok(pattern_hash(&cls.getattr("wordsep_re")?)? == 0x1da9_7a90_4e1b_f467
+        && pattern_hash(&cls.getattr("wordsep_simple_re")?)? == 0xa1b3_f8c3_4ce0_8fd3
+        && pattern_hash(&cls.getattr("sentence_end_re")?)? == 0x0b0c_1660_3b2d_4a6e)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -838,7 +910,6 @@ fn prepare_fn<'py>(
     pin_globals(cx, &globals, builtins, &g.deps)?;
     if class_pins {
         cx.pin(&globals, "TextWrapper", &g.deps)?;
-        pin_class(cx, &cls, g)?;
     }
     g.capture(&func);
     cx.vectorcall(&func, kernel, &accel::FUNCTION_VECTORCALL)
@@ -872,7 +943,7 @@ target!(SHORTEN, prep_shorten, "textwrap.shorten", ["shorten"], vc_shorten, G_SH
     &[(3, 14, "1e331e723a975c7a"), (3, 15, "37134789c5932809")], builtins: [], class_pins: true);
 target!(DEDENT, prep_dedent, "textwrap.dedent", ["dedent"], vc_dedent, G_DEDENT,
     &[(3, 14, "893f855ff5f348e9"), (3, 15, "e7dee1126e679cdc")],
-    builtins: ["min", "max", "enumerate", "AttributeError", "TypeError", "type"], class_pins: false);
+    builtins: ["min", "max", "enumerate"], class_pins: false);
 target!(INDENT, prep_indent, "textwrap.indent", ["indent"], vc_indent, G_INDENT,
     &[(3, 14, "f900977c89bc767a"), (3, 15, "5b8ede3946f79b26")], builtins: [], class_pins: false);
 target!(TW_WRAP, prep_tw_wrap, "textwrap.TextWrapper.wrap", ["TextWrapper", "wrap"], vc_tw_wrap, G_TW_WRAP,
