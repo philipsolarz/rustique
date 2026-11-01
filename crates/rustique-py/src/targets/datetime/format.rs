@@ -236,7 +236,8 @@ unsafe fn tz_texts(tzinfo: O, arg: O, needs: &Needs, is_datetime: bool) -> Optio
                                 }
                             }
                         } else {
-                            out.name = ustr::ascii(raw.name).filter(|_| ffi::PyUnicode_CheckExact(raw.name) != 0)?.to_vec();
+                            out.name =
+                                ustr::ascii(raw.name).filter(|_| ffi::PyUnicode_CheckExact(raw.name) != 0)?.to_vec();
                         }
                     }
                 }
@@ -295,8 +296,11 @@ enum Recv {
     Time,
 }
 
+/// (wrapped, format bytes, compiled or rejected)
+type FormatEntry = (bool, Box<[u8]>, Option<Rc<Compiled>>);
+
 thread_local! {
-    static FORMATS: RefCell<Vec<(bool, Box<[u8]>, Option<Rc<Compiled>>)>> = const { RefCell::new(Vec::new()) };
+    static FORMATS: RefCell<Vec<FormatEntry>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The compiled format (per thread; negative results cached too).
@@ -355,7 +359,7 @@ unsafe fn method(this: O, fmt: O, time_method: bool) -> Option<O> {
             return None;
         };
         let needs = cf.needs;
-        let Some(e) = env::env() else { return None };
+        let e = env::env()?;
         if !env::frame_ok(e) {
             c.fallback(Reason::Interp);
             return None;
@@ -420,7 +424,13 @@ unsafe fn method(this: O, fmt: O, time_method: bool) -> Option<O> {
             return None;
         };
         let mut out = Out::new();
-        strftime::render_compiled(&cf, &tm, micro, &TzText { z: &tz.z, colon_z: &tz.colon_z, name: &tz.name }, &mut out);
+        strftime::render_compiled(
+            &cf,
+            &tm,
+            micro,
+            &TzText { z: &tz.z, colon_z: &tz.colon_z, name: &tz.name },
+            &mut out,
+        );
         let Some(bytes) = out.bytes() else {
             c.fallback(Reason::Args);
             return None;
@@ -432,6 +442,9 @@ unsafe fn method(this: O, fmt: O, time_method: bool) -> Option<O> {
 macro_rules! method_kernels {
     ($fast:ident, $var:ident, $time:expr, $c:expr, $of:expr, $ov:expr, $spec:expr) => {
         /// METH_FASTCALL | METH_KEYWORDS (3.15).
+        ///
+        /// # Safety
+        /// Called by CPython with this calling convention's arguments.
         pub unsafe extern "C" fn $fast(this: O, args: *const O, nargs: ffi::Py_ssize_t, kwnames: O) -> O {
             // SAFETY: CPython's calling convention; fallback with unchanged arguments.
             unsafe {
@@ -450,6 +463,9 @@ macro_rules! method_kernels {
         }
 
         /// METH_VARARGS | METH_KEYWORDS (3.14).
+        ///
+        /// # Safety
+        /// Called by CPython with this calling convention's arguments.
         pub unsafe extern "C" fn $var(this: O, args: O, kw: O) -> O {
             // SAFETY: CPython's calling convention; fallback with unchanged arguments.
             unsafe {
@@ -548,14 +564,20 @@ unsafe fn function(module: O, args: O) -> Option<O> {
 }
 
 /// `time.strftime` (METH_VARARGS on 3.14 and 3.15).
+///
+/// # Safety
+/// Called by CPython with this calling convention's arguments.
 pub unsafe extern "C" fn time_fn(module: O, args: O) -> O {
     // SAFETY: CPython's calling convention; fallback with unchanged arguments.
     unsafe {
         if let Some(r) = function(module, args) {
             if C_FN.hit_check() {
-                return check::verify(&super::TIME_FN_STRFTIME, r, &[ffi::PyTuple_GET_ITEM(args, 0), ffi::PyTuple_GET_ITEM(args, 1)], || {
-                    ORIG_FN.get()(module, args)
-                });
+                return check::verify(
+                    &super::TIME_FN_STRFTIME,
+                    r,
+                    &[ffi::PyTuple_GET_ITEM(args, 0), ffi::PyTuple_GET_ITEM(args, 1)],
+                    || ORIG_FN.get()(module, args),
+                );
             }
             return r;
         }

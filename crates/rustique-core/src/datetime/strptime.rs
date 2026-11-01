@@ -237,8 +237,13 @@ use C::{D, L, R, Sp};
 #[cfg(test)]
 const ALT_M: &[&[C]] = &[&[L(b'1'), R(b'0', b'2')], &[L(b'0'), R(b'1', b'9')], &[R(b'1', b'9')]];
 #[cfg(test)]
-const ALT_D: &[&[C]] =
-    &[&[L(b'3'), R(b'0', b'1')], &[R(b'1', b'2'), D], &[L(b'0'), R(b'1', b'9')], &[R(b'1', b'9')], &[Sp, R(b'1', b'9')]];
+const ALT_D: &[&[C]] = &[
+    &[L(b'3'), R(b'0', b'1')],
+    &[R(b'1', b'2'), D],
+    &[L(b'0'), R(b'1', b'9')],
+    &[R(b'1', b'9')],
+    &[Sp, R(b'1', b'9')],
+];
 #[cfg(test)]
 const ALT_H: &[&[C]] = &[&[L(b'2'), R(b'0', b'3')], &[R(b'0', b'1'), D], &[D], &[Sp, D]];
 #[cfg(test)]
@@ -264,8 +269,20 @@ const ALT_Y2: &[&[C]] = &[&[D, D]];
 const ALT_Y4: &[&[C]] = &[&[D, D, D, D]];
 
 /// C-locale `LocaleTime` names (lower case), calendar order.
-pub const F_MONTH: [&str; 12] =
-    ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+pub const F_MONTH: [&str; 12] = [
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+];
 pub const A_MONTH: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 pub const F_WEEKDAY: [&str; 7] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 pub const A_WEEKDAY: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -286,7 +303,6 @@ fn alts(s: &[u8], p: usize, alts: &[&[C]], out: &mut Ends) {
         }
     }
 }
-
 
 #[inline(always)]
 fn at(s: &[u8], i: usize) -> u8 {

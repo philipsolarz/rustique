@@ -144,8 +144,19 @@ pub fn env() -> Option<&'static Env> {
 }
 
 /// Builtins read by `_strptime._strptime`, its wrappers and `locale.getlocale` & co.
-const BUILTIN_DEPS: [&str; 11] =
-    ["__import__", "isinstance", "enumerate", "str", "len", "int", "tuple", "ValueError", "TypeError", "KeyError", "range"];
+const BUILTIN_DEPS: [&str; 11] = [
+    "__import__",
+    "isinstance",
+    "enumerate",
+    "str",
+    "len",
+    "int",
+    "tuple",
+    "ValueError",
+    "TypeError",
+    "KeyError",
+    "range",
+];
 
 fn keep(o: &Bound<'_, PyAny>) -> usize {
     o.clone().into_ptr() as usize
@@ -294,5 +305,6 @@ pub fn common_ok(py: Python<'_>, e: &Env) -> bool {
 
 /// `obj` is an exact tuple of exact `str`.
 pub fn is_str_tuple(o: &Bound<'_, PyAny>) -> bool {
-    o.cast::<PyTuple>().is_ok_and(|t| t.is_exact_instance_of::<PyTuple>() && t.iter().all(|s| s.is_exact_instance_of::<PyString>()))
+    o.cast::<PyTuple>()
+        .is_ok_and(|t| t.is_exact_instance_of::<PyTuple>() && t.iter().all(|s| s.is_exact_instance_of::<PyString>()))
 }

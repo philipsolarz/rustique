@@ -165,12 +165,25 @@ fn strftime_self_test(cx: &mut Prepare<'_>, time_method: bool) -> Result<(), Ref
         // SAFETY: C API loaded; kernels and originals take these arguments.
         unsafe {
             let objs: Vec<Bound<'_, PyAny>> = if time_method {
-                vec![Bound::from_owned_ptr_or_err(py, ((*api).Time_FromTime)(7, 5, 9, 123, ffi::Py_None(), (*api).TimeType))?]
+                vec![Bound::from_owned_ptr_or_err(
+                    py,
+                    ((*api).Time_FromTime)(7, 5, 9, 123, ffi::Py_None(), (*api).TimeType),
+                )?]
             } else {
                 vec![
                     Bound::from_owned_ptr_or_err(
                         py,
-                        ((*api).DateTime_FromDateAndTime)(2024, 2, 29, 23, 59, 58, 4321, ffi::Py_None(), (*api).DateTimeType),
+                        ((*api).DateTime_FromDateAndTime)(
+                            2024,
+                            2,
+                            29,
+                            23,
+                            59,
+                            58,
+                            4321,
+                            ffi::Py_None(),
+                            (*api).DateTimeType,
+                        ),
                     )?,
                     Bound::from_owned_ptr_or_err(py, ((*api).Date_FromDate)(987, 12, 31, (*api).DateType))?,
                 ]
@@ -190,7 +203,10 @@ fn strftime_self_test(cx: &mut Prepare<'_>, time_method: bool) -> Result<(), Ref
                         let t = pyo3::types::PyTuple::new(py, [&fmt])?;
                         let k = if time_method { format::time_var } else { format::date_var };
                         let og = if time_method { format::ORIG_TIME_VAR.get() } else { format::ORIG_DATE_VAR.get() };
-                        (k(o.as_ptr(), t.as_ptr(), std::ptr::null_mut()), og(o.as_ptr(), t.as_ptr(), std::ptr::null_mut()))
+                        (
+                            k(o.as_ptr(), t.as_ptr(), std::ptr::null_mut()),
+                            og(o.as_ptr(), t.as_ptr(), std::ptr::null_mut()),
+                        )
                     };
                     let k = Bound::from_owned_ptr_or_err(py, k)?;
                     let orig = Bound::from_owned_ptr_or_err(py, orig)?;
@@ -250,7 +266,10 @@ fn prepare_time_fn_strftime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(),
     cx.ml_meth(&f, format::time_fn as format::VarArgs, &format::ORIG_FN)?;
     cx.self_test("time.strftime", |py| {
         let fmt = "%Y-%m-%d %H:%M:%S|%y %j %I %e %u %w %C %F %T %D %R %%";
-        let args = pyo3::types::PyTuple::new(py, [fmt.into_pyobject(py)?.into_any(), (2024, 2, 29, 23, 59, 58, 3, 60, -1).into_pyobject(py)?.into_any()])?;
+        let args = pyo3::types::PyTuple::new(
+            py,
+            [fmt.into_pyobject(py)?.into_any(), (2024, 2, 29, 23, 59, 58, 3, 60, -1).into_pyobject(py)?.into_any()],
+        )?;
         // SAFETY: METH_VARARGS calls with a valid tuple.
         unsafe {
             let k = Bound::from_owned_ptr_or_err(py, format::time_fn(time.as_ptr(), args.as_ptr()))?;

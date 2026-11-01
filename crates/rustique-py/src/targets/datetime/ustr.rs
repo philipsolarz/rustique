@@ -17,7 +17,8 @@ const CANDIDATE: u32 = (1 << 11) | (1 << 12);
 
 /// Check the candidate bits on sample strings (built at run time: compact, not static).
 pub fn calibrate(py: Python<'_>) -> bool {
-    let samples = [("rustique-ascii", true), ("caf\u{e9}-latin", false), ("\u{3b1}\u{3b2}-wide", false), ("\u{1F600}", false)];
+    let samples =
+        [("rustique-ascii", true), ("caf\u{e9}-latin", false), ("\u{3b1}\u{3b2}-wide", false), ("\u{1F600}", false)];
     let ok = samples.iter().all(|&(text, ascii)| {
         let s = pyo3::types::PyString::new(py, &format!("{text}{}", py.version_info().minor));
         let p = s.as_ptr();

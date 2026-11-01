@@ -14,7 +14,9 @@ use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString, PyTuple};
 
-use rustique_core::datetime::strptime::{self, A_MONTH, A_WEEKDAY, AM_PM, F_MONTH, F_WEEKDAY, Parsed, Program, Version};
+use rustique_core::datetime::strptime::{
+    self, A_MONTH, A_WEEKDAY, AM_PM, F_MONTH, F_WEEKDAY, Parsed, Program, Version,
+};
 
 use super::env::{self, Env, item, obj};
 use super::{fingerprints, ustr, watch};
@@ -160,7 +162,9 @@ fn capture_module(py: Python<'_>, m: &Bound<'_, pyo3::types::PyModule>) -> Resul
                 && std::ffi::CStr::from_ptr((*def).ml_name).to_bytes() == b"setlocale"
                 && !owner.is_null()
                 && ffi::PyModule_Check(owner) != 0
-                && Bound::from_borrowed_ptr(py, owner).getattr("__name__").is_ok_and(|n| n.eq("_locale").unwrap_or(false))
+                && Bound::from_borrowed_ptr(py, owner)
+                    .getattr("__name__")
+                    .is_ok_and(|n| n.eq("_locale").unwrap_or(false))
         }
     };
     if !c_ok {
@@ -257,7 +261,8 @@ fn find_or_capture(py: Python<'_>, m: &Bound<'_, pyo3::types::PyModule>) -> Resu
     Ok((i, unsafe { &*p }))
 }
 
-const SHADOWS: [&str; 10] = ["isinstance", "enumerate", "str", "len", "int", "tuple", "ValueError", "TypeError", "KeyError", "range"];
+const SHADOWS: [&str; 10] =
+    ["isinstance", "enumerate", "str", "len", "int", "tuple", "ValueError", "TypeError", "KeyError", "range"];
 
 fn list_is(o: &Bound<'_, PyAny>, expected: &[&str], leading_empty: bool) -> bool {
     let Ok(l) = o.cast::<PyList>() else { return false };
@@ -305,7 +310,8 @@ fn validate(py: Python<'_>, e: &Env) -> Result<usize, String> {
         o.is_some_and(|o| o.is_exact_instance_of::<pyo3::types::PyInt>() && o.eq(v).unwrap_or(false))
     };
     // SAFETY: captured modules.
-    let (mt, lt_mod) = unsafe { (ffi::Py_TYPE(sp.module as *mut _) as usize, ffi::Py_TYPE(sp.locale_mod as *mut _) as usize) };
+    let (mt, lt_mod) =
+        unsafe { (ffi::Py_TYPE(sp.module as *mut _) as usize, ffi::Py_TYPE(sp.locale_mod as *mut _) as usize) };
     need!(mt == e.module_type, "_strptime module type changed");
     need!(lt_mod == e.module_type, "locale module type changed");
     for (i, name) in FUNCS.iter().enumerate() {
@@ -481,8 +487,11 @@ unsafe fn regex_cached(sp: &SpDeps, fmt: *mut ffi::PyObject) -> bool {
 // Compiled-format cache (per thread: no locks)
 // ---------------------------------------------------------------------------------------
 
+/// (format bytes, compiled or rejected)
+type ProgramEntry = (Box<[u8]>, Option<Rc<Program>>);
+
 thread_local! {
-    static PROGS: RefCell<Vec<(Box<[u8]>, Option<Rc<Program>>)>> = const { RefCell::new(Vec::new()) };
+    static PROGS: RefCell<Vec<ProgramEntry>> = const { RefCell::new(Vec::new()) };
 }
 
 fn program(fmt: &[u8]) -> Option<Rc<Program>> {
@@ -505,7 +514,8 @@ fn program(fmt: &[u8]) -> Option<Rc<Program>> {
 // Kernels
 // ---------------------------------------------------------------------------------------
 
-pub type Fast = unsafe extern "C" fn(*mut ffi::PyObject, *const *mut ffi::PyObject, ffi::Py_ssize_t) -> *mut ffi::PyObject;
+pub type Fast =
+    unsafe extern "C" fn(*mut ffi::PyObject, *const *mut ffi::PyObject, ffi::Py_ssize_t) -> *mut ffi::PyObject;
 pub type VarArgs = unsafe extern "C" fn(*mut ffi::PyObject, *mut ffi::PyObject) -> *mut ffi::PyObject;
 
 const MAX_MICROS: i64 = 86_400_000_000;
@@ -515,7 +525,12 @@ const MAX_MICROS: i64 = 86_400_000_000;
 /// # Safety
 /// Attached thread; `s`/`fmt` live objects.
 #[inline(always)]
-unsafe fn run(kind: Kind, cls: *mut ffi::PyObject, s: *mut ffi::PyObject, fmt: *mut ffi::PyObject) -> Option<*mut ffi::PyObject> {
+unsafe fn run(
+    kind: Kind,
+    cls: *mut ffi::PyObject,
+    s: *mut ffi::PyObject,
+    fmt: *mut ffi::PyObject,
+) -> Option<*mut ffi::PyObject> {
     let c = &COUNTERS[kind as usize];
     // SAFETY: attached thread throughout; objects are live.
     unsafe {
@@ -527,7 +542,7 @@ unsafe fn run(kind: Kind, cls: *mut ffi::PyObject, s: *mut ffi::PyObject, fmt: *
             c.fallback(Reason::Args);
             return None;
         }
-        let Some(e) = env::env() else { return None };
+        let e = env::env()?;
         if !env::frame_ok(e) {
             c.fallback(Reason::Interp);
             return None;
@@ -610,7 +625,9 @@ unsafe fn build(kind: Kind, p: &Parsed, sp: &SpDeps) -> Option<*mut ffi::PyObjec
                 Some(((*api).Date_FromDate)(p.year as c_int, p.month as c_int, p.day as c_int, (*api).DateType))
             }
             Kind::DateTime | Kind::Time => {
-                if p.second > 59 || (kind == Kind::DateTime && !rustique_core::datetime::cal::valid_date(p.year, p.month, p.day)) {
+                if p.second > 59
+                    || (kind == Kind::DateTime && !rustique_core::datetime::cal::valid_date(p.year, p.month, p.day))
+                {
                     return None;
                 }
                 if p.gmtoff.is_some() && !codes_ok(sp, kind, true) {
@@ -697,6 +714,9 @@ unsafe fn build(kind: Kind, p: &Parsed, sp: &SpDeps) -> Option<*mut ffi::PyObjec
 macro_rules! classmethod_kernels {
     ($fast:ident, $var:ident, $kind:expr) => {
         /// METH_FASTCALL | METH_CLASS (3.15).
+        ///
+        /// # Safety
+        /// Called by CPython with this calling convention's arguments.
         pub unsafe extern "C" fn $fast(
             cls: *mut ffi::PyObject,
             args: *const *mut ffi::PyObject,
@@ -721,6 +741,9 @@ macro_rules! classmethod_kernels {
         }
 
         /// METH_VARARGS | METH_CLASS (3.14).
+        ///
+        /// # Safety
+        /// Called by CPython with this calling convention's arguments.
         pub unsafe extern "C" fn $var(cls: *mut ffi::PyObject, args: *mut ffi::PyObject) -> *mut ffi::PyObject {
             // SAFETY: CPython's calling convention; fallback with unchanged arguments.
             unsafe {
@@ -748,6 +771,9 @@ classmethod_kernels!(date_fast, date_varargs, Kind::Date);
 classmethod_kernels!(time_fast, time_varargs, Kind::Time);
 
 /// `time.strptime(string[, format])` (METH_VARARGS on 3.14 and 3.15).
+///
+/// # Safety
+/// Called by CPython with this calling convention's arguments.
 pub unsafe extern "C" fn time_fn(module: *mut ffi::PyObject, args: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: CPython's calling convention; fallback with unchanged arguments.
     unsafe {
