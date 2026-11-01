@@ -35,22 +35,22 @@ use rt::{
 /// with `rustique._rustique._accel.fingerprint(obj)` (identical on GIL and free-threaded
 /// builds).
 pub(crate) const FPS: &[(&str, Fingerprints)] = &[
-    ("posixpath.join", &[(3, 14, "c5f7726e246711cc"), (3, 15, "1736eec0807db5fe")]),
-    ("posixpath.split", &[(3, 14, "2a92a09f804e7f66"), (3, 15, "5b80ccd4010f9f07")]),
-    ("posixpath.splitext", &[(3, 14, "57e4fff4ed5744e9"), (3, 15, "7b7f2fd89ce939cb")]),
-    ("posixpath.basename", &[(3, 14, "9697ad6c31eb4ec6"), (3, 15, "14820d2e64ed72c1")]),
-    ("posixpath.dirname", &[(3, 14, "0ed8402af932b639"), (3, 15, "9d669ca8789e07b1")]),
-    ("posixpath.isabs", &[(3, 14, "eaad47df6dd6ed8b"), (3, 15, "135e5f019a3002ee")]),
-    ("posixpath.relpath", &[(3, 14, "939e80226b486d55"), (3, 15, "7c09617a3d61fa23")]),
-    ("posixpath.abspath", &[(3, 14, "5f8527ce7332a273"), (3, 15, "38577b59918fb8de")]),
-    ("posixpath._get_sep", &[(3, 14, "6b0a736a3526f1ed"), (3, 15, "ec659b080301f8d1")]),
-    ("genericpath._splitext", &[(3, 14, "2e130b2724074482"), (3, 15, "426bad07995314f0")]),
-    ("genericpath.commonprefix", &[(3, 14, "60e08a2eb749cf79"), (3, 15, "48abda7c1b3bb7da")]),
-    ("genericpath._commonprefix", &[(3, 15, "87fd0ffea61fdb85")]),
-    ("os.fspath", &[(3, 14, "2dbb12933adb6fd8"), (3, 15, "2dbb12933adb6fd8")]),
-    ("os.getcwd", &[(3, 14, "c9812d1c05053b8c"), (3, 15, "c9812d1c05053b8c")]),
-    ("os.getcwdb", &[(3, 14, "2604f34e97fb5a20"), (3, 15, "2604f34e97fb5a20")]),
-    ("posixpath.normpath", &[(3, 14, "9bc564ed2ef2fde6"), (3, 15, "9bc564ed2ef2fde6")]),
+    ("posixpath.join", &[(3, 14, "f9426bd851f5e1b8"), (3, 15, "f8eceb34d61d89f7")]),
+    ("posixpath.split", &[(3, 14, "9982d1a934157004"), (3, 15, "96f8c3db5bc9fe52")]),
+    ("posixpath.splitext", &[(3, 14, "73ba50ede7290757"), (3, 15, "8496dfae04f8b3f5")]),
+    ("posixpath.basename", &[(3, 14, "bacc0b3f6c53df7d"), (3, 15, "a7e4e60fb5d2bc37")]),
+    ("posixpath.dirname", &[(3, 14, "ce9cf6c4f5088db5"), (3, 15, "f707cb4e4bce98e9")]),
+    ("posixpath.isabs", &[(3, 14, "9aa922bd104243c9"), (3, 15, "ed693fb046ef035d")]),
+    ("posixpath.relpath", &[(3, 14, "ec917de6f2a960cd"), (3, 15, "1aaf374efc900813")]),
+    ("posixpath.abspath", &[(3, 14, "e29e635f89a6c4e9"), (3, 15, "5fcee84df633241d")]),
+    ("posixpath._get_sep", &[(3, 14, "54be3703c91faa4c"), (3, 15, "5bc506a017985796")]),
+    ("genericpath._splitext", &[(3, 14, "41f984dfa9547d91"), (3, 15, "4779d796fd294850")]),
+    ("genericpath.commonprefix", &[(3, 14, "21c1c29dadbfcf1f"), (3, 15, "1e8a11037b7658c6")]),
+    ("genericpath._commonprefix", &[(3, 15, "1b3a68ee2d093e2f")]),
+    ("os.fspath", &[(3, 14, "23569f1819f5a2a6"), (3, 15, "23569f1819f5a2a6")]),
+    ("os.getcwd", &[(3, 14, "ed3473ee5d2671c7"), (3, 15, "ed3473ee5d2671c7")]),
+    ("os.getcwdb", &[(3, 14, "64d5082e435b0ab7"), (3, 15, "64d5082e435b0ab7")]),
+    ("posixpath.normpath", &[(3, 14, "62a5270f293cf375"), (3, 15, "62a5270f293cf375")]),
 ];
 
 static RT_JOIN: Rt = Rt::new();

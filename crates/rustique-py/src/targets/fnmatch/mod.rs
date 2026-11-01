@@ -23,19 +23,19 @@ use crate::refuse;
 use crate::targets::posixpath::rt::{self, O, Rt, Unit, bytes_view, exact_bytes, exact_str, str_view};
 
 pub(crate) const FPS: &[(&str, Fingerprints)] = &[
-    ("fnmatch.fnmatch", &[(3, 14, "5986cba5802aba46"), (3, 15, "517d6a638fefa7e6")]),
-    ("fnmatch.fnmatchcase", &[(3, 14, "83b7cb4758b87aeb"), (3, 15, "17934a096dd6f3aa")]),
-    ("fnmatch.filter", &[(3, 14, "7bf973b1f53842dd"), (3, 15, "b5c0ce249e6a934f")]),
-    ("fnmatch._compile_pattern", &[(3, 14, "79c0f2ffdc7d95ec"), (3, 15, "2e43dc16daf8b00d")]),
-    ("fnmatch.translate", &[(3, 14, "c4fed7b889a0400f"), (3, 15, "13b3a820d251b35f")]),
-    ("fnmatch._translate", &[(3, 14, "ca38f8a1c8f7e749"), (3, 15, "c567b67d0743b4de")]),
-    ("fnmatch._join_translated_parts", &[(3, 14, "0fc493831425b153"), (3, 15, "4fd1d664ea2fd617")]),
-    ("re.escape", &[(3, 14, "4112f39d484aa40d"), (3, 15, "c721420afec3ed91")]),
-    ("re.compile", &[(3, 14, "84ef376a8f8d11c3"), (3, 15, "f744bd5c1c6c821f")]),
-    ("re._compile", &[(3, 14, "ee2108f8069d004a"), (3, 15, "97249c2720f5b6a5")]),
-    ("re._parser._parse", &[(3, 14, "c983b21f16b51ed5"), (3, 15, "9adcebe371aec858")]),
-    ("re._parser._class_escape", &[(3, 14, "7fc2558ee17ca545"), (3, 15, "86b79b5449bf7d98")]),
-    ("posixpath.normcase", &[(3, 14, "4430685c31fdf17c"), (3, 15, "b8ae21472a1996ce")]),
+    ("fnmatch.fnmatch", &[(3, 14, "dfa5c09b17d2a628"), (3, 15, "b91a7302efd00ab7")]),
+    ("fnmatch.fnmatchcase", &[(3, 14, "49051a1ea4f359eb"), (3, 15, "5e74499978ac5f66")]),
+    ("fnmatch.filter", &[(3, 14, "8ff7d447607dd2c2"), (3, 15, "d48457eb4862dc31")]),
+    ("fnmatch._compile_pattern", &[(3, 14, "210606416e460057"), (3, 15, "482b0d2dd8fb8ec5")]),
+    ("fnmatch.translate", &[(3, 14, "452f333f7d491a42"), (3, 15, "bae9e41617d16327")]),
+    ("fnmatch._translate", &[(3, 14, "2974d59e2c491214"), (3, 15, "c5c5507425325b18")]),
+    ("fnmatch._join_translated_parts", &[(3, 14, "2cc2a232f906617d"), (3, 15, "d29bdee58b96b3a6")]),
+    ("re.escape", &[(3, 14, "3e4b805b83e2d9b8"), (3, 15, "a7b4140652fb66b2")]),
+    ("re.compile", &[(3, 14, "a2ebcd8a548a953a"), (3, 15, "28f9681cad925e2b")]),
+    ("re._compile", &[(3, 14, "638524c6d0b543cc"), (3, 15, "da7d49c39bd21137")]),
+    ("re._parser._parse", &[(3, 14, "e5e3cd0d55da7193"), (3, 15, "aa2ecdd42bfc8f61")]),
+    ("re._parser._class_escape", &[(3, 14, "ac571e89293380c0"), (3, 15, "5c7ab5562ea230eb")]),
+    ("posixpath.normcase", &[(3, 14, "0c979efa01cde1ee"), (3, 15, "20a2c8c5e6360108")]),
 ];
 
 static RT_FNMATCH: Rt = Rt::new();
