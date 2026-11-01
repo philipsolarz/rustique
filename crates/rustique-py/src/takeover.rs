@@ -1385,12 +1385,12 @@ const VERSIONS: &[(u8, u8)] = &[(3, 14), (3, 15)];
 fn method<'py>(ty: &Bound<'py, pyo3::types::PyType>, name: &CStr, flags: c_int) -> Result<Bound<'py, PyAny>, Refusal> {
     let m = ty.getattr(name.to_str().unwrap_or_default())?;
     // SAFETY: attached thread; type-checked layout reads.
-    let def =
-        unsafe { accel::site::method_def(m.as_ptr()) }.ok_or_else(|| refuse!("{name:?}: not a method descriptor"))?;
+    let def = unsafe { accel::site::method_def(m.as_ptr()) }
+        .ok_or_else(|| refuse!(Conflict: "{name:?}: not a method descriptor"))?;
     // SAFETY: a live method def.
     let (n, f) = unsafe { (CStr::from_ptr((*def).ml_name), (*def).ml_flags) };
     if n != name || f != flags {
-        return Err(refuse!("{name:?}: unexpected method definition ({n:?}, {f:#x})"));
+        return Err(refuse!(Conflict: "{name:?}: unexpected method definition ({n:?}, {f:#x})"));
     }
     Ok(m)
 }
@@ -1399,7 +1399,7 @@ fn method<'py>(ty: &Bound<'py, pyo3::types::PyType>, name: &CStr, flags: c_int) 
 fn calibrate(py: Python<'_>) -> Result<(), Refusal> {
     static OK: OnceLock<bool> = OnceLock::new();
     if !*OK.get_or_init(|| layouts_ok(py).unwrap_or(false)) {
-        return Err(Refusal::new("unexpected int/float layout"));
+        return Err(Refusal::with(accel::Category::Layout, "unexpected int/float layout"));
     }
     if STR_LAYOUT.get().is_none()
         && let Some(layout) = calibrate_str(py)

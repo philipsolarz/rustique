@@ -12,6 +12,7 @@
 //! - [`stats`]: per-target hit / fallback counters, free when nobody looks.
 //! - [`version`]: interpreter facts and the gate.
 //! - [`fingerprint`]: canonical fingerprints of Python and C originals.
+//! - [`check`]: check mode (compare fast-path results with the original's).
 //!
 //! A target in one picture:
 //!
@@ -47,6 +48,7 @@
 //! };
 //! ```
 
+pub mod check;
 pub mod fingerprint;
 pub mod guard;
 pub mod prepare;
@@ -61,7 +63,7 @@ pub use fingerprint::Fingerprints;
 pub use guard::{DepFlag, Tools, code_locally_quiet, in_main_interpreter, tools_quiet};
 pub use prepare::Prepare;
 pub use site::SlotName;
-pub use spec::{FnPtr, Original, Refusal, TargetSpec};
+pub use spec::{Category, FnPtr, Original, Refusal, TargetSpec};
 pub use stats::{Counters, Reason};
 
 /// `_PyFunction_Vectorcall`, shared by every vectorcall site: pass it to
