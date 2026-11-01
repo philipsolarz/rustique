@@ -1104,14 +1104,14 @@ unsafe fn count_result(r: Result<Option<isize>, ()>) -> *mut ffi::PyObject {
 unsafe extern "C" fn k_list_count(slf: *mut ffi::PyObject, value: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: METH_O: `slf` is a list, `value` a live object.
     match unsafe { list_prelude(slf, value, Scan::Count).unwrap_or_else(|| scan_list_slow(slf, value, Scan::Count)) } {
-        // SAFETY: attached thread.
         Outcome::Done(r) => {
             C_LIST_COUNT.hit();
+            // SAFETY: attached thread.
             unsafe { count_result(r) }
         }
-        // SAFETY: same arguments to the original METH_O function.
         Outcome::Delegate => {
             C_LIST_COUNT.fallback(Reason::Args);
+            // SAFETY: same arguments to the original METH_O function.
             unsafe { ORIG_LIST_COUNT.get()(slf, value) }
         }
     }
@@ -1121,14 +1121,14 @@ unsafe extern "C" fn k_tuple_count(slf: *mut ffi::PyObject, value: *mut ffi::PyO
     // SAFETY: METH_O: `slf` is a tuple, `value` a live object.
     match unsafe { tuple_prelude(slf, value, Scan::Count).unwrap_or_else(|| scan_tuple_slow(slf, value, Scan::Count)) }
     {
-        // SAFETY: attached thread.
         Outcome::Done(r) => {
             C_TUPLE_COUNT.hit();
+            // SAFETY: attached thread.
             unsafe { count_result(r) }
         }
-        // SAFETY: same arguments to the original METH_O function.
         Outcome::Delegate => {
             C_TUPLE_COUNT.fallback(Reason::Args);
+            // SAFETY: same arguments to the original METH_O function.
             unsafe { ORIG_TUPLE_COUNT.get()(slf, value) }
         }
     }

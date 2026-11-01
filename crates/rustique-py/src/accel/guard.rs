@@ -466,9 +466,11 @@ pub fn watch(dict: &Bound<'_, PyDict>, key: &str, gen_: &'static AtomicU64) -> P
     let k = PyString::intern(py, key);
     {
         let t = tables();
-        // SAFETY: attached thread; live objects.
         if t.gens.iter().any(|g| {
-            g.dict == dict.as_ptr() as usize && std::ptr::eq(g.counter, gen_) && unsafe { same_key(k.as_ptr(), g.key) }
+            g.dict == dict.as_ptr() as usize
+                && std::ptr::eq(g.counter, gen_)
+                // SAFETY: attached thread; live objects.
+                && unsafe { same_key(k.as_ptr(), g.key) }
         }) {
             return Ok(());
         }
@@ -535,10 +537,11 @@ pub(crate) fn activate(py: Python<'_>, pins: Vec<PendingPin>) -> PyResult<u64> {
                 let d = dict.bind(py);
                 let mut dev = Vec::new();
                 for (k, v) in d.iter() {
-                    // SAFETY: attached thread; same_key runs no Python code (identity, then
-                    // exact-str comparison).
                     let same = snap.iter().any(|(sk, sv)| {
-                        sv.as_ptr() == v.as_ptr() && unsafe { same_key(k.as_ptr(), sk.as_ptr() as usize) }
+                        sv.as_ptr() == v.as_ptr()
+                            // SAFETY: attached thread; same_key runs no Python code (identity,
+                            // then exact-str comparison).
+                            && unsafe { same_key(k.as_ptr(), sk.as_ptr() as usize) }
                     });
                     if !same {
                         dev.push(k.into_ptr() as usize);
