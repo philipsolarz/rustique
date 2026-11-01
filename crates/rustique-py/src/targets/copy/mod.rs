@@ -429,12 +429,13 @@ pub(crate) struct SetSnap {
     mask: isize,
     table: usize,
     entries: Vec<[usize; 2]>,
-    /// For the types of [`PROBED`]: `(type, first, last, found)` — the slots CPython's lookup
+    /// For the types of [`probed`]: `(type, first, last, found)` — the slots CPython's lookup
     /// of that type inspects (`set_do_lookup`: home slot, then the linear run) and its
     /// outcome, when it ends inside the first run without calling `__eq__`.
     probes: Vec<(usize, usize, usize, bool)>,
 }
 
+/// `PySetObject` (public header); `table` entries are `setentry {key, hash}`.
 #[repr(C)]
 struct RawSet {
     ob_base: ffi::PyObject,
@@ -479,7 +480,7 @@ impl SetSnap {
                     let h = ffi::PyObject_Hash(t.cast()) as usize;
                     let home = h & mask;
                     let run = if home + LINEAR_PROBES <= mask { LINEAR_PROBES } else { 0 };
-                    for (j, &[eh, ek]) in entries.iter().enumerate().skip(home).take(run + 1) {
+                    for (j, &[ek, eh]) in entries.iter().enumerate().skip(home).take(run + 1) {
                         if eh == 0 && ek == 0 {
                             probes.push((t as usize, home, j, false));
                             break;

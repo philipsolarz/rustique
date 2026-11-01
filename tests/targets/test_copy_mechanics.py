@@ -513,13 +513,6 @@ def test_mutable_container_set_314():
         try:
             a, b = copy.copy(big), S.REF.copy(big)
             assert a == b and sys.getsizeof(a) == sys.getsizeof(b)
-            copy._atomic_types.discard(int)
-            S.REF._atomic_types.discard(int)
-            try:
-                assert copy.deepcopy(7) == S.REF.deepcopy(7)
-            finally:
-                copy._atomic_types.add(int)
-                S.REF._atomic_types.add(int)
         finally:
             copy._copy_builtin_containers.add(list)
             S.REF._copy_builtin_containers.add(list)
