@@ -20,6 +20,7 @@ pub mod set;
 pub mod storage;
 pub mod sync;
 pub mod takeover;
+pub mod targets;
 pub mod tuple;
 pub mod typing;
 
@@ -37,5 +38,6 @@ fn _rustique(m: &Bound<'_, PyModule>) -> PyResult<()> {
     capi::register(m)?;
     builtins::register(m)?;
     takeover::register(m)?;
+    targets::register(m)?;
     Ok(())
 }
