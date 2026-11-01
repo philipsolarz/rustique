@@ -290,7 +290,7 @@ fn cast_target(dtype: &Bound<'_, PyAny>) -> PyResult<ExprType> {
 
 /// The rustique scalar class of a fixed-width dtype (`rs.i8`, …).
 fn scalar_class<'py>(py: Python<'py>, dtype: DType) -> PyResult<Bound<'py, PyAny>> {
-    py.import("rustique._rustique")?.getattr(dtype.name())
+    crate::module(py)?.getattr(dtype.name())
 }
 
 fn math_isnan(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
