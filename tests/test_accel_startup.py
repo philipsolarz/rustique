@@ -19,21 +19,13 @@ import textwrap
 
 import pytest
 
-# The line shipped in `_rustique_startup.pth` (one logical line; no nested scopes: it runs
-# through exec() in site's frame, where only `sitedir`, `os` and `sys` are guaranteed).
-PTH_LINE = (
-    "import os, sys, _imp; "
-    "os.environ.get('RUSTIQUE', '0').strip().lower() not in ('', '0', 'false', 'no', 'off') "
-    "and not sys.flags.ignore_environment "
-    "and 'rustique._rustique' not in sys.modules "
-    "and (p := next(filter(os.path.isfile, map(os.path.join, [sitedir, *sys.path], "
-    "[os.path.join('rustique', '_rustique' + _imp.extension_suffixes()[0])] * (len(sys.path) + 1))), None)) "
-    "and (s := sys.modules['_frozen_importlib_external'].spec_from_file_location('rustique._rustique', p)) "
-    "and (m := sys.modules['_frozen_importlib'].module_from_spec(s)) "
-    "and not s.loader.exec_module(m) "
-    "and not sys.modules.__setitem__('rustique._rustique', m) "
-    "and m._accel.startup()"
-)
+# The line shipped in `_rustique_startup.pth` (dx's file; this is its exact text). `site`
+# compiles every `.pth` import line at each start, so the line itself stays short
+# (RUSTIQUE unset or 0: one getenv); the loader is a string literal, compiled by exec()
+# only when RUSTIQUE is set. It runs through exec() in site's frame, where `sitedir` is
+# defined (3.14: addpackage's parameter; 3.15: injected by _exec_imports for
+# compatibility); the inner exec sees the same locals; it uses no nested scopes.
+PTH_LINE = 'import os; os.environ.get(\'RUSTIQUE\', \'0\') != \'0\' and exec("import sys, _imp; os.environ.get(\'RUSTIQUE\', \'0\').strip().lower() not in (\'\', \'0\', \'false\', \'no\', \'off\') and not sys.flags.ignore_environment and \'rustique._rustique\' not in sys.modules and (p := next(filter(os.path.isfile, map(os.path.join, [sitedir, *sys.path], [os.path.join(\'rustique\', \'_rustique\' + _imp.extension_suffixes()[0])] * (len(sys.path) + 1))), None)) and (s := sys.modules[\'_frozen_importlib_external\'].spec_from_file_location(\'rustique._rustique\', p)) and (m := sys.modules[\'_frozen_importlib\'].module_from_spec(s)) and not s.loader.exec_module(m) and not sys.modules.__setitem__(\'rustique._rustique\', m) and m._accel.startup()")'
 
 SITEDIR = os.path.dirname(os.path.dirname(importlib.util.find_spec("rustique").origin))
 

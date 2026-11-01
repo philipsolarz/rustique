@@ -39,13 +39,19 @@ fn state() -> std::sync::MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// `sys.flags.ignore_environment` (`-E`, `-I`).
+/// `sys.flags.ignore_environment` (`-E`, `-I`; fixed for the life of the process).
 fn ignore_environment(py: Python<'_>) -> bool {
-    py.import("sys")
-        .and_then(|s| s.getattr("flags"))
-        .and_then(|f| f.getattr("ignore_environment"))
-        .and_then(|v| v.is_truthy())
-        .unwrap_or(false)
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| {
+        // SAFETY: borrowed lookup in the sys module dict.
+        let flags = unsafe { pyo3::ffi::PySys_GetObject(c"flags".as_ptr()) };
+        if flags.is_null() {
+            return false;
+        }
+        // SAFETY: a live borrowed object.
+        let flags = unsafe { Bound::from_borrowed_ptr(py, flags) };
+        flags.getattr("ignore_environment").and_then(|v| v.is_truthy()).unwrap_or(false)
+    })
 }
 
 /// A `RUSTIQUE*` variable, or None (unset, or `-E`/`-I`). Read from the C environment,
