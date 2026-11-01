@@ -67,7 +67,7 @@ Identity with CPython (all **measured**):
 - Original check: `PyFloat_Type.tp_repr` must equal the `d_wrapped` of the `float.__repr__`
   wrapper descriptor (i.e. CPython's own function, nobody patched it; `Prepare::slot`);
   `float.__format__` fingerprint (`ml_name`, `ml_flags`, `ml_doc`) recorded for 3.14 and
-  3.15 (`c80efea6ae8f6b2c` on both).
+  3.15 (`5626db3e609b8ffe` on both, fingerprint format v2).
 - Install is all-or-nothing (both sites), compare-and-swap; the registry clears the JIT
   caches after the `ml_meth` swap and on `disable()` (contract §3.8). Counters: `hits`,
   `fallback.args`.

@@ -25,16 +25,16 @@ use crate::refuse;
 /// functions a target replaces or runs through, per validated minor version.
 mod fp {
     use super::Fingerprints;
-    pub const DUMPS: Fingerprints = &[(3, 14, "44f548cb97c25ed6"), (3, 15, "299b65261fd6e670")];
-    pub const ENCODE: Fingerprints = &[(3, 14, "d684320438e5c058"), (3, 15, "2b56d3d22c5748f6")];
-    pub const ITERENCODE: Fingerprints = &[(3, 14, "2480e0d236d7af8d"), (3, 15, "8991479886531852")];
-    pub const ENCODER_INIT: Fingerprints = &[(3, 14, "b84cd944059c35b8"), (3, 15, "d85a7266d03bfce8")];
-    pub const ENCODE_BASESTRING_ASCII: Fingerprints = &[(3, 14, "448b8d466edf28ad"), (3, 15, "6b1efe01cd0aabf3")];
-    pub const LOADS: Fingerprints = &[(3, 14, "14eac0591dddcd6e"), (3, 15, "102b17fe130dee91")];
-    pub const DECODE: Fingerprints = &[(3, 14, "9fd7e2cf9cb48497"), (3, 15, "6d49e790e3821789")];
-    pub const RAW_DECODE: Fingerprints = &[(3, 14, "014b59b4541eabd3"), (3, 15, "947d9475a7d318ba")];
-    pub const DETECT_ENCODING: Fingerprints = &[(3, 14, "c129d6cf5fd598e5"), (3, 15, "781a525e9a40c4f8")];
-    pub const ENCODE_BASESTRING: Fingerprints = &[(3, 14, "9b3603c10dd95cd7"), (3, 15, "a14341830caa1909")];
+    pub const DUMPS: Fingerprints = &[(3, 14, "7f42c415c74bf1d3"), (3, 15, "1ced9f350e6b5061")];
+    pub const ENCODE: Fingerprints = &[(3, 14, "ce27c43139846f9a"), (3, 15, "6387ce2203f23c95")];
+    pub const ITERENCODE: Fingerprints = &[(3, 14, "cd84c954705b4dc5"), (3, 15, "3e1d5488eb2d71a3")];
+    pub const ENCODER_INIT: Fingerprints = &[(3, 14, "3c5d23ec6e733252"), (3, 15, "77753dec39658b7f")];
+    pub const ENCODE_BASESTRING_ASCII: Fingerprints = &[(3, 14, "2c9896fbf3b7dca2"), (3, 15, "d324f05c082979c1")];
+    pub const LOADS: Fingerprints = &[(3, 14, "68322fb1c769b1c1"), (3, 15, "55888471b81e7eb1")];
+    pub const DECODE: Fingerprints = &[(3, 14, "57362382a0ffe2ad"), (3, 15, "46b9ff6818bad89f")];
+    pub const RAW_DECODE: Fingerprints = &[(3, 14, "c4bc4e35866d7980"), (3, 15, "626591b94edbe103")];
+    pub const DETECT_ENCODING: Fingerprints = &[(3, 14, "b9fc218e6e351edf"), (3, 15, "7508de46b9eccab8")];
+    pub const ENCODE_BASESTRING: Fingerprints = &[(3, 14, "6a777168f604c030"), (3, 15, "cf257e8d6b93d904")];
 }
 
 /// A Python function the target runs through (`JSONEncoder.encode`, `JSONDecoder.decode`,
@@ -72,6 +72,23 @@ impl FnCheck {
         // SAFETY: set before the kernel is installed; kept alive.
         unsafe { (*f).func_code == self.code.load(Relaxed) && (*f).func_defaults == self.defaults.load(Relaxed) }
     }
+}
+
+/// One pass over `d`: exactly the keys of `want`, each value `None` (`None`) or the given
+/// bool (cheaper at install than a lookup per key).
+fn dict_is(d: &Bound<'_, PyDict>, want: &[(&str, Option<bool>)]) -> bool {
+    d.len() == want.len()
+        && d.iter().all(|(k, v)| {
+            let Ok(k) = k.cast_into::<PyString>() else { return false };
+            let Ok(k) = k.to_str() else { return false };
+            want.iter().any(|&(n, w)| {
+                n == k
+                    && match w {
+                        None => v.is_none(),
+                        Some(b) => v.is(pyo3::types::PyBool::new(d.py(), b)),
+                    }
+            })
+        })
 }
 
 /// `obj.__dict__` as a dict (materializes an instance's managed dict; C code only).
@@ -141,29 +158,22 @@ fn prepare_dumps(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         return Err(refuse!(Deps: "json._default_encoder is not a JSONEncoder"));
     }
     let ed = instance_dict(&enc)?;
-    let expect = [
-        ("skipkeys", false),
-        ("ensure_ascii", true),
-        ("check_circular", true),
-        ("allow_nan", true),
-        ("sort_keys", false),
+    let defaults = [
+        ("skipkeys", Some(false)),
+        ("ensure_ascii", Some(true)),
+        ("check_circular", Some(true)),
+        ("allow_nan", Some(true)),
+        ("sort_keys", Some(false)),
+        ("indent", None),
     ];
-    if ed.len() != expect.len() + 1 {
-        return Err(refuse!(Deps: "json._default_encoder has unexpected attributes"));
-    }
-    for (name, want) in expect {
-        if !cx.get(&ed, name)?.is(pyo3::types::PyBool::new(py, want)) {
-            return Err(refuse!(Deps: "json._default_encoder.{name} is not {want}"));
-        }
-    }
-    if !cx.get(&ed, "indent")?.is_none() {
-        return Err(refuse!(Deps: "json._default_encoder.indent is not None"));
+    if !dict_is(&ed, &defaults) {
+        return Err(refuse!(Deps: "json._default_encoder's attributes differ"));
     }
     cx.pin_dict(&ed, &DEPS)?;
 
     // dumps' keyword defaults (a dict, pinned whole) and the function itself.
     let kwd = func.getattr("__kwdefaults__")?.cast_into::<PyDict>().map_err(|_| refuse!(Deps: "no __kwdefaults__"))?;
-    for (name, want) in [
+    let want = [
         ("skipkeys", Some(false)),
         ("ensure_ascii", Some(true)),
         ("check_circular", Some(true)),
@@ -173,17 +183,8 @@ fn prepare_dumps(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         ("indent", None),
         ("separators", None),
         ("default", None),
-    ] {
-        let v = cx.get(&kwd, name)?;
-        let ok = match want {
-            Some(b) => v.is(pyo3::types::PyBool::new(py, b)),
-            None => v.is_none(),
-        };
-        if !ok {
-            return Err(refuse!(Deps: "json.dumps default {name} differs"));
-        }
-    }
-    if kwd.len() != KW_NAMES.len() {
+    ];
+    if !dict_is(&kwd, &want) {
         return Err(refuse!(Deps: "json.dumps keyword defaults differ"));
     }
     cx.pin_dict(&kwd, &DEPS)?;
@@ -285,12 +286,8 @@ fn prepare_loads(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     // loads' keyword defaults: all None.
     let kwd = func.getattr("__kwdefaults__")?.cast_into::<PyDict>().map_err(|_| refuse!(Deps: "no __kwdefaults__"))?;
     let n_kw = if cx.version() >= (3, 15) { 7 } else { 6 };
-    for name in &KW_NAMES[..n_kw] {
-        if !cx.get(&kwd, name)?.is_none() {
-            return Err(refuse!(Deps: "json.loads default {name} differs"));
-        }
-    }
-    if kwd.len() != n_kw {
+    let want: Vec<(&str, Option<bool>)> = KW_NAMES[..n_kw].iter().map(|n| (*n, None)).collect();
+    if !dict_is(&kwd, &want) {
         return Err(refuse!(Deps: "json.loads keyword defaults differ"));
     }
     cx.pin_dict(&kwd, &DEPS)?;

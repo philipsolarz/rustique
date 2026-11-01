@@ -203,8 +203,8 @@ fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 /// `ml_name`/`ml_flags`/`ml_doc` of `float.__format__` per minor version
 /// (`rustique._rustique._accel.fingerprint(float.__dict__['__format__'])`).
 const FORMAT_FINGERPRINT: crate::accel::Fingerprints = &[(3, 14, FMT_314), (3, 15, FMT_315)];
-const FMT_314: &str = "c80efea6ae8f6b2c";
-const FMT_315: &str = "c80efea6ae8f6b2c";
+const FMT_314: &str = "5626db3e609b8ffe";
+const FMT_315: &str = "5626db3e609b8ffe";
 
 /// `float.repr`: `PyFloat_Type.tp_repr` and `float.__format__('')`.
 pub static FLOAT_REPR: TargetSpec = TargetSpec {

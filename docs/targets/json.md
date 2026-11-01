@@ -257,27 +257,28 @@ Measured on the shared box (wall time; pairs interleaved). `default=` callers (j
 logging, Flask/FastAPI-style providers) need a kernel behind `_json.make_encoder.tp_call`
 that calls `default` at the C encoder's points: the next step for this group.
 
-## Install cost (`benches/targets/json_install_cost.py`, 3.15.1, callgrind region)
+## Install cost (`benches/targets/json_install_cost.py`, 3.15.1, callgrind region, wave1 5a690e2)
 
 Budget: ≤ 0.1M Ir per group at `enable()`, lazy install ≤ 5% of the module's import.
 
 | cell | Ir |
 |---|---:|
-| `rustique.enable(only=["float"])` whole call | 549,047 |
-| — of which `float.repr` `prepare` (layout, slot and wrapper checks, fingerprint, self-test) | **45,388** |
-| — of which the registry for the group (`registry::enable`) | 56,927 |
-| — the rest: the Python `enable()` wrapper and the `status()` it returns | ~490,000 |
-| `rustique.enable(only=["json"])` before `import json` (targets pending) | 528,428 |
+| `rustique.enable(only=["float"])` whole call | 383,990 |
+| — of which `float.repr`'s `prepare` | **49,007** |
+| — of which the registry for the group (`registry::enable`, incl. prepare) | 60,341 |
+| `rustique.enable(only=["json"])` before `import json` (pending) | 360,878 |
 | `import json` plain | 4,378,080 |
-| `import json` with the targets pending (installs both) | 5,429,667 (**+1,051,587, +24%**) |
-| — `Prepare::fingerprint_code` (8 code fingerprints, accel) | 541,073 |
-| — `Prepare::vectorcall` (2 sites; accel's `function_vectorcall` evaluates Python each time) | 141,253 |
-| — the targets' own `prepare` code (pins, layout checks, self-tests ~70k) | ~290,000 |
+| `import json` with the json targets pending (installs both) | 4,806,088 (**+428,008, +9.8%**) |
+| — the two `prepare`s (incl. 10 code/C fingerprints ≈ 92k) | ≈ 280,000 |
+| — the registry (pins activation, sites, watcher) | ≈ 150,000 |
 
-`float` is within budget. `json` is not: most of its lazy install is the framework's
-fingerprinting and site declaration (being made cheaper by accel-core); the group's own
-part was trimmed (snapshot pins of `json.encoder`/`json.decoder` instead of per-name pins,
-no `JSONDecoder.__init__` fingerprint, smaller self-tests) and is ~6.6% of `import json`.
+`float` is within budget. `json` is above it (9.8% vs 5%): trimmed so far — snapshot pins
+of `json.encoder`/`json.decoder` instead of per-name pins, one-pass validation of the
+default encoder's attributes and of `dumps`/`loads` keyword defaults, no
+`JSONDecoder.__init__` fingerprint, install self-tests reduced to one option set (all three
+run in `test_selftest_texts`). What remains is the dependency surface the contract asks to
+pin (two classes, two instances, two modules, two keyword-default dicts, builtins, codecs
+BOMs) and 10 fingerprints; see the final report for options.
 
 ## Versions
 
