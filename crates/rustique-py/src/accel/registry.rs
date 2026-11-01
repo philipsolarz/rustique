@@ -942,6 +942,29 @@ pub fn installed(py: Python<'_>, names: Option<&[String]>) -> PyResult<Vec<&'sta
         .collect())
 }
 
+/// Per-target immutable status values (name, group, module, versions), built once.
+struct StaticStatus {
+    name: Py<pyo3::types::PyString>,
+    group: Py<pyo3::types::PyString>,
+    module: Option<Py<pyo3::types::PyString>>,
+    versions: Vec<Py<pyo3::types::PyString>>,
+}
+
+fn static_status(py: Python<'_>) -> &'static [StaticStatus] {
+    static CELL: pyo3::sync::PyOnceLock<Vec<StaticStatus>> = pyo3::sync::PyOnceLock::new();
+    CELL.get_or_init(py, || {
+        all_specs()
+            .iter()
+            .map(|s| StaticStatus {
+                name: pyo3::types::PyString::intern(py, s.name).unbind(),
+                group: pyo3::types::PyString::intern(py, s.group).unbind(),
+                module: s.module.map(|m| pyo3::types::PyString::intern(py, m).unbind()),
+                versions: versions_of(s).iter().map(|v| pyo3::types::PyString::new(py, v).unbind()).collect(),
+            })
+            .collect()
+    })
+}
+
 fn versions_of(spec: &TargetSpec) -> Vec<String> {
     let mut v = Vec::new();
     for (a, b) in spec.versions {
@@ -967,8 +990,9 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         }
         enabled |= matches!(rt.state, State::Installed | State::Pending);
         let d = PyDict::new(py);
-        d.set_item(intern!(py, "name"), spec.name)?;
-        d.set_item(intern!(py, "group"), spec.group)?;
+        let fixed = &static_status(py)[i];
+        d.set_item(intern!(py, "name"), fixed.name.bind(py))?;
+        d.set_item(intern!(py, "group"), fixed.group.bind(py))?;
         d.set_item(intern!(py, "state"), rt.state.as_str())?;
         d.set_item(intern!(py, "reason"), rt.reason.as_deref())?;
         d.set_item(
@@ -976,10 +1000,10 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
             if rt.state == State::Refused { rt.refusal.map(Category::as_str) } else { None },
         )?;
         d.set_item(intern!(py, "sites"), PyList::new(py, &rt.site_names)?)?;
-        d.set_item(intern!(py, "versions"), PyList::new(py, versions_of(spec))?)?;
+        d.set_item(intern!(py, "versions"), PyList::new(py, fixed.versions.iter().map(|v| v.bind(py)))?)?;
         d.set_item(intern!(py, "checkable"), spec.checkable)?;
-        if let Some(m) = spec.module {
-            d.set_item(intern!(py, "module"), m)?;
+        if let Some(m) = &fixed.module {
+            d.set_item(intern!(py, "module"), m.bind(py))?;
         }
         if rt.pin_owner != 0 || rt.group.is_some() {
             let group_ok = rt.group.is_none_or(|gi| reg.groups[gi].flags.iter().all(|f| f.ok()));
