@@ -7,8 +7,6 @@
 //! materialises the same frame objects. `stack_info` true (traceback formatting) and
 //! `stacklevel < 1` (the result would be `findCaller`'s own frame) run CPython's original.
 
-
-
 use pyo3::ffi;
 
 use super::common::*;
@@ -38,7 +36,10 @@ unsafe fn internal(f: *mut ffi::PyFrameObject) -> Option<bool> {
         } else if ffi::PyUnicode_Compare(filename, SRCFILE.get()) == 0 {
             Some(true)
         } else {
-            Some(ffi::PyUnicode_Contains(filename, IMPORTLIB.get()) == 1 && ffi::PyUnicode_Contains(filename, BOOTSTRAP.get()) == 1)
+            Some(
+                ffi::PyUnicode_Contains(filename, IMPORTLIB.get()) == 1
+                    && ffi::PyUnicode_Contains(filename, BOOTSTRAP.get()) == 1,
+            )
         };
         ffi::Py_DECREF(code);
         r
@@ -155,6 +156,9 @@ unsafe fn find(mut level: i64) -> Option<O> {
 }
 
 /// `Logger.findCaller(self, stack_info=False, stacklevel=1)`.
+///
+/// # Safety
+/// Installed as the function's vectorcall: CPython calls it with vectorcall arguments.
 pub unsafe extern "C" fn vc_find_caller(func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments; attached thread.
     unsafe {

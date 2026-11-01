@@ -326,7 +326,11 @@ pub fn dirs(pieces: &[Piece]) -> impl Iterator<Item = &Dir> {
 /// `module` is `filename[..module_end]` (relative to `filename`).
 ///
 /// `rfind` is a reverse search for a character: `None` when absent.
-pub fn split_path(len: usize, rfind: impl Fn(u32, usize, usize) -> Option<usize>, at: impl Fn(usize) -> u32) -> (usize, usize) {
+pub fn split_path(
+    len: usize,
+    rfind: impl Fn(u32, usize, usize) -> Option<usize>,
+    at: impl Fn(usize) -> u32,
+) -> (usize, usize) {
     // basename: p[p.rfind('/') + 1:]
     let fstart = rfind('/' as u32, 0, len).map_or(0, |i| i + 1);
     let flen = len - fstart;
@@ -399,19 +403,31 @@ mod tests {
 
     #[test]
     fn parse() {
-        assert_eq!(keys("%(asctime)s %(levelname)-8s [%(name)s] %(message)s").unwrap(), ["asctime", "levelname", "name", "message"]);
+        assert_eq!(
+            keys("%(asctime)s %(levelname)-8s [%(name)s] %(message)s").unwrap(),
+            ["asctime", "levelname", "name", "message"]
+        );
         assert_eq!(keys("%(msecs)03d %(created).3f %(x)+ #0-10.2e 100%%").unwrap(), ["msecs", "created", "x"]);
         assert_eq!(keys("no directives").unwrap(), Vec::<String>::new());
         assert_eq!(keys("%()s").unwrap(), [""]);
         assert_eq!(keys("x=%s y=%5.2f %%").unwrap(), ["-", "-"]);
-        for f in ["%(a)", "%(a", "%(a(b))s", "%(a)*d", "%(a).*f", "%(a)ld", "%(a)k", "%", "abc%", "%*d", "%.*s", "%hd"] {
+        for f in ["%(a)", "%(a", "%(a(b))s", "%(a)*d", "%(a).*f", "%(a)ld", "%(a)k", "%", "abc%", "%*d", "%.*s", "%hd"]
+        {
             assert!(keys(f).is_none(), "{f:?}");
         }
         let p = parse_format(b"a%-08.3sb").unwrap();
         assert_eq!(p[0], Piece::Lit(0, 1));
         assert_eq!(
             p[1],
-            Piece::Dir(Dir { key: None, ljust: true, zero: true, other_flags: false, width: Some(8), prec: Some(3), conv: b's' })
+            Piece::Dir(Dir {
+                key: None,
+                ljust: true,
+                zero: true,
+                other_flags: false,
+                width: Some(8),
+                prec: Some(3),
+                conv: b's'
+            })
         );
         assert_eq!(p[2], Piece::Lit(8, 9));
     }
@@ -461,11 +477,7 @@ mod tests {
     fn paths() {
         let sp = |p: &str| {
             let c: Vec<char> = p.chars().collect();
-            let (fs, me) = split_path(
-                c.len(),
-                |ch, a, b| (a..b).rev().find(|&i| c[i] as u32 == ch),
-                |i| c[i] as u32,
-            );
+            let (fs, me) = split_path(c.len(), |ch, a, b| (a..b).rev().find(|&i| c[i] as u32 == ch), |i| c[i] as u32);
             let filename: String = c[fs..].iter().collect();
             let module: String = c[fs..fs + me].iter().collect();
             (filename, module)

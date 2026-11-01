@@ -104,6 +104,9 @@ unsafe fn kw_ok(kw: O, with_level: bool) -> bool {
 }
 
 /// `Logger.isEnabledFor(self, level)`.
+///
+/// # Safety
+/// Installed as the function's vectorcall: CPython calls it with vectorcall arguments.
 pub unsafe extern "C" fn vc_is_enabled_for(func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments; attached thread.
     unsafe {
@@ -156,10 +159,7 @@ unsafe fn level_call(func: O, args: *const O, nargsf: usize, kw: O, level: O, co
             if !DEPS.ok() {
                 break 'fb Reason::Deps;
             }
-            if !TOOLS.quiet()
-                || !CODES[0].ok()
-                || !CODES[code].ok()
-            {
+            if !TOOLS.quiet() || !CODES[0].ok() || !CODES[code].ok() {
                 break 'fb Reason::Tools;
             }
             if !bound_to(me, o(n().is_enabled_for), IS_ENABLED_FOR.get()) {
@@ -190,6 +190,10 @@ unsafe fn level_call(func: O, args: *const O, nargsf: usize, kw: O, level: O, co
 
 macro_rules! level_kernel {
     ($name:ident, $idx:expr, $code:expr) => {
+        /// A level method (`debug`, `info`, ...).
+        ///
+        /// # Safety
+        /// Installed as the function's vectorcall: CPython calls it with vectorcall arguments.
         pub unsafe extern "C" fn $name(func: O, args: *const O, nargsf: usize, kw: O) -> O {
             // SAFETY: vectorcall arguments.
             unsafe { level_call(func, args, nargsf, kw, LEVELS[$idx].get(), $code, 1) }
@@ -204,6 +208,9 @@ level_kernel!(vc_error, 3, 4);
 level_kernel!(vc_critical, 4, 5);
 
 /// `Logger.log(self, level, msg, *args, **kwargs)` with an exact int level.
+///
+/// # Safety
+/// Installed as the function's vectorcall: CPython calls it with vectorcall arguments.
 pub unsafe extern "C" fn vc_log(func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments.
     unsafe {

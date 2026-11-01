@@ -22,7 +22,9 @@ use super::common::*;
 use super::record::RECORDS;
 use crate::accel::guard::DepFlag;
 use crate::accel::stats::{Counters, Reason};
-use rustique_core::logging::{Dir, Piece, Tm, Val, dirs, msec_suffix, native_dir, parse_format, render, strftime_numeric};
+use rustique_core::logging::{
+    Dir, Piece, Tm, Val, dirs, msec_suffix, native_dir, parse_format, render, strftime_numeric,
+};
 
 pub static TIME_DEPS: DepFlag = DepFlag::new();
 pub static TIME_STATS: Counters = Counters::new();
@@ -277,11 +279,7 @@ unsafe fn format_time_with(me: &dyn Fn(usize) -> O, rec: &dyn Fn(usize) -> Optio
             Some(true) if exact_str(msf.0) => true,
             _ => return None,
         };
-        let msecs = if with_msecs {
-            Owned1(rec(1)?)
-        } else {
-            Owned1(std::ptr::null_mut())
-        };
+        let msecs = if with_msecs { Owned1(rec(1)?) } else { Owned1(std::ptr::null_mut()) };
         if with_msecs && !pure_scalar(msecs.0) {
             return None;
         }
@@ -349,6 +347,9 @@ impl Drop for Owned1 {
 }
 
 /// `Formatter.formatTime(self, record, datefmt=None)`.
+///
+/// # Safety
+/// Installed as the function's vectorcall: CPython calls it with vectorcall arguments.
 pub unsafe extern "C" fn vc_format_time(func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments; attached thread.
     unsafe {
@@ -450,7 +451,12 @@ unsafe fn to_val(v: O, conv: u8, temps: &mut Vec<Owned1>) -> Option<Val<'static>
 /// `fmt % args` where every argument the format reads is plain. `vals` yields the value of
 /// each directive in order (borrowed; `None` if missing). `Some(new str)`, or `None` when
 /// the operation would raise or read a non-plain value (nothing observable happened).
-unsafe fn percent(fmt: O, args: O, pieces: Option<&[Piece]>, value: &mut dyn FnMut(usize, &Dir) -> Option<O>) -> Option<O> {
+unsafe fn percent(
+    fmt: O,
+    args: O,
+    pieces: Option<&[Piece]>,
+    value: &mut dyn FnMut(usize, &Dir) -> Option<O>,
+) -> Option<O> {
     // SAFETY: attached thread; plain objects.
     unsafe {
         let mut temps: Vec<Owned1> = Vec::new();
@@ -460,7 +466,7 @@ unsafe fn percent(fmt: O, args: O, pieces: Option<&[Piece]>, value: &mut dyn FnM
         let mut vals: Vec<Val<'static>> = Vec::new();
         if let Some(pieces) = pieces {
             for (i, d) in dirs(pieces).enumerate() {
-                let Some(v) = value(i, d) else { return None };
+                let v = value(i, d)?;
                 held.push(Owned1(v));
                 if !pure_scalar(v) {
                     plain = false;
@@ -526,6 +532,7 @@ impl Drop for Parsed {
 
 // SAFETY: plain addresses of objects whose references the entry owns.
 unsafe impl Send for Parsed {}
+// SAFETY: immutable after construction.
 unsafe impl Sync for Parsed {}
 
 static FMT_CACHE: parking_lot::Mutex<Vec<std::sync::Arc<Parsed>>> = parking_lot::Mutex::new(Vec::new());
@@ -740,7 +747,8 @@ unsafe fn format(fe: usize, me: O, record: O) -> Fmt {
             }
             let datefmt = Owned1(datefmt);
             let rnames = [n.created, n.msecs];
-            let Some(a) = format_time_with(&|k| FORMATTERS.read(fe, me, k), &|k| dget(d.0, o(rnames[k])), datefmt.0) else {
+            let Some(a) = format_time_with(&|k| FORMATTERS.read(fe, me, k), &|k| dget(d.0, o(rnames[k])), datefmt.0)
+            else {
                 fb!(Reason::Args)
             };
             Owned1(a)
@@ -795,6 +803,9 @@ pub fn clear_fmt_cache() {
 }
 
 /// `Formatter.format(self, record)`.
+///
+/// # Safety
+/// Installed as the function's vectorcall: CPython calls it with vectorcall arguments.
 pub unsafe extern "C" fn vc_format(func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments; attached thread.
     unsafe {

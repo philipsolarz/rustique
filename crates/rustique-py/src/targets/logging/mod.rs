@@ -105,14 +105,14 @@ fn prepare_level(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let logger = ty(cx.module_attr("Logger")?)?;
     let ief = cx.type_attr(&logger, "isEnabledFor")?;
     function(cx, &ief, fp::IS_ENABLED_FOR, &level::CODES[0])?;
-    level::IS_ENABLED_FOR.set(ief.as_ptr());
+    level::IS_ENABLED_FOR.set_obj(&ief);
     for (i, name) in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"].iter().enumerate() {
         let v = cx.get(&g, name)?;
         if !v.is_exact_instance_of::<pyo3::types::PyInt>() {
             return Err(refuse!("logging.{name} is not an int"));
         }
         cx.pin(&g, name, &level::DEPS)?;
-        level::LEVELS[i].set(v.as_ptr());
+        level::LEVELS[i].set_obj(&v);
     }
     cx.pin_global(&g, "isinstance", &level::DEPS)?;
     cx.pin_global(&g, "int", &level::DEPS)?;
@@ -161,7 +161,7 @@ fn prepare_caller(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if !src.is_exact_instance_of::<pyo3::types::PyString>() {
         return Err(Refusal::new("logging._srcfile is not a str"));
     }
-    caller::SRCFILE.set(src.as_ptr());
+    caller::SRCFILE.set_obj(&src);
     for name in ["_is_internal_frame", "currentframe", "_srcfile", "os", "sys"] {
         cx.pin(&g, name, &caller::DEPS)?;
     }
@@ -177,8 +177,8 @@ fn prepare_caller(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     cx.pin(&os, "fspath", &caller::DEPS)?;
     cx.pin(&pp, "normcase", &caller::DEPS)?;
     cx.pin(&pp, "os", &caller::DEPS)?;
-    caller::IMPORTLIB.set(pyo3::types::PyString::intern(py, "importlib").as_ptr());
-    caller::BOOTSTRAP.set(pyo3::types::PyString::intern(py, "_bootstrap").as_ptr());
+    caller::IMPORTLIB.set_obj(pyo3::types::PyString::intern(py, "importlib").as_any());
+    caller::BOOTSTRAP.set_obj(pyo3::types::PyString::intern(py, "_bootstrap").as_any());
     cx.vectorcall(&fc, caller::vc_find_caller, &accel::FUNCTION_VECTORCALL)
 }
 
@@ -186,13 +186,20 @@ fn prepare_caller(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 /// no descriptors for these names). A failed calibration only disables the fast reads.
 fn calibrate(cx: &Prepare<'_>) -> Result<(), Refusal> {
     let root = cx.module_attr("root")?;
-    common::calibrate_inline(cx.py(), &root, &["name", "level", "parent", "propagate", "handlers", "disabled", "_cache"]);
+    common::calibrate_inline(
+        cx.py(),
+        &root,
+        &["name", "level", "parent", "propagate", "handlers", "disabled", "_cache"],
+    );
     Ok(())
 }
 
 /// `logging.os` is `os`, `os.path` is `posixpath` (and `posixpath.os` is `os`): the dicts
 /// of `os` and `posixpath`.
-fn os_path<'py>(cx: &Prepare<'py>, g: &Bound<'py, PyDict>) -> Result<(Bound<'py, PyDict>, Bound<'py, PyDict>), Refusal> {
+fn os_path<'py>(
+    cx: &Prepare<'py>,
+    g: &Bound<'py, PyDict>,
+) -> Result<(Bound<'py, PyDict>, Bound<'py, PyDict>), Refusal> {
     let os_mod = cx.loaded_module("os")?;
     if !cx.get(g, "os")?.is(os_mod.as_any()) {
         return Err(Refusal::new("logging.os is not os"));
@@ -249,16 +256,16 @@ fn prepare_record(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if !l2n.is_exact_instance_of::<PyDict>() || !n2l.is_exact_instance_of::<PyDict>() {
         return Err(Refusal::new("level name tables are not dicts"));
     }
-    record::LEVEL_TO_NAME.set(l2n.as_ptr());
-    record::NAME_TO_LEVEL.set(n2l.as_ptr());
+    record::LEVEL_TO_NAME.set_obj(&l2n);
+    record::NAME_TO_LEVEL.set_obj(&n2l);
     let start: i64 = cx.get(&g, "_startTime")?.extract().map_err(|_| Refusal::new("_startTime"))?;
     record::START_TIME.store(start as u64, Relaxed);
     let mut sw = 0usize;
     for (bit, name) in ["logThreads", "logMultiprocessing", "logProcesses", "logAsyncioTasks"].iter().enumerate() {
         let v = cx.get(&g, name)?;
-        if v.is(&pyo3::types::PyBool::new(cx.py(), true).to_owned()) {
+        if v.is(pyo3::types::PyBool::new(cx.py(), true).as_any()) {
             sw |= 1 << bit;
-        } else if !v.is(&pyo3::types::PyBool::new(cx.py(), false).to_owned()) {
+        } else if !v.is(pyo3::types::PyBool::new(cx.py(), false).as_any()) {
             return Err(refuse!("logging.{name} is not a bool"));
         }
     }
@@ -316,7 +323,7 @@ fn prepare_record(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if !active.is_exact_instance_of::<PyDict>() {
         return Err(Refusal::new("threading._active is not a dict"));
     }
-    record::THREAD_ACTIVE.set(active.as_ptr());
+    record::THREAD_ACTIVE.set_obj(&active);
     let thread = ty(cx.get(&thd, "Thread")?)?;
     let prop = cx.type_attr(&thread, "name")?;
     // SAFETY: type check of a live object.
@@ -325,14 +332,14 @@ fn prepare_record(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     }
     let fget = prop.getattr("fget")?;
     function(cx, &fget, fp::THREAD_NAME, &record::CODES[6])?;
-    record::THREAD_NAME_PROP.set(prop.as_ptr());
+    record::THREAD_NAME_PROP.set_obj(&prop);
     // sys.modules, collections.abc.Mapping, _abc.get_cache_token
     let sys_mod = cx.loaded_module("sys")?;
     if !cx.get(&g, "sys")?.is(sys_mod.as_any()) {
         return Err(Refusal::new("logging.sys is not sys"));
     }
     cx.pin(&sys_mod.dict(), "modules", deps)?;
-    record::SYS_MODULES.set(cx.get(&sys_mod.dict(), "modules")?.as_ptr());
+    record::SYS_MODULES.set_obj(&cx.get(&sys_mod.dict(), "modules")?);
     let coll = cx.loaded_module("collections")?;
     if !cx.get(&g, "collections")?.is(coll.as_any()) {
         return Err(Refusal::new("logging.collections is not collections"));
@@ -341,8 +348,8 @@ fn prepare_record(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let cabc = cx.get(&coll.dict(), "abc")?.cast_into::<PyModule>().map_err(|_| Refusal::new("collections.abc"))?;
     cx.pin(&cabc.dict(), "Mapping", deps)?;
     match cx.loaded_module("_abc").and_then(|m| cx.get(&m.dict(), "get_cache_token")) {
-        Ok(tok) => record::ABC_TOKEN.set(tok.as_ptr()),
-        Err(_) => record::ABC_TOKEN.set(std::ptr::null_mut()),
+        Ok(tok) => record::ABC_TOKEN.set_obj(&tok),
+        Err(_) => record::ABC_TOKEN.clear_ptr(),
     }
     {
         let n = common::names();
@@ -374,9 +381,9 @@ fn time_functions(cx: &mut Prepare<'_>, deps: &'static DepFlag) -> Result<(), Re
     c_function(cx, &lt, fp::LOCALTIME)?;
     c_function(cx, &gt, fp::GMTIME)?;
     c_function(cx, &sf, fp::STRFTIME)?;
-    format::LOCALTIME.set(lt.as_ptr());
-    format::GMTIME.set(gt.as_ptr());
-    format::STRFTIME.set(sf.as_ptr());
+    format::LOCALTIME.set_obj(&lt);
+    format::GMTIME.set_obj(&gt);
+    format::STRFTIME.set_obj(&sf);
     cx.pin(&g, "time", deps)?;
     cx.pin(&td, "strftime", deps)?;
     Ok(())
@@ -406,8 +413,8 @@ fn prepare_record_types(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     calibrate(cx)?;
     let lr = ty(cx.module_attr("LogRecord")?)?;
     let gm = cx.type_attr(&lr, "getMessage")?;
-    format::R_GET_MESSAGE.set(gm.as_ptr());
-    format::R_DICT.set(cx.type_attr(&lr, "__dict__")?.as_ptr());
+    format::R_GET_MESSAGE.set_obj(&gm);
+    format::R_DICT.set_obj(&cx.type_attr(&lr, "__dict__")?);
     Ok(())
 }
 
@@ -439,12 +446,12 @@ fn prepare_format(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     function(cx, &sf_, fp::STYLE_FORMAT_, &codes[6])?;
     let gm = cx.type_attr(&lr, "getMessage")?;
     function(cx, &gm, fp::GET_MESSAGE, &codes[7])?;
-    format::F_USES_TIME.set(ut.as_ptr());
-    format::F_FORMAT_TIME.set(ft.as_ptr());
-    format::F_FORMAT_MESSAGE.set(fm.as_ptr());
-    format::S_USES_TIME.set(sut.as_ptr());
-    format::S_FORMAT.set(sf.as_ptr());
-    format::S_FORMAT_.set(sf_.as_ptr());
+    format::F_USES_TIME.set_obj(&ut);
+    format::F_FORMAT_TIME.set_obj(&ft);
+    format::F_FORMAT_MESSAGE.set_obj(&fm);
+    format::S_USES_TIME.set_obj(&sut);
+    format::S_FORMAT.set_obj(&sf);
+    format::S_FORMAT_.set_obj(&sf_);
     prepare_record_types(cx)?;
     format::clear_type_caches();
     cx.vectorcall(&f, format::vc_format, &accel::FUNCTION_VECTORCALL)

@@ -428,7 +428,9 @@ unsafe fn mp_process_name(mp: O) -> Option<O> {
             return None;
         }
         ffi::Py_DECREF(cp); // identity only (validated: held by MP_CURRENT_PROCESS)
-        if cp != MP_CURRENT_PROCESS.get() && (MP_STATE.load(Relaxed) != 0 || !capture_mp(cp) || cp != MP_CURRENT_PROCESS.get()) {
+        if cp != MP_CURRENT_PROCESS.get()
+            && (MP_STATE.load(Relaxed) != 0 || !capture_mp(cp) || cp != MP_CURRENT_PROCESS.get())
+        {
             return None;
         }
         if (*cp.cast::<ffi::PyFunctionObject>()).func_code != MP_CODE.get() {
@@ -571,7 +573,19 @@ unsafe fn init(me: O, a: *const O, n_args: usize) -> Outcome {
         }
         let sw = SWITCHES.load(Relaxed);
         let Some(levelname) = level_name(level) else { return Outcome::Fallback(Reason::Args) };
-        let mut own = Owned([levelname, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()]);
+        let mut own = Owned([
+            levelname,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        ]);
         let Some((filename, module)) = filename_module(pathname) else { return Outcome::Fallback(Reason::Args) };
         own.0[1] = filename;
         own.0[2] = module;
@@ -707,6 +721,9 @@ pub fn record_times(ct: i64, start: i64) -> Option<(f64, f64, f64)> {
 
 /// `LogRecord.__init__(self, name, level, pathname, lineno, msg, args, exc_info,
 /// func=None, sinfo=None, **kwargs)`.
+///
+/// # Safety
+/// Installed as the function's vectorcall: CPython calls it with vectorcall arguments.
 pub unsafe extern "C" fn vc_record_init(func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments; attached thread.
     unsafe {

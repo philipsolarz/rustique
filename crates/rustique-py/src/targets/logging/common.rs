@@ -606,30 +606,40 @@ pub unsafe fn pure_scalar(o: O) -> bool {
     }
 }
 
+/// # Safety
+/// A live object.
 #[inline(always)]
 pub unsafe fn is_type(o: O, t: *mut ffi::PyTypeObject) -> bool {
     // SAFETY: header read of a live object.
     unsafe { ffi::Py_TYPE(o) == t }
 }
 
+/// # Safety
+/// A live object.
 #[inline(always)]
 pub unsafe fn exact_str(o: O) -> bool {
     // SAFETY: header read.
     unsafe { is_type(o, &raw mut ffi::PyUnicode_Type) }
 }
 
+/// # Safety
+/// A live object.
 #[inline(always)]
 pub unsafe fn exact_int(o: O) -> bool {
     // SAFETY: header read.
     unsafe { is_type(o, &raw mut ffi::PyLong_Type) }
 }
 
+/// # Safety
+/// A live object.
 #[inline(always)]
 pub unsafe fn exact_dict(o: O) -> bool {
     // SAFETY: header read.
     unsafe { is_type(o, &raw mut ffi::PyDict_Type) }
 }
 
+/// # Safety
+/// A live object.
 #[inline(always)]
 pub unsafe fn exact_tuple(o: O) -> bool {
     // SAFETY: header read.
@@ -698,7 +708,7 @@ pub unsafe fn dict_all(d: O, mut f: impl FnMut(O, O) -> bool) -> bool {
 ///
 /// # Safety
 /// Attached thread; `d` exact dict; `key` exact int.
-pub unsafe fn int_keyed_get(d: O, key: O) -> Result<Option<O>, ()> {
+pub(super) unsafe fn int_keyed_get(d: O, key: O) -> Result<Option<O>, ()> {
     // SAFETY: per the caller.
     unsafe {
         if ffi::PyDict_Size(d) > 32 {
@@ -889,10 +899,24 @@ impl Cap {
     }
     /// Store a strong reference (the previous one, if any, is leaked on purpose: a kernel
     /// running concurrently may still be using it).
-    pub fn set(&self, obj: O) {
-        // SAFETY: attached thread (install).
+    ///
+    /// # Safety
+    /// Attached thread; `obj` is a live object or NULL.
+    pub unsafe fn set(&self, obj: O) {
+        // SAFETY: per the caller.
         unsafe { ffi::Py_XINCREF(obj) };
         self.0.store(obj as usize, Relaxed);
+    }
+
+    /// [`Self::set`] from a bound object.
+    pub fn set_obj(&self, obj: &Bound<'_, PyAny>) {
+        // SAFETY: a live object; attached thread (the `Bound` proves it).
+        unsafe { self.set(obj.as_ptr()) }
+    }
+
+    /// Forget the object (NULL).
+    pub fn clear_ptr(&self) {
+        self.0.store(0, Relaxed);
     }
 }
 
