@@ -5,8 +5,8 @@
 //! `object`'s own entry and is free of user code: `__reduce_ex__`, `__reduce__` and
 //! `__getstate__` are `object`'s method descriptors (and the instance dict does not shadow
 //! the first and the last), there is no `__getnewargs_ex__`/`__getnewargs__`, the class's
-//! `__slotnames__` is already cached, attribute access is the generic one, and the metatype
-//! is `type`. Then the value is `(copyreg.__newobj__, (cls,), state, None, None)` with
+//! `__slotnames__` is cached or computable by [`emulate_slotnames`], attribute access is
+//! the generic one, and the metatype is `type`. Then the value is `(copyreg.__newobj__, (cls,), state, None, None)` with
 //! `state` = the instance `__dict__` (materialised exactly when CPython materialises it) or
 //! `None`, paired with a dict of the slot values when there are any — the same objects
 //! `object_getstate_default` returns. Every check runs before anything observable, so a
@@ -55,14 +55,16 @@ unsafe fn class_ok(st: &St, cls: *mut ffi::PyTypeObject, deep: bool) -> bool {
         if !generic_getattr(cls)
             || (*cls).tp_itemsize != 0
             || addr((*cls).tp_new) != addr((*obj).tp_new)
-            || flags & (ffi::Py_TPFLAGS_LIST_SUBCLASS | ffi::Py_TPFLAGS_DICT_SUBCLASS | ffi::Py_TPFLAGS_IS_ABSTRACT) != 0
+            || flags & (ffi::Py_TPFLAGS_LIST_SUBCLASS | ffi::Py_TPFLAGS_DICT_SUBCLASS | ffi::Py_TPFLAGS_IS_ABSTRACT)
+                != 0
         {
             return false;
         }
         if (*cls).tp_dictoffset != 0 && flags & ffi::Py_TPFLAGS_MANAGED_DICT == 0 {
             return false;
         }
-        if deep && ((*cls).tp_finalize.is_some() || (*cls).tp_del.is_some() || !_PyType_Lookup(cls, st.s_del).is_null()) {
+        if deep && ((*cls).tp_finalize.is_some() || (*cls).tp_del.is_some() || !_PyType_Lookup(cls, st.s_del).is_null())
+        {
             return false;
         }
         if flags & ffi::Py_TPFLAGS_MANAGED_DICT != 0 {
@@ -132,7 +134,10 @@ unsafe fn instance_state(x: O, cls: *mut ffi::PyTypeObject) -> R<O> {
 
 /// The reduce value of plain `x`, or `None` when `x` does not qualify (nothing observable
 /// happened then).
-pub unsafe fn plain_reduce(st: &St, x: O, cls: *mut ffi::PyTypeObject, deep: bool) -> R<Option<O>> {
+///
+/// `slot_frame`: the `copyreg._slotnames` frame CPython enters for a class whose
+/// `__slotnames__` is not cached yet would not hit the recursion limit.
+pub unsafe fn plain_reduce(st: &St, x: O, cls: *mut ffi::PyTypeObject, deep: bool, slot_frame: bool) -> R<Option<O>> {
     // SAFETY: attached thread; live objects.
     unsafe {
         if st.get_method_addr == 0 || !class_ok(st, cls, deep) {
@@ -142,9 +147,16 @@ pub unsafe fn plain_reduce(st: &St, x: O, cls: *mut ffi::PyTypeObject, deep: boo
         {
             return Ok(None);
         }
-        // `_PyType_GetSlotNames`: the cached `cls.__dict__['__slotnames__']` (a list or None).
+        // `_PyType_GetSlotNames`: the cached `cls.__dict__['__slotnames__']` (a list or None),
+        // or `copyreg._slotnames(cls)`, which computes and caches it.
         let tdict = Own::new(ffi::PyType_GetDict(cls))?;
-        let slotnames = Own(dict_get(tdict.get(), st.s_slotnames)?);
+        let mut slotnames = Own(dict_get(tdict.get(), st.s_slotnames)?);
+        if slotnames.get().is_null() {
+            if !slot_frame || !helper_intact(st, H_SLOTNAMES) || !emulate_slotnames(st, cls)? {
+                return Ok(None);
+            }
+            slotnames = Own(dict_get(tdict.get(), st.s_slotnames)?);
+        }
         let sn = slotnames.get();
         if sn.is_null() || (sn != ffi::Py_None() && ty(sn) != &raw mut ffi::PyList_Type) {
             return Ok(None);
@@ -233,5 +245,102 @@ pub unsafe fn object_new_alloc(st: &St, cls: O) -> Option<R<O>> {
         }
         let alloc = (*t).tp_alloc?;
         Some(nn(alloc(t, 0)))
+    }
+}
+
+/// `copyreg._slotnames(cls)` for a class (metatype `type`) whose `__slotnames__` is not
+/// cached: the names of the `__slots__` along the MRO (mangled, without `__dict__` and
+/// `__weakref__`), then `cls.__slotnames__ = names` — the write CPython makes, with no user
+/// code involved. `Ok(false)`: a `__slots__` value that is not an exact str/tuple/list of
+/// exact strs, a non-heap class defining `__slots__`, or a class that refuses the write
+/// (nothing observable happened; CPython runs the function itself).
+pub unsafe fn emulate_slotnames(st: &St, cls: *mut ffi::PyTypeObject) -> R<bool> {
+    // SAFETY: a live, ready type with metatype `type` (class_ok).
+    unsafe {
+        let names = Own::new(ffi::PyList_New(0))?;
+        // `hasattr(cls, "__slots__")`: `type` defines no `__slots__`, so the MRO entry decides.
+        let a = _PyType_Lookup(cls, st.s_slots);
+        if !a.is_null() {
+            if (*ty(a)).tp_descr_get.is_some() {
+                return Ok(false);
+            }
+            let mro = (*cls).tp_mro;
+            if mro.is_null() || ty(mro) != &raw mut ffi::PyTuple_Type {
+                return Ok(false);
+            }
+            for i in 0..ffi::PyTuple_GET_SIZE(mro) {
+                let c = ffi::PyTuple_GET_ITEM(mro, i).cast::<ffi::PyTypeObject>();
+                let cd = Own::new(ffi::PyType_GetDict(c))?;
+                let slots = Own(dict_get(cd.get(), st.s_slots)?);
+                let sv = slots.get();
+                if sv.is_null() {
+                    continue;
+                }
+                if ffi::PyType_GetFlags(c) & ffi::Py_TPFLAGS_HEAPTYPE == 0 {
+                    return Ok(false);
+                }
+                let items: Vec<O> = if ty(sv) == &raw mut ffi::PyUnicode_Type {
+                    vec![sv]
+                } else if ty(sv) == &raw mut ffi::PyTuple_Type {
+                    (0..ffi::PyTuple_GET_SIZE(sv)).map(|j| ffi::PyTuple_GET_ITEM(sv, j)).collect()
+                } else if ty(sv) == &raw mut ffi::PyList_Type {
+                    (0..ffi::PyList_GET_SIZE(sv)).map(|j| ffi::PyList_GET_ITEM(sv, j)).collect()
+                } else {
+                    return Ok(false);
+                };
+                // Strong references: the list cannot change meanwhile (no code runs), but
+                // keep the borrowed items alive regardless.
+                let items: Vec<Own> = items.into_iter().map(|o| Own(incref(o))).collect();
+                for n in &items {
+                    let n = n.get();
+                    if ty(n) != &raw mut ffi::PyUnicode_Type {
+                        return Ok(false);
+                    }
+                    let mut len: ffi::Py_ssize_t = 0;
+                    let p = ffi::PyUnicode_AsUTF8AndSize(n, &mut len);
+                    if p.is_null() {
+                        ffi::PyErr_Clear();
+                        return Ok(false);
+                    }
+                    let b = std::slice::from_raw_parts(p.cast::<u8>(), len as usize);
+                    if b == b"__dict__" || b == b"__weakref__" {
+                        continue;
+                    }
+                    let item = if b.starts_with(b"__") && !b.ends_with(b"__") {
+                        // `'_%s%s' % (c.__name__.lstrip('_'), name)`, unless that is empty.
+                        let cn = Own::new(ffi::PyType_GetName(c))?;
+                        let mut clen: ffi::Py_ssize_t = 0;
+                        let cp = ffi::PyUnicode_AsUTF8AndSize(cn.get(), &mut clen);
+                        if cp.is_null() {
+                            ffi::PyErr_Clear();
+                            return Ok(false);
+                        }
+                        let cb = std::slice::from_raw_parts(cp.cast::<u8>(), clen as usize);
+                        let k = cb.iter().take_while(|&&ch| ch == b'_').count();
+                        if k == cb.len() {
+                            Own(incref(n))
+                        } else {
+                            let mut m = Vec::with_capacity(1 + cb.len() - k + b.len());
+                            m.push(b'_');
+                            m.extend_from_slice(&cb[k..]);
+                            m.extend_from_slice(b);
+                            Own::new(ffi::PyUnicode_FromStringAndSize(m.as_ptr().cast(), m.len() as ffi::Py_ssize_t))?
+                        }
+                    } else {
+                        Own(incref(n))
+                    };
+                    if ffi::PyList_Append(names.get(), item.get()) < 0 {
+                        return Err(());
+                    }
+                }
+            }
+        }
+        // `try: cls.__slotnames__ = names / except: pass`; a class refusing it (immutable)
+        // is left to CPython.
+        if ffi::PyObject_SetAttr(cls.cast(), st.s_slotnames, names.get()) < 0 {
+            ffi::PyErr_Clear();
+            return Ok(false);
+        }
+        Ok(true)
     }
 }

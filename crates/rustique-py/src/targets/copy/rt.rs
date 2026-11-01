@@ -156,6 +156,7 @@ pub struct St {
     pub s_getnewargs: O,
     pub s_getnewargs_ex: O,
     pub s_slotnames: O,
+    pub s_slots: O,
     pub s_del: O,
     // types
     pub atomic_types: [*mut ffi::PyTypeObject; 16],
@@ -326,13 +327,11 @@ pub unsafe fn dict_get(d: O, k: O) -> R<O> {
     if unsafe { ffi::PyDict_GetItemRef(d, k, &mut out) } < 0 { Err(()) } else { Ok(out) }
 }
 
-
 #[inline(always)]
 pub unsafe fn call1(f: O, a: O) -> R<O> {
     // SAFETY: live objects.
     nn(unsafe { ffi::PyObject_CallOneArg(f, a) })
 }
-
 
 #[inline(always)]
 pub unsafe fn call2(f: O, a: O, b: O) -> R<O> {
@@ -342,14 +341,6 @@ pub unsafe fn call2(f: O, a: O, b: O) -> R<O> {
         ffi::PyObject_Vectorcall(f, args.as_ptr().add(1), 2 | ffi::PY_VECTORCALL_ARGUMENTS_OFFSET, std::ptr::null_mut())
     })
 }
-
-
-
-
-
-
-
-
 
 static REF1: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
 static REF2: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());

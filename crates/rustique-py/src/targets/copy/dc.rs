@@ -94,7 +94,6 @@ unsafe impl Sync for DcSt {}
 
 static DST: AtomicPtr<DcSt> = AtomicPtr::new(null_mut());
 
-
 #[inline(always)]
 fn dst() -> &'static DcSt {
     // SAFETY: set before the kernels are installed; never freed.
@@ -729,7 +728,18 @@ unsafe extern "C" fn vc_asdict(func: O, args: *const O, nargsf: usize, kw: O) ->
     let d = dst();
     // SAFETY: as kernel.
     unsafe {
-        kernel(func, args, nargsf, kw, &C_ASDICT, d.asdict, d.asdict_inner, d.s_dict_factory, &raw mut ffi::PyDict_Type, false)
+        kernel(
+            func,
+            args,
+            nargsf,
+            kw,
+            &C_ASDICT,
+            d.asdict,
+            d.asdict_inner,
+            d.s_dict_factory,
+            &raw mut ffi::PyDict_Type,
+            false,
+        )
     }
 }
 

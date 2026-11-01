@@ -128,8 +128,9 @@ impl Memo {
     /// `base`: null or an exact dict (borrowed).
     #[inline(always)]
     pub unsafe fn new(base: O) -> Memo {
-        // SAFETY: live dict.
-        Memo { native: Native::new(), base: if base.is_null() { base } else { unsafe { incref(base) } }, ka: Ka::Unknown }
+        // SAFETY: a live dict (or null).
+        let base = if base.is_null() { base } else { unsafe { incref(base) } };
+        Memo { native: Native::new(), base, ka: Ka::Unknown }
     }
 
     #[inline(always)]

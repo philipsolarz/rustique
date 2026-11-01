@@ -110,7 +110,7 @@ unsafe fn copy_body(st: &St, x: O, fast_sets: bool, budget: i32) -> R<O> {
             decref(r);
             return Err(());
         }
-        let Some(rv) = plain_reduce(st, x, cls, false)? else { return Err(()) };
+        let Some(rv) = plain_reduce(st, x, cls, false, budget - 1 > 0)? else { return Err(()) };
         let rv = Own(rv);
         if !helper_intact(st, H_RECONSTRUCT) || !helper_intact(st, H_NEWOBJ) {
             return Err(());

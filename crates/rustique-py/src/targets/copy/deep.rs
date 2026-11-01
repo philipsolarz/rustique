@@ -322,7 +322,7 @@ impl Engine {
                 let rv = Own::new(ffi::PyTuple_Pack(3, cls.cast::<ffi::PyObject>(), args.get(), ffi::Py_None()))?;
                 return self.reconstruct(x, rv.into_raw());
             }
-            if let Some(rv) = plain_reduce(st, x, cls, true)? {
+            if let Some(rv) = plain_reduce(st, x, cls, true, self.touch().is_ok())? {
                 return self.reconstruct(x, rv);
             }
             Err(())

@@ -363,3 +363,41 @@ def test_dataclasses_without_copy_imported():
     )
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+class _Hook:
+    def __init__(self):
+        self.seen = None
+
+    def __deepcopy__(self, memo):
+        # What the hook sees is CPython's memo: the entries `copy.py` made before reaching
+        # it, nothing left over from the kernel's abandoned attempt.
+        self.seen = sorted(type(v).__name__ for k, v in memo.items() if k != id(memo))
+        return self
+
+
+def test_restart_counts_deopt_and_leaves_no_trace():
+    h = _Hook()
+    root = [{"a": [1, 2]}, Plain(), h]
+    memo = {}
+    out = copy.deepcopy(root, memo)
+    assert out[2] is h and out[0] == root[0] and out[0] is not root[0]
+    assert fallbacks("copy.deepcopy") == {"deopt": 1}
+    assert hits("copy.deepcopy") == 0
+    assert h.seen == ["Plain", "dict", "list"]
+    # The memo the caller gets back is CPython's (same keys, keep-alive list, order).
+    ref = {}
+    S.REF.deepcopy([{"a": [1, 2]}, Plain(), _Hook()], ref)
+    assert [type(v).__name__ for v in memo.values()] == [type(v).__name__ for v in ref.values()]
+    # A pure call afterwards is native again.
+    copy.deepcopy([1, {"a": 2}])
+    assert hits("copy.deepcopy") == 1
+
+
+def test_restart_streak_suspends_and_hit_resets():
+    h = _Hook()
+    for _ in range(10):
+        copy.deepcopy([h])
+        copy.deepcopy(7)
+    st = S.A.stats()["copy.deepcopy"]
+    assert st["fallback"]["deopt"] == 10 and st["hits"] == 10 and st["suspensions"] == 0

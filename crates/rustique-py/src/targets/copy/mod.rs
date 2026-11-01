@@ -577,6 +577,7 @@ fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>
         s_getnewargs: intern(py, "__getnewargs__"),
         s_getnewargs_ex: intern(py, "__getnewargs_ex__"),
         s_slotnames: intern(py, "__slotnames__"),
+        s_slots: intern(py, "__slots__"),
         s_del: intern(py, "__del__"),
         atomic_types: atomic.try_into().map_err(|_| Refusal::new("atomic types"))?,
         // SAFETY: static type objects.
