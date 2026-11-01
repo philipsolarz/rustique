@@ -449,3 +449,54 @@ def test_nested_restart_counts():
     # hook restarts at its root.
     assert fallbacks("copy.deepcopy") == {"deopt": 4}
     assert hits("copy.deepcopy") == 4
+
+
+class _Link:
+    """A linked list whose `__deepcopy__`/`__copy__` recurse through `copy` (user code)."""
+
+    def __init__(self, nxt):
+        self.nxt = nxt
+
+    def __deepcopy__(self, memo):
+        return _Link(copy.deepcopy(self.nxt, memo))
+
+    def __copy__(self):
+        return _Link(copy.copy(self.nxt))
+
+
+@pytest.mark.parametrize("how", ["chain", "hooks", "copy_hooks", "generic_memo"])
+def test_deep_fallback_recursion_like_cpython(how):
+    """Fallbacks recursing through the function nest C calls where CPython inlines Python
+    calls: past a bound the original vectorcall is put back, so a raised recursion limit
+    reaches as deep as in CPython (no C stack overflow)."""
+    import collections
+
+    old = sys.getrecursionlimit()
+    sys.setrecursionlimit(300_000)
+    try:
+        n = 30_000
+        if how == "chain":
+            x = _Hook()
+            for _ in range(n):
+                x = [x]
+            y = copy.deepcopy(x)
+        elif how == "hooks":
+            x = None
+            for _ in range(n):
+                x = _Link(x)
+            y = copy.deepcopy(x)
+        elif how == "copy_hooks":
+            x = None
+            for _ in range(n):
+                x = _Link(x)
+            y = copy.copy(x)
+        else:
+            x = 1
+            for _ in range(n):
+                x = [x]
+            y = copy.deepcopy(x, collections.OrderedDict())
+        assert type(y) is type(x)
+    finally:
+        sys.setrecursionlimit(old)
+    target = "copy.copy" if how == "copy_hooks" else "copy.deepcopy"
+    assert S.A.stats()[target]["suspensions"] == 1

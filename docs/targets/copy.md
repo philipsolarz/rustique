@@ -26,12 +26,24 @@ A kernel completes a call only when **no user code runs anywhere in it**. It exe
 `Lib/copy.py`'s algorithm (and `dataclasses._asdict_inner`/`_astuple_inner`) step for step
 with operations that run no Python code; at the first node that *would* run user code it
 abandons everything it built and calls the saved original from scratch with the unchanged
-arguments (contract §5.1, restart rule; counted as `fallback["deopt"]`, so adaptive
-suspension bounds repeated restarts). Nothing it did before is observable: it ran no user
-code, the partial copies it drops are builtin containers and instances of classes without
-finalizers, and a caller's memo dict is only written on success. So every hook runs under
-CPython's own frames (tracebacks, `sys._getframe`, `inspect.stack`), tools attached by a
-hook see the rest of the call, and temporaries are freed by CPython in its order.
+arguments (contract §5.1, restart rule; counted as `fallback["deopt"]`). Nothing it did
+before is observable: it ran no user code, the partial copies it drops are builtin
+containers and instances of classes without finalizers, and a caller's memo dict is only
+written on success. So every hook runs under CPython's own frames (tracebacks,
+`sys._getframe`, `inspect.stack`), tools attached by a hook see the rest of the call, and
+temporaries are freed by CPython in its order.
+
+Restarts and suspension. A restart that abandoned copies extends the target's suspension
+streak (64 in a row suspend it, contract §5.3); one decided at the root itself — the object
+handed to `deepcopy` needs user code, which is what the original's helpers produce when they
+reach a hook object again — wasted nothing and is counted without extending the streak (a
+list of 100 objects with their own `__deepcopy__` must not suspend the kernel). Any native
+hit ends a streak. While a restarted call runs, the containers on the path from its root to
+the node that needed user code go straight to the original when the helpers reach them again
+(each would restart at that same node, since no user code ran before it); everything else
+the helpers hand to `deepcopy` (siblings, subtrees) is copied natively. A hook at depth *d*
+thus costs one wasted native traversal of the prefix, not *d*. The path is a per-thread
+stack of addresses; a stale match only calls the original, which is always correct.
 
 What restarts (`deepcopy`): a `__deepcopy__` other than a recognised no-op (a Python
 function whose code is exactly `return self`, i.e. `Enum.__deepcopy__`); a copier registered
@@ -49,9 +61,18 @@ raises it itself). On 3.14, a `copy._atomic_types` (a mutable set) that no longe
 exactly the validated types.
 
 Native (`deepcopy`): `copy`'s atomic types; exact `list`, `tuple`, `dict`, `frozendict`,
-bound methods through the original helpers; `issubclass(cls, type)`; `return self` hooks;
+bound methods through the original helpers; `issubclass(cls, type)`; `return self` hooks
+(Python functions whose code is `return self`, ignoring 3.14's `CO_METHOD` flag);
+`_decimal.Decimal` (its C `__deepcopy__` returns `self`); the `_datetime` types `date`,
+`datetime`, `time`, `timedelta`, `timezone` (their C `__reduce_ex__`, or `tzinfo.__reduce__`
+emulated for `timezone` because CPython's enters `copyreg._slotnames`, then `_reconstruct`
+calling the C constructor with the copied arguments). These C types are recognised lazily
+and never imported: exact, immutable types that are the very objects in
+`sys.modules["_datetime"]`/`["_decimal"]` (`known.rs`);
 plain objects and dataclasses (incl. frozen and `__slots__` ones): `object.__reduce_ex__(4)`
-computed natively (`reduce.rs`: `(copyreg.__newobj__, (cls,), state)` with `state` the
+computed natively (`reduce.rs`; the first copy of a class runs `copyreg._slotnames`'
+computation natively and caches `cls.__slotnames__` exactly as CPython does:
+`(copyreg.__newobj__, (cls,), state)` with `state` the
 instance `__dict__` — materialised exactly when `object_getstate_default` materialises it,
 emptiness read with `PyObject_VisitManagedDict` — and the slot values), then `_reconstruct`
 (`object.__new__` allocation, `y.__dict__.update`, member-descriptor `setattr`); exact
@@ -71,9 +92,10 @@ copies — 50,000 levels deep under a high recursion limit included — and one 
 cannot, CPython gets to fail.
 
 `copy.copy` native: atomic types, `list`/`dict`/`set`/`bytearray` (`cls.copy(x)`, the C
-methods), `issubclass(cls, type)`, a `return self` `__copy__` (Enum), plain objects
-(`object.__reduce_ex__(4)` natively, then `y.__dict__.update(x.__dict__)` when its keys are
-strings, and the slots). Anything else restarts.
+methods), `issubclass(cls, type)`, a `return self` `__copy__` (Enum) or `Decimal`'s, plain
+objects (`object.__reduce_ex__(4)` natively, then `y.__dict__.update(x.__dict__)` when its
+keys are strings, and the slots), the `_datetime` types (`cls(*args)`). Anything else
+restarts (counted, never a streak: `copy.copy` decides before building anything).
 
 `dataclasses.asdict`/`astuple` native: atomic values, dataclass instances (`fields(obj)` over
 `Field` objects, `getattr(obj, f.name)` when it is an instance attribute, a slot, or a class

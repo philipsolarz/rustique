@@ -119,6 +119,75 @@ unsafe fn deepcopy_direct(st: &St, f: O) -> bool {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// Deep recursion through fallbacks
+// ---------------------------------------------------------------------------------------
+//
+// While the kernel is installed, every call of `deepcopy`/`copy` from Python code is a C
+// call (the interpreter inlines only functions whose vectorcall is its own). A call that
+// falls back runs the original, whose helpers (or the hooks) call the function again: one
+// C-level recursion per level, where CPython would inline Python-to-Python calls and go as
+// deep as the recursion limit allows. So fallbacks nesting deeper than [`DEEP_FALLBACK`] on
+// one thread put the original vectorcall back at once — the deeper levels are inlined by
+// the interpreter exactly as in CPython — and have the registry record a suspension
+// (resumed by the next `enable()`, contract §5.3).
+
+// Nesting of fallback calls on this thread, per target.
+thread_local! {
+    static NEST_DEEPCOPY: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static NEST_COPY: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Fallback calls nested on one thread before the original vectorcall is put back
+/// (bounded C stack: a few hundred kB at most).
+const DEEP_FALLBACK: u32 = 128;
+
+/// `original(...)`, counting the nesting of fallbacks on this thread.
+#[inline(always)]
+unsafe fn fallback_call(
+    c: &'static accel::Counters,
+    nest: &'static std::thread::LocalKey<std::cell::Cell<u32>>,
+    func: O,
+    args: *const O,
+    nargsf: usize,
+    kw: O,
+) -> O {
+    let depth = nest.with(|n| {
+        let d = n.get() + 1;
+        n.set(d);
+        d
+    });
+    if depth == DEEP_FALLBACK {
+        // SAFETY: a live function object (the target's).
+        unsafe { leave_kernel(c, func) };
+    }
+    // SAFETY: vectorcall arguments.
+    let r = unsafe { original(func, args, nargsf, kw) };
+    nest.with(|n| n.set(n.get() - 1));
+    r
+}
+
+unsafe extern "C" {
+    /// Public C API (funcobject.h), not in pyo3's bindings.
+    fn PyFunction_SetVectorcall(func: *mut ffi::PyFunctionObject, vectorcall: ffi::vectorcallfunc);
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn leave_kernel(c: &'static accel::Counters, func: O) {
+    // SAFETY: a live function object; its version is already cleared (the kernel is
+    // installed), so this is the plain store `PyFunction_SetVectorcall` would make. The
+    // registry's suspension then finds the original in place and only records it.
+    unsafe {
+        let fo = func.cast::<ffi::PyFunctionObject>();
+        if (*fo).vectorcall.map(|v| v as usize) != Some(accel::FUNCTION_VECTORCALL.get() as usize) {
+            PyFunction_SetVectorcall(fo, accel::FUNCTION_VECTORCALL.get());
+        }
+    }
+    c.suspend_requested.store(true, std::sync::atomic::Ordering::Release);
+    crate::accel::registry::schedule_resync();
+}
+
 /// Threads currently running a restarted `deepcopy` with a non-empty skip path.
 static RESTARTING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -201,29 +270,29 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
                 2 => *args.add(1),
                 _ => {
                     C_DEEPCOPY.fallback_streak(Reason::Args);
-                    return original(func, args, nargsf, kw);
+                    return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
                 }
             }
         } else if n == 1 && ffi::PyTuple_GET_SIZE(kw) == 1 && ffi::PyTuple_GET_ITEM(kw, 0) == st.s_memo {
             *args.add(1)
         } else {
             C_DEEPCOPY.fallback_streak(Reason::Args);
-            return original(func, args, nargsf, kw);
+            return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
         };
         let memo = if memo == ffi::Py_None() { std::ptr::null_mut() } else { memo };
         // Any other memo's `__contains__`/`__getitem__` could be user code.
         if !memo.is_null() && ty(memo) != &raw mut ffi::PyDict_Type {
             C_DEEPCOPY.fallback_streak(Reason::Args);
-            return original(func, args, nargsf, kw);
+            return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
         }
         let fo = func.cast::<ffi::PyFunctionObject>();
         if !DEPS_COPY.ok() || (*fo).func_code != st.deepcopy_code || (*fo).func_defaults != st.deepcopy_defaults {
             C_DEEPCOPY.fallback_streak(Reason::Deps);
-            return original(func, args, nargsf, kw);
+            return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
         }
         if !accel::tools_quiet(&TOOLS_DEEPCOPY, func) {
             C_DEEPCOPY.fallback_streak(Reason::Tools);
-            return original(func, args, nargsf, kw);
+            return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
         }
         let x = *args;
         let fast = atomic_fast(st);
@@ -237,7 +306,7 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
         // original's helpers reach `x` again, and the kernel would find it again.
         if RESTARTING.load(Relaxed) != 0 && skip::contains(x) {
             C_DEEPCOPY.fallback(Reason::Deopt);
-            return original(func, args, nargsf, kw);
+            return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
         }
         let mut path = Vec::new();
         let e = deep::Engine::new(st, memo, fast, budget);
@@ -250,7 +319,7 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
                 // User code at the root itself (a hook object, typically reached again
                 // through the original's helpers): nothing was wasted; counted, no streak.
                 C_DEEPCOPY.fallback(Reason::Deopt);
-                original(func, args, nargsf, kw)
+                fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw)
             }
             Err(true) => {
                 // User code (or an error, or the recursion limit) below: CPython's own call,
@@ -261,7 +330,7 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
                 // it), so a deep restart does not re-traverse its prefix once per level.
                 C_DEEPCOPY.fallback_streak(Reason::Deopt);
                 let mark = skip::push(&path);
-                let r = original(func, args, nargsf, kw);
+                let r = fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
                 skip::truncate(mark);
                 r
             }
@@ -276,16 +345,16 @@ unsafe extern "C" fn vc_copy(func: O, args: *const O, nargsf: usize, kw: O) -> O
         let st = st();
         if !kw.is_null() || nargs(nargsf) != 1 {
             C_COPY.fallback_streak(Reason::Args);
-            return original(func, args, nargsf, kw);
+            return fallback_call(&C_COPY, &NEST_COPY, func, args, nargsf, kw);
         }
         let fo = func.cast::<ffi::PyFunctionObject>();
         if !DEPS_COPY.ok() || (*fo).func_code != st.copy_code || !(*fo).func_defaults.is_null() {
             C_COPY.fallback_streak(Reason::Deps);
-            return original(func, args, nargsf, kw);
+            return fallback_call(&C_COPY, &NEST_COPY, func, args, nargsf, kw);
         }
         if !accel::tools_quiet(&TOOLS_COPY, func) {
             C_COPY.fallback_streak(Reason::Tools);
-            return original(func, args, nargsf, kw);
+            return fallback_call(&C_COPY, &NEST_COPY, func, args, nargsf, kw);
         }
         match shallow::copy(st, *args, copy_sets_fast(st), recursion_remaining()) {
             Some(y) => {
@@ -296,7 +365,7 @@ unsafe extern "C" fn vc_copy(func: O, args: *const O, nargsf: usize, kw: O) -> O
                 // Decided before anything was built (copy.copy is one level deep): counted,
                 // not a streak.
                 C_COPY.fallback(Reason::Deopt);
-                original(func, args, nargsf, kw)
+                fallback_call(&C_COPY, &NEST_COPY, func, args, nargsf, kw)
             }
         }
     }
