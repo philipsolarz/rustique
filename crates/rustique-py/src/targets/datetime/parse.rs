@@ -85,6 +85,9 @@ pub struct SpDeps {
     time_re_cls: usize,
     locale_time_cls: usize,
     cache_lock_type: usize,
+    /// `_strptime._regex_cache` and `re.Pattern`.
+    regex_cache: usize,
+    pattern_type: usize,
     /// (0 = `_strptime`, 1 = `locale`; name; identity of the global or None) at capture.
     shadows: Vec<(u8, &'static str, Option<usize>)>,
 }
@@ -152,6 +155,14 @@ fn capture_sp(cx: &mut Prepare<'_>) -> Result<&'static SpDeps, Refusal> {
         time_re_cls: keep(&cx.get(&d, "TimeRE")?),
         locale_time_cls: keep(&cx.get(&d, "LocaleTime")?),
         cache_lock_type: keep(cx.get(&d, "_cache_lock")?.get_type().as_any()),
+        regex_cache: {
+            let rc = cx.get(&d, "_regex_cache")?;
+            if !rc.is_exact_instance_of::<PyDict>() {
+                return Err(Refusal::new("_strptime._regex_cache is not a dict"));
+            }
+            keep(&rc)
+        },
+        pattern_type: keep(&cx.get(&cx.loaded_module("re")?.dict(), "Pattern")?),
         shadows: {
             let mut v = Vec::new();
             for (which, dict) in [(0u8, &d), (1u8, &ld)] {
@@ -176,6 +187,8 @@ fn capture_sp(cx: &mut Prepare<'_>) -> Result<&'static SpDeps, Refusal> {
                 "LocaleTime",
                 "_cache_lock",
                 "_TimeRE_cache",
+                "_regex_cache",
+                "_CACHE_MAX_SIZE",
             ]
             .iter(),
         )
@@ -263,6 +276,10 @@ fn validate(py: Python<'_>, e: &Env) -> Result<(), String> {
     need!(
         item(&d, "_cache_lock").is_some_and(|l| l.get_type().as_ptr() as usize == sp.cache_lock_type),
         "_strptime._cache_lock changed"
+    );
+    need!(
+        is(item(&d, "_regex_cache"), sp.regex_cache) && int_is(item(&d, "_CACHE_MAX_SIZE"), 5),
+        "_strptime._regex_cache / _CACHE_MAX_SIZE changed"
     );
     need!(
         is(item(&ldict, "_setlocale"), sp.setlocale) && is(item(&ldict, "locale_alias"), sp.locale_alias),
@@ -366,6 +383,32 @@ unsafe fn codes_ok(sp: &SpDeps, kind: Kind, with_tz: bool) -> bool {
     check(kind as usize) && check(4) && check(5) && check(7) && check(8) && check(9) && (!with_tz || check(6))
 }
 
+/// `len(_regex_cache) <= 5` and `_regex_cache.get(fmt)` is a compiled pattern.
+///
+/// # Safety
+/// Attached thread; `fmt` an exact str.
+#[inline(always)]
+unsafe fn regex_cached(sp: &SpDeps, fmt: *mut ffi::PyObject) -> bool {
+    // SAFETY: the captured dict (kept alive); exact str key: no Python code runs.
+    unsafe {
+        let rc = sp.regex_cache as *mut ffi::PyObject;
+        if ffi::PyDict_Size(rc) > 5 {
+            return false;
+        }
+        let mut v: *mut ffi::PyObject = std::ptr::null_mut();
+        let r = ffi::PyDict_GetItemRef(rc, fmt, &mut v);
+        if r <= 0 {
+            if r < 0 {
+                ffi::PyErr_Clear();
+            }
+            return false;
+        }
+        let ok = ffi::Py_TYPE(v) as usize == sp.pattern_type;
+        ffi::Py_DECREF(v);
+        ok
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // Compiled-format cache (per thread: no locks)
 // ---------------------------------------------------------------------------------------
@@ -429,6 +472,13 @@ unsafe fn run(kind: Kind, cls: *mut ffi::PyObject, s: *mut ffi::PyObject, fmt: *
         let sp = SP.get()?;
         if !TOOLS.quiet() || !codes_ok(sp, kind, false) {
             c.fallback(Reason::Tools);
+            return None;
+        }
+        // The original's private cache: it clears `_regex_cache` when it holds more than
+        // `_CACHE_MAX_SIZE` (5) entries and compiles (and may warn) on a miss. Take the fast
+        // path only when it would do neither, so the cache evolves exactly as in CPython.
+        if !regex_cached(sp, fmt) {
+            c.fallback(Reason::Deopt);
             return None;
         }
         let (Some(fb), Some(sb)) = (ustr::ascii(fmt), ustr::ascii(s)) else {

@@ -55,6 +55,14 @@ def original():
         rq.enable(only=[GROUP])
 
 
+def warm(*formats: str) -> None:
+    """Compile formats into `_strptime._regex_cache`: the kernels take the fast path only on
+    a cache hit (as CPython's original does no compile then)."""
+    for fmt in formats:
+        with contextlib.suppress(ValueError):
+            _strptime._strptime_time("", fmt)
+
+
 def hits(name: str) -> int:
     return rq.stats()[name]["hits"]
 
@@ -150,6 +158,8 @@ def test_strptime_cases(s, fmt):
 
 def test_strptime_hits_and_python_original():
     for s, fmt in STRPTIME_CASES[:9]:
+        _strptime._regex_cache.clear()  # at most 5 formats stay cached (_CACHE_MAX_SIZE)
+        warm(fmt)
         got = D.datetime.strptime(s, fmt)
         want = _strptime._strptime_datetime_datetime(D.datetime, s, fmt)
         assert (type(got), repr(got)) == (type(want), repr(want))
@@ -157,6 +167,7 @@ def test_strptime_hits_and_python_original():
 
 
 def test_utc_singleton_identity():
+    warm("%Y-%m-%d %z")
     r = D.datetime.strptime("2024-01-01 +0000", "%Y-%m-%d %z")
     assert r.tzinfo is D.timezone.utc
     r = D.datetime.strptime("2024-01-01 Z", "%Y-%m-%d %z")
@@ -165,6 +176,7 @@ def test_utc_singleton_identity():
 
 
 def test_time_strptime_default_format():
+    warm("%a %b %d %H:%M:%S %Y")
     same_as_original(time.strptime, "Fri Mar 15 13:45:30 2024")
     assert hits("time.strptime") == 1
 
@@ -196,6 +208,7 @@ def test_captured_references():
     f = captured.strptime
     g = time.strptime
     rq.enable(only=[GROUP])
+    warm("%Y-%m-%d", "%Y")
     assert f("2024-03-15", "%Y-%m-%d") == D.datetime(2024, 3, 15)
     assert g("2024", "%Y").tm_year == 2024
     assert hits("datetime.datetime.strptime") == 1
@@ -254,21 +267,18 @@ def test_monkeypatched_getlocale_is_honoured():
     assert fallbacks("datetime.datetime.strptime").get("deps") == 1
 
 
+def _replacement(cls, data_string, format="%a %b %d %Y"):
+    return cls(1999, 1, 1)  # runs with `_strptime`'s globals
+
+
 def test_code_replacement_is_honoured():
     f = _strptime._strptime_datetime_date
     code = f.__code__
-    marker = []
-
-    def replacement(cls, data_string, format="%a %b %d %Y"):
-        marker.append(1)
-        return cls(1999, 1, 1)
-
-    f.__code__ = replacement.__code__
+    f.__code__ = _replacement.__code__
     try:
         assert D.date.strptime("2024-03-15", "%Y-%m-%d") == D.date(1999, 1, 1)
     finally:
         f.__code__ = code
-    assert marker == [1]
     assert D.date.strptime("2024-03-15", "%Y-%m-%d") == D.date(2024, 3, 15)
     assert hits("datetime.date.strptime") == 1
 
@@ -520,3 +530,35 @@ def test_threads_with_enable_disable_and_locale_churn():
         for t in threads:
             t.join()
     assert not errors, errors[:3]
+
+
+def test_regex_cache_evolves_as_in_cpython():
+    _strptime._regex_cache.clear()
+    fmts = [f"%Y-%m-%d{'x' * i}" for i in range(8)]
+    for f in fmts:
+        D.datetime.strptime("2024-03-15" + f[8:], f)
+    got = list(_strptime._regex_cache)
+    _strptime._regex_cache.clear()
+    with original():
+        for f in fmts:
+            D.datetime.strptime("2024-03-15" + f[8:], f)
+    assert got == list(_strptime._regex_cache)
+    # a hit: fast path, cache unchanged
+    before = dict(_strptime._regex_cache)
+    h = hits("datetime.datetime.strptime")
+    D.datetime.strptime("2024-03-15" + fmts[-1][8:], fmts[-1])
+    assert hits("datetime.datetime.strptime") == h + 1
+    assert dict(_strptime._regex_cache) == before
+
+
+@pytest.mark.skipif(sys.version_info < (3, 15), reason="3.15: %e without a year warns")
+def test_warning_on_compile_only():
+    _strptime._regex_cache.clear()
+    a = outcome(D.datetime.strptime, "5", "%e")
+    b = outcome(D.datetime.strptime, "5", "%e")
+    _strptime._regex_cache.clear()
+    with original():
+        a2 = outcome(D.datetime.strptime, "5", "%e")
+        b2 = outcome(D.datetime.strptime, "5", "%e")
+    assert (a, b) == (a2, b2)
+    assert a[1] and not b[1]
