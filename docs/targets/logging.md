@@ -230,7 +230,7 @@ target never suspends (the first-64-calls cost). "[deps]": a pinned dependency r
 | info disabled | 1,343 | 836 | **0.623** | | | |
 | debug disabled, no args | 1,172 | 803 | **0.685** | 1,150 | 806 | 0.700 |
 | debug disabled, kwargs | 1,932 | 957 | **0.495** | 1,897 | 960 | 0.506 |
-| isEnabledFor | 612 | 596 | **0.974** | 689 | 599 | 0.869 |
+| isEnabledFor (not a site) | 612 | 612 | **1.000** | 689 | 689 | 1.000 |
 | LogRecord() | 19,339 | 7,685 | **0.397** | 15,744 | 7,687 | 0.488 |
 | makeRecord | 19,802 | 8,106 | **0.409** | | | |
 | findCaller | 12,491 | 4,100 | **0.328** | 11,585 | 4,103 | 0.354 |
@@ -273,7 +273,54 @@ Readings:
 
 ### Workload
 
-WORKLOAD
+`python benches/workloads/run.py compare web/logging_service -n 5 -p 3 --only logging`
+(3.15.1, fresh processes, plain and enabled interleaved, median of steady-state runs, wall
+time on the shared dev box): **282.0 ms → 234.2 ms, 0.830**, digests identical. Logging
+is 66% of this workload; the rest (its JSON-lines formatter's `json.dumps`, a
+`{`-style handler, `logger.exception` tracebacks, the request simulation) is not this
+group's.
+
+### pyperf (wall time, 3.15.1, `benches/targets/logging_pyperf.py --fast`)
+
+| benchmark | CPython | enabled | ratio |
+|---|---:|---:|---:|
+| 1000 records, asctime format → StreamHandler(StringIO) | 6109 µs | 3691 µs | **0.604** |
+| 1000 records, BASIC_FORMAT | 4670 µs | 3186 µs | 0.682 |
+| 1000 records, JSON formatter (Formatter subclass) | 7359 µs | 5139 µs | 0.698 |
+| 1000 disabled `debug` calls | 84.3 µs | 53.1 µs | 0.630 |
+
+### Free-threaded spot check (3.15.1t, callgrind)
+
+| cell | CPython | enabled | ratio |
+|---|---:|---:|---:|
+| info asctime fmt | 75,741 | 46,930 | 0.620 |
+| info asctime fmt, `extra=` | 82,411 | 52,897 | 0.642 |
+| debug disabled / no args / kwargs | 1,437 / 1,259 / 2,058 | 1,188 / 1,153 / 1,302 | 0.826 / 0.915 / 0.632 |
+| `LogRecord(...)` | 21,319 | 9,689 | 0.454 |
+| `findCaller()` | 12,899 | 9,085 | 0.704 |
+| format asctime / `%(message)s` | 24,059 / 7,922 | 11,160 / 6,751 | 0.464 / 0.852 |
+| formatTime | 11,640 | 2,922 | 0.251 |
+| fallback cells (steady / alternating) | | | 0.999–1.000 / 0.650–1.035 |
+
+Free-threaded builds read attributes through `PyObject_GenericGetAttr` (no inline-value
+reads: another thread may replace a value concurrently) and do not memoise line numbers,
+so the gains are smaller.
+
+### Install cost (contract item 13, callgrind regions, `benches/targets/logging_install_cost.py`)
+
+| region | Ir |
+|---|---:|
+| `import logging`, plain | 27,947,258 |
+| `import logging` with the group pending (lazy install of the 5 targets) | 28,536,572 (**+2.1%**) |
+| `rustique.enable(only=["logging"])` with `logging` already imported | 917,225 |
+| `rustique.enable(only=["logging"])` before `import logging` (targets pending) | 1,043,713 |
+
+The lazy install is within the 5% budget. `enable()` is above the 0.1M budget: the
+pending-only case (no logging code runs) costs as much, so the excess is the public
+`enable()` path (selection, status) rather than this group's `prepare`s, which cost
+≈0.6M (≈0.59M measured as the lazy-install delta): 30 fingerprinted functions (the
+patched ones and every helper a kernel inlines; shared ones are checked once per
+process), 10 sites, ≈80 pins.
 
 ## 5. Conformance
 
