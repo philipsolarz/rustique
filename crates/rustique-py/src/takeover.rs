@@ -35,6 +35,7 @@ use std::cmp::Ordering;
 use std::ffi::{CStr, c_int};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicPtr;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::ffi;
@@ -887,10 +888,18 @@ unsafe fn prelude(
         if n == 1 {
             return Some(Outcome::Done(Ok(Some(1))));
         }
+    }
+    // The needle first: a needle that needs CPython's comparison makes any scan wasted
+    // work (`objs.count(o)` would scan, then delegate).
+    // SAFETY: live objects.
+    if unsafe { !maybe_scalar(needle) } {
+        return Some(Outcome::Delegate);
+    }
+    if first == needle {
         return None;
     }
-    // SAFETY: live objects.
-    if unsafe { !maybe_scalar(first) || !maybe_scalar(needle) } {
+    // SAFETY: live object.
+    if unsafe { !maybe_scalar(first) } {
         return Some(Outcome::Delegate);
     }
     None
@@ -959,7 +968,7 @@ unsafe extern "C" fn k_list_contains(seq: *mut ffi::PyObject, el: *mut ffi::PyOb
                 C_LIST_CONTAINS.hit();
                 return 1;
             }
-            if !maybe_scalar(first) || !maybe_scalar(el) {
+            if !maybe_scalar(el) || !maybe_scalar(first) {
                 C_LIST_CONTAINS.fallback(Reason::Args);
                 return ORIG_LIST_CONTAINS.get()(seq, el);
             }
@@ -1001,7 +1010,7 @@ unsafe extern "C" fn k_tuple_contains(seq: *mut ffi::PyObject, el: *mut ffi::PyO
             C_TUPLE_CONTAINS.hit();
             return 1;
         }
-        if !maybe_scalar(first) || !maybe_scalar(el) {
+        if !maybe_scalar(el) || !maybe_scalar(first) {
             C_TUPLE_CONTAINS.fallback(Reason::Args);
             return ORIG_TUPLE_CONTAINS.get()(seq, el);
         }
@@ -1102,6 +1111,14 @@ unsafe fn count_result(r: Result<Option<isize>, ()>) -> *mut ffi::PyObject {
 }
 
 unsafe extern "C" fn k_list_count(slf: *mut ffi::PyObject, value: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    // A needle that needs CPython's comparison: no scan can decide, delegate at once (a
+    // plain tail call: the fallback costs a few instructions).
+    // SAFETY: METH_O: a live object.
+    if unsafe { !maybe_scalar(value) } {
+        C_LIST_COUNT.fallback(Reason::Args);
+        // SAFETY: same arguments to the original METH_O function.
+        return unsafe { ORIG_LIST_COUNT.get()(slf, value) };
+    }
     // SAFETY: METH_O: `slf` is a list, `value` a live object.
     match unsafe { list_prelude(slf, value, Scan::Count).unwrap_or_else(|| scan_list_slow(slf, value, Scan::Count)) } {
         Outcome::Done(r) => {
@@ -1118,6 +1135,14 @@ unsafe extern "C" fn k_list_count(slf: *mut ffi::PyObject, value: *mut ffi::PyOb
 }
 
 unsafe extern "C" fn k_tuple_count(slf: *mut ffi::PyObject, value: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    // A needle that needs CPython's comparison: no scan can decide, delegate at once (a
+    // plain tail call: the fallback costs a few instructions).
+    // SAFETY: METH_O: a live object.
+    if unsafe { !maybe_scalar(value) } {
+        C_TUPLE_COUNT.fallback(Reason::Args);
+        // SAFETY: same arguments to the original METH_O function.
+        return unsafe { ORIG_TUPLE_COUNT.get()(slf, value) };
+    }
     // SAFETY: METH_O: `slf` is a tuple, `value` a live object.
     match unsafe { tuple_prelude(slf, value, Scan::Count).unwrap_or_else(|| scan_tuple_slow(slf, value, Scan::Count)) }
     {
@@ -1143,10 +1168,17 @@ unsafe extern "C" fn k_tuple_count(slf: *mut ffi::PyObject, value: *mut ffi::PyO
 /// # Safety
 /// `name` must be a `str`.
 #[inline]
-unsafe fn kw_is(name: *mut ffi::PyObject, s: &CStr) -> bool {
+unsafe fn kw_is(name: *mut ffi::PyObject, s: &CStr, interned: &AtomicPtr<ffi::PyObject>) -> bool {
+    // Keyword names compiled into code objects are interned: the same object as ours
+    // (`key`/`reverse` are CPython's static strings, shared by every interpreter).
     // SAFETY: str object, NUL-terminated ASCII literal; this comparison never fails.
-    unsafe { ffi::PyUnicode_CompareWithASCIIString(name, s.as_ptr()) == 0 }
+    name == interned.load(std::sync::atomic::Ordering::Relaxed)
+        || unsafe { ffi::PyUnicode_CompareWithASCIIString(name, s.as_ptr()) == 0 }
 }
+
+/// Interned `"key"` and `"reverse"` (set by the first `prepare`).
+static KW_KEY: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
+static KW_REVERSE: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Parse `sort(*, key=None, reverse=<exact bool or int>)` without running Python code.
 /// `None` means "let the original parse it".
@@ -1170,11 +1202,11 @@ unsafe fn sort_args(
         for j in 0..ffi::PyTuple_GET_SIZE(kwnames) {
             let name = ffi::PyTuple_GET_ITEM(kwnames, j);
             let value = *args.offset(nargs + j);
-            if kw_is(name, c"key") {
+            if kw_is(name, c"key", &KW_KEY) {
                 if value != ffi::Py_None() {
                     return None;
                 }
-            } else if kw_is(name, c"reverse") {
+            } else if kw_is(name, c"reverse", &KW_REVERSE) {
                 let t = ffi::Py_TYPE(value);
                 if t == bool_type() {
                     reverse = value == ffi::Py_True();
@@ -1381,6 +1413,13 @@ unsafe extern "C" fn k_list_sort(
 
 const VERSIONS: &[(u8, u8)] = &[(3, 14), (3, 15)];
 
+// Fingerprints of the C originals (`ml_name`, `ml_flags`, `ml_doc`), recorded with
+// `python -m rustique._takeover._dev fingerprint list.sort ...` (identical on 3.14.9,
+// 3.14.9t, 3.15.1 and 3.15.1t).
+const FP_SORT: accel::Fingerprints = &[(3, 14, "c354345b57a6339c"), (3, 15, "c354345b57a6339c")];
+const FP_INDEX: accel::Fingerprints = &[(3, 14, "41ad5dad780407da"), (3, 15, "41ad5dad780407da")];
+const FP_COUNT: accel::Fingerprints = &[(3, 14, "dccd1a56f428a482"), (3, 15, "dccd1a56f428a482")];
+
 /// The method descriptor `ty.name`, checked for the expected `ml_name` and `ml_flags`.
 fn method<'py>(ty: &Bound<'py, pyo3::types::PyType>, name: &CStr, flags: c_int) -> Result<Bound<'py, PyAny>, Refusal> {
     let m = ty.getattr(name.to_str().unwrap_or_default())?;
@@ -1411,13 +1450,21 @@ fn calibrate(py: Python<'_>) -> Result<(), Refusal> {
 
 fn prepare_list_sort(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     calibrate(py)?;
+    for (cell, name) in [(&KW_KEY, "key"), (&KW_REVERSE, "reverse")] {
+        if cell.load(std::sync::atomic::Ordering::Relaxed).is_null() {
+            // Interned strings live as long as the interpreter; keep one reference forever.
+            cell.store(PyString::intern(py, name).into_ptr(), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
     let m = method(&py.get_type::<PyList>(), c"sort", ffi::METH_FASTCALL | ffi::METH_KEYWORDS)?;
+    cx.fingerprint_c(&m, FP_SORT)?;
     cx.ml_meth(&m, k_list_sort as FastKwFn, &ORIG_LIST_SORT)
 }
 
 fn prepare_list_index(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     calibrate(py)?;
     let m = method(&py.get_type::<PyList>(), c"index", ffi::METH_FASTCALL)?;
+    cx.fingerprint_c(&m, FP_INDEX)?;
     cx.ml_meth(&m, k_list_index as FastFn, &ORIG_LIST_INDEX)?;
     if LIST_INDEX_MSG.get().is_none() {
         let msg = index_message(py, ORIG_LIST_INDEX.get(), PyList::empty(py).as_any())?;
@@ -1429,12 +1476,14 @@ fn prepare_list_index(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusa
 fn prepare_list_count(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     calibrate(py)?;
     let m = method(&py.get_type::<PyList>(), c"count", ffi::METH_O)?;
+    cx.fingerprint_c(&m, FP_COUNT)?;
     cx.ml_meth(&m, k_list_count as OFn, &ORIG_LIST_COUNT)
 }
 
 fn prepare_tuple_index(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     calibrate(py)?;
     let m = method(&py.get_type::<PyTuple>(), c"index", ffi::METH_FASTCALL)?;
+    cx.fingerprint_c(&m, FP_INDEX)?;
     cx.ml_meth(&m, k_tuple_index as FastFn, &ORIG_TUPLE_INDEX)?;
     if TUPLE_INDEX_MSG.get().is_none() {
         let msg = index_message(py, ORIG_TUPLE_INDEX.get(), PyTuple::empty(py).as_any())?;
@@ -1446,6 +1495,7 @@ fn prepare_tuple_index(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refus
 fn prepare_tuple_count(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     calibrate(py)?;
     let m = method(&py.get_type::<PyTuple>(), c"count", ffi::METH_O)?;
+    cx.fingerprint_c(&m, FP_COUNT)?;
     cx.ml_meth(&m, k_tuple_count as OFn, &ORIG_TUPLE_COUNT)
 }
 
