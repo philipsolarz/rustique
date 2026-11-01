@@ -194,10 +194,16 @@ def test_errors_are_cpythons():
         deep = [deep]
     # RecursionError at the C stack limit: CPython's depth depends on the C stack in use
     # when it is called, and the fallback runs one C frame deeper, so only the type,
-    # message and kind of notes are compared, not how many levels were noted.
+    # message and kind of notes are compared, not how many levels were noted. Where the C
+    # stack holds 100,000 levels (CPython builds with smaller encoder frames, as on GitHub's
+    # runners), both succeed and must agree.
     a, b = outcome(json.dumps, deep), outcome(cpython, deep)
-    assert a[:3] == b[:3] and a[1] is RecursionError
-    assert set(a[3]) == set(b[3]) == {"when serializing list item 0"}
+    assert a[0] == b[0]
+    if a[0] == "raise":
+        assert a[:3] == b[:3] and a[1] is RecursionError
+        assert set(a[3]) == set(b[3]) == {"when serializing list item 0"}
+    else:
+        assert a == b
 
 
 def test_int_max_str_digits():
