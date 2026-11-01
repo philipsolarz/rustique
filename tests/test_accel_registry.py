@@ -312,7 +312,7 @@ def test_deopt_while_unpinned(selftest_module):
     assert A._selftest_vectorcall(m.ident) == "original"
     assert A.func_version(m.ident) >= 2  # specializable again while suspended
     t = target("_selftest.vectorcall")
-    assert t["state"] == "installed" and t["suspended"]
+    assert t["state"] == "installed" and t["suspended"] == "deps"
     assert m.ident(1) == ("orig", 1)
     m.DEP = dep
     settle()
@@ -329,3 +329,35 @@ def test_deopt_while_unpinned(selftest_module):
     assert t["state"] == "refused" and t["refusal"] == "deps" and "unstable" in t["reason"]
     assert A._selftest_vectorcall(m.ident) == "original"
     assert m.ident(1) == ("orig", 1)
+
+
+def test_persistent_fallback_suspends_until_next_enable(selftest_module):
+    m = importlib.import_module(MOD)
+    rt.enable(only=["_selftest.vectorcall"])
+    A.stats(True, True)
+    for _ in range(1000):  # alternating hit / fallback never suspends
+        m.ident(1)
+        m.ident(x=1)
+    settle()
+    assert A._selftest_vectorcall(m.ident) == "kernel"
+    m.ident(1)  # a hit ends the streak
+    for _ in range(63):
+        assert m.ident(x=1) == ("orig", 1)  # keyword argument: outside the subset
+    settle()
+    assert A._selftest_vectorcall(m.ident) == "kernel"
+    m.ident(x=1)  # the 64th consecutive fallback
+    settle()
+    assert A._selftest_vectorcall(m.ident) == "original"
+    assert A.func_version(m.ident) >= 2
+    t = target("_selftest.vectorcall")
+    assert t["state"] == "installed" and t["suspended"] == "fallback"
+    st = A.stats()["_selftest.vectorcall"]
+    assert st["suspensions"] == 1 and st["fallback"]["args"] == 1000 + 64
+    assert st["hits"] == 1001
+    for _ in range(1000):  # suspended: CPython's own call path, no kernel
+        assert m.ident(1) == ("orig", 1)
+    assert A.stats()["_selftest.vectorcall"]["hits"] == 1001
+    rt.enable(only=["_selftest.vectorcall"])  # re-arms
+    assert A._selftest_vectorcall(m.ident) == "kernel"
+    assert "suspended" not in target("_selftest.vectorcall")
+    assert m.ident(1) == ("kernel", 1)

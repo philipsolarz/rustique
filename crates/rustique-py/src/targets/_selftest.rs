@@ -122,13 +122,13 @@ unsafe extern "C" fn k_ident(f: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments from CPython; attached thread.
     unsafe {
         if !(kw.is_null() && nargsf & !ffi::PY_VECTORCALL_ARGUMENTS_OFFSET == 1) {
-            C_VC.fallback(Reason::Args);
+            C_VC.fallback_streak(Reason::Args);
         } else if !DEPS.ok() {
-            C_VC.fallback(Reason::Deps);
+            C_VC.fallback_streak(Reason::Deps);
         } else if !accel::tools_quiet(&TOOLS, f) {
-            C_VC.fallback(Reason::Tools);
+            C_VC.fallback_streak(Reason::Tools);
         } else {
-            C_VC.hit();
+            C_VC.hit_streak();
             return tagged(&KERNEL_STR, *args);
         }
         accel::FUNCTION_VECTORCALL.get()(f, args, nargsf, kw)
