@@ -64,7 +64,9 @@ call falls back. `bisect_right` compares `x < a[mid]` as `_bisect` does.
 
 **Lookups without side effects.** The class side is classified once per (type,
 `tp_version_tag`) — the tag changes whenever the class or a base is modified, e.g.
-`mock.patch.object(random.Random, "_randbelow", ...)` — and cached (a seqlock). The
+`mock.patch.object(random.Random, "_randbelow", ...)` — and cached (`utils_kit::TypeCache`:
+8 direct-mapped seqlock entries, so traffic alternating between a few receiver types does
+not re-classify on every call). The
 instance side reads the object's inline values (CPython 3.13+ layout, calibrated at install:
 `utils_kit::InstLayout`): if the type's shared keys lack the three names and the object
 uses only its inline values, no instance attribute can shadow them; otherwise the
@@ -157,30 +159,30 @@ plain CPython; `rq`: `rustique.enable(only=["random"])`. **M**.
 
 | cell | orig Ir | rq Ir | ratio | JIT orig | JIT rq | JIT ratio |
 |---|---:|---:|---:|---:|---:|---:|
-| `randint(1, 6)` (module function) | 2169 | 769 | 0.355 | 1892 | 770 | 0.407 |
-| `rng.randint(3, 7)` | 2291 | 777 | 0.339 | 2056 | 781 | 0.380 |
-| `rng.randint(0, 2**40)` | 4691 | 1012 | 0.216 | 4315 | 1005 | 0.233 |
-| `rng.randint(0, 2**64)` (128-bit path) | 4791 | 1635 | 0.341 | 4536 | 1639 | 0.361 |
-| `rng.randint(1, 2**70)` | 4782 | 1768 | 0.370 | 4527 | 1761 | 0.389 |
-| `rng.randint(a=1, b=6)` (keywords) | 2354 | 949 | 0.403 | 2102 | 952 | 0.453 |
-| `rng.randint(True, 6)` | 2168 | 773 | 0.356 | 1915 | 776 | 0.405 |
-| `rng.randrange(10)` | 2212 | 744 | 0.336 | 1946 | 748 | 0.384 |
-| `rng.randrange(0, 100, 5)` | 3212 | 1049 | 0.327 | 2615 | 1053 | 0.403 |
-| `rng.choice(list of 6)` | 1770 | 517 | 0.292 | 1629 | 520 | 0.319 |
-| `rng.choice(tuple of 4)` | 2157 | 540 | 0.250 | 2035 | 547 | 0.269 |
-| `rng.choice('abcdef')` | 1778 | 613 | 0.345 | 1633 | 616 | 0.377 |
-| `rng.choice(range(10))` | 2887 | 1469 | 0.509 | 2761 | 1472 | 0.533 |
-| `rng.choice(deque)` (C sequence: `len()` twice, `[]`) | 1906 | 750 | 0.394 | 1765 | 753 | 0.427 |
-| `rng.choices(words, k=40)` | 33643 | 6893 | 0.205 | 32651 | 6906 | 0.212 |
-| `rng.choices(T4, weights=[50,30,15,5])` | 8340 | 2575 | 0.309 | 7737 | 2579 | 0.333 |
-| `rng.choices(L6, cum_weights=[1..6])` | 6101 | 3261 | 0.535 | 5574 | 3266 | 0.586 |
-| `rng.choices(L6)` | 3894 | 872 | 0.224 | 3705 | 877 | 0.237 |
-| `rng.sample(words, 5)` | 17249 | 2254 | 0.131 | 16338 | 2265 | 0.139 |
-| `rng.sample(range(10**6), 20)` (set method) | 59154 | 18056 | 0.305 | 57311 | 18034 | 0.315 |
-| `rng.shuffle(list of 100)` | 175741 | 8850 | 0.050 | 163572 | 8905 | 0.054 |
-| `sub.randint(1, 6)` (subclass, no overrides) | 2153 | 768 | 0.357 | 1908 | 771 | 0.404 |
-| `sub.choice(L6)` | 1796 | 518 | 0.288 | 1665 | 521 | 0.313 |
-| `own_bits.choices(L6)` (Python `getrandbits`, C `random()`: native) | 3899 | 871 | 0.223 | 3709 | 876 | 0.236 |
+| `randint(1, 6)` (module function) | 2186 | 775 | 0.355 | 1887 | 777 | 0.412 |
+| `rng.randint(3, 7)` | 2291 | 786 | 0.343 | 2056 | 790 | 0.384 |
+| `rng.randint(0, 2**40)` | 4691 | 1021 | 0.218 | 4315 | 1014 | 0.235 |
+| `rng.randint(0, 2**64)` (128-bit path) | 4791 | 1644 | 0.343 | 4536 | 1648 | 0.363 |
+| `rng.randint(1, 2**70)` | 4782 | 1777 | 0.372 | 4527 | 1770 | 0.391 |
+| `rng.randint(a=1, b=6)` (keywords) | 2354 | 958 | 0.407 | 2102 | 961 | 0.457 |
+| `rng.randint(True, 6)` | 2168 | 782 | 0.361 | 1915 | 785 | 0.410 |
+| `rng.randrange(10)` | 2212 | 753 | 0.340 | 1946 | 757 | 0.389 |
+| `rng.randrange(0, 100, 5)` | 3212 | 1058 | 0.330 | 2615 | 1062 | 0.406 |
+| `rng.choice(list of 6)` | 1770 | 526 | 0.297 | 1629 | 529 | 0.325 |
+| `rng.choice(tuple of 4)` | 2157 | 549 | 0.254 | 2035 | 556 | 0.273 |
+| `rng.choice('abcdef')` | 1778 | 622 | 0.350 | 1633 | 625 | 0.383 |
+| `rng.choice(range(10))` | 2887 | 1478 | 0.512 | 2761 | 1481 | 0.536 |
+| `rng.choice(deque)` (C sequence: `len()` twice, `[]`) | 1906 | 759 | 0.398 | 1765 | 762 | 0.432 |
+| `rng.choices(words, k=40)` | 33643 | 6902 | 0.205 | 32651 | 6915 | 0.212 |
+| `rng.choices(T4, weights=[50,30,15,5])` | 8340 | 2584 | 0.310 | 7737 | 2588 | 0.335 |
+| `rng.choices(L6, cum_weights=[1..6])` | 6101 | 3270 | 0.536 | 5574 | 3275 | 0.588 |
+| `rng.choices(L6)` | 3894 | 881 | 0.226 | 3705 | 886 | 0.239 |
+| `rng.sample(words, 5)` | 17249 | 2263 | 0.131 | 16337 | 2294 | 0.140 |
+| `rng.sample(range(10**6), 20)` (set method) | 59154 | 18065 | 0.305 | 57311 | 18043 | 0.315 |
+| `rng.shuffle(list of 100)` | 175741 | 8859 | 0.050 | 163572 | 8914 | 0.054 |
+| `sub.randint(1, 6)` (subclass, no overrides) | 2153 | 777 | 0.361 | 1908 | 780 | 0.409 |
+| `sub.choice(L6)` | 1796 | 527 | 0.293 | 1665 | 530 | 0.318 |
+| `own_bits.choices(L6)` (Python `getrandbits`, C `random()`: native) | 3899 | 880 | 0.226 | 3709 | 885 | 0.239 |
 | Python overrides of the randomness sources: the original runs, decided at entry (steady state: the target suspends after 64 consecutive fallbacks): | | | | | | |
 | `own.randint(1, 6)` (Python `random()`, hence `_randbelow_without_getrandbits`) | 6330 | 6330 | 1.000 | 6025 | 6025 | 1.000 |
 | `own.choice(L6)` (same) | 5974 | 5974 | 1.000 | 5775 | 5775 | 1.000 |
@@ -191,12 +193,16 @@ plain CPython; `rq`: `rustique.enable(only=["random"])`. **M**.
 | `own_bits.shuffle(L6)` (same) | 17023 | 17023 | 1.000 | 13838 | 13838 | 1.000 |
 | `own_bits.sample(L6, 2)` (same) | 11420 | 11423 | 1.000 | 9878 | 9881 | 1.000 |
 | `shadow.choice(L6)` (instance attribute shadows `getrandbits`) | 1642 | 1642 | 1.000 | 1385 | 1411 | 1.019 |
-| `sysr.randint(1, 6)` (`SystemRandom`; see note) | 5213 | 4942 | 0.948 | 4398 | 4537 | 1.032 |
-| `sysr.choice(L6)` (`SystemRandom`) | 4646 | 4698 | 1.011 | 4363 | 4190 | 0.960 |
+| `sysr.randint(1, 6)` (`SystemRandom`; see note) | 5169 | 5136 | 0.994 | 4565 | 4407 | 0.965 |
+| `sysr.choice(L6)` (`SystemRandom`) | 4742 | 4807 | 1.014 | 4425 | 4254 | 0.961 |
 | other fallbacks (steady state): | | | | | | |
 | `rng.choices(L6, [Fraction(1)]*6, k=3)` | 152702 | 152698 | 1.000 | 143422 | 143417 | 1.000 |
 | `rng.choice(UserList)` (Python `__len__`/`__getitem__`) | 3629 | 3629 | 1.000 | 3457 | 3457 | 1.000 |
-| `rng.sample(L6, k=2, counts=[1]*6)` (calls `sample` again: accelerated) | 21338 | 12284 | 0.576 | 19835 | 11739 | 0.592 |
+| `rng.sample(L6, k=2, counts=[1]*6)` (calls `sample` again: accelerated) | 21338 | 12293 | 0.576 | 19835 | 11748 | 0.592 |
+| mixed traffic on one target (the overriding calls reset the streak and are never suspended; one cell = the whole statement): | | | | | | |
+| `rng.randint(1, 6); own_bits.randint(1, 6)` | 5608 | 4428 | 0.790 | 4407 | 3795 | 0.861 |
+| `rng.choice(L6); sysr.choice(L6)` | 7078 | 5792 | 0.818 | 6002 | 5224 | 0.870 |
+| 4 × `rng.randint(1, 6)` + `own_bits.randint(1, 6)` | 12222 | 6749 | 0.552 | 10161 | 6116 | 0.602 |
 
 Every cell is ≤ 1.05, with and without the JIT. The cells with a Python override measure
 1.000 in the steady state: the kernel declines at entry, and after 64 consecutive fallbacks
@@ -207,6 +213,15 @@ Before the wave-1 ruling, the kernels called those overrides from native code: 0
 without the JIT but 1.10–1.21 under it (the JIT inlines CPython's own calls into a Python
 `getrandbits`; a kernel's call enters the eval loop), so the group was `jit_safe: false`.
 They now fall back, so the group is JIT-safe (default `jit_safe: true`).
+
+Mixed traffic: when accelerated calls and calls on an overriding class alternate on one
+target, the hits reset the fallback streak, so the target is never suspended. Each
+overriding call then pays the unsuspended fallback cost: about +325 Ir (the pair
+`rng.randint` + `own_bits.randint`: 4,428 Ir = 786 native + 3,317 original + 325). The
+type cache used to hold one entry, so alternating receiver types re-classified on every
+call (0.973, and 1.094 under the JIT). It now has 8 entries, giving the rows above.
+Suspension policy for such traffic is the framework's (a net-benefit accumulator is
+planned by accel-core).
 
 ### 6.2 Wall time, large inputs (pyperf)
 
@@ -270,5 +285,6 @@ itself, on the 64th call, costs about 1.5k Ir once. Each fallback pays for the k
 argument and class checks plus the original's eval-loop entry (a call site whose callee has
 a replaced vectorcall is not specialized, so the original's frame is not pushed inline).
 The steady state is 1.000 (§6.1). A program that interleaves accelerated calls with calls on
-an overriding class (e.g. `random.randint` and `SystemRandom().randint`) resets the streak,
-never suspends, and keeps paying this cost on the overriding calls.
+an overriding class (e.g. `random.randint` and `SystemRandom().randint`) resets the streak
+and never suspends. Its overriding calls then pay about +325 Ir each, once the class
+classifications are cached (the mixed rows of §6.1).

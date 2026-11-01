@@ -362,10 +362,16 @@ pub unsafe fn version_tag(tp: *mut ffi::PyTypeObject) -> u32 {
     unsafe { std::ptr::read_volatile(&raw const (*tp).tp_version_tag) }
 }
 
-/// One-entry cache of a per-type classification `(info, shared keys, nentries)` keyed by
-/// (type, `tp_version_tag`): a seqlock (readers never block; a writer that loses a race
-/// does not cache).
+/// Cache of per-type classifications `(info, shared keys, nentries)` keyed by (type,
+/// `tp_version_tag`): `SLOTS` direct-mapped entries indexed by the type's address, each a
+/// seqlock (readers never block; a writer that loses a race does not cache). Several
+/// entries so that calls alternating between a few receiver types (`Random` and a
+/// subclass, `TextWrapper` and a subclass) do not evict each other.
 pub struct TypeCache {
+    slots: [Slot; TypeCache::SLOTS],
+}
+
+struct Slot {
     seq: AtomicU64,
     tp: AtomicUsize,
     ver: AtomicU32,
@@ -374,9 +380,9 @@ pub struct TypeCache {
     nentries: AtomicUsize,
 }
 
-impl TypeCache {
-    pub const fn new() -> Self {
-        TypeCache {
+impl Slot {
+    const fn new() -> Self {
+        Slot {
             seq: AtomicU64::new(0),
             tp: AtomicUsize::new(0),
             ver: AtomicU32::new(0),
@@ -385,38 +391,54 @@ impl TypeCache {
             nentries: AtomicUsize::new(0),
         }
     }
+}
+
+impl TypeCache {
+    const SLOTS: usize = 8;
+
+    pub const fn new() -> Self {
+        TypeCache { slots: [const { Slot::new() }; TypeCache::SLOTS] }
+    }
+
+    /// Type objects are at least 16-byte aligned and several hundred bytes long.
+    #[inline(always)]
+    fn slot(&self, tp: usize) -> &Slot {
+        &self.slots[((tp >> 4) ^ (tp >> 10)) % Self::SLOTS]
+    }
 
     #[inline(always)]
     pub fn get(&self, tp: usize, ver: u32) -> Option<(u32, usize, usize)> {
-        let s1 = self.seq.load(Ordering::Acquire);
+        let e = self.slot(tp);
+        let s1 = e.seq.load(Ordering::Acquire);
         if s1 & 1 != 0 {
             return None;
         }
         let (t, v, info, keys, nentries) = (
-            self.tp.load(Relaxed),
-            self.ver.load(Relaxed),
-            self.info.load(Relaxed),
-            self.keys.load(Relaxed),
-            self.nentries.load(Relaxed),
+            e.tp.load(Relaxed),
+            e.ver.load(Relaxed),
+            e.info.load(Relaxed),
+            e.keys.load(Relaxed),
+            e.nentries.load(Relaxed),
         );
         std::sync::atomic::fence(Ordering::Acquire);
-        if self.seq.load(Relaxed) != s1 || t != tp || v != ver {
+        if e.seq.load(Relaxed) != s1 || t != tp || v != ver {
             return None;
         }
         Some((info, keys, nentries))
     }
 
     pub fn put(&self, tp: usize, ver: u32, info: u32, keys: usize, nentries: usize) {
-        let s = self.seq.load(Relaxed);
-        if s & 1 != 0 || self.seq.compare_exchange(s, s + 1, Ordering::Acquire, Relaxed).is_err() {
+        let e = self.slot(tp);
+        let s = e.seq.load(Relaxed);
+        if s & 1 != 0 || e.seq.compare_exchange(s, s + 1, Ordering::Acquire, Relaxed).is_err() {
             return;
         }
-        self.tp.store(tp, Relaxed);
-        self.ver.store(ver, Relaxed);
-        self.info.store(info, Relaxed);
-        self.keys.store(keys, Relaxed);
-        self.nentries.store(nentries, Relaxed);
-        self.seq.store(s + 2, Ordering::Release);
+        e.tp.store(tp, Relaxed);
+        e.ver.store(ver, Relaxed);
+        e.info.store(info, Relaxed);
+        e.keys.store(keys, Relaxed);
+        e.nentries.store(nentries, Relaxed);
+        e.seq.store(s + 2, Ordering::Release);
     }
 }
 

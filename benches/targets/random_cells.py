@@ -66,6 +66,12 @@ CELLS = {
     "own.sample(L100, 2) [Python random]": "own.sample(L100, 2)",
     "sysr.randint(1, 6) [SystemRandom]": "sysr.randint(1, 6)",
     "sysr.choice(L6) [SystemRandom]": "sysr.choice(L6)",
+    # mixed traffic on one target: native hits interleaved with an overriding class, which
+    # reset the fallback streak (never suspended). The cell is the pair; compare with the
+    # sum of the two single cells.
+    "mixed: rng.randint + own_bits.randint": "rng.randint(1, 6); own_bits.randint(1, 6)",
+    "mixed: rng.choice + sysr.choice": "rng.choice(L6); sysr.choice(L6)",
+    "mixed: 4x rng.randint + own_bits.randint": "rng.randint(1, 6); rng.randint(1, 6); rng.randint(1, 6); rng.randint(1, 6); own_bits.randint(1, 6)",
     # other fallbacks and edge forms
     "rng.randint(True, 6) [bool]": "rng.randint(True, 6)",
     "rng.randint(1, 2**70) [big]": "rng.randint(1, 1180591620717411303424)",
