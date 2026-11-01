@@ -13,14 +13,14 @@ module-level `random.randint` etc. are bound methods of `random._inst`, so they,
 randint`, bound methods, `partial`) reach the kernels; identity, pickling, signature,
 `__code__` and source are unchanged (tested with `_mechanics`).
 
-| target | module (lazy install) | validated | free-threaded | checkable |
-|---|---|---|---|---|
-| `random.randint` | `random` | 3.14, 3.15 | yes | no (consumes state) |
-| `random.randrange` | `random` | 3.14, 3.15 | yes | no |
-| `random.choice` | `random` | 3.14, 3.15 | yes | no |
-| `random.shuffle` | `random` | 3.14, 3.15 | yes | no |
-| `random.sample` | `random` | 3.14, 3.15 | yes | no |
-| `random.choices` | `random` | 3.14, 3.15 | yes | no |
+| target | module (lazy install) | validated | free-threaded | checkable | JIT |
+|---|---|---|---|---|---|
+| `random.randint` | `random` | 3.14, 3.15 | yes | no (consumes state) | refused (`jit_safe: false`, §6.1) |
+| `random.randrange` | `random` | 3.14, 3.15 | yes | no | refused |
+| `random.choice` | `random` | 3.14, 3.15 | yes | no | refused |
+| `random.shuffle` | `random` | 3.14, 3.15 | yes | no | refused |
+| `random.sample` | `random` | 3.14, 3.15 | yes | no | refused |
+| `random.choices` | `random` | 3.14, 3.15 | yes | no | refused |
 
 `uniform` and `_randbelow_with_getrandbits` are not targets: `uniform` costs ~1,000 Ir, so
 any fallback (Decimal, numpy scalars, a Python `random()`) would exceed 1.05, and
@@ -120,9 +120,19 @@ builds, and when the self-test fails (the `RandomObject` layout checked against
 `getstate()`, 1,400 natively generated words and three `random()` values against CPython's
 on probe generators, C calls only).
 
-## 5. Measurements
+## 5. Conformance
 
-### 5.1 Instructions per call (callgrind, region-instrumented)
+`python tests/conformance/run_target_suites.py --targets random --modules ...` (CPython's own test
+modules from `$CPYTHON_SRC`, plain vs `enable(only=["random"])` before the tests import the
+module, per test id; every target asserted `installed`), on 3.15.1, 3.15.1t, 3.14.9 and
+3.14.9t: `test.test_random`: 114 pass, 2 skip — **identical outcome sets on all four builds, 0 differences**
+(`benches/targets/utils_matrix.sh`, which also runs `tests/targets` and the whole
+`pytest -q`). The runner normalizes object addresses in subTest ids (`0x…`), which differ
+between processes (`test_urlparse` parametrizes with function reprs).
+
+## 6. Measurements
+
+### 6.1 Instructions per call (callgrind, region-instrumented)
 
 `python benches/targets/utils_cg.py random_cells [--jit]` on the dev box, CPython 3.15.1
 (python-build-standalone), `--profile dev-release` build; each cell in its own process,
@@ -176,7 +186,7 @@ the eval loop (C → Python): those cells are 1.10–1.21. The targets are there
 `jit_safe: false` (refused with reason `jit` when the JIT is enabled); the native paths would
 be 0.22–0.47 under the JIT.
 
-### 5.2 Wall time, large inputs (pyperf)
+### 6.2 Wall time, large inputs (pyperf)
 
 `python benches/targets/utils_pyperf.py random --fast` (median of pyperf values, fresh
 workers; the shared dev box was busy, so only the ≥ 1.5× claims are meaningful; the lead

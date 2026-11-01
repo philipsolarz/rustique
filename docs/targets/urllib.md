@@ -76,12 +76,22 @@ its first call with a `%`).
 3.14.9 and 3.15.1 and their free-threaded builds; refused elsewhere and on fingerprint or
 constant mismatch.
 
-## 5. Measurements
+## 5. Conformance
 
-### 5.1 Instructions per call (callgrind)
+`python tests/conformance/run_target_suites.py --targets urllib --modules ...` (CPython's own test
+modules from `$CPYTHON_SRC`, plain vs `enable(only=["urllib"])` before the tests import the
+module, per test id; every target asserted `installed`), on 3.15.1, 3.15.1t, 3.14.9 and
+3.14.9t: `test.test_urlparse`: 78 pass, 5 skip (3.15) / 74 pass, 5 skip (3.14); `test.test_urllib`: 104 pass, 2 skip — **identical outcome sets on all four builds, 0 differences**
+(`benches/targets/utils_matrix.sh`, which also runs `tests/targets` and the whole
+`pytest -q`). The runner normalizes object addresses in subTest ids (`0x…`), which differ
+between processes (`test_urlparse` parametrizes with function reprs).
+
+## 6. Measurements
+
+### 6.1 Instructions per call (callgrind)
 
 `python benches/targets/utils_cg.py urllib_cells [--jit]`, CPython 3.15.1, dev box (method:
-random.md §5.1). **M**.
+random.md §6.1). **M**.
 
 | cell | orig Ir | rq Ir | ratio | JIT orig | JIT rq | JIT ratio |
 |---|---:|---:|---:|---:|---:|---:|
