@@ -52,13 +52,14 @@ class FakeAccel:
     def targets(self):
         return [(n, g, None) for n, g in self.TARGETS]
 
-    def enable(self, only=None, exclude=None):
+    def enable(self, only=None, exclude=None, builtins=True, quiet=False):
+        assert quiet  # rustique never needs the framework's status dict here
         self.calls.append(("enable", {"only": only, "exclude": exclude}))
         for n, g in self.TARGETS:
             if (only is None or n in only or g in only) and not (n in (exclude or ()) or g in (exclude or ())):
                 self.installed.add(n)
 
-    def disable(self, names=None):
+    def disable(self, names=None, quiet=False):
         self.calls.append(("disable",))
         self.installed.clear()
 
@@ -204,7 +205,10 @@ def test_stats_switches(fake, monkeypatch):
     assert rustique.status()["process"]["switch"]["stats"]
 
 
-def test_source_is_the_first_enable_path(fake):
+def test_source_is_the_first_enable_path(fake, monkeypatch):
+    rustique._startup()  # RUSTIQUE unset: nothing
+    assert not enables(fake)
+    monkeypatch.setenv("RUSTIQUE", "1")
     rustique._startup()
     rustique.enable()
     assert rustique.status()["process"]["switch"]["source"] == "RUSTIQUE=1"
@@ -382,8 +386,7 @@ def sitedir(tmp_path):
     """A site directory holding what the wheel puts at the root of site-packages."""
     d = tmp_path / "site"
     d.mkdir()
-    for name in ("_rustique_startup.pth", "_rustique_startup.py"):
-        shutil.copy(os.path.join(PYSRC, name), d / name)
+    shutil.copy(os.path.join(PYSRC, "_rustique_startup.pth"), d / "_rustique_startup.pth")
     return str(d)
 
 
@@ -411,7 +414,7 @@ def test_pth_is_one_cheap_import_line():
     with open(os.path.join(PYSRC, "_rustique_startup.pth")) as f:
         lines = [ln for ln in f.read().splitlines() if ln.strip() and not ln.startswith("#")]
     assert len(lines) == 1 and lines[0].startswith("import ")  # site exec()s only `import ` lines
-    assert "os.environ.get('RUSTIQUE', '0') != '0'" in lines[0]
+    assert lines[0] == "import os; os.environ.get('RUSTIQUE', '0') != '0' and __import__('rustique')._startup()"
     assert not os.path.exists(os.path.join(PYSRC, "_rustique_startup.start"))  # see docs/targets/dx.md
 
 
@@ -419,7 +422,6 @@ def test_wheel_ships_the_startup_files():
     with open(os.path.join(ROOT, "pyproject.toml"), "rb") as f:
         cfg = tomllib.load(f)
     inc = {i["path"]: i["format"] for i in cfg["tool"]["maturin"]["include"] if isinstance(i, dict)}
-    assert inc.get("python/_rustique_startup.py") == ["sdist", "wheel"]
     assert inc.get("python/_rustique_startup.pth") == ["sdist", "wheel"]
     assert cfg["project"]["entry-points"]["pytest11"] == {"rustique.pytest_plugin": "rustique.pytest_plugin"}
 
@@ -429,10 +431,15 @@ def test_startup_unset_imports_nothing(sitedir):
     assert out["loaded"] == [] and err == ""
 
 
-@pytest.mark.parametrize("value", ["0", "off", ""])
-def test_startup_off_values_do_not_import_rustique(sitedir, value):
+def test_startup_kill_switch_imports_nothing(sitedir):
+    out, err = probe(sitedir, RUSTIQUE="0")
+    assert out["loaded"] == [] and err == ""
+
+
+@pytest.mark.parametrize("value", ["off", "false", ""])
+def test_startup_other_off_values_do_not_enable(sitedir, value):
     out, err = probe(sitedir, RUSTIQUE=value)
-    assert "rustique" not in out["loaded"] and err == ""
+    assert out.get("source") is None and not out.get("installed") and err == ""
 
 
 @pytest.mark.parametrize("value", ["1", "true", "ON"])
@@ -448,14 +455,15 @@ def test_startup_honours_selection(sitedir):
 
 def test_startup_invalid_value_warns(sitedir):
     out, err = probe(sitedir, RUSTIQUE="maybe")
-    assert "rustique" not in out["loaded"]
+    assert out.get("source") is None and not out.get("installed")
     assert "ignoring RUSTIQUE='maybe'" in err
 
 
 @pytest.mark.parametrize("flag", ["-E", "-I"])
 def test_startup_ignores_environment_under_E_and_I(sitedir, flag):
     out, err = probe(sitedir, flags=(flag,), RUSTIQUE="1")
-    assert "rustique" not in out["loaded"] and err == ""
+    # the .pth line reads os.environ (imports rustique); _startup() honours the flag
+    assert out.get("source") is None and not out.get("installed") and err == ""
 
 
 def test_kill_switch_ignored_under_E():
@@ -470,15 +478,26 @@ def test_startup_survives_a_broken_install(sitedir, tmp_path):
     (broken / "__init__.py").write_text("raise ImportError('no wheel for this interpreter')\n")
     code = f"import sys; sys.path.insert(0, {str(broken.parent)!r})\n" + PROBE
     r = py(code, sitedir, env=clean_env(RUSTIQUE="1"))
-    assert r.returncode == 0
-    assert "RUSTIQUE=1 ignored: cannot import rustique: no wheel for this interpreter" in r.stderr
+    assert r.returncode == 0  # site reports the failing line and carries on
+    assert "ImportError: no wheel for this interpreter" in r.stderr
 
 
-def test_hook_start_is_idempotent(sitedir):
-    r = py("import site, sys; site.addsitedir(sys.argv[1]); import _rustique_startup as h, rustique;"
-           "h.start(); h.start(); print(rustique.status()['process']['switch']['source'])", sitedir,
-           env=clean_env(RUSTIQUE="1"))
+def test_startup_is_idempotent(sitedir):
+    r = py("import site, sys; site.addsitedir(sys.argv[1]); import rustique;"
+           "rustique._startup(); rustique._startup(); print(rustique.status()['process']['switch']['source'])",
+           sitedir, env=clean_env(RUSTIQUE="1"))
     assert r.stdout.strip() == "RUSTIQUE=1", r.stderr
+
+
+def test_startup_and_import_load_no_other_module():
+    """The module budget: the startup path and `import rustique; enable()` load `rustique`
+    and the extension, nothing else (docs/targets/dx.md §1.3)."""
+    code = ("import sys; before = set(sys.modules); import rustique; rustique.enable();"
+            "print(sorted(set(sys.modules) - before))")
+    assert py(code).stdout.strip() == "['rustique', 'rustique._rustique']"
+    code = "import sys; print(sorted(m for m in sys.modules if 'rustique' in m))"
+    assert py("import rustique; rustique._startup();" + code, env=clean_env(RUSTIQUE="1")).stdout.strip() == \
+        "['rustique', 'rustique._rustique']"
 
 
 # --- report at exit (subprocesses) --------------------------------------------------------

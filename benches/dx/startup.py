@@ -35,7 +35,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 PYSRC = os.path.join(ROOT, "python")
 
-HOOK = open(os.path.join(PYSRC, "_rustique_startup.py")).read()
+# A stand-in module for the variants that import one (the shipped line imports `rustique`,
+# which is not installed in these venvs: with RUSTIQUE unset it is never imported).
+HOOK = "import os, sys\n\ndef start():\n    pass\n"
 PTH = open(os.path.join(PYSRC, "_rustique_startup.pth")).read()
 # Not shipped (docs/targets/dx.md §1): on 3.15.1 a .start file costs 1.7x `python -c pass`.
 START = "_rustique_startup:start\n"

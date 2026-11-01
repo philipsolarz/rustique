@@ -7,13 +7,18 @@ below). Rustique's own containers (``List``/``Dict``/``Set``/``FrozenSet``/``Tup
 expression placeholder ``X``, fixed-width scalars) are created on first use
 (docs/ARCHITECTURE.md, docs/TAKEOVER.md).
 
-This module is on the startup path of ``RUSTIQUE=1`` (with ``_rustique_startup`` and the
-extension, and nothing else): it imports no other Python module at import or enable time.
-Formatting (report at exit, CLI) and the native tier are imported on use.
+This module is the startup path of ``RUSTIQUE=1`` (with the extension, and nothing else):
+the ``_rustique_startup.pth`` line that ``site`` runs at every interpreter start imports it
+only when ``RUSTIQUE`` is set to something other than ``0``::
+
+    import os; os.environ.get('RUSTIQUE', '0') != '0' and __import__('rustique')._startup()
+
+It imports no other Python module at import or enable time; formatting (report at exit,
+CLI) and the native tier are imported on use.
 
 Environment (read at every enable; all ignored under ``-E``/``-I``, like ``PYTHON*``):
 
-``RUSTIQUE``          ``1`` enables at startup (``_rustique_startup``); ``0`` is the kill
+``RUSTIQUE``          ``1`` enables at startup (the ``.pth`` line above); ``0`` is the kill
                       switch: every enable path (startup, ``python -m rustique``,
                       ``enable()`` in code, ``native``, ``pytest --rustique``) is a no-op.
 ``RUSTIQUE_ONLY``     groups or target names; intersected with ``enable(only=)``.
@@ -221,11 +226,12 @@ def _enable(only=None, exclude=None, native=None, builtins=True, source="rustiqu
         _accel.check(mode)
     if report is not None or _flag(_env("RUSTIQUE_STATS")):
         _accel.stats(True)
-    _accel.enable(None if sel_only is None else list(sel_only), list(sel_exclude))
+    _accel.enable(None if sel_only is None else list(sel_only), list(sel_exclude), quiet=True)
     if native:
         from rustique._takeover import _hook
 
         _hook.install((native,) if isinstance(native, str) else tuple(native))
+        _accel._set_native(list(_hook.patterns()))
     if _state["source"] is None:
         _state["source"] = source
     _state["only"], _state["exclude"] = sel_only, sel_exclude
@@ -247,9 +253,7 @@ def enable(*, only=None, exclude=None, native=None, builtins: bool = True) -> di
 def disable() -> dict:
     """Restore every original entry point and stop rewriting imports (modules already
     rewritten by the native tier keep their code). Returns :func:`status`."""
-    _accel.disable()
-    if "rustique._takeover._hook" in sys.modules:
-        sys.modules["rustique._takeover._hook"].uninstall()
+    _accel.disable(quiet=True)  # also stops the native tier's import rewriting
     _state["source"] = None
     return status()
 
@@ -262,8 +266,6 @@ def status() -> dict:
     selection and the ``RUSTIQUE*`` variables in effect."""
     st = _accel.status()
     proc = st["process"]
-    hook = sys.modules.get("rustique._takeover._hook")
-    proc["native"] = tuple(hook.patterns()) if hook is not None else ()
     proc["free_threaded"] = not getattr(sys, "_is_gil_enabled", lambda: True)()
     proc["switch"] = {
         "source": _state["source"],
@@ -309,8 +311,22 @@ def native(obj=None, /):
 
 
 def _startup() -> None:
-    """``RUSTIQUE=1`` at interpreter startup (``_rustique_startup``)."""
-    _enable(source="RUSTIQUE=1")
+    """``RUSTIQUE=1`` at interpreter startup, called by the ``_rustique_startup.pth`` line
+    (the quiet enable: no status dict). ``1``/``true``/``yes``/``on`` enable; ``0``/
+    ``false``/``no``/``off``/empty do nothing; anything else warns. Never raises: a failure
+    prints one line and the interpreter starts plain."""
+    value = _env("RUSTIQUE")  # None under -E/-I
+    if value is None:
+        return
+    flag = _flag(value) if value.strip() else False
+    if flag is None:
+        sys.stderr.write(f"rustique: ignoring RUSTIQUE={value!r} (expected 1 or 0)\n")
+        return
+    if flag:
+        try:
+            _enable(source="RUSTIQUE=1")
+        except Exception as exc:
+            sys.stderr.write(f"rustique: RUSTIQUE={value} ignored: {type(exc).__name__}: {exc}\n")
 
 
 # --- report at exit (formatting imported only then) -------------------------------------------
