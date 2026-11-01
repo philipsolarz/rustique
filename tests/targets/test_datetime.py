@@ -655,3 +655,48 @@ def test_warning_on_compile_only():
         b2 = outcome(D.datetime.strptime, "5", fmt)
     assert (a, b) == (a2, b2)
     assert a[1] and not b[1]
+
+
+# ---------------------------------------------------------------------------------------
+# Subinterpreters: the sites are process-global; the kernels must fall back or be correct
+# there (they hold only main-interpreter objects, compared by identity).
+# ---------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("config", ["isolated", "legacy"])
+def test_subinterpreters(config):
+    interpreters = pytest.importorskip("_interpreters")
+    import textwrap
+
+    code = textwrap.dedent(
+        """
+        import datetime as D, time, zoneinfo
+        tz = D.timezone(D.timedelta(hours=1))
+        for _ in range(3):
+            p = D.datetime.strptime("15/Mar/2024:13:45:30 +0100", "%d/%b/%Y:%H:%M:%S %z")
+            assert repr(p) == "datetime.datetime(2024, 3, 15, 13, 45, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600)))", repr(p)
+            assert time.strptime("2024-03-15", "%Y-%m-%d").tm_yday == 75
+            assert p.strftime("%a %d %b %Y %H:%M:%S %z %Z") == "Fri 15 Mar 2024 13:45:30 +0100 UTC+01:00"
+            assert D.date(2024, 3, 15).strftime("%Y-%m-%d") == "2024-03-15"
+            assert time.strftime("%Y-%m-%d %H", (2024, 3, 15, 13, 0, 0, 4, 75, 0)) == "2024-03-15 13"
+            assert p.isoformat() == "2024-03-15T13:45:30+01:00" and str(p) == "2024-03-15 13:45:30+01:00"
+            assert D.time(1, 2, 3, tzinfo=tz).isoformat(timespec="minutes") == "01:02+01:00"
+            assert D.date(2024, 3, 15).isoformat() == "2024-03-15"
+            try:
+                z = D.datetime(2024, 3, 15, tzinfo=zoneinfo.ZoneInfo("Europe/Berlin"))
+            except zoneinfo.ZoneInfoNotFoundError:
+                z = None
+            if z is not None:
+                assert z.isoformat() == "2024-03-15T00:00:00+01:00" and z.strftime("%Z") == "CET"
+        """
+    )
+    warm("%d/%b/%Y:%H:%M:%S %z", "%Y-%m-%d")
+    D.datetime(2024, 1, 1).strftime("%Y")  # main interpreter: formats cached here first
+    interp = interpreters.create(config)
+    try:
+        exc = interpreters.run_string(interp, code)
+    finally:
+        interpreters.destroy(interp)
+    assert exc is None, f"{exc.type.__name__}: {exc.msg}"
+    # the main interpreter is unaffected
+    assert D.datetime.strptime("2024-03-15", "%Y-%m-%d") == D.datetime(2024, 3, 15)

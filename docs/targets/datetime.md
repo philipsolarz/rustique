@@ -203,7 +203,70 @@ No documented deviation in results, exceptions, warnings or calls into user code
 
 Ir per call, region-instrumented, each cell in its own process, Ir(2n) − Ir(n).
 
-RESULTS_TABLE
+| cell | CPython Ir | Rustique Ir | ratio | ratio, JIT on |
+|---|---:|---:|---:|---:|
+| strptime log %d/%b/%Y:%H:%M:%S %z | 62648 | 4919 | 0.079 |  |
+| strptime %Y-%m-%d %H:%M:%S | 42784 | 3108 | 0.073 |  |
+| strptime iso %f%z | 66773 | 4536 | 0.068 |  |
+| strptime %m/%d/%Y %I:%M %p | 45738 | 3344 | 0.073 |  |
+| date.strptime %Y-%m-%d | 31404 | 2375 | 0.076 |  |
+| time.strptime %Y-%m-%d %H:%M:%S | 43405 | 3749 | 0.086 |  |
+| strptime fallback: subclass receiver | 42963 | 43114 | 1.004 | 0.997 |
+| strptime fallback: unsupported %U | 39251 | 39755 | 1.013 | 1.007 |
+| strptime fallback: no match (error) | 22621 | 23465 | 1.037 | 1.040 |
+| strptime fallback: LC_TIME en_US | 56573 | 56874 | 1.005 | 1.006 |
+| strptime fallback: dependency changed (deps) | 43103 | 43326 | 1.005 | 1.003 |
+| strptime fallback: _regex_cache miss (deopt) | 103059 | 104485 | 1.014 | 1.006 |
+| strptime fallback: tracing tool (tools) | 43761 | 44102 | 1.008 | 1.006 |
+| strftime %Y-%m-%d %H:%M:%S | 17215 | 1898 | 0.110 |  |
+| strftime %Y-%m (utc) | 16990 | 1467 | 0.086 |  |
+| strftime %Y-%m-%d %H:00 (fixed offset) | 17876 | 1754 | 0.098 |  |
+| strftime %a %d %b %Y %H:%M %Z (ZoneInfo) | 21975 | 4440 | 0.202 |  |
+| strftime %A (ZoneInfo) | 16583 | 2397 | 0.145 |  |
+| strftime %a, %d %b %Y %H:%M:%S GMT (utc) | 19103 | 2198 | 0.115 |  |
+| date.strftime %Y-%m-%d | 15828 | 1373 | 0.087 |  |
+| time.strftime method %H:%M:%S.%f | 11866 | 1517 | 0.128 |  |
+| f-string {dt:%Y-%m-%d} | 16490 | 1860 | 0.113 |  |
+| time.strftime(fmt, struct_time) | 5346 | 1972 | 0.369 |  |
+| time.strftime(fmt, tuple) | 5267 | 1945 | 0.369 |  |
+| time.strftime fallback: year < 1000 | 6146 | 6379 | 1.038 | 1.040 |
+| strftime fallback: subclass | 17251 | 13876 | 0.804 | 0.811 |
+| strftime fallback: unsupported %U | 15787 | 16167 | 1.024 | 1.020 |
+| strftime fallback: names in en_US | 15631 | 16138 | 1.032 | 1.023 |
+| strftime numeric in en_US | 17195 | 1898 | 0.110 |  |
+| isoformat() | 6350 | 738 | 0.116 |  |
+| isoformat() utc | 8768 | 1239 | 0.141 |  |
+| isoformat(timespec='minutes') ZoneInfo | 8645 | 2529 | 0.293 |  |
+| str(dt) | 6663 | 1066 | 0.160 |  |
+| date.isoformat() | 3079 | 512 | 0.166 |  |
+| time.isoformat() | 3908 | 676 | 0.173 |  |
+| isoformat(sep=' ', timespec='seconds') | 6030 | 906 | 0.150 |  |
+| isoformat fallback: subclass | 5616 | 5667 | 1.009 | 1.011 |
+| isoformat fallback: unknown timespec (error) | 2704 | 2805 | 1.038 | 1.018 |
+| fromisoformat full tz | 2191 | 2204 | 1.006 |  |
+
+Fast paths: strptime 0.068–0.086 (the original runs `_strptime`'s Python code: 31k–67k Ir),
+strftime 0.086–0.20 (0.37 for `time.strftime`, whose original is already a thin C call
+into `wcsftime`), isoformat 0.12–0.29. ZoneInfo cells keep the cost of calling its C
+methods (`dst`, `utcoffset`, `tzname`) through the method protocol.
+
+Fallback and reject paths, every one ≤ 1.05 (JIT on: ≤ 1.04): subclass receivers, unsupported
+directives, errors (the original raises), non-C `LC_TIME`, a changed dependency (`deps`), a
+`_regex_cache` miss (the original compiles), a tool listening (`tools`), years < 1000 in
+`time.strftime`, unknown `timespec`. "strftime fallback: subclass" is 0.80 because the
+subclass's original `strftime` calls `time.strftime`, which is accelerated.
+
+**Workloads** (`benches/workloads/run.py compare … --only datetime -n 5 -p 3`, 3.15.1,
+wall time on the shared box, digests identical):
+
+| workload | plain | enabled | ratio |
+|---|---:|---:|---:|
+| data/log_analytics (`strptime` `%d/%b/%Y:%H:%M:%S %z`, `strftime`, `isoformat`) | 759 ms | 468 ms | **0.617** |
+| data/tz_events (`strptime` ×3 formats, ZoneInfo `strftime` `%A` / `%a %d %b %Y %H:%M %Z`, `isoformat`) | 545 ms | 323 ms | **0.593** |
+| data/csv_etl (`strftime('%Y-%m')`, `isoformat`) | 390 ms | 321 ms | **0.823** |
+| geometric mean | | | 0.670 |
+
+PYPERF
 
 ## 7. Conformance
 

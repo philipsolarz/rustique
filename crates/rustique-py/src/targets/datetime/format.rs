@@ -316,9 +316,12 @@ fn zoneinfo_type() -> usize {
     }
     static TRIED: AtomicU64 = AtomicU64::new(0);
     let g = watch::current();
-    if TRIED.swap(g, Ordering::Relaxed) == g {
+    // Only the main interpreter reads its `sys.modules` (kernels also run in others).
+    // SAFETY: called from kernels (attached thread).
+    if TRIED.load(Ordering::Relaxed) == g || !unsafe { crate::accel::in_main_interpreter() } {
         return 0;
     }
+    TRIED.store(g, Ordering::Relaxed);
     if let Some(e) = env::env() {
         // SAFETY: called from kernels (attached thread).
         capture_zoneinfo(unsafe { Python::assume_attached() }, e);
@@ -395,16 +398,18 @@ unsafe fn method(this: O, fmt: O, time_method: bool) -> Option<O> {
             c.fallback(Reason::Args);
             return None;
         }
-        let Some(cf) = compiled(fmt, true).filter(|cf| names_ok(&cf.needs)) else {
-            c.fallback(Reason::Args);
-            return None;
-        };
-        let needs = cf.needs;
+        // The main interpreter first: the format tables keep strong references to the
+        // `str` keys they cache (never to another interpreter's objects).
         let e = env::env()?;
         if !env::frame_ok(e) {
             c.fallback(Reason::Interp);
             return None;
         }
+        let Some(cf) = compiled(fmt, true).filter(|cf| names_ok(&cf.needs)) else {
+            c.fallback(Reason::Args);
+            return None;
+        };
+        let needs = cf.needs;
         let py = Python::assume_attached();
         if !ready(py, e) {
             c.fallback(Reason::Deps);
