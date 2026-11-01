@@ -687,7 +687,7 @@ fn selected(spec: &TargetSpec, only: Option<&[String]>, exclude: &[String]) -> b
     inc && !matches(spec, exclude)
 }
 
-fn check_names(names: &[String]) -> PyResult<()> {
+pub(crate) fn check_names(names: &[String]) -> PyResult<()> {
     let unknown: Vec<&String> =
         names.iter().filter(|n| !all_specs().iter().any(|s| s.name == n.as_str() || s.group == n.as_str())).collect();
     if unknown.is_empty() {
