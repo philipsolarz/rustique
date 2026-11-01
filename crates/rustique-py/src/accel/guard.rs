@@ -424,7 +424,7 @@ unsafe fn str_hash(key: *mut ffi::PyObject) -> Option<isize> {
         if key.is_null() || ffi::PyUnicode_Check(key) == 0 {
             return None;
         }
-        let hash = (*(&raw const ffi::PyUnicode_Type)).tp_hash?;
+        let hash = ffi::PyUnicode_Type.tp_hash?;
         let h = hash(key);
         (h != -1).then_some(h)
     }
@@ -673,12 +673,11 @@ pub fn watch(dict: &Bound<'_, PyDict>, key: &str, gen_: &'static AtomicU64) -> P
     let mut guard = tables();
     let t = guard.get_or_insert_with(Tables::default);
     let slot = dict_slot(py, t, dict.as_any())?;
-    // SAFETY: attached thread; live objects.
-    if !slot
-        .gens
-        .iter()
-        .any(|g| std::ptr::eq(g.counter, gen_) && g.key.0 != 0 && unsafe { same_key(k.as_ptr(), h, g.key) })
-    {
+    let known = slot.gens.iter().any(|g| {
+        // SAFETY: attached thread; live objects (no Python code).
+        std::ptr::eq(g.counter, gen_) && g.key.0 != 0 && unsafe { same_key(k.as_ptr(), h, g.key) }
+    });
+    if !known {
         slot.gens.push(GenWatch { key: (k.into_ptr() as usize, h), counter: gen_ });
     }
     Ok(())
