@@ -124,10 +124,18 @@ fn pin_sep(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, deps: &'static DepFlag) 
     Ok(())
 }
 
-fn prep_sep_fn(cx: &mut Prepare<'_>, attr: &str, rt: &'static Rt, kernel: ffi::vectorcallfunc) -> Result<(), Refusal> {
+/// Layout calibrations every kernel of the group relies on (str buffers; plain str
+/// subclasses, which fall back when unavailable).
+fn init_layouts(cx: &Prepare<'_>) -> Result<(), Refusal> {
     if !rt::init_str_layout(cx.py()) {
         return Err(refuse!("str layout not calibrated"));
     }
+    rt::init_plain(cx.py());
+    Ok(())
+}
+
+fn prep_sep_fn(cx: &mut Prepare<'_>, attr: &str, rt: &'static Rt, kernel: ffi::vectorcallfunc) -> Result<(), Refusal> {
+    init_layouts(cx)?;
     let g = cx.module()?.dict();
     let f = func(cx, &g, attr)?;
     pin_sep(cx, &g, &rt.deps)?;
@@ -150,10 +158,8 @@ fn prep_isabs(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     prep_sep_fn(cx, "isabs", &RT_ISABS, k_isabs)
 }
 
-fn prep_splitext(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    if !rt::init_str_layout(py) {
-        return Err(refuse!("str layout not calibrated"));
-    }
+fn prep_splitext(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    init_layouts(cx)?;
     let g = cx.module()?.dict();
     let f = func(cx, &g, "splitext")?;
     let deps = &RT_SPLITEXT.deps;
@@ -189,6 +195,8 @@ unsafe fn ty_of(o: O) -> Option<Ty> {
             Some(Ty::Str)
         } else if exact_bytes(o) {
             Some(Ty::Bytes)
+        } else if ffi::PyUnicode_Check(o) != 0 && rt::plain_str_subclass(o) {
+            Some(Ty::Str)
         } else {
             None
         }
@@ -279,7 +287,17 @@ unsafe fn join_str(args: *const O, n: usize) -> O {
             views[k] = v;
             jargs[k] = crate::with_text!(v.text, |s| JoinArg::of(s));
         }
-        match posix::join_plan(jargs, pieces) {
+        let plan = match posix::join_plan(jargs, pieces) {
+            // `path += b` with an empty `b` keeps `path` only on the exact-str fast path
+            // (`PyUnicode_Append` with the empty singleton). With a str subclass on either
+            // side CPython goes through `PyUnicode_Concat`, which returns a fresh exact copy.
+            Joined::Arg(k) if k + 1 < n && (k..n).any(|j| !exact_str(*args.add(j))) => {
+                pieces[0] = Piece { arg: k, sep_before: false };
+                Joined::Build { npieces: 1, len: views[k].len() }
+            }
+            p => p,
+        };
+        match plan {
             Joined::Arg(k) => ffi::Py_NewRef(*args.add(k)),
             Joined::Build { npieces, len } => {
                 let pieces = &pieces[..npieces];
@@ -498,9 +516,7 @@ fn check_normpath(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, deps: &'static De
 
 /// What `abspath` reads: `os.fspath`, `os.getcwd(b)`, `join`, `_get_sep`, `normpath`.
 fn prep_abs_common<'py>(cx: &mut Prepare<'py>, g: &Bound<'py, PyDict>, deps: &'static DepFlag) -> Result<(), Refusal> {
-    if !rt::init_str_layout(cx.py()) {
-        return Err(refuse!("str layout not calibrated"));
-    }
+    init_layouts(cx)?;
     pin_sep(cx, g, deps)?;
     let osd = cx.loaded_module("os")?.dict();
     for (key, cell) in [("getcwd", &GETCWD), ("getcwdb", &GETCWDB)] {
