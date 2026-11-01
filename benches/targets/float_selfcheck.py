@@ -41,7 +41,9 @@ def jobs(scale):
 
 
 def run(job):
-    from rustique._rustique import _t_float
+    from rustique._rustique import _accel
+
+    _t_float = _accel._t_float
 
     fam, n, seed = job
     t0 = time.time()

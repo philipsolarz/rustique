@@ -90,24 +90,28 @@ def _summary(err: Any) -> str:
 
 
 def install(groups: list[str]) -> dict[str, Any]:
-    from rustique import _rustique
+    import rustique
+    from rustique import _takeover as _tk
 
+    rustique.enable(only=groups)
+    _tk.stats(enabled=True, reset=True)
     out = {}
-    for g in groups:
-        mod = getattr(_rustique, f"_t_{g}")
-        reason = mod.install()
-        st = mod.status()
-        out[g] = st if isinstance(st, dict) else {"targets": st}
-        if reason is not None:
-            raise SystemExit(f"target group {g} refused: {reason}")
-        mod.stats_on(True)
+    for d in _tk.status()["targets"]:
+        if d["group"] in groups:
+            out[d["name"]] = d
+            # Module targets wait for their import (the test modules import them).
+            if d["state"] not in ("installed", "pending-import"):
+                raise SystemExit(f"target {d['name']} not installed: {d['state']} {d['reason']}")
     return out
 
 
 def counters(groups: list[str]) -> dict[str, Any]:
-    from rustique import _rustique
+    import rustique
+    from rustique import _takeover as _tk
 
-    return {g: getattr(_rustique, f"_t_{g}").counters() for g in groups}
+    status = {d["name"]: d for d in _tk.status()["targets"]}
+    return {name: {**c, "state": status[name]["state"]} for name, c in _tk.stats().items()
+            if status.get(name, {}).get("group") in groups}
 
 
 def run_child(module: str, groups: list[str], verbose: bool) -> dict[str, Any]:
@@ -189,7 +193,7 @@ def main() -> None:
         )
         tally = lambda d: {k: list(d["outcomes"].values()).count(k)  # noqa: E731
                            for k in ("pass", "fail", "error", "skip", "xfail", "xpass")}
-        hits = {g: c.get("hits") if isinstance(c, dict) else c for g, c in accel.get("counters", {}).items()}
+        hits = {n: (c.get("hits"), c.get("state")) for n, c in accel.get("counters", {}).items()}
         same = not diffs and not plain.get("crash") and not accel.get("crash")
         ok &= same
         print(f"  {module:<14} plain {tally(plain)}  targets {tally(accel)}  "

@@ -171,13 +171,13 @@ def worker(name: str, variant: str) -> None:
     exec(COMMON, ns)
     exec("enc = json.JSONEncoder()", ns)
     if variant == "on":
-        from rustique import _rustique
+        import rustique
+    from rustique import _takeover as _tk
 
-        for g in groups.split(","):
-            mod = getattr(_rustique, f"_t_{g}")
-            reason = mod.install()
-            if reason is not None:
-                raise SystemExit(f"{g} refused: {reason}")
+        rustique.enable(only=groups.split(","))
+        for d in _tk.status()["targets"]:
+            if d["group"] in groups.split(",") and d["state"] != "installed":
+                raise SystemExit(f"{d['name']} not installed: {d['state']} {d['reason']}")
     names = [k for k in ns if not k.startswith("__") and k.isidentifier()]
     binds = "".join(f"    {k} = _g[{k!r}]\n" for k in names)
     ns["_g"] = ns

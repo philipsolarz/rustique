@@ -18,39 +18,26 @@
 //! Python objects, so it is interpreter-agnostic, and it lives as long as the process
 //! (subclasses created while installed keep its address after uninstall).
 
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::PyList;
 
 use rustique_core::float_repr;
 
-use crate::accel::site::{Patch, Site, SlotName};
-use crate::accel::stats::{self, Counters, Reason};
-use crate::accel::version;
-
-/// CPython minor versions `float.repr` is validated on (GIL and free-threaded builds).
-pub const VERSIONS: &[u8] = &[14, 15];
+use crate::accel::{Counters, Original, Prepare, Reason, Refusal, SlotName, TargetSpec};
 
 pub static COUNTERS: Counters = Counters::new();
 
-/// The original `float_repr` (the kernel's fallback), saved before the swap.
-static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+/// The original `float_repr` (the kernel's fallback).
+static ORIG_REPR: Original<ffi::reprfunc> = Original::new();
 /// The original `float.__format__` (`METH_O`).
-static ORIGINAL_FORMAT: AtomicUsize = AtomicUsize::new(0);
+static ORIG_FORMAT: Original<ffi::PyCFunction> = Original::new();
 /// A fresh `PyUnicode_New(n, 127)` keeps its characters right after the `PyASCIIObject`
 /// header (verified at install).
 static ASCII_LAYOUT_OK: AtomicBool = AtomicBool::new(false);
-
-struct State {
-    patch: Option<Patch>,
-    refused: Option<String>,
-}
-
-static STATE: Mutex<State> = Mutex::new(State { patch: None, refused: None });
 
 /// A new compact ASCII `str` holding `bytes` (exactly `_PyUnicode_FromASCII` for
 /// `len >= 2`; one character goes through CPython for its cached singleton).
@@ -118,12 +105,6 @@ pub(crate) unsafe fn repr_finite(x: f64) -> *mut ffi::PyObject {
     unsafe { new_ascii(&buf[..n]) }
 }
 
-#[inline(always)]
-unsafe fn original(op: *mut ffi::PyObject) -> *mut ffi::PyObject {
-    // SAFETY: the saved `float_repr` (set before the kernel can be reached).
-    unsafe { std::mem::transmute::<usize, ffi::reprfunc>(ORIGINAL.load(Relaxed))(op) }
-}
-
 /// The `tp_repr` kernel.
 unsafe extern "C" fn repr_kernel(op: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: `op` is a live float (or float subclass) instance; attached thread.
@@ -136,14 +117,8 @@ unsafe extern "C" fn repr_kernel(op: *mut ffi::PyObject) -> *mut ffi::PyObject {
             }
         }
         COUNTERS.fallback(Reason::Args);
-        original(op)
+        ORIG_REPR.get()(op)
     }
-}
-
-#[inline(always)]
-unsafe fn original_format(slf: *mut ffi::PyObject, spec: *mut ffi::PyObject) -> *mut ffi::PyObject {
-    // SAFETY: the saved `float.__format__` (set before the kernel can be reached).
-    unsafe { std::mem::transmute::<usize, ffi::PyCFunction>(ORIGINAL_FORMAT.load(Relaxed))(slf, spec) }
 }
 
 /// The `float.__format__` kernel (`METH_O`): an empty format spec is `str(x)`
@@ -164,15 +139,7 @@ unsafe extern "C" fn format_kernel(slf: *mut ffi::PyObject, spec: *mut ffi::PyOb
             }
         }
         COUNTERS.fallback(Reason::Args);
-        original_format(slf, spec)
-    }
-}
-
-/// `sys._clear_internal_caches()`: 3.15's tier-2 traces copy `ml_meth`; call after every
-/// `ml_meth` install and uninstall (contract §3.8).
-pub(crate) fn clear_jit_caches(py: Python<'_>) {
-    if let Ok(f) = py.import("sys").and_then(|s| s.getattr("_clear_internal_caches")) {
-        let _ = f.call0();
+        ORIG_FORMAT.get()(slf, spec)
     }
 }
 
@@ -219,166 +186,63 @@ fn cpython_repr(x: f64) -> Option<Vec<u8>> {
     }
 }
 
-/// Validate (version gate, original pointer, self-test) and swap the slot.
-fn install_inner(py: Python<'_>) -> Result<Patch, String> {
-    version::supported(py, VERSIONS).map_err(|e| e.to_string())??;
+/// Validate (layout, original pointers, fingerprint, self-test) and declare both sites.
+fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if !calibrate_ascii(py) {
-        return Err("str layout not calibrated".into());
+        return Err(Refusal::new("str layout not calibrated"));
     }
     let float_type = py.get_type::<pyo3::types::PyFloat>();
-    // The slot must still hold what CPython installed: the function the `float.__repr__`
-    // wrapper descriptor captured when the type was readied.
-    // (Static builtin types keep their dict in the interpreter, not in `tp_dict`.)
-    let descr = float_type
-        .getattr("__dict__")
-        .and_then(|d| d.get_item("__repr__"))
-        .map_err(|_| "float.__repr__ not found".to_string())?;
-    // SAFETY: attached thread; type and descriptor objects are alive.
-    let (current, wrapped) = unsafe {
-        if ffi::Py_TYPE(descr.as_ptr()) != &raw mut ffi::PyWrapperDescr_Type {
-            return Err("float.__repr__ is not a wrapper descriptor".into());
-        }
-        (
-            (*float_type.as_type_ptr()).tp_repr.map_or(0, |f| f as usize),
-            (*descr.as_ptr().cast::<ffi::PyWrapperDescrObject>()).d_wrapped as usize,
-        )
-    };
-    if current == 0 || current != wrapped {
-        return Err("float.tp_repr was replaced by someone else".into());
-    }
-    let site =
-        Site::slot(&float_type, SlotName::TpRepr, repr_kernel as ffi::reprfunc as usize).map_err(|e| e.to_string())?;
-    // `float.__format__`: fingerprint of the method table entry.
-    let fmt = float_type.getattr("__dict__").and_then(|d| d.get_item("__format__")).map_err(|e| e.to_string())?;
-    let (fmt_site, conv) =
-        Site::ml_meth(&fmt, format_kernel as ffi::PyCFunction as usize).map_err(|e| e.to_string())?;
-    if fmt_site.name != "__format__" || conv != ffi::METH_O {
-        return Err(format!("float.__format__ fingerprint differs ({} {conv:#x})", fmt_site.name));
-    }
-    // Behavioural self-test of the kernel's text against the original's, before the swap.
-    for &x in PROBES {
-        for v in [x, -x] {
-            let mut buf = [0u8; 32];
-            let n = float_repr::write_finite(v, &mut buf);
-            if cpython_repr(v).as_deref() != Some(&buf[..n]) {
-                return Err(format!("self-test failed on {v:e}"));
-            }
-            // The original `__format__` with an empty spec gives the same text.
-            let via_format = (|| -> PyResult<String> {
-                pyo3::types::PyFloat::new(py, v).call_method1("__format__", ("",))?.extract()
-            })();
-            if via_format.ok().as_deref().map(str::as_bytes) != Some(&buf[..n]) {
-                return Err(format!("format self-test failed on {v:e}"));
+    // The slot must hold what the `float.__repr__` wrapper captured (checked by `slot`).
+    cx.slot(&float_type, SlotName::TpRepr, repr_kernel as ffi::reprfunc, &ORIG_REPR)?;
+    let fmt = cx.type_attr(&float_type, "__format__")?;
+    cx.fingerprint_c(&fmt, FORMAT_FINGERPRINT)?;
+    cx.ml_meth(&fmt, format_kernel as ffi::PyCFunction, &ORIG_FORMAT)?;
+    // Behavioural self-test: the core's text against `PyOS_double_to_string` (what
+    // `float_repr` returns) and the original `__format__('')`, both signs of every probe.
+    cx.self_test("float repr probes", |py| {
+        for &x in PROBES {
+            for v in [x, -x] {
+                let mut buf = [0u8; 32];
+                let n = float_repr::write_finite(v, &mut buf);
+                if cpython_repr(v).as_deref() != Some(&buf[..n]) {
+                    return Ok(false);
+                }
+                let obj = pyo3::types::PyFloat::new(py, v);
+                let empty = pyo3::types::PyString::new(py, "");
+                // SAFETY: the original METH_O function with its receiver and argument.
+                let r = unsafe { Bound::from_owned_ptr_or_err(py, ORIG_FORMAT.get()(obj.as_ptr(), empty.as_ptr()))? };
+                if r.extract::<String>()?.as_bytes() != &buf[..n] {
+                    return Ok(false);
+                }
             }
         }
-    }
-    ORIGINAL.store(site.original, Relaxed);
-    ORIGINAL_FORMAT.store(fmt_site.original, Relaxed);
-    let mut patch = Patch { sites: vec![site, fmt_site] };
-    patch.install().map_err(|e| e.to_string())?;
-    clear_jit_caches(py);
-    Ok(patch)
+        Ok(true)
+    })
 }
 
-/// Install `float.repr`; returns `None` when installed (or already), the refusal reason
-/// otherwise.
-pub fn install(py: Python<'_>) -> Option<String> {
-    let mut st = STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if st.patch.is_some() {
-        return None;
-    }
-    match install_inner(py) {
-        Ok(p) => {
-            st.patch = Some(p);
-            st.refused = None;
-            None
-        }
-        Err(e) => {
-            st.refused = Some(e.clone());
-            Some(e)
-        }
-    }
-}
+/// `ml_name`/`ml_flags`/`ml_doc` of `float.__format__` per minor version
+/// (`rustique._rustique._accel.fingerprint(float.__dict__['__format__'])`).
+const FORMAT_FINGERPRINT: crate::accel::Fingerprints = &[(3, 14, FMT_314), (3, 15, FMT_315)];
+const FMT_314: &str = "c80efea6ae8f6b2c";
+const FMT_315: &str = "c80efea6ae8f6b2c";
 
-/// Restore the original slot and method (the kernels stay callable: subclasses may have
-/// copied the slot, traces may hold the method).
-pub fn uninstall(py: Python<'_>) {
-    let mut st = STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(mut p) = st.patch.take() {
-        p.uninstall(false);
-        clear_jit_caches(py);
-    }
-}
+/// `float.repr`: `PyFloat_Type.tp_repr` and `float.__format__('')`.
+pub static FLOAT_REPR: TargetSpec = TargetSpec {
+    name: "float.repr",
+    group: "float",
+    module: None,
+    versions: &[(3, 14), (3, 15)],
+    free_threaded: true,
+    counters: &COUNTERS,
+    prepare,
+    ..TargetSpec::DEFAULT
+};
 
-pub fn installed() -> bool {
-    STATE.lock().unwrap_or_else(|e| e.into_inner()).patch.is_some()
-}
+pub static TARGETS: &[&TargetSpec] = &[&FLOAT_REPR];
 
 // ---------------------------------------------------------------------------------------
-// Python interface (private module `rustique._rustique._t_float`, until the accel
-// registry takes over installation).
+// Test and benchmark helpers (`rustique._rustique._accel._t_float`).
 // ---------------------------------------------------------------------------------------
-
-#[pyfunction(name = "install")]
-fn py_install(py: Python<'_>) -> Option<String> {
-    install(py)
-}
-
-#[pyfunction(name = "uninstall")]
-fn py_uninstall(py: Python<'_>) {
-    uninstall(py)
-}
-
-#[pyfunction(name = "installed")]
-fn py_installed() -> bool {
-    installed()
-}
-
-#[pyfunction]
-fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    let st = STATE.lock().unwrap_or_else(|e| e.into_inner());
-    let d = PyDict::new(py);
-    d.set_item("name", "float.repr")?;
-    d.set_item("group", "float")?;
-    d.set_item(
-        "state",
-        if st.patch.is_some() {
-            "installed"
-        } else if st.refused.is_some() {
-            "refused"
-        } else {
-            "disabled"
-        },
-    )?;
-    d.set_item("reason", st.refused.clone())?;
-    d.set_item("sites", vec!["float.tp_repr", "float.__format__"])?;
-    d.set_item("versions", VERSIONS.iter().map(|m| format!("3.{m}")).collect::<Vec<_>>())?;
-    Ok(d)
-}
-
-/// Turn the (global) counters on or off.
-#[pyfunction]
-fn stats_on(on: bool) {
-    stats::ON.store(on, Relaxed);
-}
-
-#[pyfunction]
-fn counters(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    let (hits, fb) = COUNTERS.snapshot();
-    let d = PyDict::new(py);
-    d.set_item("hits", hits)?;
-    let f = PyDict::new(py);
-    for (k, v) in fb {
-        f.set_item(k, v)?;
-    }
-    d.set_item("fallback", f)?;
-    Ok(d)
-}
-
-#[pyfunction]
-fn reset_counters() {
-    COUNTERS.reset();
-}
 
 /// The core's text for `x` (any float), for tests.
 #[pyfunction]
@@ -461,13 +325,6 @@ fn selfcheck(py: Python<'_>, family: &str, n: u64, seed: u64) -> PyResult<(u64, 
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let sub = PyModule::new(m.py(), "_t_float")?;
-    sub.add_function(wrap_pyfunction!(py_install, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(py_uninstall, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(py_installed, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(status, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(stats_on, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(counters, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(reset_counters, &sub)?)?;
     sub.add_function(wrap_pyfunction!(core_repr, &sub)?)?;
     sub.add_function(wrap_pyfunction!(core_reprs, &sub)?)?;
     sub.add_function(wrap_pyfunction!(selfcheck, &sub)?)?;

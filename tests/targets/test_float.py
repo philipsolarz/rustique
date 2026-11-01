@@ -15,8 +15,30 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-_rustique = pytest.importorskip("rustique._rustique")
-t = _rustique._t_float
+rustique = pytest.importorskip("rustique")
+from rustique import _takeover as _tk  # noqa: E402  (status/stats until the DX layer exports them)
+from rustique._rustique import _accel  # noqa: E402
+
+t = _accel._t_float
+NAME = "float.repr"
+
+
+def install():
+    rustique.enable(only=["float"])
+    st_ = {d["name"]: d for d in _tk.status()["targets"]}[NAME]
+    assert st_["state"] == "installed", st_
+
+
+def uninstall():
+    _accel.disable([NAME])
+
+
+def counters():
+    return _tk.stats()[NAME]
+
+
+def reset_counters():
+    _tk.stats(reset=True)
 
 ORIG = float.__repr__
 
@@ -30,11 +52,10 @@ SPECIALS = [
 
 @pytest.fixture(autouse=True)
 def installed():
-    assert t.install() is None
-    t.stats_on(True)
-    t.reset_counters()
+    install()
+    _tk.stats(enabled=True, reset=True)
     yield
-    t.stats_on(False)
+    _tk.stats(enabled=False)
 
 
 def from_bits(b: int) -> float:
@@ -42,10 +63,11 @@ def from_bits(b: int) -> float:
 
 
 def test_status():
-    st_ = t.status()
-    assert st_["name"] == "float.repr" and st_["group"] == "float"
+    st_ = {d["name"]: d for d in _tk.status()["targets"]}[NAME]
+    assert st_["group"] == "float"
     assert st_["state"] == "installed" and st_["reason"] is None
-    assert st_["sites"] == ["float.tp_repr", "float.__format__"]
+    assert [s.split()[0] for s in st_["sites"]] == ["float.tp_repr", "float.__format__"]
+    assert st_["versions"] == ["3.14", "3.14t", "3.15", "3.15t"]
 
 
 @pytest.mark.parametrize("x", SPECIALS)
@@ -62,12 +84,12 @@ def test_specials(x):
 
 def test_reachability():
     x = 1.23  # a constant: the compiler may fold nothing here, repr is a call
-    t.reset_counters()
+    reset_counters()
     for expr in (lambda: repr(x), lambda: str(x), lambda: f"{x}", lambda: f"{x!r}", lambda: "%s" % (x,),
                  lambda: "%r" % (x,), lambda: format(x), lambda: "{}".format(x), lambda: [x].__repr__()):
-        before = t.counters()["hits"]
+        before = counters()["hits"]
         expr()
-        assert t.counters()["hits"] == before + 1
+        assert counters()["hits"] == before + 1
 
 
 def test_format_spec_paths():
@@ -94,9 +116,9 @@ def test_format_spec_paths():
 
 
 def test_not_reached_but_exact():
-    t.reset_counters()
+    reset_counters()
     assert float.__repr__(2.5) == "2.5"  # wrapper descriptor: the original
-    assert t.counters()["hits"] == 0
+    assert counters()["hits"] == 0
 
 
 def test_fallbacks():
@@ -107,13 +129,13 @@ def test_fallbacks():
         def __repr__(self):
             return "G!"
 
-    t.reset_counters()
+    reset_counters()
     assert repr(F(1.5)) == "1.5"
     assert repr(G(1.5)) == "G!"
     assert str(G(1.5)) == "G!"
     for v in (math.inf, -math.inf, math.nan):
         assert repr(v) == ORIG(v)
-    c = t.counters()
+    c = counters()
     assert c["hits"] == 0
     assert c["fallback"]["args"] == 3  # inf, -inf, nan (Python subclasses copied the original)
 
@@ -132,28 +154,30 @@ def test_result_objects():
 
 
 def test_uninstall_restores():
-    t.uninstall()
+    uninstall()
     try:
-        t.reset_counters()
+        reset_counters()
         assert repr(1.25) == "1.25"
-        assert t.counters()["hits"] == 0
-        assert t.status()["state"] == "disabled"
+        assert f"{1.25}" == "1.25"
+        assert counters()["hits"] == 0
+        st_ = {d["name"]: d for d in _tk.status()["targets"]}[NAME]
+        assert st_["state"] == "disabled"
     finally:
-        assert t.install() is None
-    t.reset_counters()
+        install()
+    reset_counters()
     repr(1.25)
-    assert t.counters()["hits"] == 1
+    assert counters()["hits"] == 1
 
 
 def test_subclass_created_while_installed_keeps_working_after_uninstall():
     class H(float):
         pass
 
-    t.uninstall()
+    uninstall()
     try:
         assert repr(H(0.5)) == "0.5"
     finally:
-        assert t.install() is None
+        install()
 
 
 @given(st.floats(allow_nan=True, allow_infinity=True))
@@ -209,8 +233,8 @@ def test_free_threaded_stress():
         th.start()
     try:
         for _ in range(200):
-            t.uninstall()
-            assert t.install() is None
+            uninstall()
+            install()
     finally:
         stop.set()
         for th in threads:

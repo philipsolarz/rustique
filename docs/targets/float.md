@@ -63,14 +63,16 @@ Identity with CPython (all **measured**):
 
 - Version gate: CPython 3.14 and 3.15 final, GIL and free-threaded, non-debug
   (`accel::version::supported`).
+- Registered as `TargetSpec` `float.repr` (group `float`, installed at `enable()`).
 - Original check: `PyFloat_Type.tp_repr` must equal the `d_wrapped` of the `float.__repr__`
-  wrapper descriptor (i.e. CPython's own function, nobody patched it); `float.__format__`
-  must be `ml_name == "__format__"`, `METH_O`.
-- Install is all-or-nothing (both sites), compare-and-swap; `sys._clear_internal_caches()`
-  after install and uninstall (the `ml_meth` site; contract §3.8).
-- Interim interface until the accel registry lands: `rustique._rustique._t_float`
-  (`install()`, `uninstall()`, `status()`, `counters()`, `stats_on()`), counters `hits`
-  and `fallback.args`.
+  wrapper descriptor (i.e. CPython's own function, nobody patched it; `Prepare::slot`);
+  `float.__format__` fingerprint (`ml_name`, `ml_flags`, `ml_doc`) recorded for 3.14 and
+  3.15 (`c80efea6ae8f6b2c` on both).
+- Install is all-or-nothing (both sites), compare-and-swap; the registry clears the JIT
+  caches after the `ml_meth` swap and on `disable()` (contract §3.8). Counters: `hits`,
+  `fallback.args`.
+- Test/benchmark helpers: `rustique._rustique._accel._t_float` (`core_repr`,
+  `core_reprs`, `_selfcheck`).
 
 ## Conformance (measured, `tests/targets/conformance.py --groups float`)
 
