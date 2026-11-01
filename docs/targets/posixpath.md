@@ -224,7 +224,7 @@ the four builds.
 
 `benches/targets/paths_startup.py` (callgrind regions, fresh processes, 3.15.1):
 `rustique.enable(only=["posixpath"])` with `posixpath` imported (it always is) costs
-2.0M Ir (≈ 0.5 ms): fingerprints (each shared helper hashed once), pins, the str layout
+1.98M Ir (≈ 0.5 ms): fingerprints (each shared helper hashed once), pins, the str layout
 calibration and the normpath self-test. Nothing is imported.
 
 ## Version coverage

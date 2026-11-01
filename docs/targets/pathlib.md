@@ -173,8 +173,8 @@ the four builds.
 | region | Ir |
 |---|---:|
 | `import pathlib`, plain | 7.57M |
-| `import pathlib` after `enable(only=["pathlib"])` | STARTUP_PATHLIB_PENDING |
-| `enable(only=["pathlib"])` with pathlib imported | STARTUP_PATHLIB_ENABLE |
+| `import pathlib` after `enable(only=["pathlib"])` | 11.80M (+4.24M, ≈ 1 ms) |
+| `enable(only=["pathlib"])` with pathlib imported | 5.74M |
 
 The install work is the fingerprints (29 functions, hashed once), and per target the pins
 of the attributes, module globals and builtins its original reaches (`pin_attr` through
