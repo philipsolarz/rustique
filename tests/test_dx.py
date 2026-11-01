@@ -1,9 +1,9 @@
 """The user-facing switches (docs/USAGE.md, docs/targets/dx.md): the startup hook, the
 environment variables, the kill switch, selection, the report at exit.
 
-Selection and kill-switch logic is tested against a fake framework (`rustique._accel`, the
-extension's primitives), so these tests hold whatever targets are registered; a few tests
-run the real framework end to end in subprocesses.
+These tests are the contract of the switches: they go through the public API, the shipped
+`.pth` line and environment variables only, so they hold whichever layer implements the
+environment handling (Python, or the extension's `_accel`).
 """
 
 import json
@@ -16,7 +16,7 @@ import tomllib
 import pytest
 
 import rustique
-from rustique import _report, _switch
+from rustique import _report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PYSRC = os.path.join(ROOT, "python")
@@ -34,85 +34,53 @@ def py(code: str, *args: str, env: dict[str, str] | None = None, flags: tuple[st
                           env=env if env is not None else clean_env(), timeout=120)
 
 
-# --- fake framework -------------------------------------------------------------------------
+# --- the switch semantics: the contract (docs/USAGE.md "Reference: environment variables") ----
+#
+# Behaviour through the public API and the real framework, whatever implements the
+# environment handling (Python today, `_accel` in Rust per the lead's plan). Groups of the
+# registry used here: `containers` (list/tuple methods) and `builtins` (sum/min/max/...).
 
-
-class FakeAccel:
-    """Stands for `rustique._rustique._accel` (the framework's primitives)."""
-
-    TARGETS = [("json.dumps", "json"), ("json.loads", "json"), ("copy.deepcopy", "copy"), ("re.match", "re")]
-    RustiqueCheckError = RuntimeError
-
-    def __init__(self):
-        self.calls: list = []
-        self.installed: set[str] = set()
-        self.mode = "off"
-        self.stats_on = False
-
-    def targets(self):
-        return [(n, g, None) for n, g in self.TARGETS]
-
-    def enable(self, only=None, exclude=None, builtins=True, quiet=False):
-        assert quiet  # rustique never needs the framework's status dict here
-        self.calls.append(("enable", {"only": only, "exclude": exclude}))
-        for n, g in self.TARGETS:
-            if (only is None or n in only or g in only) and not (n in (exclude or ()) or g in (exclude or ())):
-                self.installed.add(n)
-
-    def disable(self, names=None, quiet=False):
-        self.calls.append(("disable",))
-        self.installed.clear()
-
-    def status(self):
-        return {"targets": [{"name": n, "group": g, "state": "installed" if n in self.installed else "disabled",
-                             "reason": None, "refusal": None, "sites": [], "versions": ["3.15"]}
-                            for n, g in self.TARGETS],
-                "process": {"stats": self.stats_on, "check": self.mode}}
-
-    def stats(self, enabled=None, reset=False):
-        self.calls.append(("stats", enabled))
-        if enabled is not None:
-            self.stats_on = enabled
-        return {n: {"hits": 1, "fallback": {}} for n in self.installed}
-
-    def check(self, mode):
-        self.calls.append(("check", mode))
-        prev, self.mode = self.mode, mode
-        return prev
-
-    def check_mode(self):
-        return self.mode
+CONTAINERS = {"list.sort", "list.index", "list.count", "tuple.index", "tuple.count", "list.__contains__",
+              "tuple.__contains__"}
 
 
 @pytest.fixture
-def fake(monkeypatch):
-    fw = FakeAccel()
-    monkeypatch.setattr(rustique, "_accel", fw)
-    monkeypatch.setattr(rustique, "_state", {"source": None, "only": None, "exclude": (), "killed_calls": 0,
-                                             "report": None})
+def real(monkeypatch):
     for k in VARS:
         monkeypatch.delenv(k, raising=False)
-    return fw
+    was = installed()
+    yield
+    rustique.disable()
+    rustique.check(None)
+    if was:
+        rustique.enable()
 
 
-def enables(fw):
-    return [c[1] for c in fw.calls if c[0] == "enable"]
+def installed(st=None) -> set[str]:
+    st = st or rustique.status()
+    return {t["name"] for t in st["targets"] if t["state"] == "installed"}
 
 
-# --- kill switch --------------------------------------------------------------------------
+def groups(st=None) -> set[str]:
+    st = st or rustique.status()
+    return {t["group"] for t in st["targets"] if t["state"] == "installed"}
 
 
 @pytest.mark.parametrize("value", ["0", "false", "OFF", "no", " 0 "])
-def test_kill_switch_makes_enable_a_noop(fake, monkeypatch, value):
+def test_kill_switch_makes_enable_a_noop(real, monkeypatch, value):
+    rustique.disable()
     monkeypatch.setenv("RUSTIQUE", value)
-    st = rustique.enable(only=["json"])
-    assert enables(fake) == []
-    assert not fake.installed
+    calls = rustique.status()["process"]["switch"]["killed_calls"]
+    monkeypatch.setenv("RUSTIQUE_CHECK", "1")
+    monkeypatch.setenv("RUSTIQUE_STATS", "1")
+    st = rustique.enable(only=["containers"])
+    assert installed(st) == set()
     sw = st["process"]["switch"]
-    assert sw["killed"] and sw["killed_calls"] == 1 and sw["source"] is None
+    assert sw["killed"] and sw["killed_calls"] == calls + 1 and sw["source"] is None
+    assert rustique.check() in (None, "off") and not st["process"]["stats"]  # nothing else switched on
 
 
-def test_kill_switch_native_returns_the_object(fake, monkeypatch):
+def test_kill_switch_native_returns_the_object(real, monkeypatch):
     monkeypatch.setenv("RUSTIQUE", "0")
 
     def f():
@@ -123,138 +91,107 @@ def test_kill_switch_native_returns_the_object(fake, monkeypatch):
 
 
 @pytest.mark.parametrize("value", ["1", "", "yes", "anything"])
-def test_only_zero_like_values_kill(fake, monkeypatch, value):
+def test_only_off_values_kill(real, monkeypatch, value):
     monkeypatch.setenv("RUSTIQUE", value)
-    rustique.enable()
-    assert len(enables(fake)) == 1
+    assert installed(rustique.enable()) >= CONTAINERS
 
 
-# --- selection ----------------------------------------------------------------------------
+def test_enable_selection(real):
+    st = rustique.enable(only="containers, builtins", exclude=["list.sort"])
+    assert installed(st) >= CONTAINERS - {"list.sort"} and "list.sort" not in installed(st)
+    assert st["process"]["switch"]["exclude"] == ("list.sort",)
+    rustique.disable()
+    assert groups(rustique.enable(builtins=False)) == {"containers"}
 
 
-def test_enable_passes_selection(fake):
-    rustique.enable(only="json, copy", exclude=["json.loads"])
-    assert enables(fake) == [{"only": ["json", "copy"], "exclude": ["json.loads"]}]
-    assert fake.installed == {"json.dumps", "copy.deepcopy"}
-    rustique.enable(builtins=False)
-    assert enables(fake)[-1] == {"only": None, "exclude": ["builtins"]}
-
-
-def test_env_only_and_exclude_apply_to_explicit_enable(fake, monkeypatch):
-    monkeypatch.setenv("RUSTIQUE_ONLY", "json,copy")
-    monkeypatch.setenv("RUSTIQUE_EXCLUDE", "json.loads")
-    rustique.enable()
-    assert enables(fake)[0]["only"] == ["json", "copy"]
-    assert enables(fake)[0]["exclude"] == ["json.loads"]
-
-
-def test_env_only_intersects_code_only(fake, monkeypatch):
-    """The environment narrows, never widens: code says json + copy, env says json."""
-    monkeypatch.setenv("RUSTIQUE_ONLY", "json")
-    rustique.enable(only=["json.dumps", "copy"])
-    assert enables(fake)[0]["only"] == ["json.dumps"]
-    assert fake.installed == {"json.dumps"}
-
-
-def test_env_exclude_adds_to_code_exclude(fake, monkeypatch):
-    monkeypatch.setenv("RUSTIQUE_EXCLUDE", "re")
-    rustique.enable(exclude="copy")
-    assert enables(fake)[0]["exclude"] == ["copy", "re"]
-    assert fake.installed == {"json.dumps", "json.loads"}
-
-
-def test_unknown_env_names_warn_and_are_dropped(fake, monkeypatch, capsys):
-    monkeypatch.setenv("RUSTIQUE_EXCLUDE", "jsn,re")
-    rustique.enable()
-    err = capsys.readouterr().err
-    assert "RUSTIQUE_EXCLUDE: no target or group named 'jsn', ignored" in err and "copy, json, re" in err
-    assert enables(fake)[-1]["exclude"] == ["re"]  # the framework raises on unknown names
-    monkeypatch.delenv("RUSTIQUE_EXCLUDE")
-    monkeypatch.setenv("RUSTIQUE_ONLY", "jsn")
-    rustique.enable()
-    assert enables(fake)[-1]["only"] == []  # narrows to nothing, never to everything
-
-
-def test_unknown_env_names_never_raise_with_the_real_framework(monkeypatch):
-    for k in VARS:
-        monkeypatch.delenv(k, raising=False)
-    monkeypatch.setenv("RUSTIQUE_EXCLUDE", "no-such-group")
-    try:
-        st = rustique.enable()
-        assert any(t["state"] == "installed" for t in st["targets"])
-    finally:
-        rustique.disable()
+def test_code_unknown_names_raise(real):
     with pytest.raises(ValueError):
         rustique.enable(exclude=["no-such-group"])
+    assert installed() == set()
 
 
-def test_names_parsing():
-    assert _switch.names(None) is None
-    assert _switch.names("json, copy;re,,json") == ("json", "copy", "re")
-    assert _switch.names(["a", " b "]) == ("a", "b")
-    with pytest.raises(TypeError):
-        _switch.names([1])
+def test_env_only_and_exclude_apply_to_explicit_enable(real, monkeypatch):
+    monkeypatch.setenv("RUSTIQUE_ONLY", "containers")
+    monkeypatch.setenv("RUSTIQUE_EXCLUDE", "list.sort")
+    assert installed(rustique.enable()) == CONTAINERS - {"list.sort"}
 
 
-def test_stats_switches(fake, monkeypatch):
-    rustique.enable()
-    assert ("stats", True) not in fake.calls
-    monkeypatch.setenv("RUSTIQUE_STATS", "1")
-    rustique.enable()
-    assert ("stats", True) in fake.calls
-    assert rustique.status()["process"]["switch"]["stats"]
+def test_env_only_intersects_code_only(real, monkeypatch):
+    """The environment narrows, never widens: code says list.sort + builtins, env says containers."""
+    monkeypatch.setenv("RUSTIQUE_ONLY", "containers")
+    st = rustique.enable(only=["list.sort", "builtins"])
+    assert installed(st) == {"list.sort"}
+    assert st["process"]["switch"]["only"] == ("list.sort",)
 
 
-def test_source_is_the_first_enable_path(fake, monkeypatch):
-    rustique._startup()  # RUSTIQUE unset: nothing
-    assert not enables(fake)
-    monkeypatch.setenv("RUSTIQUE", "1")
-    rustique._startup()
-    rustique.enable()
-    assert rustique.status()["process"]["switch"]["source"] == "RUSTIQUE=1"
+def test_env_exclude_adds_to_code_exclude(real, monkeypatch):
+    monkeypatch.setenv("RUSTIQUE_EXCLUDE", "builtins")
+    st = rustique.enable(exclude="list.sort")
+    assert installed(st) == CONTAINERS - {"list.sort"}
+    assert st["process"]["switch"]["exclude"] == ("list.sort", "builtins")
+
+
+def test_unknown_env_names_warn_and_are_dropped(real, monkeypatch, capfd):
+    monkeypatch.setenv("RUSTIQUE_EXCLUDE", "jsn;builtins")
+    assert groups(rustique.enable()) == {"containers"}  # never a ValueError from the environment
+    err = capfd.readouterr().err
+    assert "rustique: RUSTIQUE_EXCLUDE: no target or group named 'jsn', ignored (groups: builtins, containers" in err
     rustique.disable()
-    assert rustique.status()["process"]["switch"]["source"] is None
+    monkeypatch.delenv("RUSTIQUE_EXCLUDE")
+    monkeypatch.setenv("RUSTIQUE_ONLY", "jsn")
+    assert installed(rustique.enable()) == set()  # narrows to nothing, never to everything
+    assert "RUSTIQUE_ONLY: no target or group named 'jsn'" in capfd.readouterr().err
+
+
+def test_stats_env(real, monkeypatch):
+    rustique.stats(False)
+    rustique.enable()
+    assert not rustique.status()["process"]["stats"]
+    monkeypatch.setenv("RUSTIQUE_STATS", "1")
+    st = rustique.enable()
+    assert st["process"]["stats"] and st["process"]["switch"]["stats"]
+    rustique.stats(False)
+
+
+def test_source_is_the_first_enable_path(real):
+    rustique.disable()
+    rustique.enable()
+    rustique.enable(only="containers")
+    assert rustique.status()["process"]["switch"]["source"] == "rustique.enable()"
+    assert rustique.disable()["process"]["switch"]["source"] is None
 
 
 @pytest.mark.parametrize(("value", "mode"), [("1", "warn"), ("warn", "warn"), ("RAISE", "raise"), ("0", "off"),
                                              ("off", "off")])
-def test_check_env(fake, monkeypatch, value, mode):
+def test_check_env(real, monkeypatch, value, mode):
+    rustique.check("warn" if mode == "off" else None)
     monkeypatch.setenv("RUSTIQUE_CHECK", value)
-    rustique.enable()
-    assert ("check", mode) in fake.calls
+    st = rustique.enable()
+    assert rustique.check() in ((None, "off") if mode == "off" else (mode,))
+    assert st["process"]["switch"]["check"] == st["process"]["check"]
 
 
-def test_check_env_unset_and_invalid(fake, monkeypatch, capsys):
+def test_check_env_unset_and_invalid(real, monkeypatch, capfd):
+    rustique.check("raise")
     rustique.enable()
-    assert not [c for c in fake.calls if c[0] == "check"]
+    assert rustique.check() == "raise"  # unset: left as is
     monkeypatch.setenv("RUSTIQUE_CHECK", "maybe")
     rustique.enable()
-    assert not [c for c in fake.calls if c[0] == "check"]
-    assert "ignoring RUSTIQUE_CHECK='maybe'" in capsys.readouterr().err
+    assert rustique.check() == "raise"
+    assert "rustique: ignoring RUSTIQUE_CHECK='maybe' (expected 1, raise or 0)" in capfd.readouterr().err
 
 
-def test_check_not_set_when_killed(fake, monkeypatch):
-    monkeypatch.setenv("RUSTIQUE", "0")
-    monkeypatch.setenv("RUSTIQUE_CHECK", "1")
-    rustique.enable()
-    assert fake.calls == []
+def test_switch_state_shape(real, monkeypatch):
+    monkeypatch.setenv("RUSTIQUE_STATS", "1")
+    sw = rustique.enable(only="containers")["process"]["switch"]
+    assert {"source", "only", "exclude", "killed_calls", "report", "killed", "stats", "check", "env"} <= sw.keys()
+    assert sw["env"] == {"RUSTIQUE_STATS": "1"} and sw["only"] == ("containers",) and sw["exclude"] == ()
+    rustique.stats(False)
 
 
-@pytest.mark.parametrize(("value", "expected"), [
-    (None, None), ("", None), ("0", None), ("1", "stderr"), ("stderr", "stderr"), ("true", "stderr"),
-    ("/tmp/r.json", "/tmp/r.json"),
-])
-def test_report_target(monkeypatch, value, expected):
-    if value is None:
-        monkeypatch.delenv("RUSTIQUE_REPORT", raising=False)
-    else:
-        monkeypatch.setenv("RUSTIQUE_REPORT", value)
-    assert _switch.report_target() == expected
-
-
-def test_report_target_pid(monkeypatch):
-    monkeypatch.setenv("RUSTIQUE_REPORT", "/tmp/r-{pid}.txt")
-    assert _switch.report_target() == f"/tmp/r-{os.getpid()}.txt"
+def test_names_are_comma_or_semicolon_separated(real, monkeypatch):
+    monkeypatch.setenv("RUSTIQUE_EXCLUDE", " builtins ;; list.sort,builtins ")
+    assert installed(rustique.enable()) == CONTAINERS - {"list.sort"}
 
 
 # --- report formatting --------------------------------------------------------------------
@@ -330,52 +267,16 @@ def test_render_status_groups():
 # --- real framework, in-process -----------------------------------------------------------
 
 
-@pytest.fixture
-def real(monkeypatch):
-    for k in VARS:
-        monkeypatch.delenv(k, raising=False)
-    was = {t["name"] for t in rustique.status()["targets"] if t["state"] == "installed"}
-    yield
-    rustique.disable()
-    if was:
-        rustique.enable()
-
-
 def test_real_status_shape(real):
     st = rustique.enable()
     assert st["targets"], "the framework reports no target"
     for t in st["targets"]:
-        assert {"name", "group", "state", "reason", "sites", "versions"} <= t.keys()
+        assert {"name", "group", "state", "reason", "refusal", "sites", "versions"} <= t.keys()
         assert t["state"] in ("installed", "pending-import", "refused", "disabled")
     proc = st["process"]
     assert proc["python"] == sys.version.split()[0] and proc["rustique"] == rustique.__version__
     assert proc["switch"]["source"] == "rustique.enable()"
     assert all(t["state"] != "installed" for t in rustique.disable()["targets"])
-
-
-def test_real_exclude_a_group(real):
-    st = rustique.enable(exclude=["builtins"])
-    states = {t["name"]: t["state"] for t in st["targets"] if t["group"] == "builtins"}
-    assert states and all(s != "installed" for s in states.values())
-    assert sum(1 for x in [1, 2] if x) == 2
-
-
-def test_real_check_env(real, monkeypatch):
-    monkeypatch.setenv("RUSTIQUE_CHECK", "1")
-    try:
-        st = rustique.enable()
-        assert st["process"]["check"] == "warn" and st["process"]["switch"]["check"] == "warn"
-        assert rustique.check() == "warn"
-        assert sorted([3, 1, 2]) == [1, 2, 3]
-    finally:
-        assert rustique.check(None) == "warn"
-    assert rustique.check() in (None, "off")
-
-
-def test_real_kill_switch(real, monkeypatch):
-    monkeypatch.setenv("RUSTIQUE", "0")
-    st = rustique.enable()
-    assert all(t["state"] != "installed" for t in st["targets"])
 
 
 # --- the startup hook (subprocesses) ------------------------------------------------------
@@ -482,22 +383,14 @@ def test_startup_survives_a_broken_install(sitedir, tmp_path):
     assert "ImportError: no wheel for this interpreter" in r.stderr
 
 
-def test_startup_is_idempotent(sitedir):
-    r = py("import site, sys; site.addsitedir(sys.argv[1]); import rustique;"
-           "rustique._startup(); rustique._startup(); print(rustique.status()['process']['switch']['source'])",
-           sitedir, env=clean_env(RUSTIQUE="1"))
-    assert r.stdout.strip() == "RUSTIQUE=1", r.stderr
-
-
-def test_startup_and_import_load_no_other_module():
-    """The module budget: the startup path and `import rustique; enable()` load `rustique`
-    and the extension, nothing else (docs/targets/dx.md §1.3)."""
+def test_startup_and_import_load_no_other_module(sitedir):
+    """The module budget (docs/targets/dx.md §1.3): `import rustique; enable()` loads the
+    package and the extension, nothing else; the RUSTIQUE=1 startup path no more than that."""
     code = ("import sys; before = set(sys.modules); import rustique; rustique.enable();"
             "print(sorted(set(sys.modules) - before))")
     assert py(code).stdout.strip() == "['rustique', 'rustique._rustique']"
-    code = "import sys; print(sorted(m for m in sys.modules if 'rustique' in m))"
-    assert py("import rustique; rustique._startup();" + code, env=clean_env(RUSTIQUE="1")).stdout.strip() == \
-        "['rustique', 'rustique._rustique']"
+    out, err = probe(sitedir, RUSTIQUE="1")
+    assert set(out["loaded"]) <= {"rustique", "rustique._rustique"} and out["source"] == "RUSTIQUE=1", err
 
 
 # --- report at exit (subprocesses) --------------------------------------------------------
@@ -523,6 +416,20 @@ def test_report_at_exit_json(tmp_path):
 def test_report_says_killed():
     r = py("import rustique; rustique.enable()", env=clean_env(RUSTIQUE="0", RUSTIQUE_REPORT="1"))
     assert "disabled by RUSTIQUE=0 (kill switch)" in r.stderr and "1 enable call(s) ignored" in r.stderr
+
+
+@pytest.mark.parametrize(("value", "where"), [("stderr", "stderr"), ("TRUE", "stderr"), ("0", None), ("", None)])
+def test_report_values(value, where):
+    r = py("import rustique; rustique.enable()", env=clean_env(RUSTIQUE_REPORT=value))
+    assert ("enabled by rustique.enable()" in r.stderr) == (where == "stderr"), r.stderr
+
+
+def test_report_text_file(tmp_path):
+    path = tmp_path / "report.txt"
+    for _ in range(2):
+        r = py("import rustique; rustique.enable()", env=clean_env(RUSTIQUE_REPORT=f" {path} "))
+        assert r.returncode == 0 and r.stderr == ""
+    assert path.read_text().count("enabled by rustique.enable()") == 2  # appended
 
 
 def test_no_report_without_enable():
