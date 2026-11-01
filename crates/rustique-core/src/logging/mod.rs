@@ -25,8 +25,103 @@ pub struct Tm {
     pub yday: i32,
 }
 
+/// An append-only byte sink: a `Vec<u8>` or a fixed stack buffer ([`Buf`]).
+pub trait Out {
+    fn push(&mut self, b: u8);
+    fn extend_from_slice(&mut self, s: &[u8]);
+    fn pad(&mut self, c: u8, n: usize) {
+        for _ in 0..n {
+            self.push(c);
+        }
+    }
+}
+
+impl Out for Vec<u8> {
+    #[inline]
+    fn push(&mut self, b: u8) {
+        Vec::push(self, b);
+    }
+    #[inline]
+    fn extend_from_slice(&mut self, s: &[u8]) {
+        Vec::extend_from_slice(self, s);
+    }
+    fn pad(&mut self, c: u8, n: usize) {
+        self.extend(std::iter::repeat_n(c, n));
+    }
+}
+
+/// A fixed-size stack buffer; writes past its end set `overflow` (the caller then takes
+/// another path).
+#[derive(Debug)]
+pub struct Buf<const N: usize> {
+    b: [u8; N],
+    len: usize,
+    pub overflow: bool,
+}
+
+impl<const N: usize> Buf<N> {
+    pub const fn new() -> Self {
+        Buf { b: [0; N], len: 0, overflow: false }
+    }
+    pub fn as_slice(&self) -> &[u8] {
+        &self.b[..self.len]
+    }
+    pub fn clear(&mut self) {
+        self.len = 0;
+        self.overflow = false;
+    }
+}
+
+impl<const N: usize> Default for Buf<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> Out for Buf<N> {
+    #[inline]
+    fn push(&mut self, c: u8) {
+        if self.len < N {
+            self.b[self.len] = c;
+            self.len += 1;
+        } else {
+            self.overflow = true;
+        }
+    }
+    #[inline]
+    fn extend_from_slice(&mut self, s: &[u8]) {
+        if self.len + s.len() <= N {
+            self.b[self.len..self.len + s.len()].copy_from_slice(s);
+            self.len += s.len();
+        } else {
+            self.overflow = true;
+        }
+    }
+    fn pad(&mut self, c: u8, n: usize) {
+        if self.len + n <= N {
+            self.b[self.len..self.len + n].fill(c);
+            self.len += n;
+        } else {
+            self.overflow = true;
+        }
+    }
+}
+
+/// Decimal digits of `x` (no sign) into `buf`, returning the used tail.
+fn digits(mut x: u64, buf: &mut [u8; 20]) -> &[u8] {
+    let mut i = 20;
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (x % 10) as u8;
+        x /= 10;
+        if x == 0 {
+            return &buf[i..];
+        }
+    }
+}
+
 #[inline]
-fn push2(out: &mut Vec<u8>, v: i32) {
+fn push2(out: &mut impl Out, v: i32) {
     out.push(b'0' + (v / 10 % 10) as u8);
     out.push(b'0' + (v % 10) as u8);
 }
@@ -37,7 +132,7 @@ fn push2(out: &mut Vec<u8>, v: i32) {
 /// unspecified state) for anything else: other directives (locale names, `%z`/`%Z`,
 /// flags such as `%-d`), a trailing `%`, NUL or non-ASCII bytes, field values outside
 /// `struct tm`'s ranges, or a year outside 1000..=9999 (libc padding rules differ there).
-pub fn strftime_numeric(fmt: &[u8], tm: &Tm, out: &mut Vec<u8>) -> bool {
+pub fn strftime_numeric(fmt: &[u8], tm: &Tm, out: &mut impl Out) -> bool {
     if !(1000..=9999).contains(&tm.year)
         || !(1..=12).contains(&tm.mon)
         || !(1..=31).contains(&tm.mday)
@@ -87,7 +182,7 @@ pub fn strftime_numeric(fmt: &[u8], tm: &Tm, out: &mut Vec<u8>) -> bool {
 /// `'%s,%03d' % (s, msecs)` minus the `s` part: append `,` and `int(msecs)` zero-padded
 /// to three digits, for a finite `msecs` in `0.0..1000.0` (what `LogRecord` stores).
 /// Returns false otherwise.
-pub fn msec_suffix(msecs: f64, out: &mut Vec<u8>) -> bool {
+pub fn msec_suffix(msecs: f64, out: &mut impl Out) -> bool {
     if !(0.0..1000.0).contains(&msecs) {
         return false;
     }
@@ -132,6 +227,38 @@ pub struct Dir {
 /// the same order.
 pub fn parse_format(fmt: &[u8]) -> Option<Vec<Piece>> {
     let mut out = Vec::new();
+    parse_format_with(fmt, &mut |p| {
+        out.push(p);
+        true
+    })
+    .then_some(out)
+}
+
+/// [`parse_format`] into a fixed array: the number of pieces, or `None` (unsupported
+/// syntax, or more pieces than `out` holds).
+pub fn parse_format_into(fmt: &[u8], out: &mut [Piece]) -> Option<usize> {
+    let mut n = 0;
+    parse_format_with(fmt, &mut |p| {
+        if n == out.len() {
+            return false;
+        }
+        out[n] = p;
+        n += 1;
+        true
+    })
+    .then_some(n)
+}
+
+/// The parser, emitting pieces to `push` (which may refuse: the parse then fails).
+fn parse_format_with(fmt: &[u8], push: &mut dyn FnMut(Piece) -> bool) -> bool {
+    match parse_inner(fmt, push) {
+        Some(()) => true,
+        None => false,
+    }
+}
+
+fn parse_inner(fmt: &[u8], push: &mut dyn FnMut(Piece) -> bool) -> Option<()> {
+    let mut out = PushOut(push);
     let n = fmt.len();
     let mut i = 0;
     let mut lit = 0;
@@ -141,11 +268,11 @@ pub fn parse_format(fmt: &[u8]) -> Option<Vec<Piece>> {
             continue;
         }
         if lit < i {
-            out.push(Piece::Lit(lit, i));
+            out.push(Piece::Lit(lit, i))?;
         }
         i += 1;
         if *fmt.get(i)? == b'%' {
-            out.push(Piece::Percent);
+            out.push(Piece::Percent)?;
             i += 1;
             lit = i;
             continue;
@@ -196,13 +323,21 @@ pub fn parse_format(fmt: &[u8]) -> Option<Vec<Piece>> {
             return None;
         }
         i += 1;
-        out.push(Piece::Dir(Dir { key, ljust, zero, other_flags: other, width, prec, conv: c }));
+        out.push(Piece::Dir(Dir { key, ljust, zero, other_flags: other, width, prec, conv: c }))?;
         lit = i;
     }
     if lit < n {
-        out.push(Piece::Lit(lit, n));
+        out.push(Piece::Lit(lit, n))?;
     }
-    Some(out)
+    Some(())
+}
+
+struct PushOut<'a>(&'a mut dyn FnMut(Piece) -> bool);
+
+impl PushOut<'_> {
+    fn push(&mut self, p: Piece) -> Option<()> {
+        (self.0)(p).then_some(())
+    }
 }
 
 /// A converted argument, as the native renderer needs it.
@@ -230,18 +365,18 @@ pub fn native_dir(d: &Dir) -> bool {
     }
 }
 
-fn pad(out: &mut Vec<u8>, c: u8, n: usize) {
-    out.extend(std::iter::repeat_n(c, n));
-}
-
 /// Append the output of one `%s` / `%d` directive exactly as
 /// `unicode_format_arg_output` writes it.
-fn render_dir(d: &Dir, v: Val<'_>, out: &mut Vec<u8>) -> bool {
-    let digits;
+fn render_dir(d: &Dir, v: Val<'_>, out: &mut impl Out) -> bool {
+    let mut sbuf = [0u8; 21];
     let v = match (d.conv, v) {
         (b's', Val::Int(x)) => {
-            digits = x.to_string();
-            Val::Text(digits.as_bytes())
+            let mut dbuf = [0u8; 20];
+            let dg = digits(x.unsigned_abs(), &mut dbuf);
+            let neg = (x < 0) as usize;
+            sbuf[0] = b'-';
+            sbuf[neg..neg + dg.len()].copy_from_slice(dg);
+            Val::Text(&sbuf[..neg + dg.len()])
         }
         _ => v,
     };
@@ -254,16 +389,17 @@ fn render_dir(d: &Dir, v: Val<'_>, out: &mut Vec<u8>) -> bool {
             let w = d.width.unwrap_or(0);
             let fillc = w.saturating_sub(t.len());
             if !d.ljust {
-                pad(out, b' ', fillc);
+                out.pad(b' ', fillc);
             }
             out.extend_from_slice(t);
             if d.ljust {
-                pad(out, b' ', fillc);
+                out.pad(b' ', fillc);
             }
             true
         }
         (b'd' | b'i' | b'u', Val::Int(x)) => {
-            let digits = x.unsigned_abs().to_string();
+            let mut dbuf = [0u8; 20];
+            let digits = digits(x.unsigned_abs(), &mut dbuf);
             let neg = x < 0;
             let len = digits.len();
             let mut width = d.width.unwrap_or(0).max(len + neg as usize);
@@ -278,15 +414,15 @@ fn render_dir(d: &Dir, v: Val<'_>, out: &mut Vec<u8>) -> bool {
                 }
             }
             if width > len && !d.ljust {
-                pad(out, fill, width - len);
+                out.pad(fill, width - len);
                 width = len;
             }
             if fill == b' ' && neg {
                 out.push(b'-');
             }
-            out.extend_from_slice(digits.as_bytes());
+            out.extend_from_slice(digits);
             if width > len {
-                pad(out, b' ', width - len);
+                out.pad(b' ', width - len);
             }
             true
         }
@@ -297,7 +433,7 @@ fn render_dir(d: &Dir, v: Val<'_>, out: &mut Vec<u8>) -> bool {
 /// Render `fmt` with one value per directive (in order), appending Latin-1 bytes to `out`.
 /// Every directive must satisfy [`native_dir`]. Returns false (output unspecified) if a
 /// value does not fit its directive.
-pub fn render(fmt: &[u8], pieces: &[Piece], vals: &[Val<'_>], out: &mut Vec<u8>) -> bool {
+pub fn render(fmt: &[u8], pieces: &[Piece], vals: &[Val<'_>], out: &mut impl Out) -> bool {
     let mut k = 0;
     for p in pieces {
         match *p {
@@ -471,6 +607,26 @@ mod tests {
         assert!(r("%d", &[t("x")]).is_none());
         assert!(r("%s %s", &[t("x")]).is_none());
         assert!(r("%s", &[t("x"), t("y")]).is_none());
+    }
+
+    #[test]
+    fn stack_buffers() {
+        let f = "%(a)s-%(b)05d";
+        let mut pieces = [Piece::Percent; 4];
+        let n = parse_format_into(f.as_bytes(), &mut pieces).unwrap();
+        assert_eq!(n, 3);
+        let mut few = [Piece::Percent; 4];
+        assert!(parse_format_into(b"%s%s%s%s%s", &mut few).is_none());
+        let mut b = Buf::<16>::new();
+        assert!(render(f.as_bytes(), &pieces[..n], &[Val::Text(b"x"), Val::Int(-7)], &mut b));
+        assert_eq!(b.as_slice(), b"x--0007");
+        assert!(!b.overflow);
+        let mut small = Buf::<3>::new();
+        render(f.as_bytes(), &pieces[..n], &[Val::Text(b"xyz"), Val::Int(1)], &mut small);
+        assert!(small.overflow);
+        let mut d = [0u8; 20];
+        assert_eq!(digits(0, &mut d), b"0");
+        assert_eq!(digits(u64::MAX, &mut d), b"18446744073709551615");
     }
 
     #[test]

@@ -23,7 +23,7 @@ use super::record::RECORDS;
 use crate::accel::guard::DepFlag;
 use crate::accel::stats::{Counters, Reason};
 use rustique_core::logging::{
-    Dir, Piece, Tm, Val, dirs, msec_suffix, native_dir, parse_format, render, strftime_numeric,
+    Buf, Dir, Piece, Tm, Val, dirs, msec_suffix, native_dir, parse_format, parse_format_into, render, strftime_numeric,
 };
 
 pub static TIME_DEPS: DepFlag = DepFlag::new();
@@ -253,12 +253,13 @@ unsafe fn format_time_with(me: &dyn Fn(usize) -> O, rec: &dyn Fn(usize) -> Optio
             Some(b) if datefmt == ffi::Py_None() || exact_str(datefmt) => b,
             _ => return None,
         };
-        let mut out: Vec<u8> = Vec::with_capacity(32);
+        let mut out = Buf::<64>::new();
         if with_datefmt {
             if let (Some(tm), Some(b)) = (tm, latin1(datefmt))
                 && strftime_numeric(b, &tm, &mut out)
+                && !out.overflow
             {
-                return new_ascii(&out);
+                return new_ascii(out.as_slice());
             }
             return strftime_generic(conv, created_g.0, datefmt);
         }
@@ -285,21 +286,22 @@ unsafe fn format_time_with(me: &dyn Fn(usize) -> O, rec: &dyn Fn(usize) -> Optio
             return None;
         }
         let native = match (tm, latin1(fmt.0)) {
-            (Some(tm), Some(b)) => strftime_numeric(b, &tm, &mut out),
+            (Some(tm), Some(b)) => strftime_numeric(b, &tm, &mut out) && !out.overflow,
             _ => false,
         };
         if !with_msecs {
-            return if native { new_ascii(&out) } else { strftime_generic(conv, created_g.0, fmt.0) };
+            return if native { new_ascii(out.as_slice()) } else { strftime_generic(conv, created_g.0, fmt.0) };
         }
         // The default '%s,%03d' with a float msecs in range: one string.
         if native
             && is_type(msecs.0, &raw mut ffi::PyFloat_Type)
             && ffi::PyUnicode_Compare(msf.0, o(n.msec_default)) == 0
             && msec_suffix(ffi::PyFloat_AS_DOUBLE(msecs.0), &mut out)
+            && !out.overflow
         {
-            return new_ascii(&out);
+            return new_ascii(out.as_slice());
         }
-        let s = if native { new_ascii(&out)? } else { strftime_generic(conv, created_g.0, fmt.0)? };
+        let s = if native { new_ascii(out.as_slice())? } else { strftime_generic(conv, created_g.0, fmt.0)? };
         let s = Owned1(s);
         let t = ffi::PyTuple_Pack(2, s.0, msecs.0);
         if t.is_null() {
@@ -392,7 +394,7 @@ pub unsafe extern "C" fn vc_format_time(func: O, args: *const O, nargsf: usize, 
 /// Latin-1 bytes of `str(v)` for `%s`, or the integer for `%d`, for plain values; `None`
 /// when the native renderer does not handle the value (the generic path then decides).
 /// Temporary strings are kept in `temps` (the bytes borrow them).
-unsafe fn to_val(v: O, conv: u8, temps: &mut Vec<Owned1>) -> Option<Val<'static>> {
+unsafe fn to_val(v: O, conv: u8, temps: &mut Held) -> Option<Val<'static>> {
     // SAFETY: live object; returned bytes borrow `v` or a temp the caller keeps alive.
     unsafe {
         let t = ffi::Py_TYPE(v);
@@ -422,7 +424,7 @@ unsafe fn to_val(v: O, conv: u8, temps: &mut Vec<Owned1>) -> Option<Val<'static>
                     ffi::PyErr_Clear();
                     return None;
                 }
-                temps.push(Owned1(s));
+                temps.push(s);
                 return latin1(s).map(Val::Text);
             }
             return None;
@@ -460,42 +462,40 @@ unsafe fn percent(
 ) -> Option<O> {
     // SAFETY: attached thread; plain objects.
     unsafe {
-        let mut temps: Vec<Owned1> = Vec::new();
-        let mut held: Vec<Owned1> = Vec::new();
-        let mut plain = true;
+        let mut temps = Held::new();
+        let mut held = Held::new();
         let mut native = pieces.is_some();
-        let mut vals: Vec<Val<'static>> = Vec::new();
+        let mut vals = [Val::Int(0); MAX_DIRS];
+        let mut nv = 0;
         if let Some(pieces) = pieces {
             for (i, d) in dirs(pieces).enumerate() {
                 let v = value(i, d)?;
-                held.push(Owned1(v));
+                held.push(v);
                 if !pure_scalar(v) {
-                    plain = false;
-                    break;
+                    return None;
                 }
                 if native {
                     match to_val(v, d.conv, &mut temps) {
-                        Some(x) if native_dir(d) => vals.push(x),
+                        Some(x) if native_dir(d) && nv < MAX_DIRS => {
+                            vals[nv] = x;
+                            nv += 1;
+                        }
                         _ => native = false,
                     }
                 }
             }
         }
-        if !plain {
-            return None;
-        }
         if native
             && let Some(pieces) = pieces
             && let Some(fb) = latin1(fmt)
         {
-            let mut out: Vec<u8> = Vec::with_capacity(fb.len() + 64);
-            if render(fb, pieces, &vals, &mut out) {
-                let r = ffi::PyUnicode_DecodeLatin1(out.as_ptr().cast(), out.len() as _, std::ptr::null());
-                if r.is_null() {
-                    ffi::PyErr_Clear();
-                    return None;
-                }
-                return Some(r);
+            let mut out = Buf::<512>::new();
+            if render(fb, pieces, &vals[..nv], &mut out) && !out.overflow {
+                return new_latin1(out.as_slice());
+            }
+            let mut big: Vec<u8> = Vec::with_capacity(fb.len() + 1024);
+            if render(fb, pieces, &vals[..nv], &mut big) {
+                return new_latin1(&big);
             }
         }
         drop(held);
@@ -505,6 +505,52 @@ unsafe fn percent(
             return None;
         }
         Some(r)
+    }
+}
+
+/// A str from Latin-1 bytes.
+unsafe fn new_latin1(b: &[u8]) -> Option<O> {
+    // SAFETY: attached thread.
+    unsafe {
+        let r = ffi::PyUnicode_DecodeLatin1(b.as_ptr().cast(), b.len() as _, std::ptr::null());
+        if r.is_null() {
+            ffi::PyErr_Clear();
+            return None;
+        }
+        Some(r)
+    }
+}
+
+/// Directives the native renderer handles in one call (more: `PyUnicode_Format`).
+const MAX_DIRS: usize = 16;
+
+/// Owned references (inline up to 16), released on drop.
+struct Held {
+    a: [O; MAX_DIRS],
+    n: usize,
+    more: Vec<O>,
+}
+
+impl Held {
+    fn new() -> Self {
+        Held { a: [std::ptr::null_mut(); MAX_DIRS], n: 0, more: Vec::new() }
+    }
+    fn push(&mut self, o: O) {
+        if self.n < MAX_DIRS {
+            self.a[self.n] = o;
+            self.n += 1;
+        } else {
+            self.more.push(o);
+        }
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        for &o in self.a[..self.n].iter().chain(self.more.iter()) {
+            // SAFETY: owned references.
+            unsafe { ffi::Py_DECREF(o) };
+        }
     }
 }
 
@@ -628,7 +674,8 @@ unsafe fn message(msg: O, args: O) -> Option<O> {
             Some(true) => {}
             None => return None,
         }
-        let pieces = latin1(s.0).and_then(parse_format);
+        let mut pbuf = [Piece::Percent; 2 * MAX_DIRS + 1];
+        let pieces = latin1(s.0).and_then(|b| parse_format_into(b, &mut pbuf)).map(|n| &pbuf[..n]);
         if exact_tuple(args) {
             let n = ffi::PyTuple_GET_SIZE(args) as usize;
             if let Some(p) = &pieces
@@ -639,7 +686,7 @@ unsafe fn message(msg: O, args: O) -> Option<O> {
             if pieces.is_none() && !(0..n).all(|i| pure_scalar(ffi::PyTuple_GET_ITEM(args, i as _))) {
                 return None;
             }
-            percent(s.0, args, pieces.as_deref(), &mut |i, _| Some(ffi::Py_NewRef(ffi::PyTuple_GET_ITEM(args, i as _))))
+            percent(s.0, args, pieces, &mut |i, _| Some(ffi::Py_NewRef(ffi::PyTuple_GET_ITEM(args, i as _))))
         } else if exact_dict(args) {
             if !str_keyed(args, 256) {
                 return None;
@@ -653,7 +700,7 @@ unsafe fn message(msg: O, args: O) -> Option<O> {
                 return None;
             }
             let fb = latin1(s.0);
-            percent(s.0, args, pieces.as_deref(), &mut |_, d| {
+            percent(s.0, args, pieces, &mut |_, d| {
                 let (x, y) = d.key?;
                 let fb = fb?;
                 let k = ffi::PyUnicode_DecodeLatin1(fb[x..].as_ptr().cast(), (y - x) as _, std::ptr::null());
