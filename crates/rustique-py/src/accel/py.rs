@@ -54,10 +54,7 @@ fn fingerprint(obj: &Bound<'_, PyAny>) -> PyResult<String> {
 /// Dev tool: fingerprints every selected target checks, observed vs recorded.
 #[pyfunction]
 #[pyo3(signature = (only=None))]
-fn fingerprint_report(
-    py: Python<'_>,
-    only: Option<Vec<String>>,
-) -> PyResult<Vec<(String, String, String, Option<String>)>> {
+fn fingerprint_report(py: Python<'_>, only: Option<Vec<String>>) -> PyResult<Vec<registry::FingerprintRow>> {
     registry::fingerprint_report(py, only)
 }
 

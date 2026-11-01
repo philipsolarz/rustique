@@ -795,6 +795,7 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         targets.append(d)?;
     }
     let process = PyDict::new(py);
+    #[allow(clippy::useless_conversion)] // `unsigned long`: 32-bit on Windows
     // SAFETY: immutable after startup.
     let hv = u64::from(unsafe { ffi::Py_Version });
     process.set_item("python", format!("{}.{}.{}", (hv >> 24) & 0xff, (hv >> 16) & 0xff, (hv >> 8) & 0xff))?;
@@ -846,13 +847,13 @@ pub fn stats(py: Python<'_>, enabled: Option<bool>, reset: bool) -> PyResult<Bou
     Ok(out)
 }
 
+/// One row of [`fingerprint_report`]: (target, what, observed, expected).
+pub type FingerprintRow = (String, String, String, Option<String>);
+
 /// Dev tool: run `prepare` of the selected targets in record mode (nothing installed) and
 /// return every fingerprint they check: `[(target, what, observed, expected|None)]`.
 /// Module targets need their module imported (the dev tool imports them).
-pub fn fingerprint_report(
-    py: Python<'_>,
-    only: Option<Vec<String>>,
-) -> PyResult<Vec<(String, String, String, Option<String>)>> {
+pub fn fingerprint_report(py: Python<'_>, only: Option<Vec<String>>) -> PyResult<Vec<FingerprintRow>> {
     let sys_modules = prepare::sys_modules(py).map_err(|r| PyRuntimeError::new_err(r.reason().to_owned()))?;
     let _g = REG.lock(py)?;
     let mut out = Vec::new();
