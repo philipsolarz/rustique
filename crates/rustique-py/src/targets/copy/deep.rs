@@ -340,7 +340,7 @@ impl Engine {
                 return self.ready(x, d.into_raw(), incref(x));
             }
             let cp = Own(getattr_opt(x, st.s_deepcopy)?);
-            if !cp.get().is_null() {
+            if !cp.get().is_null() && cp.get() != ffi::Py_None() {
                 let c = cp.get();
                 if ty(c) == &raw mut PyMethod_Type && is_return_self(st, method_func(c), 2) {
                     // `def __deepcopy__(self, memo): return self` (Enum, ...): its frame only.
@@ -370,7 +370,7 @@ impl Engine {
             }
             drop(reductor);
             let r = Own(getattr_opt(x, st.s_reduce_ex)?);
-            if !r.get().is_null() {
+            if !r.get().is_null() && r.get() != ffi::Py_None() {
                 return call1(r.get(), st.int4);
             }
             let r = Own(getattr_opt(x, st.s_reduce)?);

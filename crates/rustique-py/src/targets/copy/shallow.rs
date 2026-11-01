@@ -218,7 +218,7 @@ unsafe fn copy_body(st: &St, depth: &mut Depth, x: O, fast_sets: bool) -> R<O> {
             return Ok(incref(x));
         }
         let copier = Own(getattr_opt(cls.cast(), st.s_copy)?);
-        if !copier.get().is_null() {
+        if !copier.get().is_null() && copier.get() != ffi::Py_None() {
             if is_return_self(st, copier.get(), 1) {
                 depth.touch()?;
                 return Ok(incref(x));
@@ -232,7 +232,7 @@ unsafe fn copy_body(st: &St, depth: &mut Depth, x: O, fast_sets: bool) -> R<O> {
             } else {
                 drop(reductor);
                 let r = Own(getattr_opt(x, st.s_reduce_ex)?);
-                if !r.get().is_null() {
+                if !r.get().is_null() && r.get() != ffi::Py_None() {
                     call1(r.get(), st.int4)?
                 } else {
                     let r = Own(getattr_opt(x, st.s_reduce)?);
