@@ -46,7 +46,7 @@ def _fallbacks(c: dict | None) -> str:
 def header(rec: dict) -> str:
     proc = rec["status"].get("process", {})
     sw = proc.get("switch", {})
-    build = "free-threaded" if proc.get("free_threaded") else "GIL"
+    build = "free-threaded" if proc.get("free_threaded") or proc.get("build") == "free-threaded" else "GIL"
     where = f"pid {rec['pid']}" if rec.get("pid") else f"{rec.get('processes', 1)} processes"
     if sw.get("killed"):
         how = "disabled by RUSTIQUE=0 (kill switch)"
@@ -81,7 +81,7 @@ def render(rec: dict, *, limit: int | None = None, title: bool = True, counters_
         pass
     elif not have_counters:
         lines.append("  counters: not available (this build's kernels have no counters)")
-    elif not sw.get("stats") and not any(c.get("hits") for c in counters.values()):
+    elif not (proc.get("stats") or sw.get("stats")) and not any(c.get("hits") for c in counters.values()):
         lines.append("  counters: off (set RUSTIQUE_STATS=1, or use `python -m rustique report -- <cmd>`)")
     installed = by_state["installed"]
     if installed:

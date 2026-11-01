@@ -343,8 +343,8 @@ def test_wheel_ships_the_startup_files():
     with open(os.path.join(ROOT, "pyproject.toml"), "rb") as f:
         cfg = tomllib.load(f)
     inc = {i["path"]: i["format"] for i in cfg["tool"]["maturin"]["include"] if isinstance(i, dict)}
-    assert inc.get("python/_rustique_startup.py") == "wheel"
-    assert inc.get("python/_rustique_startup.pth") == "wheel"
+    assert inc.get("python/_rustique_startup.py") == ["sdist", "wheel"]
+    assert inc.get("python/_rustique_startup.pth") == ["sdist", "wheel"]
     assert cfg["project"]["entry-points"]["pytest11"] == {"rustique.pytest_plugin": "rustique.pytest_plugin"}
 
 

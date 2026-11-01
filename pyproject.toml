@@ -6,7 +6,10 @@ build-backend = "maturin"
 name = "rustique"
 description = "Python's data model, Rust's memory: typed native containers and zero-copy Rust/Python interop"
 readme = "README.md"
-requires-python = ">=3.14"
+# The upper bound is deliberate (docs/targets/dx.md §5): PyO3 0.30 cannot build for 3.16, and an
+# unknown interpreter must be refused at install time with a clear message, not by a failed
+# Rust build from the sdist. Raise it when a release is validated on the next minor.
+requires-python = ">=3.14,<3.16"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",

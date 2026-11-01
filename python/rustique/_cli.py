@@ -175,7 +175,7 @@ def status_cmd(argv: list[str]) -> int:
     p.add_argument("--json", action="store_true", help="print rustique.status() as JSON")
     opts = p.parse_args(argv)
     import rustique
-    from rustique import _framework, _report, _switch
+    from rustique import _report, _switch
 
     st = _switch.enable(_source="python -m rustique status")
     hooks = startup_files()
@@ -204,8 +204,10 @@ def status_cmd(argv: list[str]) -> int:
     if sw.get("killed"):
         print("\nRUSTIQUE=0 is set: the kill switch makes every enable path a no-op in this environment.")
         return 0
-    if not _framework.NATIVE_API:
-        print("Framework   wave-0 kernels (no per-target counters yet)")
+    if proc.get("interpreter"):
+        print(f"Refused     {proc['interpreter']}: no target installs on this interpreter")
+    if proc.get("jit"):
+        print("JIT         on (sys._jit): targets marked not JIT-safe are refused")
     print()
     print(_report.render_status(st), end="")
     return 0
