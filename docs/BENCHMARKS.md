@@ -1,5 +1,140 @@
 # Rustique benchmarks
 
+Ratios are Rustique ÷ CPython (lower is faster; parity bar ≤ 1.05). Two things are
+measured:
+
+- **the default tier**: plain builtin `list`/`tuple`/`dict`/`set`/`frozenset` code in a
+  process where `rustique.enable()` ran, against the same code in plain CPython;
+- **Rustique's own types** (`List`, `Tuple`, `Dict`, `Set`, `FrozenSet`, used explicitly
+  or through the opt-in native tier) running the same statements as the builtins, with
+  `rustique.enable()` active.
+
+Why the default tier keeps exact builtins: `docs/DECISIONS.md`, `docs/TAKEOVER.md`.
+
+## Setup
+
+AWS c7a.8xlarge (AMD EPYC 9R14, 32 cores, no SMT, 4 L3 domains), Ubuntu 24.04,
+python-build-standalone CPython 3.15.1 and 3.15.1t (GIL disabled), fat-LTO release builds
+of rustique at `2922d13` (pyperformance and applications: `2789558`, which differs only in startup cost and the routing of large builtin sets) (baseline: `c93e24f`, i.e. `next` before this work). Concurrent
+jobs were pinned to different L3 domains; every benchmark verifies its result against
+CPython's.
+
+- **Scoreboard** (`benches/scoreboard.py`): every builtin operation (literals,
+  comprehensions, unpacking, `in`, iteration, `len`, `==`, hashing, indexing, mutation,
+  set algebra, `json`, `pickle`, `copy`, `sorted`/`sum`/`min`/`max`/`any`/`all`/
+  `enumerate`/`zip`/`reversed`) × 5 types × 5 storages (int, float, str, mixed, object)
+  × 6 sizes (0, 1, 8, 100, 10k, 1M): 3,814 cells at 0–100 elements and 1,846 at 10k/1M per
+  build. Sizes 0–100: callgrind instruction counts of exactly the measured region
+  (load-independent; noise-free). 10k/1M: pyperf medians (3 processes × 3 values).
+- **pyperformance 1.14.0**, full default suite (97 benchmarks, ~120 results), plain vs
+  `rustique.enable()` injected through `sitecustomize` into every benchmark process.
+- **Applications** (`benches/apps/run_apps.py`, `pyperf command`, 5 fresh processes each):
+  networkx graph algorithms, pyflakes over ~90 files of CPython's tests, and a
+  csv → dict/set group-by → sort → json pipeline.
+
+## Headline: the default tier, `rustique.enable()`
+
+| | 3.15.1 | 3.15.1t |
+|---|---|---|
+| pyperformance, geometric mean | **1.00×** | **1.01×** |
+| networkx graph / pyflakes lint / csv-json etl | 1.005 / 0.963 / 0.987 | 1.006 / 0.998 / 0.993 |
+| scoreboard 0–100 elements: cells ≤ 1.05 | 3810/3814 | 3814/3814 |
+| scoreboard 0–100 elements: geometric mean | 0.93 | 0.93 |
+| scoreboard 10k/1M: cells ≤ 1.05 | 1741/1846 | 1766/1846 |
+| scoreboard 10k/1M: geometric mean | 0.88 | 0.88 |
+| startup (`python -c pass`) | 10.4 → 12.1 ms (1.17×) | 12.7 → 14.9 ms (1.18×) |
+
+pyperformance: 122 results (3.15.1) / 120 (3.15.1t); 114 / 107 are not
+significant. Faster: hexiom 1.09×, meteor_contest 1.08× / 1.07×, logging_silent 1.03×.
+Slower: `python_startup` 1.39× / 1.42× at `2789558` (fixed since: 1.17× / 1.18× at
+`2922d13`, measured), `create_gc_cycles` 1.03× / 1.04× (still at `2922d13`: more objects
+for the collector after the import, *inferred*), and a handful of 1.02–1.04× results whose
+noise overlaps (`asyncio_tcp_ssl`, `base16_small`, `spectral_norm`; on 3.15.1t several
+`async_tree_*`, `pyflate`, `2to3`, `xdsl_constant_fold`). Benchmarks that crash on plain
+CPython 3.15 crash identically with Rustique and are excluded: `genshi` (both builds),
+`asyncio_tcp` and `asyncio_tcp_ssl` (3.15.1t).
+
+**Where the scoreboard cells come from.** The kernels change the code path of 328
+cells per build at 10k/1M; their geometric mean is **0.46× (3.15.1) / 0.48× (3.15.1t)**,
+e.g. at 1M: `max(floats)` 0.13 / 0.21, `min(ints)` 0.17 / 0.21, `ints.sort()` 0.18 /
+0.15, `sorted(ints)` 0.29 / 0.22, `x in ints` 0.26 / 0.33, `ints.count(v)` 0.25 / 0.33,
+`sum(ints)` 0.37 / 0.54, `min` over dict keys 0.42 / 0.38. The other 1518 cells run unchanged
+CPython code: geometric mean 1.004 / 0.999, median 1.000, 100 / 80 cells above 1.05 and
+62 / 82 below 0.95, i.e. the spread of pyperf medians between processes. Of the kernel
+cells, 5 (3.15.1) / 0 (3.15.1t) are above 1.05, each within 1–2σ of its measured noise.
+
+At 0–100 elements (instruction counts, no noise) the 4 cells above 1.05 on 3.15.1 are
+size-0 operations that run no Rustique code (`list(x)`, `x.copy()`, iterating an empty
+set); re-measured in isolation they are 0.93–1.00 (allocator state left by the previous
+cell in the same callgrind worker). The fallbacks into CPython cost at most one call layer:
+worst kernel-path cell 1.028 (`any(dict)` at size 0).
+
+**Regressions found by these runs and fixed before release:** (1) startup: every patch
+site re-read `/proc/self/maps`, and the package imported `collections` (1.39× → 1.17×);
+(2) builtin sets: walking a large set table in hash order lost to CPython's iterator for
+`all()` and for `min`/`max` over str/tuple elements (up to 1.68× at 1M); sets of ≥ 2048
+elements now use the kernels only for numbers, and `any(dict)` always uses CPython.
+
+## Rustique's own types
+
+Geometric mean of the ratio to the builtin type over all scoreboard operations, and cells
+at parity, baseline (`c93e24f`) → final. Rustique containers run with
+`rustique.enable()` active (builtin functions dispatch to their native kernels).
+
+**0–100 elements (instruction counts)**
+
+| type | 3.15.1 cells ≤ 1.05 | 3.15.1 geomean | 3.15.1t cells ≤ 1.05 | 3.15.1t geomean |
+|---|---:|---:|---:|---:|
+| `List` | 73 → 233 / 890 | 2.10 → 1.21 | 74 → 181 / 890 | 2.02 → 1.31 |
+| `Tuple` (new) | 192 / 719 | 1.32 | 189 / 719 | 1.40 |
+| `Dict` | 9 → 67 / 819 | 2.73 → 1.70 | 9 → 70 / 819 | 2.65 → 1.75 |
+| `Set` | 39 → 83 / 743 | 2.41 → 1.63 | 35 → 76 / 743 | 2.35 → 1.66 |
+| `FrozenSet` (new) | 133 / 643 | 1.49 | 149 / 643 | 1.48 |
+
+**10k / 1M elements (wall time)**
+
+| type | 3.15.1 cells ≤ 1.05 | 3.15.1 geomean | 3.15.1t cells ≤ 1.05 | 3.15.1t geomean |
+|---|---:|---:|---:|---:|
+| `List` | 100 → 189 / 429 | 1.44 → 0.75 | 93 → 159 / 429 | 1.48 → 0.81 |
+| `Tuple` (new) | 148 / 346 | 0.95 | 139 / 346 | 0.99 |
+| `Dict` | 25 → 117 / 405 | 3.84 → 1.18 | 7 → 76 / 405 | 3.78 → 1.42 |
+| `Set` | 84 → 164 / 358 | 4.23 → 0.89 | 92 → 152 / 358 | 4.23 → 0.99 |
+| `FrozenSet` (new) | 144 / 308 | 0.95 | 161 / 308 | 0.92 |
+
+Per-element operations on Rustique containers stay above 1.00 at small sizes because
+CPython's interpreter only fast-paths exact builtins (DECISIONS.md §1): `List` runs `x[i]`,
+`x[i] = v`, `len`, `if x` and iteration at 1.0–1.16× of the cost of an empty `list`
+subclass (the floor for any foreign type), `append` below it. At large sizes native storage
+wins: `copy`/slicing 0.08–0.33×, `sort` 0.02–0.07×, `in` 0.04×, set algebra and `Dict`
+copies/merges below 1. Remaining gaps: small `Dict`/`Set` construction (three allocations
+per table), `List(list_of_strs)` 2.3–6.4× at 100–10k, unpacking ~1.5× the floor.
+
+## Full matrices
+
+`docs/scoreboard/{enabled,rustique}-{3.15.1,3.15.1t}.md`: every cell, instruction-count
+ratios at 0–100 elements and wall-time ratios at 10k/1M.
+
+## Reproduce
+
+```bash
+.venv/bin/maturin develop --uv --release
+.venv/bin/python benches/scoreboard.py instr --impls rustique,enabled --shards 8 -o instr.json
+.venv/bin/python benches/scoreboard.py time --size 1e4,1e6 --impls rustique,enabled --shards 4 -o time.json
+.venv/bin/python benches/scoreboard.py report instr.json time.json.shard*.json [--impl enabled]
+.venv/bin/python benches/scoreboard.py summary --before base.json --after instr.json [--impl enabled]
+.venv/bin/python benches/apps/run_apps.py bench -o apps.json
+CPYTHON_SRC=<cpython checkout> .venv/bin/python tests/conformance/run_cpython_suites.py
+```
+
+pyperformance: `PYTHONPATH=<repo>/python:<dir with a sitecustomize.py that calls
+rustique.enable() when RUSTIQUE_ENABLE=1> pyperformance run --inherit-environ
+PYTHONPATH,RUSTIQUE_ENABLE`, once with `RUSTIQUE_ENABLE=0` and once with `1`.
+
+## Earlier bulk-operation benchmarks (v0.2, `a6be77a`)
+
+Kept for reference: the explicit Rustique API before this work, on the development WSL2
+machine; `benches/bench.py` still reproduces them.
+
 Produced by `benches/bench.py --sizes 1e5,1e6 --repeat 7` against a `maturin develop
 --release` build (fat LTO, one codegen unit) on an otherwise idle 8-CPU WSL2 machine
 (Ryzen 5600X). Ratios are rustique time ÷ reference time (the `(ref)` row, usually the

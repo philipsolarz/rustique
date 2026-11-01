@@ -18,6 +18,7 @@ use rustique_core::{DType, Value};
 
 use crate::convert;
 use crate::dict::Dict;
+use crate::frozenset::FrozenSet;
 use crate::list::List;
 use crate::set::Set;
 
@@ -46,6 +47,8 @@ pub enum Schema {
     Dict(Arc<Schema>, Arc<Schema>),
     /// Nested rustique `Set[T]`.
     Set(Arc<Schema>),
+    /// Nested rustique `FrozenSet[T]`.
+    FrozenSet(Arc<Schema>),
     /// Any other class: `isinstance` check.
     Class(Py<PyType>),
 }
@@ -56,7 +59,7 @@ impl PartialEq for Schema {
         match (self, other) {
             (Any, Any) | (Int, Int) | (Float, Float) | (Bool, Bool) | (Str, Str) => true,
             (Fixed(a), Fixed(b)) => a == b,
-            (Optional(a), Optional(b)) | (List(a), List(b)) | (Set(a), Set(b)) => a == b,
+            (Optional(a), Optional(b)) | (List(a), List(b)) | (Set(a), Set(b)) | (FrozenSet(a), FrozenSet(b)) => a == b,
             (Union(a), Union(b)) => a == b,
             (Dict(k1, v1), Dict(k2, v2)) => k1 == k2 && v1 == v2,
             (Class(a), Class(b)) => a.as_ptr() == b.as_ptr(),
@@ -72,7 +75,7 @@ impl Hash for Schema {
         std::mem::discriminant(self).hash(state);
         match self {
             Schema::Fixed(d) => d.hash(state),
-            Schema::Optional(s) | Schema::List(s) | Schema::Set(s) => s.hash(state),
+            Schema::Optional(s) | Schema::List(s) | Schema::Set(s) | Schema::FrozenSet(s) => s.hash(state),
             Schema::Union(members) => members.hash(state),
             Schema::Dict(k, v) => {
                 k.hash(state);
@@ -126,6 +129,7 @@ impl fmt::Display for Schema {
             Schema::List(s) => write!(f, "List[{s}]"),
             Schema::Dict(k, v) => write!(f, "Dict[{k}, {v}]"),
             Schema::Set(s) => write!(f, "Set[{s}]"),
+            Schema::FrozenSet(s) => write!(f, "FrozenSet[{s}]"),
             Schema::Class(c) => Python::attach(|py| {
                 let ty = c.bind(py);
                 if ty.is(py.get_type::<pyo3::types::PyNone>()) {
@@ -213,6 +217,7 @@ impl Schema {
             Schema::List(item) => coerce_list(item, obj, self),
             Schema::Dict(key, value) => coerce_dict(key, value, obj, self),
             Schema::Set(item) => coerce_set(item, obj, self),
+            Schema::FrozenSet(item) => coerce_frozenset(item, obj, self),
             Schema::Class(cls) => {
                 if obj.is_instance(cls.bind(obj.py()))? {
                     Ok(Coerced::Object(obj.clone().unbind()))
@@ -407,6 +412,15 @@ fn coerce_set(item: &Arc<Schema>, obj: &Bound<'_, PyAny>, schema: &Schema) -> Re
     }
     let set = Set::from_iterable(obj.py(), item.clone(), Some(obj))?;
     Ok(Coerced::Object(set.into_any().unbind()))
+}
+
+fn coerce_frozenset(item: &Arc<Schema>, obj: &Bound<'_, PyAny>, schema: &Schema) -> Result<Coerced, CoerceError> {
+    if !obj.is_instance_of::<FrozenSet>() && !convert::is_iterable(obj) {
+        return Err(type_error(&schema.to_string(), obj));
+    }
+    // A `FrozenSet` of this schema is reused as it is (immutable, so sharing is safe).
+    let frozen = FrozenSet::from_iterable(obj.py(), item.clone(), Some(obj))?;
+    Ok(Coerced::Object(frozen.into_any().unbind()))
 }
 
 /// INTERFACE. The shared `Any` schema.

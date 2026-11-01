@@ -3,6 +3,20 @@
 Status of the `next` rewrite and where it goes from here. See `ARCHITECTURE.md` for the
 contract and `ARCHAEOLOGY.md` for the history that motivated it.
 
+## Done: parity program (October 2026)
+
+See `DECISIONS.md` for the decisions and `BENCHMARKS.md` for the numbers.
+
+| Area | State |
+|---|---|
+| Takeover | `rustique.enable()`: exact builtins accelerated in place, process-wide, by swapping CPython's C entry points (`list.sort`, `list`/`tuple` `index`/`count`/`in`, builtins `sum`/`min`/`max`/`sorted`/`any`/`all`); every candidate mechanism measured (subclassing, rewriting, PEP 523, boundary materialization) in `TAKEOVER.md`. Opt-in native tier (`native=`, runner, decorator) |
+| Parity, default tier | pyperformance 1.00× / 1.01× (3.15.1 / 3.15.1t); scoreboard: every result identical to CPython's, kernels 0.1–0.5× on 10k/1M inputs |
+| `List` / `Tuple` | raw C slots, borrow-flag locking on GIL builds, element cache, CPython-layout object sort via `list.sort`; new immutable lock-free `Tuple` with CPython's tuple hash |
+| `Dict` | CPython's compact dict index (index width by size, perturb probing, growth policy), str keys as objects with cached hashes, raw slots, bulk builds |
+| `Set` / `FrozenSet` | smaller-operand algebra, early exits, set-of-sets semantics, weakrefs, subclassing; new immutable `FrozenSet` with CPython's frozenset hash |
+| Measurement | parity scoreboard (5 types × 5 storages × 6 sizes, callgrind + pyperf), CPython `Lib/test` conformance gate, pyperformance + application harness |
+| Validation | ~3,880 pytest cases on 3.14, 3.14t, 3.15.1, 3.15.1t; CPython conformance list 67/69, tuple 37/38, dict 35/36, set 52/54, frozenset 31/33 |
+
 ## Done (v0.2 "next")
 
 | Area | State |
@@ -20,10 +34,11 @@ contract and `ARCHAEOLOGY.md` for the history that motivated it.
 
 ## Known trade-offs
 
-- **Per-element access from Python costs more than a builtin list.** Every `x[i]`, `next()`
-  or `append` pays PyO3 dispatch, a lock and (for native storage) creation of a Python
-  object. Rustique wins when work stays in Rust between operations (bulk kernels,
-  expressions, buffer export); it is not a drop-in speedup for element-at-a-time loops.
+- **Per-element access to Rustique containers costs more than to a builtin.** CPython only
+  fast-paths exact builtins: even an empty `list` subclass pays 2.4× for `x[i]`.
+  `List` now runs at 1.0–1.16× of that floor (raw slots, no locks on GIL builds, an
+  element cache for native storage), i.e. ~2× the builtin for `x[i]` on tiny lists. The
+  drop-in speedup for existing code is `rustique.enable()`, which keeps the builtins.
 - **Native float storage has no object identity**, so NaN compares equal to NaN in
   searches and comparisons (documented deviation).
 - **Typed containers normalise values** (`List[int]` stores `True` as `1`; `List[float]`
@@ -39,29 +54,29 @@ contract and `ARCHAEOLOGY.md` for the history that motivated it.
   NumPy scalar elements from byte-swapped arrays.
 - **Buffer exports freeze the container**: safer than `bytearray`'s resize-only rule,
   stricter for writers.
-- **`match lst: case [a, b]`** does not work: PyO3 types are immutable, so the sequence
-  flag cannot be set by ABC registration.
+- **Rustique containers are not builtin subclasses** (by design, `TAKEOVER.md` R2): C code
+  that requires a real `list`/`dict` (`json.dumps`, `type()` namespaces, PyO3 `cast`)
+  rejects them. `match` works: `List`/`Tuple` set the sequence flag, `Dict` the mapping flag.
 
 ## Next steps
 
-1. **Per-element hot paths** — lower-overhead slot implementations for `__getitem__` /
-   `__next__` / `append`, bulk object creation for `to_list()`/`list(x)`.
-2. **Big integers natively** — a big-int column backed by PEP 757 `PyLong_Export` /
-   `PyLongWriter` (zero-copy 30-bit digit access, measured 9–160 ns per conversion) so
-   `List[int]` never needs to demote; optional GMP/`malachite` arithmetic for `X` on big data.
-3. **Struct-of-arrays records** — `List[Point]` for dataclasses/`TypedDict`s stored as one
-   column per field (schema already compiles nested types; needs a record column and
-   annotationlib-based field discovery that handles 3.14+ deferred annotations).
-4. **Optional values without demotion** — validity bitmaps for `List[int | None]`.
-5. **Expression engine** — string kernels (`X.len()`, `X.startswith()`, `X.upper()`),
-   reductions in expressions (`(X * 2).sum()` without materialising), `where`/`clip`,
-   fused `map`+`filter` pipelines.
-6. **abi3t wheels** — one wheel for GIL and free-threaded 3.15 (PEP 803) once the ~3×
-   slower list ingest through the limited API is addressed; version-specific wheels until then.
-7. **Subinterpreters** — per-interpreter module state (PEP 734 / PEP 793) so Rustique loads
-   in `concurrent.interpreters`.
-8. **Rust interop** — extend the C-API capsule (owned-buffer hand-off without memcpy via a
-   drop callback, `Dict`/`Set` construction and borrowing, `List[str]` borrowing without
-   copies) and publish `rustique-api` to crates.io for downstream PyO3 crates.
-9. **Allocator** — evaluate mimalloc for Rust allocations to remove the first-touch page
-   fault cost of large fresh buffers on free-threaded builds.
+Ranked by expected gain and risk (details and evidence: `DECISIONS.md` §4).
+
+1. **`str` method kernels** behind the existing C entry points (`find`, `count`, `split`,
+   `replace`, `join`, ASCII case mapping): SIMD on PEP 393 buffers, exact semantics,
+   CPython's code otherwise.
+2. **`bytes`/`bytearray` method kernels** (`find`/`count`/`split`/`replace`/`hex`/
+   `fromhex`/`translate`).
+3. **Large-`int` arithmetic** behind `nb_multiply`/`nb_floor_divide`/`nb_power` and
+   `int`↔`str`, above a size threshold (subquadratic algorithms; PEP 757 digit access).
+4. **`float` → text** (`repr`/`str`/`format`) with shortest-round-trip printing.
+5. **Remaining container kernels**: `list ==`/`<`, `list.remove`, `key=` fast paths for
+   `min`/`max`/`sorted`, a faster table walk for large builtin sets.
+6. **Rustique containers**: single-allocation hash tables for `Dict`/`Set` (small sizes),
+   cheaper iterator `next`, native `str` ingest, lock-free reads on free-threaded builds.
+   Carried over from v0.2: big ints natively (PEP 757 export/import), struct-of-arrays
+   records, validity bitmaps for `T | None`, expression-engine string kernels and fused
+   pipelines, abi3t wheels, subinterpreter support, C-API capsule extensions, mimalloc for
+   large fresh buffers.
+7. **Upstream**: a CPython specialization hook for third-party containers is the
+   prerequisite for native storage ever being the default.
