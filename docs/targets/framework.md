@@ -264,6 +264,14 @@ it); a second `enable()` 0.14M. Lazy activation: one `sys.modules` callback per 
 event (a flag load when nothing is pending; a length/bytes compare per pending module name
 otherwise).
 
+One-time work is paid only when needed (`benches/accel_primitives.py`, 3.15.1): the
+local-monitoring calibration (~20k Ir) runs with the first vectorcall site prepared, so an
+`enable()` that leaves module targets pending costs 13k Ir instead of 41k; the loaded
+objects' segments (`patch::writable`, ~9k Ir to build) are kept for the process and
+rebuilt only when the loader's `dlpi_adds`/`dlpi_subs` change (one `dl_iterate_phdr`
+step per pass checks them). The net-benefit score left per-call costs unchanged (649 /
+771 Ir for the hit / alternating cells, 648 / 770 before).
+
 **Startup** (`benches/startup.py`, whole process, `python -c pass` = 39.7M Ir / 9.8 ms,
 3.15.1, fat-LTO release build, CPU-pinned, 40 interleaved runs):
 
