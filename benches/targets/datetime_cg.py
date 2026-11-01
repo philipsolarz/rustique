@@ -89,7 +89,7 @@ AMPMF = '%m/%d/%Y %I:%M %p'
 _strptime._strptime_time('2024', '%Y')
 """
 
-RQ = "from rustique._rustique import _t_datetime as _t; _t.install()"
+RQ = "import rustique._takeover as _rq; _rq.enable(only=[\"datetime\"])"
 V = {"orig": "", "rq": RQ}
 
 # cell -> (statement, extra setup run before the variant's setup)
@@ -153,7 +153,7 @@ def worker(idx, only):
     exec(COMMON, ns)
     exec(pre, ns)
     exec(setup, ns)
-    names = [k for k in ns if not k.startswith("__") and k.isidentifier() and k != "_t"]
+    names = [k for k in ns if not k.startswith("__") and k.isidentifier() and k not in ("_t", "_rq")]
     binds = "".join(f"    {k} = _g[{k!r}]\n" for k in names)
     ns["_g"] = ns
     body = "".join(f"        {stmt}\n" for _ in range(UNROLL))

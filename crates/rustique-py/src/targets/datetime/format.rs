@@ -28,7 +28,7 @@ use rustique_core::datetime::strftime::{self, Needs, Tm, TzText};
 
 use super::env::{self, Env, item, obj};
 use super::{capi, ustr, watch};
-use crate::accel::{Counters, Original, Reason};
+use crate::accel::{Counters, Original, Reason, check};
 
 type O = *mut ffi::PyObject;
 pub type FastKw = unsafe extern "C" fn(O, *const O, ffi::Py_ssize_t, O) -> O;
@@ -110,7 +110,7 @@ fn capture_zoneinfo(py: Python<'_>, e: &Env) {
             return;
         }
         let ty = p.cast::<ffi::PyTypeObject>();
-        let immutable = (*ty).tp_flags & ffi::Py_TPFLAGS_IMMUTABLETYPE != 0;
+        let immutable = ffi::PyType_GetFlags(ty) & ffi::Py_TPFLAGS_IMMUTABLETYPE != 0;
         let name_ok = std::ffi::CStr::from_ptr((*ty).tp_name).to_bytes() == b"zoneinfo.ZoneInfo";
         if immutable && name_ok && (*ty).tp_dictoffset == 0 {
             ZI_TYPE.store(t.into_ptr() as usize, Ordering::Relaxed);
@@ -399,19 +399,21 @@ unsafe fn method(this: O, fmt: O, time_method: bool) -> Option<O> {
         };
         let mut buf = Vec::with_capacity(fb.len() + 32);
         strftime::render(fb, &tm, micro, &TzText { z: &tz.z, colon_z: &tz.colon_z, name: &tz.name }, &mut buf);
-        c.hit();
         Some(result(&buf))
     }
 }
 
 macro_rules! method_kernels {
-    ($fast:ident, $var:ident, $time:expr, $c:expr, $of:expr, $ov:expr) => {
+    ($fast:ident, $var:ident, $time:expr, $c:expr, $of:expr, $ov:expr, $spec:expr) => {
         /// METH_FASTCALL | METH_KEYWORDS (3.15).
         pub unsafe extern "C" fn $fast(this: O, args: *const O, nargs: ffi::Py_ssize_t, kwnames: O) -> O {
             // SAFETY: CPython's calling convention; fallback with unchanged arguments.
             unsafe {
                 if nargs == 1 && (kwnames.is_null() || ffi::PyTuple_GET_SIZE(kwnames) == 0) {
                     if let Some(r) = method(this, *args, $time) {
+                        if $c.hit_check() {
+                            return check::verify(&$spec, r, &[this, *args], || $of.get()(this, args, nargs, kwnames));
+                        }
                         return r;
                     }
                 } else {
@@ -426,7 +428,11 @@ macro_rules! method_kernels {
             // SAFETY: CPython's calling convention; fallback with unchanged arguments.
             unsafe {
                 if ffi::PyTuple_GET_SIZE(args) == 1 && (kw.is_null() || ffi::PyDict_Size(kw) == 0) {
-                    if let Some(r) = method(this, ffi::PyTuple_GET_ITEM(args, 0), $time) {
+                    let f = ffi::PyTuple_GET_ITEM(args, 0);
+                    if let Some(r) = method(this, f, $time) {
+                        if $c.hit_check() {
+                            return check::verify(&$spec, r, &[this, f], || $ov.get()(this, args, kw));
+                        }
                         return r;
                     }
                 } else {
@@ -438,8 +444,8 @@ macro_rules! method_kernels {
     };
 }
 
-method_kernels!(date_fast, date_var, false, C_DATE, ORIG_DATE_FAST, ORIG_DATE_VAR);
-method_kernels!(time_fast, time_var, true, C_TIME, ORIG_TIME_FAST, ORIG_TIME_VAR);
+method_kernels!(date_fast, date_var, false, C_DATE, ORIG_DATE_FAST, ORIG_DATE_VAR, super::DATE_STRFTIME);
+method_kernels!(time_fast, time_var, true, C_TIME, ORIG_TIME_FAST, ORIG_TIME_VAR, super::TIME_STRFTIME);
 
 /// An exact int that fits a C int.
 unsafe fn small_int(o: O) -> Option<i32> {
@@ -532,10 +538,19 @@ pub unsafe extern "C" fn time_fn(module: O, args: O) -> O {
     // SAFETY: CPython's calling convention; fallback with unchanged arguments.
     unsafe {
         if let Some(r) = function(module, args) {
-            C_FN.hit();
+            if C_FN.hit_check() {
+                return check::verify(&super::TIME_FN_STRFTIME, r, &[ffi::PyTuple_GET_ITEM(args, 0), ffi::PyTuple_GET_ITEM(args, 1)], || {
+                    ORIG_FN.get()(module, args)
+                });
+            }
             return r;
         }
         C_FN.fallback(Reason::Args);
         ORIG_FN.get()(module, args)
     }
+}
+
+/// (ok generation, failed generation).
+pub fn validation_state() -> (u64, u64) {
+    (FT_OK.load(Ordering::Relaxed), FT_BAD.load(Ordering::Relaxed))
 }

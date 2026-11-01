@@ -19,7 +19,7 @@ use rustique_core::datetime::strptime::{self, A_MONTH, A_WEEKDAY, AM_PM, F_MONTH
 
 use super::env::{self, Env, item, obj};
 use super::{fingerprints, ustr, watch};
-use crate::accel::{Counters, Original, Prepare, Reason, Refusal, Tools, code_locally_quiet};
+use crate::accel::{Counters, Original, Prepare, Reason, Refusal, Tools, check, code_locally_quiet};
 
 /// Which entry point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +85,8 @@ pub struct SpDeps {
     time_re_cls: usize,
     locale_time_cls: usize,
     cache_lock_type: usize,
+    /// (0 = `_strptime`, 1 = `locale`; name; identity of the global or None) at capture.
+    shadows: Vec<(u8, &'static str, Option<usize>)>,
 }
 
 static SP: OnceLock<SpDeps> = OnceLock::new();
@@ -150,12 +152,46 @@ fn capture_sp(cx: &mut Prepare<'_>) -> Result<&'static SpDeps, Refusal> {
         time_re_cls: keep(&cx.get(&d, "TimeRE")?),
         locale_time_cls: keep(&cx.get(&d, "LocaleTime")?),
         cache_lock_type: keep(cx.get(&d, "_cache_lock")?.get_type().as_any()),
+        shadows: {
+            let mut v = Vec::new();
+            for (which, dict) in [(0u8, &d), (1u8, &ld)] {
+                for name in SHADOWS {
+                    v.push((which, name, cx.get_opt(dict, name)?.map(|o| keep(&o))));
+                }
+            }
+            v
+        },
     };
-    // SAFETY: just captured.
-    for dict in [sp.dict, sp.locale_dict, sp.locale_alias] {
-        let dict = unsafe { obj(py, dict) }.cast_into::<PyDict>().map_err(PyErr::from)?;
-        watch::watch(&dict, None)?;
-    }
+    let keys_m: Vec<&str> = FUNCS
+        .iter()
+        .chain(SHADOWS.iter())
+        .chain(
+            [
+                "time",
+                "locale",
+                "datetime_date",
+                "datetime_timedelta",
+                "datetime_timezone",
+                "TimeRE",
+                "LocaleTime",
+                "_cache_lock",
+                "_TimeRE_cache",
+            ]
+            .iter(),
+        )
+        .copied()
+        .collect();
+    let keys_l: Vec<&str> = LOCALE_FUNCS
+        .iter()
+        .chain(SHADOWS.iter())
+        .chain(["_setlocale", "locale_alias", "LC_TIME", "LC_ALL"].iter())
+        .copied()
+        .collect();
+    let _ = py;
+    watch::watch(&d, &keys_m)?;
+    watch::watch(&ld, &keys_l)?;
+    let alias = cx.get(&ld, "locale_alias")?.cast_into::<PyDict>().map_err(PyErr::from)?;
+    watch::watch(&alias, &["c"])?;
     Ok(SP.get_or_init(|| sp))
 }
 
@@ -170,106 +206,118 @@ fn list_is(o: &Bound<'_, PyAny>, expected: &[&str], leading_empty: bool) -> bool
     l.iter().zip(want).all(|(x, w)| x.is_exact_instance_of::<PyString>() && x.eq(w).unwrap_or(false))
 }
 
+/// Why the last validation failed (diagnostics: `_accel._datetime_debug()`).
+pub static LAST_FAILURE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
 /// Everything the original reads in its steady state is what the kernel assumes.
-fn validate(py: Python<'_>, e: &Env) -> PyResult<bool> {
-    if !env::common_ok(py, e) {
-        return Ok(false);
+fn validate(py: Python<'_>, e: &Env) -> Result<(), String> {
+    macro_rules! need {
+        ($c:expr, $why:expr) => {
+            if !$c {
+                return Err($why.to_string());
+            }
+        };
     }
-    let Some(sp) = SP.get() else { return Ok(false) };
+    let pe = |r: PyErr| format!("error: {}", r.value(py));
+    need!(env::common_ok(py, e), "builtins / time dependencies changed");
+    let Some(sp) = SP.get() else { return Err("_strptime not captured".into()) };
     // SAFETY: captured objects.
     let (modules, d, tdict, ldict) = unsafe {
         (
-            obj(py, e.sys_modules).cast_into::<PyDict>()?,
-            obj(py, sp.dict).cast_into::<PyDict>()?,
-            obj(py, e.time_dict).cast_into::<PyDict>()?,
-            obj(py, sp.locale_dict).cast_into::<PyDict>()?,
+            obj(py, e.sys_modules).cast_into::<PyDict>().map_err(|e| pe(e.into()))?,
+            obj(py, sp.dict).cast_into::<PyDict>().map_err(|e| pe(e.into()))?,
+            obj(py, e.time_dict).cast_into::<PyDict>().map_err(|e| pe(e.into()))?,
+            obj(py, sp.locale_dict).cast_into::<PyDict>().map_err(|e| pe(e.into()))?,
         )
     };
     let is = |o: Option<Bound<'_, PyAny>>, addr: usize| o.is_some_and(|o| o.as_ptr() as usize == addr);
-    // sys.modules['_strptime'] and the module's globals.
-    // SAFETY: captured module.
-    if !is(item(&modules, "_strptime"), sp.module) || unsafe { ffi::Py_TYPE(sp.module as *mut _) } as usize != e.module_type {
-        return Ok(false);
-    }
+    let int_is = |o: Option<Bound<'_, PyAny>>, v: i64| {
+        o.is_some_and(|o| o.is_exact_instance_of::<pyo3::types::PyInt>() && o.eq(v).unwrap_or(false))
+    };
+    // SAFETY: captured modules.
+    let (mt, lt_mod) = unsafe { (ffi::Py_TYPE(sp.module as *mut _) as usize, ffi::Py_TYPE(sp.locale_mod as *mut _) as usize) };
+    need!(is(item(&modules, "_strptime"), sp.module) && mt == e.module_type, "sys.modules['_strptime'] changed");
+    need!(lt_mod == e.module_type, "locale module type changed");
     for (i, name) in FUNCS.iter().enumerate() {
-        if !is(item(&d, name), sp.codes[i].0) {
-            return Ok(false);
-        }
+        need!(is(item(&d, name), sp.codes[i].0), format!("_strptime.{name} changed"));
     }
     for (i, name) in LOCALE_FUNCS.iter().enumerate() {
-        if !is(item(&ldict, name), sp.codes[FUNCS.len() + i].0) {
-            return Ok(false);
-        }
+        need!(is(item(&ldict, name), sp.codes[FUNCS.len() + i].0), format!("locale.{name} changed"));
     }
     let api = super::capi();
     // SAFETY: datetime C API, filled at install.
-    let (date_t, delta_t, tz_t) = unsafe {
-        ((*api).DateType as usize, (*api).DeltaType as usize, ffi::Py_TYPE((*api).TimeZone_UTC) as usize)
-    };
-    if !(is(item(&d, "time"), e.time_mod)
-        && is(item(&d, "locale"), sp.locale_mod)
-        && is(item(&d, "datetime_date"), date_t)
-        && is(item(&d, "datetime_timedelta"), delta_t)
-        && is(item(&d, "datetime_timezone"), tz_t)
-        && is(item(&d, "TimeRE"), sp.time_re_cls)
-        && is(item(&d, "LocaleTime"), sp.locale_time_cls)
-        && item(&d, "_cache_lock").is_some_and(|l| l.get_type().as_ptr() as usize == sp.cache_lock_type)
-        && is(item(&ldict, "_setlocale"), sp.setlocale)
-        && is(item(&ldict, "locale_alias"), sp.locale_alias)
-        && item(&ldict, "LC_TIME").is_some_and(|v| v.is_exact_instance_of::<pyo3::types::PyInt>() && v.eq(2).unwrap_or(false))
-        && item(&ldict, "LC_ALL").is_some_and(|v| v.is_exact_instance_of::<pyo3::types::PyInt>() && v.eq(6).unwrap_or(false)))
-    {
-        return Ok(false);
-    }
-    // SAFETY: captured module.
-    if unsafe { ffi::Py_TYPE(sp.locale_mod as *mut _) } as usize != e.module_type {
-        return Ok(false);
-    }
-    if SHADOWS.iter().any(|n| item(&d, n).is_some() || item(&ldict, n).is_some()) {
-        return Ok(false);
+    let (date_t, delta_t, tz_t) =
+        unsafe { ((*api).DateType as usize, (*api).DeltaType as usize, ffi::Py_TYPE((*api).TimeZone_UTC) as usize) };
+    need!(is(item(&d, "time"), e.time_mod), "_strptime.time changed");
+    need!(is(item(&d, "locale"), sp.locale_mod), "_strptime.locale changed");
+    need!(
+        is(item(&d, "datetime_date"), date_t)
+            && is(item(&d, "datetime_timedelta"), delta_t)
+            && is(item(&d, "datetime_timezone"), tz_t),
+        "_strptime datetime types changed"
+    );
+    need!(
+        is(item(&d, "TimeRE"), sp.time_re_cls) && is(item(&d, "LocaleTime"), sp.locale_time_cls),
+        "_strptime classes changed"
+    );
+    need!(
+        item(&d, "_cache_lock").is_some_and(|l| l.get_type().as_ptr() as usize == sp.cache_lock_type),
+        "_strptime._cache_lock changed"
+    );
+    need!(
+        is(item(&ldict, "_setlocale"), sp.setlocale) && is(item(&ldict, "locale_alias"), sp.locale_alias),
+        "locale._setlocale / locale_alias changed"
+    );
+    need!(int_is(item(&ldict, "LC_TIME"), 2) && int_is(item(&ldict, "LC_ALL"), 6), "locale.LC_* changed");
+    for &(which, name, expected) in &sp.shadows {
+        let dict = if which == 0 { &d } else { &ldict };
+        need!(item(dict, name).map(|o| o.as_ptr() as usize) == expected, format!("global {name} shadowing changed"));
     }
     // SAFETY: captured dict.
-    let alias = unsafe { obj(py, sp.locale_alias) }.cast_into::<PyDict>()?;
-    if !item(&alias, "c").is_some_and(|v| v.is_exact_instance_of::<PyString>() && v.eq("C").unwrap_or(false)) {
-        return Ok(false);
-    }
-    // time module values `_strptime` reads.
-    if !item(&tdict, "_STRUCT_TM_ITEMS").is_some_and(|v| v.is_exact_instance_of::<pyo3::types::PyInt>() && v.eq(11).unwrap_or(false)) {
-        return Ok(false);
-    }
+    let alias = unsafe { obj(py, sp.locale_alias) }.cast_into::<PyDict>().map_err(|e| pe(e.into()))?;
+    need!(
+        item(&alias, "c").is_some_and(|v| v.is_exact_instance_of::<PyString>() && v.eq("C").unwrap_or(false)),
+        "locale_alias['c'] changed"
+    );
+    need!(int_is(item(&tdict, "_STRUCT_TM_ITEMS"), 11), "time._STRUCT_TM_ITEMS changed");
     // The cached LocaleTime: C locale content, and the original's recreation test
     // (`_getlang() != lang or time.tzname != tzname or time.daylight != daylight`) is false
     // while LC_TIME is "C" (checked per call).
-    let Some(cache) = item(&d, "_TimeRE_cache") else { return Ok(false) };
-    if cache.get_type().as_ptr() as usize != sp.time_re_cls {
-        return Ok(false);
-    }
-    let lt = cache.getattr("locale_time")?;
-    if lt.get_type().as_ptr() as usize != sp.locale_time_cls {
-        return Ok(false);
-    }
-    let lang = lt.getattr("lang")?;
-    if !(lang.is_exact_instance_of::<PyTuple>() && lang.eq((py.None(), py.None()))?) {
-        return Ok(false);
-    }
-    let (Some(tzname), Some(daylight)) = (item(&tdict, "tzname"), item(&tdict, "daylight")) else { return Ok(false) };
-    let lt_tz = lt.getattr("tzname")?;
-    let lt_dl = lt.getattr("daylight")?;
-    if !(env::is_str_tuple(&tzname) && env::is_str_tuple(&lt_tz) && tzname.eq(&lt_tz)?) {
-        return Ok(false);
-    }
+    let Some(cache) = item(&d, "_TimeRE_cache") else { return Err("no _TimeRE_cache".into()) };
+    need!(cache.get_type().as_ptr() as usize == sp.time_re_cls, "_TimeRE_cache type");
+    let lt = cache.getattr("locale_time").map_err(pe)?;
+    need!(lt.get_type().as_ptr() as usize == sp.locale_time_cls, "locale_time type");
+    let lang = lt.getattr("lang").map_err(pe)?;
+    need!(
+        lang.is_exact_instance_of::<PyTuple>() && lang.eq((py.None(), py.None())).unwrap_or(false),
+        "cached LocaleTime is not for the C locale"
+    );
+    let (Some(tzname), Some(daylight)) = (item(&tdict, "tzname"), item(&tdict, "daylight")) else {
+        return Err("no time.tzname/daylight".into());
+    };
+    let lt_tz = lt.getattr("tzname").map_err(pe)?;
+    let lt_dl = lt.getattr("daylight").map_err(pe)?;
+    need!(
+        env::is_str_tuple(&tzname) && env::is_str_tuple(&lt_tz) && tzname.eq(&lt_tz).unwrap_or(false),
+        "time.tzname differs from the cached one"
+    );
     let int_t = py.get_type::<pyo3::types::PyInt>();
-    if !(daylight.is_exact_instance(&int_t) && lt_dl.is_exact_instance(&int_t) && daylight.eq(&lt_dl)?) {
-        return Ok(false);
-    }
-    let alt = lt.getattr("LC_alt_digits")?;
-    Ok(alt.is_exact_instance_of::<PyTuple>()
-        && alt.len()? == 0
-        && list_is(&lt.getattr("a_weekday")?, &A_WEEKDAY, false)
-        && list_is(&lt.getattr("f_weekday")?, &F_WEEKDAY, false)
-        && list_is(&lt.getattr("a_month")?, &A_MONTH, true)
-        && list_is(&lt.getattr("f_month")?, &F_MONTH, true)
-        && list_is(&lt.getattr("am_pm")?, &AM_PM, false))
+    need!(
+        daylight.is_exact_instance(&int_t) && lt_dl.is_exact_instance(&int_t) && daylight.eq(&lt_dl).unwrap_or(false),
+        "time.daylight differs from the cached one"
+    );
+    let alt = lt.getattr("LC_alt_digits").map_err(pe)?;
+    need!(alt.is_exact_instance_of::<PyTuple>() && alt.len().unwrap_or(1) == 0, "LC_alt_digits");
+    let names = |a: &str, list: &[&str], lead| lt.getattr(a).is_ok_and(|o| list_is(&o, list, lead));
+    need!(
+        names("a_weekday", &A_WEEKDAY, false)
+            && names("f_weekday", &F_WEEKDAY, false)
+            && names("a_month", &A_MONTH, true)
+            && names("f_month", &F_MONTH, true)
+            && names("am_pm", &AM_PM, false),
+        "cached LocaleTime names are not the C locale's"
+    );
+    Ok(())
 }
 
 /// Is `_strptime` in the validated steady state? One relaxed load in the common case.
@@ -288,7 +336,11 @@ fn ready(py: Python<'_>, e: &Env) -> bool {
 #[cold]
 #[inline(never)]
 fn revalidate(py: Python<'_>, e: &Env, g: u64) -> bool {
-    let ok = validate(py, e).unwrap_or(false);
+    let r = validate(py, e);
+    let ok = r.is_ok();
+    if let (Err(why), Ok(mut last)) = (r, LAST_FAILURE.lock()) {
+        *last = why;
+    }
     if ok {
         SP_OK.store(g, Ordering::Relaxed);
     } else {
@@ -388,9 +440,8 @@ unsafe fn run(kind: Kind, cls: *mut ffi::PyObject, s: *mut ffi::PyObject, fmt: *
             return None;
         };
         let r = build(kind, &p, sp);
-        match r {
-            Some(_) => c.hit(),
-            None => c.fallback(Reason::Args),
+        if r.is_none() {
+            c.fallback(Reason::Args);
         }
         r
     }
@@ -525,6 +576,11 @@ macro_rules! classmethod_kernels {
             unsafe {
                 if nargs == 2 {
                     if let Some(r) = run($kind, cls, *args, *args.add(1)) {
+                        if COUNTERS[$kind as usize].hit_check() {
+                            return check::verify(super::spec(&$kind), r, &[*args, *args.add(1)], || {
+                                ORIG_FAST[$kind as usize].get()(cls, args, nargs)
+                            });
+                        }
                         return r;
                     }
                 } else {
@@ -539,7 +595,13 @@ macro_rules! classmethod_kernels {
             // SAFETY: CPython's calling convention; fallback with unchanged arguments.
             unsafe {
                 if ffi::PyTuple_GET_SIZE(args) == 2 {
-                    if let Some(r) = run($kind, cls, ffi::PyTuple_GET_ITEM(args, 0), ffi::PyTuple_GET_ITEM(args, 1)) {
+                    let (a, b) = (ffi::PyTuple_GET_ITEM(args, 0), ffi::PyTuple_GET_ITEM(args, 1));
+                    if let Some(r) = run($kind, cls, a, b) {
+                        if COUNTERS[$kind as usize].hit_check() {
+                            return check::verify(super::spec(&$kind), r, &[a, b], || {
+                                ORIG_VAR[$kind as usize].get()(cls, args)
+                            });
+                        }
                         return r;
                     }
                 } else {
@@ -576,6 +638,11 @@ pub unsafe extern "C" fn time_fn(module: *mut ffi::PyObject, args: *mut ffi::PyO
             if let Some(fmt) = fmt
                 && let Some(r) = run(Kind::TimeFn, module, s, fmt)
             {
+                if COUNTERS[Kind::TimeFn as usize].hit_check() {
+                    return check::verify(super::spec(&Kind::TimeFn), r, &[s, fmt], || {
+                        ORIG_VAR[Kind::TimeFn as usize].get()(module, args)
+                    });
+                }
                 return r;
             }
         } else {
@@ -598,4 +665,13 @@ pub fn prepare_common(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     }
     capture_sp(cx)?;
     Ok(())
+}
+
+/// (ok generation, failed generation, last failure reason).
+pub fn validation_state() -> (u64, u64, String) {
+    (
+        SP_OK.load(Ordering::Relaxed),
+        SP_BAD.load(Ordering::Relaxed),
+        LAST_FAILURE.lock().map(|s| s.clone()).unwrap_or_default(),
+    )
 }

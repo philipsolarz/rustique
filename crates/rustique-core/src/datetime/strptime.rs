@@ -180,8 +180,15 @@ struct Ends {
 }
 
 impl Ends {
+    #[inline(always)]
     fn new() -> Self {
         Ends { buf: [0; 24], len: 0 }
+    }
+    /// Append an end position known to differ from the ones already listed.
+    #[inline(always)]
+    fn add(&mut self, e: usize) {
+        self.buf[self.len] = e as u8;
+        self.len += 1;
     }
     #[inline]
     fn push(&mut self, e: usize) {
@@ -196,7 +203,9 @@ impl Ends {
     }
 }
 
-/// A character class of the directive regexes.
+/// A character class of the directive regexes (reference tables for the tests of the
+/// hand-written matchers below).
+#[cfg(test)]
 #[derive(Clone, Copy)]
 enum C {
     /// `\d` (ASCII input: `[0-9]`)
@@ -209,8 +218,8 @@ enum C {
     Sp,
 }
 
+#[cfg(test)]
 impl C {
-    #[inline]
     fn matches(self, b: u8) -> bool {
         match self {
             C::D => b.is_ascii_digit(),
@@ -221,16 +230,24 @@ impl C {
     }
 }
 
+#[cfg(test)]
 use C::{D, L, R, Sp};
 
 // The alternatives of each numeric directive, in regex order (`TimeRE.__init__`).
+#[cfg(test)]
 const ALT_M: &[&[C]] = &[&[L(b'1'), R(b'0', b'2')], &[L(b'0'), R(b'1', b'9')], &[R(b'1', b'9')]];
+#[cfg(test)]
 const ALT_D: &[&[C]] =
     &[&[L(b'3'), R(b'0', b'1')], &[R(b'1', b'2'), D], &[L(b'0'), R(b'1', b'9')], &[R(b'1', b'9')], &[Sp, R(b'1', b'9')]];
+#[cfg(test)]
 const ALT_H: &[&[C]] = &[&[L(b'2'), R(b'0', b'3')], &[R(b'0', b'1'), D], &[D], &[Sp, D]];
+#[cfg(test)]
 const ALT_I: &[&[C]] = &[&[L(b'1'), R(b'0', b'2')], &[L(b'0'), R(b'1', b'9')], &[R(b'1', b'9')], &[Sp, R(b'1', b'9')]];
+#[cfg(test)]
 const ALT_MIN: &[&[C]] = &[&[R(b'0', b'5'), D], &[D]];
+#[cfg(test)]
 const ALT_S: &[&[C]] = &[&[L(b'6'), R(b'0', b'1')], &[R(b'0', b'5'), D], &[D]];
+#[cfg(test)]
 const ALT_J: &[&[C]] = &[
     &[L(b'3'), L(b'6'), R(b'0', b'6')],
     &[L(b'3'), R(b'0', b'5'), D],
@@ -241,7 +258,9 @@ const ALT_J: &[&[C]] = &[
     &[L(b'0'), R(b'1', b'9')],
     &[R(b'1', b'9')],
 ];
+#[cfg(test)]
 const ALT_Y2: &[&[C]] = &[&[D, D]];
+#[cfg(test)]
 const ALT_Y4: &[&[C]] = &[&[D, D, D, D]];
 
 /// C-locale `LocaleTime` names (lower case), calendar order.
@@ -259,11 +278,137 @@ const F_WEEKDAY_RE: [u8; 7] = [2, 3, 5, 1, 0, 4, 6];
 const A_WEEKDAY_RE: [u8; 7] = [0, 1, 2, 3, 4, 5, 6];
 const AM_PM_RE: [u8; 2] = [0, 1];
 
+#[cfg(test)]
 fn alts(s: &[u8], p: usize, alts: &[&[C]], out: &mut Ends) {
     for alt in alts {
         if p + alt.len() <= s.len() && alt.iter().zip(&s[p..]).all(|(c, &b)| c.matches(b)) {
             out.push(p + alt.len());
         }
+    }
+}
+
+
+#[inline(always)]
+fn at(s: &[u8], i: usize) -> u8 {
+    if i < s.len() { s[i] } else { 0 }
+}
+#[inline(always)]
+fn dg(b: u8) -> bool {
+    b.wrapping_sub(b'0') < 10
+}
+#[inline(always)]
+fn rg(b: u8, lo: u8, hi: u8) -> bool {
+    b.wrapping_sub(lo) <= hi - lo
+}
+
+/// End positions of a numeric directive, in the order of its regex alternatives (see the
+/// `ALT_*` reference tables; equivalence is tested exhaustively).
+#[inline(always)]
+fn numeric_ends(dir: Dir, s: &[u8], p: usize, out: &mut Ends) {
+    let (a, b) = (at(s, p), at(s, p + 1));
+    match dir {
+        // 1[0-2]|0[1-9]|[1-9]
+        Dir::Month => {
+            if (a == b'1' && rg(b, b'0', b'2')) || (a == b'0' && rg(b, b'1', b'9')) {
+                out.add(p + 2);
+            }
+            if rg(a, b'1', b'9') {
+                out.add(p + 1);
+            }
+        }
+        // 3[0-1]|[1-2]\d|0[1-9]|[1-9]| [1-9]
+        Dir::Day => {
+            if (a == b'3' && rg(b, b'0', b'1')) || (rg(a, b'1', b'2') && dg(b)) || (a == b'0' && rg(b, b'1', b'9')) {
+                out.add(p + 2);
+            }
+            if rg(a, b'1', b'9') {
+                out.add(p + 1);
+            } else if a == b' ' && rg(b, b'1', b'9') {
+                out.add(p + 2);
+            }
+        }
+        // 2[0-3]|[0-1]\d|\d| \d
+        Dir::Hour24 => {
+            if (a == b'2' && rg(b, b'0', b'3')) || (rg(a, b'0', b'1') && dg(b)) {
+                out.add(p + 2);
+            }
+            if dg(a) {
+                out.add(p + 1);
+            } else if a == b' ' && dg(b) {
+                out.add(p + 2);
+            }
+        }
+        // 1[0-2]|0[1-9]|[1-9]| [1-9]
+        Dir::Hour12 => {
+            if (a == b'1' && rg(b, b'0', b'2')) || (a == b'0' && rg(b, b'1', b'9')) {
+                out.add(p + 2);
+            }
+            if rg(a, b'1', b'9') {
+                out.add(p + 1);
+            } else if a == b' ' && rg(b, b'1', b'9') {
+                out.add(p + 2);
+            }
+        }
+        // [0-5]\d|\d
+        Dir::Minute => {
+            if rg(a, b'0', b'5') && dg(b) {
+                out.add(p + 2);
+            }
+            if dg(a) {
+                out.add(p + 1);
+            }
+        }
+        // 6[0-1]|[0-5]\d|\d
+        Dir::Second => {
+            if (a == b'6' && rg(b, b'0', b'1')) || (rg(a, b'0', b'5') && dg(b)) {
+                out.add(p + 2);
+            }
+            if dg(a) {
+                out.add(p + 1);
+            }
+        }
+        // \d\d
+        Dir::Year2 => {
+            if dg(a) && dg(b) {
+                out.add(p + 2);
+            }
+        }
+        // \d\d\d\d
+        Dir::Year4 => {
+            if dg(a) && dg(b) && dg(at(s, p + 2)) && dg(at(s, p + 3)) {
+                out.add(p + 4);
+            }
+        }
+        // 36[0-6]|3[0-5]\d|[1-2]\d\d|0[1-9]\d|00[1-9]|[1-9]\d|0[1-9]|[1-9]
+        Dir::Julian => {
+            let c = at(s, p + 2);
+            if (a == b'3' && b == b'6' && rg(c, b'0', b'6'))
+                || (a == b'3' && rg(b, b'0', b'5') && dg(c))
+                || (rg(a, b'1', b'2') && dg(b) && dg(c))
+                || (a == b'0' && rg(b, b'1', b'9') && dg(c))
+                || (a == b'0' && b == b'0' && rg(c, b'1', b'9'))
+            {
+                out.add(p + 3);
+            }
+            if (rg(a, b'1', b'9') && dg(b)) || (a == b'0' && rg(b, b'1', b'9')) {
+                out.add(p + 2);
+            }
+            if rg(a, b'1', b'9') {
+                out.add(p + 1);
+            }
+        }
+        // [0-9]{1,6}
+        Dir::Fraction => {
+            let mut k = 0;
+            while k < 6 && dg(at(s, p + k)) {
+                k += 1;
+            }
+            while k > 0 {
+                out.add(p + k);
+                k -= 1;
+            }
+        }
+        _ => unreachable!("not numeric"),
     }
 }
 
@@ -325,24 +470,10 @@ impl Program {
         &self.fields
     }
 
+    #[inline(always)]
     fn ends(&self, dir: Dir, s: &[u8], p: usize, out: &mut Ends) {
         let v315 = self.version == Version::V3_15;
         match dir {
-            Dir::Year4 => alts(s, p, ALT_Y4, out),
-            Dir::Year2 => alts(s, p, ALT_Y2, out),
-            Dir::Month => alts(s, p, ALT_M, out),
-            Dir::Day => alts(s, p, ALT_D, out),
-            Dir::Hour24 => alts(s, p, ALT_H, out),
-            Dir::Hour12 => alts(s, p, ALT_I, out),
-            Dir::Minute => alts(s, p, ALT_MIN, out),
-            Dir::Second => alts(s, p, ALT_S, out),
-            Dir::Julian => alts(s, p, ALT_J, out),
-            Dir::Fraction => {
-                let k = s[p..].iter().take(6).take_while(|b| b.is_ascii_digit()).count();
-                for kk in (1..=k).rev() {
-                    out.push(p + kk);
-                }
-            }
             Dir::MonthAbbr => names(s, p, &A_MONTH, &A_MONTH_RE, out),
             Dir::MonthFull => names(s, p, &F_MONTH, &F_MONTH_RE, out),
             Dir::WeekdayAbbr => names(s, p, &A_WEEKDAY, &A_WEEKDAY_RE, out),
@@ -350,6 +481,7 @@ impl Program {
             Dir::AmPm => names(s, p, &AM_PM, &AM_PM_RE, out),
             Dir::Z => z_ends(s, p, false, v315, out),
             Dir::ColonZ => z_ends(s, p, true, true, out),
+            _ => numeric_ends(dir, s, p, out),
         }
     }
 
@@ -402,7 +534,10 @@ impl Program {
     /// Run `_strptime` on `s` (ASCII): `Some` when the result is CPython's and no exception
     /// would be raised; `None` means "let CPython decide" (no match, leftover input, an
     /// invalid date, an inconsistent `%z`, ...).
-    pub fn parse(&self, s: &[u8]) -> Option<Parsed> {
+    ///
+    /// `full`: also compute `weekday` and `julian` (only `time.strptime` returns them;
+    /// otherwise they are 0).
+    pub fn parse(&self, s: &[u8], full: bool) -> Option<Parsed> {
         if s.len() > MAX_INPUT || !s.is_ascii() {
             return None;
         }
@@ -412,7 +547,7 @@ impl Program {
         if end != s.len() {
             return None; // "unconverted data remains"
         }
-        resolve(&self.fields, s, &caps)
+        resolve(&self.fields, s, &caps, full)
     }
 }
 
@@ -452,15 +587,30 @@ fn parse_z(z: &[u8]) -> Option<(i64, i64)> {
     if z == b"Z" {
         return Some((0, 0));
     }
-    let mut v: Vec<u8> = z.to_vec();
-    if v[3] == b':' {
-        v.remove(3);
-        if v.len() > 5 {
-            if v[5] != b':' {
-                return None; // "Inconsistent use of : in ..."
-            }
-            v.remove(5);
+    // z = z[:3] + z[4:] (and z[:5] + z[6:]) without allocating.
+    let mut v = [0u8; 20];
+    let mut n = 0;
+    let mut i = 0;
+    let colon1 = z.len() > 3 && z[3] == b':';
+    while i < z.len() && n < v.len() {
+        if colon1 && i == 3 {
+            i += 1;
+            continue;
         }
+        v[n] = z[i];
+        n += 1;
+        i += 1;
+    }
+    let mut v = &mut v[..n];
+    let mut tmp = [0u8; 20];
+    if colon1 && v.len() > 5 {
+        if v[5] != b':' {
+            return None; // "Inconsistent use of : in ..."
+        }
+        tmp[..5].copy_from_slice(&v[..5]);
+        tmp[5..v.len() - 1].copy_from_slice(&v[6..]);
+        let len = v.len() - 1;
+        v = &mut tmp[..len];
     }
     let digits = |r: &[u8]| -> Option<i64> { r.iter().all(u8::is_ascii_digit).then(|| num(r)) };
     let hours = digits(&v[1..3])?;
@@ -482,7 +632,7 @@ fn parse_z(z: &[u8]) -> Option<(i64, i64)> {
     Some((off, frac))
 }
 
-fn resolve(fields: &[Dir], s: &[u8], caps: &[(u8, u8)]) -> Option<Parsed> {
+fn resolve(fields: &[Dir], s: &[u8], caps: &[(u8, u8)], full: bool) -> Option<Parsed> {
     let text = |i: usize| &s[caps[i].0 as usize..caps[i].1 as usize];
     let ampm_pm = fields.iter().position(|&d| d == Dir::AmPm).is_some_and(|i| text(i).eq_ignore_ascii_case(b"pm"));
     let mut year: Option<i64> = None;
@@ -551,7 +701,7 @@ fn resolve(fields: &[Dir], s: &[u8], caps: &[(u8, u8)]) -> Option<Parsed> {
             if !cal::valid_date(year, month, day) {
                 return None; // datetime_date(year, month, day) raises
             }
-            i64::from(cal::day_of_year(year, month, day))
+            if full { i64::from(cal::day_of_year(year, month, day)) } else { 0 }
         }
         Some(j) => {
             if !(1..=9999).contains(&year) {
@@ -566,12 +716,8 @@ fn resolve(fields: &[Dir], s: &[u8], caps: &[(u8, u8)]) -> Option<Parsed> {
     };
     let weekday = match weekday {
         Some(w) => w,
-        None => {
-            if !cal::valid_date(year, month, day) {
-                return None;
-            }
-            cal::weekday(year, month, day)
-        }
+        None if full => cal::weekday(year, month, day),
+        None => 0,
     };
     if leap_year_fix {
         year = 1900;
@@ -584,7 +730,7 @@ mod tests {
     use super::*;
 
     fn p(s: &str, f: &str) -> Option<Parsed> {
-        compile(f.as_bytes(), Version::V3_15)?.parse(s.as_bytes())
+        compile(f.as_bytes(), Version::V3_15)?.parse(s.as_bytes(), true)
     }
 
     #[test]
@@ -627,6 +773,46 @@ mod tests {
         assert_eq!(p("12", "%H%M").map(|r| (r.hour, r.minute)), Some((1, 2)));
     }
 
+    /// The hand-written numeric matchers equal the regex alternation tables on every
+    /// input of up to 4 characters over a relevant alphabet.
+    #[test]
+    fn numeric_matchers_match_regex_tables() {
+        let alphabet = b"0123456789 :x";
+        let dirs: [(Dir, &[&[C]]); 9] = [
+            (Dir::Month, ALT_M),
+            (Dir::Day, ALT_D),
+            (Dir::Hour24, ALT_H),
+            (Dir::Hour12, ALT_I),
+            (Dir::Minute, ALT_MIN),
+            (Dir::Second, ALT_S),
+            (Dir::Julian, ALT_J),
+            (Dir::Year2, ALT_Y2),
+            (Dir::Year4, ALT_Y4),
+        ];
+        let mut inputs: Vec<Vec<u8>> = vec![vec![]];
+        for _ in 0..4 {
+            let mut next = Vec::new();
+            for i in &inputs {
+                for &c in alphabet {
+                    let mut j = i.clone();
+                    j.push(c);
+                    next.push(j);
+                }
+            }
+            inputs.extend(next);
+            inputs.sort();
+            inputs.dedup();
+        }
+        for (dir, table) in dirs {
+            for inp in &inputs {
+                let (mut a, mut b) = (Ends::new(), Ends::new());
+                alts(inp, 0, table, &mut a);
+                numeric_ends(dir, inp, 0, &mut b);
+                assert_eq!(a.as_slice(), b.as_slice(), "{dir:?} on {:?}", String::from_utf8_lossy(inp));
+            }
+        }
+    }
+
     #[test]
     fn rejects() {
         assert!(compile(b"%d", Version::V3_15).is_none());
@@ -644,6 +830,6 @@ mod tests {
     fn optional_z_315() {
         let r = p("2024 ", "%Y %z").unwrap();
         assert_eq!(r.gmtoff, None);
-        assert!(compile(b"%Y %z", Version::V3_14).unwrap().parse(b"2024 ").is_none());
+        assert!(compile(b"%Y %z", Version::V3_14).unwrap().parse(b"2024 ", true).is_none());
     }
 }

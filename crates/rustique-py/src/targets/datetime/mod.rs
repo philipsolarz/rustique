@@ -257,6 +257,7 @@ pub static DATETIME_STRPTIME: TargetSpec = TargetSpec {
     module: Some("_strptime"),
     versions: VERSIONS,
     free_threaded: true,
+    checkable: true,
     counters: &parse::COUNTERS[0],
     prepare: prepare_datetime_strptime,
     ..TargetSpec::DEFAULT
@@ -268,6 +269,7 @@ pub static DATE_STRPTIME: TargetSpec = TargetSpec {
     module: Some("_strptime"),
     versions: VERSIONS,
     free_threaded: true,
+    checkable: true,
     counters: &parse::COUNTERS[1],
     prepare: prepare_date_strptime,
     ..TargetSpec::DEFAULT
@@ -279,6 +281,7 @@ pub static TIME_STRPTIME: TargetSpec = TargetSpec {
     module: Some("_strptime"),
     versions: VERSIONS,
     free_threaded: true,
+    checkable: true,
     counters: &parse::COUNTERS[2],
     prepare: prepare_time_strptime,
     ..TargetSpec::DEFAULT
@@ -290,6 +293,7 @@ pub static TIME_FN_STRPTIME: TargetSpec = TargetSpec {
     module: Some("_strptime"),
     versions: VERSIONS,
     free_threaded: true,
+    checkable: true,
     counters: &parse::COUNTERS[3],
     prepare: prepare_time_fn_strptime,
     ..TargetSpec::DEFAULT
@@ -301,6 +305,7 @@ pub static DATE_STRFTIME: TargetSpec = TargetSpec {
     module: Some("_datetime"),
     versions: VERSIONS,
     free_threaded: true,
+    checkable: true,
     counters: &format::C_DATE,
     prepare: prepare_date_strftime,
     ..TargetSpec::DEFAULT
@@ -312,6 +317,7 @@ pub static TIME_STRFTIME: TargetSpec = TargetSpec {
     module: Some("_datetime"),
     versions: VERSIONS,
     free_threaded: true,
+    checkable: true,
     counters: &format::C_TIME,
     prepare: prepare_time_strftime,
     ..TargetSpec::DEFAULT
@@ -323,10 +329,21 @@ pub static TIME_FN_STRFTIME: TargetSpec = TargetSpec {
     module: Some("time"),
     versions: VERSIONS,
     free_threaded: true,
+    checkable: true,
     counters: &format::C_FN,
     prepare: prepare_time_fn_strftime,
     ..TargetSpec::DEFAULT
 };
+
+/// The spec of a strptime kernel.
+pub(crate) fn spec(kind: &parse::Kind) -> &'static TargetSpec {
+    match kind {
+        parse::Kind::DateTime => &DATETIME_STRPTIME,
+        parse::Kind::Date => &DATE_STRPTIME,
+        parse::Kind::Time => &TIME_STRPTIME,
+        parse::Kind::TimeFn => &TIME_FN_STRPTIME,
+    }
+}
 
 pub static TARGETS: &[&TargetSpec] = &[
     &DATETIME_STRPTIME,
@@ -337,3 +354,24 @@ pub static TARGETS: &[&TargetSpec] = &[
     &TIME_STRFTIME,
     &TIME_FN_STRFTIME,
 ];
+
+/// `_accel._datetime_debug()`: the group's validation state (tests, diagnostics).
+#[pyfunction]
+fn _datetime_debug(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("generation", watch::current())?;
+    let (sp_ok, sp_bad, last) = parse::validation_state();
+    d.set_item("strptime_ok_gen", sp_ok)?;
+    d.set_item("strptime_bad_gen", sp_bad)?;
+    d.set_item("strptime_last_failure", last)?;
+    let (ft_ok, ft_bad) = format::validation_state();
+    d.set_item("strftime_ok_gen", ft_ok)?;
+    d.set_item("strftime_bad_gen", ft_bad)?;
+    d.set_item("lc_time_is_c", env::lc_time_is_c())?;
+    d.set_item("thread_locale_is_global", env::thread_locale_is_global())?;
+    Ok(d)
+}
+
+pub fn register(accel: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
+    accel.add_function(wrap_pyfunction!(_datetime_debug, accel)?)
+}

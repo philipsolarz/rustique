@@ -24,5 +24,6 @@ pub static ALL: &[&[&TargetSpec]] = &[
 
 /// Python-visible helpers of targets (registered on `rustique._rustique._accel`).
 pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {
+    datetime::register(accel)?;
     _selftest::register(accel)
 }

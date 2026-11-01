@@ -197,7 +197,7 @@ pub fn capture(cx: &Prepare<'_>) -> Result<&'static Env, Refusal> {
             _ => unsafe {
                 let p = o.as_ptr();
                 ffi::PyType_Check(p) != 0
-                    && (*p.cast::<ffi::PyTypeObject>()).tp_flags & ffi::Py_TPFLAGS_HEAPTYPE == 0
+                    && ffi::PyType_GetFlags(p.cast()) & ffi::Py_TPFLAGS_HEAPTYPE == 0
                     && CStr::from_ptr((*p.cast::<ffi::PyTypeObject>()).tp_name).to_bytes() == name.as_bytes()
             },
         };
@@ -221,13 +221,9 @@ pub fn capture(cx: &Prepare<'_>) -> Result<&'static Env, Refusal> {
         builtin_objs,
     };
     // Watch what every target depends on.
-    for name in BUILTIN_DEPS {
-        super::watch::watch(&bdict, Some(name))?;
-    }
-    for name in ["time", "_strptime", "locale", "zoneinfo", "_zoneinfo"] {
-        super::watch::watch(&modules, Some(name))?;
-    }
-    super::watch::watch(&tdict, None)?;
+    super::watch::watch(&bdict, &BUILTIN_DEPS)?;
+    super::watch::watch(&modules, &["time", "_strptime", "locale", "zoneinfo", "_zoneinfo"])?;
+    super::watch::watch(&tdict, &["tzname", "daylight", "struct_time", "strftime", "_STRUCT_TM_ITEMS"])?;
     Ok(ENV.get_or_init(|| e))
 }
 
