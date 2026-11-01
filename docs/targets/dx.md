@@ -363,4 +363,21 @@ refusal categories, check mode, mismatches, xdist): 100 tests, ~7 s. Full suite 
 
 ## 9. Open issues and decisions for the lead
 
-⟨see the final report⟩
+1. **`RUSTIQUE=1` / `import rustique; enable()` startup** — the binding constraint. The dx
+   side is at its floor (module budget, §1.3); the remainder is the extension's load and
+   init (accel-core's lazy extension). Numbers: §1.4.
+2. **File the CPython issue** about `.start` resolution importing `pkgutil` + `re` (§1.2),
+   and add `_rustique_startup.start` when it is fixed (or for 3.18+).
+3. **`wheels.yml` has not run on GitHub** (no push from here): the first tag or manual
+   dispatch is the proof for Windows arm64 (`windows-11-arm`, free-threaded availability),
+   `macos-15-intel`, cp315t in the manylinux/musllinux images, and uv's musl free-threaded
+   CPythons for the Alpine smoke test. No PyPI publish job (trusted publishing) is included:
+   the lead's call.
+4. **`requires-python = ">=3.14,<3.16"`** (§5.3): revert to `>=3.14` if you prefer
+   "installs, refuses at runtime" over "refuses to install" on future minors.
+5. **Kill switch scope**: `RUSTIQUE=0` also disables the native tier (`native=`,
+   `@rustique.native`), per "every enable path"; confirm.
+6. **Deopt-heavy wave-0 kernels** seen on real suites (§7.4): `builtins.min` 43% `deopt` in
+   attrs, `tuple.__contains__` 86% fallbacks (20% `deopt`) in sqlglot.
+7. `docs/USAGE.md` and README carry `⟨Phase 3⟩` placeholders for the measured target numbers
+   and the `RUSTIQUE=1` startup cost.
