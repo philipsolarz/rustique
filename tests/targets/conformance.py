@@ -114,12 +114,33 @@ def counters(groups: list[str]) -> dict[str, Any]:
             if status.get(name, {}).get("group") in groups}
 
 
+def alias_cjson() -> None:
+    """`test_json@real`: make test_json's C-accelerated variant (`cjson`, normally a fresh
+    copy of `json` imported with a fresh `_json`) the process's real `json` module, so its
+    C tests (`CTest`) run through the module the targets are installed on."""
+    import json
+
+    from test.support import import_helper
+
+    orig = import_helper.import_fresh_module
+
+    def fresh(name, fresh=(), blocked=(), *args, **kw):
+        if name == "json" and list(fresh) == ["_json"] and not blocked:
+            return json
+        return orig(name, fresh, blocked, *args, **kw)
+
+    import_helper.import_fresh_module = fresh
+
+
 def run_child(module: str, groups: list[str], verbose: bool) -> dict[str, Any]:
     import importlib
 
     status = install(groups) if groups else {}
     from test import support  # noqa: F401  (CPython's test helpers; sets defaults)
 
+    if module.endswith("@real"):
+        module = module[: -len("@real")]
+        alias_cjson()
     loader = unittest.TestLoader()
     mod = importlib.import_module(f"test.{module}")
     suite = loader.loadTestsFromModule(mod)

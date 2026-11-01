@@ -156,6 +156,8 @@ ERROR_CELLS: dict[str, tuple[str, str]] = {
     # Statements that raise: measured inside try/except.
     "dumps Decimal no default [error fallback]": ("dumps(with_decimal)", "float,json"),
     "dumps circular [error fallback]": ("dumps(circular)", "float,json"),
+    "dumps circular, kernel declines at once [floor]": ("dumps(circular, skipkeys=[])", "float,json"),
+    "dumps Decimal, kernel declines at once [floor]": ("dumps(with_decimal, skipkeys=[])", "float,json"),
     "loads invalid [error fallback]": ("loads(bad_json)", "float,json"),
 }
 
@@ -172,7 +174,7 @@ def worker(name: str, variant: str) -> None:
     exec("enc = json.JSONEncoder()", ns)
     if variant == "on":
         import rustique
-    from rustique import _takeover as _tk
+        from rustique import _takeover as _tk
 
         rustique.enable(only=groups.split(","))
         for d in _tk.status()["targets"]:

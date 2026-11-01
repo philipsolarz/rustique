@@ -11,12 +11,14 @@ pub mod _selftest;
 pub mod builtins;
 pub mod containers;
 pub mod float;
+pub mod json;
 
 /// Every group's targets, in install order.
 pub static ALL: &[&[&TargetSpec]] = &[
     containers::TARGETS,
     builtins::TARGETS,
     float::TARGETS,
+    json::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,
@@ -25,5 +27,6 @@ pub static ALL: &[&[&TargetSpec]] = &[
 /// Python-visible helpers of targets (registered on `rustique._rustique._accel`).
 pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {
     float::register(accel)?;
+    json::register(accel)?;
     _selftest::register(accel)
 }

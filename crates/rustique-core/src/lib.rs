@@ -12,6 +12,7 @@ pub mod dtype;
 pub mod expr;
 pub mod float_repr;
 pub mod index;
+pub mod json;
 pub mod kernels;
 pub mod pyfmt;
 pub mod pyhash;

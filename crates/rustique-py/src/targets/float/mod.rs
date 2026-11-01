@@ -27,7 +27,7 @@ use pyo3::types::PyList;
 
 use rustique_core::float_repr;
 
-use crate::accel::{Counters, Original, Prepare, Reason, Refusal, SlotName, TargetSpec};
+use crate::accel::{Counters, Original, Prepare, Reason, Refusal, SlotName, TargetSpec, check};
 
 pub static COUNTERS: Counters = Counters::new();
 
@@ -112,8 +112,11 @@ unsafe extern "C" fn repr_kernel(op: *mut ffi::PyObject) -> *mut ffi::PyObject {
         if ffi::Py_TYPE(op) == &raw mut ffi::PyFloat_Type {
             let x = (*op.cast::<ffi::PyFloatObject>()).ob_fval;
             if x.is_finite() {
-                COUNTERS.hit();
-                return repr_finite(x);
+                let r = repr_finite(x);
+                if COUNTERS.hit_check() {
+                    return check::verify(&FLOAT_REPR, r, &[op], || ORIG_REPR.get()(op));
+                }
+                return r;
             }
         }
         COUNTERS.fallback(Reason::Args);
@@ -134,8 +137,11 @@ unsafe extern "C" fn format_kernel(slf: *mut ffi::PyObject, spec: *mut ffi::PyOb
         {
             let x = (*slf.cast::<ffi::PyFloatObject>()).ob_fval;
             if x.is_finite() {
-                COUNTERS.hit();
-                return repr_finite(x);
+                let r = repr_finite(x);
+                if COUNTERS.hit_check() {
+                    return check::verify(&FLOAT_REPR, r, &[slf, spec], || ORIG_FORMAT.get()(slf, spec));
+                }
+                return r;
             }
         }
         COUNTERS.fallback(Reason::Args);
@@ -189,7 +195,7 @@ fn cpython_repr(x: f64) -> Option<Vec<u8>> {
 /// Validate (layout, original pointers, fingerprint, self-test) and declare both sites.
 fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if !calibrate_ascii(py) {
-        return Err(Refusal::new("str layout not calibrated"));
+        return Err(crate::refuse!(Layout: "str layout not calibrated"));
     }
     let float_type = py.get_type::<pyo3::types::PyFloat>();
     // The slot must hold what the `float.__repr__` wrapper captured (checked by `slot`).
@@ -235,6 +241,7 @@ pub static FLOAT_REPR: TargetSpec = TargetSpec {
     free_threaded: true,
     counters: &COUNTERS,
     prepare,
+    checkable: true,
     ..TargetSpec::DEFAULT
 };
 
