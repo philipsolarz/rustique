@@ -2724,6 +2724,18 @@ fn lock_state() -> PyResult<std::sync::MutexGuard<'static, Option<Captured>>> {
 // Targets (docs/ACCELERATION.md §9): group `builtins`.
 // ---------------------------------------------------------------------------------------
 
+/// Fingerprints of the six C originals (`ml_name`, `ml_flags`, `ml_doc`), in [`Which`]
+/// order, recorded with `python -m rustique._takeover._dev fingerprint builtins.sum ...`
+/// (identical on 3.14.9, 3.14.9t, 3.15.1 and 3.15.1t).
+const FINGERPRINTS: [accel::Fingerprints; 6] = [
+    &[(3, 14, "6361e6d2d1b2c0b5"), (3, 15, "6361e6d2d1b2c0b5")],
+    &[(3, 14, "cb287d8f2c8a83bd"), (3, 15, "cb287d8f2c8a83bd")],
+    &[(3, 14, "c98ff6f6ef98751c"), (3, 15, "c98ff6f6ef98751c")],
+    &[(3, 14, "d2839c81e5ecc243"), (3, 15, "d2839c81e5ecc243")],
+    &[(3, 14, "52c0a11cbdfca869"), (3, 15, "52c0a11cbdfca869")],
+    &[(3, 14, "7839de65dbc5a549"), (3, 15, "7839de65dbc5a549")],
+];
+
 fn prepare(py: Python<'_>, cx: &mut Prepare<'_>, which: Which) -> Result<(), Refusal> {
     let def = {
         let mut state = lock_state()?;
@@ -2735,6 +2747,7 @@ fn prepare(py: Python<'_>, cx: &mut Prepare<'_>, which: Which) -> Result<(), Ref
     let def = def as *mut ffi::PyMethodDef;
     // SAFETY: a live entry of the static `builtins` method table.
     unsafe {
+        cx.fingerprint_def(&what, def, FINGERPRINTS[which as usize])?;
         match which {
             Which::Any | Which::All => {
                 let k = kernel(which);
