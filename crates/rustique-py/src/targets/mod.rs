@@ -12,6 +12,7 @@ pub mod builtins;
 pub mod containers;
 pub mod float;
 pub mod json;
+pub mod logging;
 
 /// Every group's targets, in install order.
 pub static ALL: &[&[&TargetSpec]] = &[
@@ -19,6 +20,7 @@ pub static ALL: &[&[&TargetSpec]] = &[
     builtins::TARGETS,
     float::TARGETS,
     json::TARGETS,
+    logging::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,
@@ -28,5 +30,7 @@ pub static ALL: &[&[&TargetSpec]] = &[
 pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {
     float::register(accel)?;
     json::register(accel)?;
-    _selftest::register(accel)
+    _selftest::register(accel)?;
+    logging::register(accel)?;
+    Ok(())
 }
