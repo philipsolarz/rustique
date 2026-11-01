@@ -45,6 +45,17 @@ the helpers hand to `deepcopy` (siblings, subtrees) is copied natively. A hook a
 thus costs one wasted native traversal of the prefix, not *d*. The path is a per-thread
 stack of addresses; a stale match only calls the original, which is always correct.
 
+Deep recursion through fallbacks. With the kernel installed, every call of `deepcopy`/
+`copy` from Python code is a C call (the interpreter inlines only functions whose
+vectorcall is its own). A call that falls back (restart, generic memo, ...) runs the
+original, whose helpers or hooks call the function again: one C-level recursion per level,
+where CPython inlines and recurses as deep as the recursion limit allows. Fallbacks nesting
+deeper than 128 on one thread therefore put the original vectorcall back at once (the deeper
+levels are inlined exactly as in CPython) and have the registry record a suspension
+(resumed by the next `enable()`). So a raised recursion limit reaches as deep as in CPython
+— 50,000-level chains with user code at the bottom, linked hooks calling `deepcopy`/`copy`
+recursively — with no C stack overflow; the native engine itself never recurses in C.
+
 What restarts (`deepcopy`): a `__deepcopy__` other than a recognised no-op (a Python
 function whose code is exactly `return self`, i.e. `Enum.__deepcopy__`); a copier registered
 in `copy._deepcopy_dispatch` that is not one of `copy.py`'s own helpers; any reductor in
