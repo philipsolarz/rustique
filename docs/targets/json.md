@@ -287,12 +287,17 @@ module, the builtins both read) are one `GroupSpec` (`json`); module namespaces 
 per name (no snapshot of `json.encoder`/`json.decoder`); validations of the default
 encoder's attributes and of the keyword defaults are one pass each; there is no install
 self-test (the originals are Python functions, covered by fingerprints; the probe texts run
-in `test_selftest_texts`). `json` stays 1.5 points above its budget (5% = 219k Ir).
+in `test_selftest_texts`). `json` stays 1.5 points above its budget (max(5%, 0.1M) =
+219k Ir; +283k, 64k over): accepted by the lead as a documented wave-1 overage. The
+remaining lever is framework-side (deferred first-call fingerprint verification, cheaper
+key interning) and goes to wave 2; pins and fingerprints are not dropped.
 
 ## Open issues
 
-- **Install cost of `json`**: +6.5% of `import json` after accel-core's second pass and the
-  group's trims (budget 5%); pins and fingerprints stay (lead's ruling).
+- **Install cost of `json`**: +6.5% of `import json` (+283,152 Ir, 64k over max(5%, 0.1M))
+  after accel-core's second pass and the group's trims. Accepted as a wave-1 overage; the
+  fix is framework-side in wave 2 (deferred first-call fingerprint verification or cheaper
+  interning), not fewer pins or fingerprints.
 - **Unreproduced crash, 3.15.1 (GIL build).** In the first 4-build matrix run
   (`~/rustique-research/p2-json/matrix.sh`, log `~/rustique-research/p2-json/matrix.log`,
   section `=== 3.15.1 tests`, 2026-11-01 around 12:50 UTC on the dev box, commit 44cbe9c),
