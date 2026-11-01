@@ -288,3 +288,17 @@ def test_threads_share_objects():
     for t in ts:
         t.join()
     assert not errors
+
+
+def test_shared_mechanics():
+    import _mechanics as M
+
+    off()
+    try:
+        p = PosixPath("/srv/a/b.txt")
+        M.assert_tools_see_original("pathlib.PurePath.name", PurePath.name.fget, lambda: p.name)
+        M.assert_tools_see_original("pathlib.PurePath.relative_to", PurePath.relative_to,
+                                    lambda: p.relative_to("/srv"))
+        M.assert_introspection_unchanged(PurePath.relative_to, "pathlib.PurePath.relative_to")
+    finally:
+        on()

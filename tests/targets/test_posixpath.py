@@ -425,3 +425,22 @@ def test_threads_with_enable_disable():
             t.join()
     assert not errors
     assert all(t["state"] == "installed" for t in rt.status()["targets"] if t["group"] == "posixpath")
+
+
+def test_shared_mechanics():
+    """tests/targets/_mechanics.py: every tool kind sees the original's frames (incl.
+    LINE-only/RAISE-only global tools and local events), introspection unchanged."""
+    import _mechanics as M
+
+    A.disable(["posixpath"])
+    try:
+        for name, call in [
+            ("join", lambda: posixpath.join("/a", "b")),
+            ("split", lambda: posixpath.split("/a/b")),
+            ("relpath", lambda: posixpath.relpath("/a/b", "/a")),
+            ("isabs", lambda: posixpath.isabs("/a")),
+        ]:
+            M.assert_tools_see_original(f"posixpath.{name}", getattr(posixpath, name), call)
+            M.assert_introspection_unchanged(getattr(posixpath, name), f"posixpath.{name}")
+    finally:
+        rt.enable(only="posixpath")

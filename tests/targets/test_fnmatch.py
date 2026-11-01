@@ -251,3 +251,15 @@ def test_filter_concurrent_mutation_is_safe():
     stop.set()
     ts[0].join()
     assert not errors
+
+
+def test_shared_mechanics():
+    import _mechanics as M
+
+    A.disable(["fnmatch"])
+    try:
+        M.assert_tools_see_original("fnmatch.fnmatch", fnmatch.fnmatch, lambda: fnmatch.fnmatch("a.py", "*.py"))
+        M.assert_tools_see_original("fnmatch.filter", fnmatch.filter, lambda: fnmatch.filter(["a.py", "b"], "*.py"))
+        M.assert_introspection_unchanged(fnmatch.fnmatchcase, "fnmatch.fnmatchcase")
+    finally:
+        rt.enable(only="fnmatch")

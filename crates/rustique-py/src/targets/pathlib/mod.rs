@@ -64,34 +64,48 @@ pub(crate) const FPS: &[(&str, Fingerprints)] = &[
     ("posixpath.splitroot", &[(3, 14, "2d41f32dde9746e1"), (3, 15, "6c3f34b1d74117df")]),
 ];
 
-/// The `PurePath` attributes the originals reach through `self` / `cls` (pinned through the
-/// MRO of both exact classes: a class-level patch anywhere breaks the pin).
-const ATTRS: &[&str] = &[
-    "__new__",
-    "__init__",
-    "with_segments",
-    "parser",
-    "__truediv__",
-    "__str__",
-    "_format_parsed_parts",
-    "_from_parsed_parts",
-    "_from_parsed_string",
-    "_parse_path",
-    "_raw_path",
-    "drive",
-    "root",
-    "_tail",
-    "parent",
-    "name",
-    "suffix",
-    "stem",
-    "parts",
-    "parents",
-    "relative_to",
-    "_str_normcase",
-    "__eq__",
-    "__hash__",
-];
+/// What parsing reaches through `self` / `cls`.
+const PARSE: &[&str] = &["parser", "_parse_path", "_raw_path", "drive", "root", "_tail"];
+/// What creating a derived path reaches (`_from_parsed_parts` → `with_segments` →
+/// `type(self)(...)`).
+const DERIVE: &[&str] =
+    &["_format_parsed_parts", "_from_parsed_parts", "_from_parsed_string", "with_segments", "__new__", "__init__"];
+
+/// The `PurePath` attributes each original reaches through `self` / `cls` besides itself
+/// (pinned through `PosixPath`'s MRO, which contains `PurePosixPath`'s: patching one on a
+/// class suspends the target; replacing the target's own attribute just stops routing calls
+/// to the kernel).
+fn reached(attr: &str) -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = Vec::new();
+    match attr {
+        "__new__" => {}
+        "__init__" => v.push("parser"),
+        "__truediv__" => v.extend(["with_segments", "__new__", "__init__", "parser"]),
+        "__str__" | "name" | "parts" => {
+            v.extend(PARSE);
+            v.push("_format_parsed_parts");
+        }
+        "suffix" | "stem" => {
+            v.extend(PARSE);
+            v.push("name");
+        }
+        "parent" => {
+            v.extend(PARSE);
+            v.extend(DERIVE);
+        }
+        "__eq__" | "__hash__" => {
+            v.extend(PARSE);
+            v.extend(["_format_parsed_parts", "_str_normcase", "__str__"]);
+        }
+        _ => {
+            // relative_to
+            v.extend(PARSE);
+            v.extend(DERIVE);
+            v.extend(["parents", "__eq__", "_str_normcase", "__str__"]);
+        }
+    }
+    v
+}
 
 // ---------------------------------------------------------------------------------------
 // Validated layout: the two exact classes and the slot offsets
@@ -469,7 +483,8 @@ macro_rules! target {
             free_threaded: true,
             counters: &$rt.counters,
             prepare: $prep,
-            jit_safe: false,
+            // Steady-state JIT cells measured within 1.05 (fallbacks suspend the target).
+            jit_safe: true,
             checkable: false,
             ..TargetSpec::DEFAULT
         };
@@ -572,18 +587,28 @@ fn prep(
             }
         }
     }
-    // Both exact classes: default metaclass, posixpath parser, every reached attribute
-    // pinned along the MRO.
+    // Both exact classes: default metaclass, posixpath parser; the attributes this original
+    // reaches pinned along PosixPath's MRO (PosixPath, Path, PurePosixPath, PurePath, object:
+    // it contains PurePosixPath's).
     let pp = cx.loaded_module("posixpath")?;
     for t in [&pure_posix, &posix] {
         if !t.get_type().is(py.get_type::<PyType>()) {
             return Err(refuse!("custom metaclass"));
         }
-        for name in ATTRS {
-            let v = cx.pin_attr(t, name, &rt.deps)?;
-            if *name == "parser" && !v.is(&pp) {
-                return Err(refuse!("{}.parser is not posixpath", t.name()?));
-            }
+    }
+    if !cx.type_attr(&pure_posix, "parser")?.is(&pp) {
+        return Err(refuse!("PurePosixPath.parser is not posixpath"));
+    }
+    for name in reached(attr) {
+        let v = cx.pin_attr(&posix, name, &rt.deps)?;
+        if name == "parser" && !v.is(&pp) {
+            return Err(refuse!("PosixPath.parser is not posixpath"));
+        }
+    }
+    if attr == "relative_to" {
+        // `path in self.parents`: Sequence.__contains__ / __iter__ over _PathParents.
+        for name in ["__init__", "__len__", "__getitem__", "__contains__", "__iter__"] {
+            cx.pin_attr(&parents, name, &rt.deps)?;
         }
     }
     let ppd = pp.dict();

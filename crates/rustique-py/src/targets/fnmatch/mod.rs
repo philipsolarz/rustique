@@ -54,7 +54,8 @@ macro_rules! target {
             free_threaded: true,
             counters: &$rt.counters,
             prepare: $prep,
-            jit_safe: false,
+            // Steady-state JIT cells measured within 1.05 (fallbacks suspend the target).
+            jit_safe: true,
             checkable: true,
             ..TargetSpec::DEFAULT
         };

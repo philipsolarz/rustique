@@ -81,13 +81,17 @@ The framework handles these classes (lead ruling, 2026-11-01): a patched depende
 suspends the target until it is restored (deopt while unpinned), and 64 consecutive
 fallbacks suspend it until the next `enable()` (adaptive suspension). Steady-state cells of
 these classes are therefore measured after ≥ 2,500 calls; the cost before suspension (the
-first 60 calls after `enable()`) is reported separately.
+first 60 calls after `enable()`) is reported separately: 1.044–1.059 for join, split,
+splitext and dirname with a user PathLike or `pathlib.Path` argument or cProfile active,
+1.065–1.105 for basename and isabs (the cheapest functions: 2.0k / 1.5k Ir). Mixed traffic
+(exact str with occasional fallbacks) never reaches a streak of 64 and stays far below 1.
+
+`normcase` (517 Ir: a fallback would cost 1.4×, and its only common caller, `fnmatch`, is
+accelerated as a whole), `commonpath`, `commonprefix` (3.15: emits a DeprecationWarning),
+`normpath` (already C), `expanduser`/`expandvars` (environment, `pwd`) are not targets;
+the table lists `normcase` and `commonpath` to show they are untouched.
 
 ## Measurements
-
-Callgrind, region-instrumented, Ir per call = (Ir(2n) − Ir(n)) / n, statements unrolled
-10×, each cell in a fresh process (`benches/targets/paths_cg.py`); CPython 3.15.1,
-dev-release build, dev box (c7a.8xlarge). `orig` = plain CPython, `rs` = `enable(only=["posixpath"])`.
 
 Callgrind, region-instrumented, Ir per call = (Ir(2n) − Ir(n)) / n after ≥ 2,500 warm-up
 calls, statements unrolled 10×, each cell in a fresh process (`benches/targets/paths_cg.py`);
@@ -161,7 +165,27 @@ bytes; `ps`/`ds`/`fs` instances of `class S(str): pass`; `PL` a minimal user Pat
 
 ## Conformance
 
-CONFORMANCE_PLACEHOLDER
+`tests/conformance/run_target_suites.py --targets posixpath,fnmatch,pathlib --modules
+test.test_posixpath,test.test_genericpath,test.test_fnmatch,test.test_glob,test.test_pathlib,test.test_os`
+(each module plain and with `enable(only=...)` before the module is imported, per-test-id
+outcomes compared; all 24 targets of the three groups asserted installed). CPython's
+`Lib/test` from the matching source tree.
+
+| module | 3.15.1 | 3.15.1t | 3.14.9 | 3.14.9t |
+|---|---|---|---|---|
+| test_posixpath | 93 pass, 3 skip | same | 91 pass, 3 skip | same |
+| test_genericpath | 26 pass | same | 25 pass | same |
+| test_fnmatch | 24 pass | same | 24 pass | same |
+| test_glob | 20 pass, 2 skip | same | 22 pass, 2 skip | same |
+| test_pathlib | 991 pass, 407 skip | same | 966 pass, 403 skip | same |
+| test_os | 472 pass, 77 skip, 3 fail, 1 error | same | 317 pass, 66 skip, 2 fail | same |
+| **differences plain vs enabled** | **0** | **0** | **0** | **0** |
+
+The `test_os` failures and error are the box's environment (identical without Rustique).
+Plus `tests/targets/test_posixpath.py`, `test_fnmatch.py`, `test_pathlib.py` (differential
+Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `pytest -q` on
+the four builds.
+
 
 ## Version coverage
 

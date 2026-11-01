@@ -56,12 +56,19 @@ classes (`pin_attr`: `__new__`, `__init__`, `with_segments`, `parser`, `_parse_p
 `drive`, `root`, `_tail`, the targets themselves, `_str_normcase`, `parents`), so patching
 `PurePath.with_segments` (the public subclass hook) or any of these on a class suspends the
 targets. Also pinned: `posixpath.sep/altsep/join/splitroot/splitdrive/_get_sep`, the
-pathlib globals the code reads (`os`, `posixpath`, `PurePath`, `chain`, `_PathParents`)
-and its builtins. Fingerprints: all 29 functions involved (per minor; checked once per set
+pathlib globals the code reads (`os`, `posixpath`, `PurePath`, `PurePosixPath`,
+`PosixPath`, `Path`, `PureWindowsPath`, `WindowsPath`, `chain`, `_PathParents`), its
+builtins, `os.fspath` (called by `__init__`) and `os.name` (read by `__new__`). Fingerprints: all 29 functions involved (per minor; checked once per set
 of function objects, since the thirteen targets share them).
 
 Subclasses (including any overriding `with_segments`, `__init__` or `parser`),
-`PureWindowsPath`, and all other inputs run CPython's code.
+`PureWindowsPath`, and all other inputs run CPython's code. Reached through slots
+(`__new__`, `__init__`, `__str__`, `__truediv__`, `__eq__`, `__hash__`) that costs +3 Ir;
+for the properties and `relative_to` a fallback costs +210–300 Ir: the framework suspends a
+target after 64 consecutive fallbacks (steady state ≈ 1.00, measured), and the first 60
+calls on a subclass or a `PureWindowsPath` cost 1.27–1.28 for `name`/`suffix` (0.7–2k Ir
+properties), 1.05 for `parent`. Plain-subclass support (as `posixpath` has for str) would
+remove that; not done in wave 1.
 
 ## Private state skipped
 
@@ -112,7 +119,27 @@ Callgrind as in docs/targets/posixpath.md (`benches/targets/paths_cg.py`, CPytho
 
 ## Conformance
 
-CONFORMANCE_PLACEHOLDER
+`tests/conformance/run_target_suites.py --targets posixpath,fnmatch,pathlib --modules
+test.test_posixpath,test.test_genericpath,test.test_fnmatch,test.test_glob,test.test_pathlib,test.test_os`
+(each module plain and with `enable(only=...)` before the module is imported, per-test-id
+outcomes compared; all 24 targets of the three groups asserted installed). CPython's
+`Lib/test` from the matching source tree.
+
+| module | 3.15.1 | 3.15.1t | 3.14.9 | 3.14.9t |
+|---|---|---|---|---|
+| test_posixpath | 93 pass, 3 skip | same | 91 pass, 3 skip | same |
+| test_genericpath | 26 pass | same | 25 pass | same |
+| test_fnmatch | 24 pass | same | 24 pass | same |
+| test_glob | 20 pass, 2 skip | same | 22 pass, 2 skip | same |
+| test_pathlib | 991 pass, 407 skip | same | 966 pass, 403 skip | same |
+| test_os | 472 pass, 77 skip, 3 fail, 1 error | same | 317 pass, 66 skip, 2 fail | same |
+| **differences plain vs enabled** | **0** | **0** | **0** | **0** |
+
+The `test_os` failures and error are the box's environment (identical without Rustique).
+Plus `tests/targets/test_posixpath.py`, `test_fnmatch.py`, `test_pathlib.py` (differential
+Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `pytest -q` on
+the four builds.
+
 
 ## Version coverage
 

@@ -387,6 +387,22 @@ pub fn code_const<'py>(func: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> P
     Ok(None)
 }
 
+/// Objects whose fingerprint matched, by identity (strong references kept, so a pointer
+/// is never reused): targets sharing helpers (`_get_sep`, `os.fspath`, ...) hash them once.
+static VERIFIED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+fn verified(obj: &Bound<'_, PyAny>) -> bool {
+    VERIFIED.lock().map(|v| v.contains(&(obj.as_ptr() as usize))).unwrap_or(false)
+}
+
+fn mark_verified(obj: &Bound<'_, PyAny>) {
+    if let Ok(mut v) = VERIFIED.lock()
+        && !v.contains(&(obj.as_ptr() as usize))
+    {
+        v.push(leak(obj));
+    }
+}
+
 /// Require the recorded fingerprint of `obj` (named `name` in `table`).
 pub fn check_fp(
     cx: &mut Prepare<'_>,
@@ -399,7 +415,12 @@ pub fn check_fp(
         .find(|(n, _)| *n == name)
         .map(|(_, f)| *f)
         .ok_or_else(|| refuse!("{name}: no fingerprint table"))?;
-    cx.fingerprint_code(obj, fps)
+    if verified(obj) {
+        return Ok(());
+    }
+    cx.fingerprint_code(obj, fps)?;
+    mark_verified(obj);
+    Ok(())
 }
 
 /// The module dict of an already imported module (never imports).
@@ -419,7 +440,12 @@ pub fn check_c(
         .find(|(n, _)| *n == name)
         .map(|(_, f)| *f)
         .ok_or_else(|| refuse!("{name}: no fingerprint table"))?;
-    cx.fingerprint_c(obj, fps)
+    if verified(obj) {
+        return Ok(());
+    }
+    cx.fingerprint_c(obj, fps)?;
+    mark_verified(obj);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------

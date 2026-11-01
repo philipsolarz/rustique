@@ -88,7 +88,27 @@ whose inner `fnmatchcase` call is still accelerated.
 
 ## Conformance
 
-CONFORMANCE_PLACEHOLDER
+`tests/conformance/run_target_suites.py --targets posixpath,fnmatch,pathlib --modules
+test.test_posixpath,test.test_genericpath,test.test_fnmatch,test.test_glob,test.test_pathlib,test.test_os`
+(each module plain and with `enable(only=...)` before the module is imported, per-test-id
+outcomes compared; all 24 targets of the three groups asserted installed). CPython's
+`Lib/test` from the matching source tree.
+
+| module | 3.15.1 | 3.15.1t | 3.14.9 | 3.14.9t |
+|---|---|---|---|---|
+| test_posixpath | 93 pass, 3 skip | same | 91 pass, 3 skip | same |
+| test_genericpath | 26 pass | same | 25 pass | same |
+| test_fnmatch | 24 pass | same | 24 pass | same |
+| test_glob | 20 pass, 2 skip | same | 22 pass, 2 skip | same |
+| test_pathlib | 991 pass, 407 skip | same | 966 pass, 403 skip | same |
+| test_os | 472 pass, 77 skip, 3 fail, 1 error | same | 317 pass, 66 skip, 2 fail | same |
+| **differences plain vs enabled** | **0** | **0** | **0** | **0** |
+
+The `test_os` failures and error are the box's environment (identical without Rustique).
+Plus `tests/targets/test_posixpath.py`, `test_fnmatch.py`, `test_pathlib.py` (differential
+Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `pytest -q` on
+the four builds.
+
 
 ## Version coverage
 
