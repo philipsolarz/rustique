@@ -377,27 +377,63 @@ class _Hook:
 
 
 def test_restart_counts_deopt_and_leaves_no_trace():
-    h = _Hook()
-    root = [{"a": [1, 2]}, Plain(), h]
-    memo = {}
-    out = copy.deepcopy(root, memo)
-    assert out[2] is h and out[0] == root[0] and out[0] is not root[0]
-    assert fallbacks("copy.deepcopy") == {"deopt": 1}
-    assert hits("copy.deepcopy") == 0
-    assert h.seen == ["Plain", "dict", "list"]
-    # The memo the caller gets back is CPython's (same keys, keep-alive list, order).
-    ref = {}
-    S.REF.deepcopy([{"a": [1, 2]}, Plain(), _Hook()], ref)
-    assert [type(v).__name__ for v in memo.values()] == [type(v).__name__ for v in ref.values()]
+    def run(dc):
+        h = _Hook()
+        root = [{"a": [1, 2]}, Plain(), h]
+        memo = {}
+        out = dc(root, memo)
+        return h.seen, [type(v).__name__ for v in memo.values()], out, h
+
+    ref_seen, ref_memo, _, _ = run(S.REF.deepcopy)
+    seen, memo, out, h = run(copy.deepcopy)
+    assert out[2] is h
+    # The outer call restarts; the original's helpers call the kernel again per element:
+    # the dict and the object are copied natively, the hook restarts at its root.
+    assert fallbacks("copy.deepcopy") == {"deopt": 2}
+    assert hits("copy.deepcopy") == 2
+    # What the hook sees, and the memo the caller gets back, are CPython's.
+    assert seen == ref_seen and memo == ref_memo
     # A pure call afterwards is native again.
     copy.deepcopy([1, {"a": 2}])
-    assert hits("copy.deepcopy") == 1
+    assert hits("copy.deepcopy") == 3
 
 
 def test_restart_streak_suspends_and_hit_resets():
     h = _Hook()
-    for _ in range(10):
-        copy.deepcopy([h])
+    for _ in range(40):
+        copy.deepcopy([h])  # abandons the list: a streak step; the nested root hook: none
         copy.deepcopy(7)
     st = S.A.stats()["copy.deepcopy"]
-    assert st["fallback"]["deopt"] == 10 and st["hits"] == 10 and st["suspensions"] == 0
+    assert st["fallback"]["deopt"] == 80 and st["hits"] == 40 and st["suspensions"] == 0
+    # Root-level restarts alone never suspend (nothing is wasted).
+    for _ in range(100):
+        copy.deepcopy(h)
+    assert S.A.stats()["copy.deepcopy"]["suspensions"] == 0
+    # Abandoned work, repeatedly (no nested hit in between): suspended at the streak limit.
+    for _ in range(70):
+        copy.deepcopy([h])
+    assert S.A.stats()["copy.deepcopy"]["suspensions"] == 1
+
+
+def test_stdlib_c_types_native():
+    import datetime as dtm
+    import decimal
+    import enum
+
+    class Col(enum.Enum):
+        A = 1
+
+    tz = dtm.timezone(dtm.timedelta(hours=2), "Z")
+    vals = [dtm.datetime(2026, 1, 1, tzinfo=tz), dtm.datetime(2026, 1, 1), dtm.date(2026, 1, 1),
+            dtm.time(1, 2, tzinfo=dtm.timezone.utc), dtm.timedelta(3), decimal.Decimal("2.5"), Col.A]
+    for v in vals:
+        h = hits("copy.deepcopy")
+        y = copy.deepcopy([v, v])
+        assert y[0] == v and y[0] is y[1]
+        assert hits("copy.deepcopy") == h + 1, (v, fallbacks("copy.deepcopy"))
+        h = hits("copy.copy")
+        assert copy.copy(v) == v
+        assert hits("copy.copy") == h + 1, (v, fallbacks("copy.copy"))
+    assert fallbacks("copy.deepcopy") == {} and fallbacks("copy.copy") == {}
+    assert copy.deepcopy(dtm.timezone.utc) is dtm.timezone.utc
+    assert copy.deepcopy(Col.A) is Col.A

@@ -16,12 +16,14 @@
 //! Native: atomic types, `list`/`tuple`/`dict`/`frozendict`/bound methods through the
 //! original helpers, `issubclass(cls, type)`, `__deepcopy__` methods that are exactly
 //! `return self` (Enum), plain objects and dataclasses (`object.__reduce_ex__(4)` emulated,
-//! `reduce.rs`), exact `set`/`frozenset`.
+//! `reduce.rs`), exact `set`/`frozenset`, and the recognised C types of `known.rs`
+//! (`datetime` family, `Decimal`).
 
 use std::ptr::null_mut;
 
 use pyo3::ffi;
 
+use super::known::{Known, datetime_reduce, known};
 use super::memo::Memo;
 use super::reduce::{object_new_alloc, plain_reduce};
 use super::rt::*;
@@ -66,14 +68,16 @@ impl Drop for Frame {
     }
 }
 
-/// `_reconstruct` state for `(func, (arg,), state)` with `func` either `copyreg.__newobj__`
-/// (plain objects) or `set`/`frozenset`.
+/// `_reconstruct` state for `(func, args, state)` with `func` `copyreg.__newobj__` (plain
+/// objects, `args == (cls,)`), `set`/`frozenset` (`(list,)`), or a recognised `_datetime`
+/// type (its C constructor).
 struct Recon {
     func: O,
-    arg: O,
-    state: O, // borrowed from the reduce value (Frame::hold)
+    args: O,  // borrowed tuple (the reduce value is held by Frame::hold)
+    state: O, // borrowed from the reduce value
     phase: u8,
-    acopy: O, // strong
+    i: ffi::Py_ssize_t,
+    acopy: O, // strong: the list of argument copies
     y: O,     // strong
 }
 
@@ -112,6 +116,8 @@ pub struct Engine {
     /// Helpers verified intact (bit i) / modified (bit 16 + i) in this call.
     checked: u32,
     atomic_fast: bool,
+    /// The root's frame was entered: a restart from here on abandons work.
+    started: bool,
 }
 
 impl Engine {
@@ -128,31 +134,33 @@ impl Engine {
             stack: SVec::new(),
             checked: 0,
             atomic_fast,
+            started: false,
         }
     }
 
-    /// Copy `root`; `None`: restart in the original (no exception is left set).
-    pub unsafe fn run(mut self, root: O) -> Option<O> {
+    /// Copy `root`; `Err(abandoned)`: restart in the original (no exception is left set);
+    /// `abandoned` is false when nothing was built yet (user code at the root itself).
+    pub unsafe fn run(mut self, root: O) -> Result<O, bool> {
         // SAFETY: attached thread.
         let r = unsafe { self.drive(root) };
         let r = match r {
             // SAFETY: as above.
             Ok(y) => match unsafe { self.memo.commit() } {
-                Ok(()) => Some(y),
+                Ok(()) => Ok(y),
                 Err(()) => {
                     // SAFETY: owned.
                     unsafe { decref(y) };
-                    None
+                    Err(true)
                 }
             },
-            Err(()) => None,
+            Err(()) => Err(self.started),
         };
         // Partial copies go first, then the memo (as CPython's frames and dict would).
         while let Some(f) = self.stack.pop() {
             drop(f);
         }
         drop(self);
-        if r.is_none() {
+        if r.is_err() {
             // SAFETY: attached thread.
             unsafe { ffi::PyErr_Clear() };
         }
@@ -213,6 +221,7 @@ impl Engine {
                 Began::Ready(y) => return Ok(y),
                 Began::Pushed => null_mut(),
             };
+            self.started = true;
             loop {
                 match self.step(input)? {
                     Step::Child(c) => match self.begin(c, false)? {
@@ -325,6 +334,12 @@ impl Engine {
             if let Some(rv) = plain_reduce(st, x, cls, true, self.touch().is_ok())? {
                 return self.reconstruct(x, rv);
             }
+            // `_datetime` objects: their C `__reduce_ex__`, then `_reconstruct`.
+            if let Some(k) = known(cls)
+                && let Some(rv) = datetime_reduce(st, x, cls, k, self.touch().is_ok() && self.helper(H_SLOTNAMES))?
+            {
+                return self.reconstruct(x, rv);
+            }
             Err(())
         }
     }
@@ -340,6 +355,10 @@ impl Engine {
                 return Err(());
             }
             let d = _PyType_Lookup(cls, st.s_deepcopy);
+            if !d.is_null() && ty(d) == &raw mut ffi::PyMethodDescr_Type && known(cls) == Some(Known::Decimal) {
+                // `_decimal.Decimal.__deepcopy__`: C, returns `self`.
+                return Ok(Some(incref(x)));
+            }
             if !d.is_null() && d != ffi::Py_None() && ty(d) != &raw mut ffi::PyFunction_Type {
                 return Err(()); // a descriptor whose `__get__` could be user code
             }
@@ -363,14 +382,15 @@ impl Engine {
         if !self.helper(H_RECONSTRUCT) {
             return Err(());
         }
-        // SAFETY: a 3- or 5-tuple built natively.
+        // SAFETY: a validated 2-, 3- or 5-tuple `(func, args_tuple, [state, ...])`.
         unsafe {
             let r = rv.get();
             let rec = Box::new(Recon {
                 func: ffi::PyTuple_GET_ITEM(r, 0),
-                arg: ffi::PyTuple_GET_ITEM(ffi::PyTuple_GET_ITEM(r, 1), 0),
-                state: ffi::PyTuple_GET_ITEM(r, 2),
+                args: ffi::PyTuple_GET_ITEM(r, 1),
+                state: if ffi::PyTuple_GET_SIZE(r) > 2 { ffi::PyTuple_GET_ITEM(r, 2) } else { ffi::Py_None() },
                 phase: 0,
+                i: 0,
                 acopy: null_mut(),
                 y: null_mut(),
             });
@@ -565,56 +585,34 @@ impl Engine {
         }
     }
 
-    /// `_reconstruct(x, memo, func, (arg,), state)` with deep=True, natively.
+    /// `_reconstruct(x, memo, func, args, state)` with deep=True, natively.
     unsafe fn recon(&mut self, rc: &mut Recon, x: O, input: O) -> R<Step> {
         let st = self.st;
         let input = Own(input);
         // SAFETY: attached thread; `rc` and the frame own what they point to.
         unsafe {
+            let n = ffi::PyTuple_GET_SIZE(rc.args);
             match rc.phase {
                 0 => {
                     // `args = [deepcopy(arg, memo) for arg in args]` (3.15) / a generator
-                    // expression created here and resumed by `func(*args)` (3.14).
-                    if st.minor < 15 {
+                    // expression created here and resumed by `func(*args)` per item and once
+                    // more to find it exhausted (3.14).
+                    rc.acopy = Own::new(ffi::PyList_New(0))?.into_raw();
+                    if n > 0 && st.minor < 15 {
                         self.touch()?; // creation
-                        self.push()?; // first resume, around the copy of the argument
                     }
                     rc.phase = P_ARG;
-                    Ok(Step::Child(rc.arg))
+                    self.recon_next(rc, x)
                 }
                 P_ARG => {
-                    rc.acopy = input.into_raw();
+                    if ffi::PyList_Append(rc.acopy, input.get()) < 0 {
+                        return Err(());
+                    }
                     if st.minor < 15 {
                         self.pop();
-                        self.touch()?; // the resume that finds the generator exhausted
                     }
-                    let y = if rc.func == st.newobj {
-                        // copyreg.__newobj__(cls) -> object.__new__(cls) (checked eligible).
-                        if !self.helper(H_NEWOBJ) {
-                            return Err(());
-                        }
-                        self.touch()?;
-                        object_new_alloc(st, rc.acopy).unwrap_or(Err(()))?
-                    } else {
-                        // set/frozenset(list_copy): hashing the copies must be pure.
-                        let l = rc.acopy;
-                        if ty(l) != &raw mut ffi::PyList_Type {
-                            return Err(());
-                        }
-                        for j in 0..ffi::PyList_GET_SIZE(l) {
-                            if !pure_key(ffi::PyList_GET_ITEM(l, j)) {
-                                return Err(());
-                            }
-                        }
-                        call1(rc.func, l)?
-                    };
-                    rc.y = y;
-                    self.memo.set(x, y);
-                    if rc.state == ffi::Py_None() {
-                        return Ok(Step::Done(std::mem::replace(&mut rc.y, null_mut())));
-                    }
-                    rc.phase = P_STATE;
-                    Ok(Step::Child(rc.state))
+                    rc.i += 1;
+                    self.recon_next(rc, x)
                 }
                 P_STATE => {
                     apply_state(st, rc.y, input.get())?;
@@ -622,6 +620,61 @@ impl Engine {
                 }
                 _ => unreachable!(),
             }
+        }
+    }
+
+    /// The next argument to copy, or `y = func(*args)`, `memo[id(x)] = y` and the state.
+    unsafe fn recon_next(&mut self, rc: &mut Recon, x: O) -> R<Step> {
+        let st = self.st;
+        // SAFETY: as recon.
+        unsafe {
+            let n = ffi::PyTuple_GET_SIZE(rc.args);
+            if rc.i < n {
+                if st.minor < 15 {
+                    self.push()?; // the generator's frame, resumed around the copy
+                }
+                return Ok(Step::Child(ffi::PyTuple_GET_ITEM(rc.args, rc.i)));
+            }
+            if n > 0 && st.minor < 15 {
+                self.touch()?; // the resume that finds the generator exhausted
+            }
+            let a = rc.acopy;
+            let y = if rc.func == st.newobj {
+                // copyreg.__newobj__(cls) -> object.__new__(cls) (checked eligible).
+                if !self.helper(H_NEWOBJ) || ffi::PyList_GET_SIZE(a) != 1 {
+                    return Err(());
+                }
+                self.touch()?;
+                object_new_alloc(st, ffi::PyList_GET_ITEM(a, 0)).unwrap_or(Err(()))?
+            } else if rc.func == (&raw mut ffi::PySet_Type).cast() || rc.func == (&raw mut ffi::PyFrozenSet_Type).cast()
+            {
+                // set/frozenset(list_copy): hashing the copies must be pure.
+                if ffi::PyList_GET_SIZE(a) != 1 {
+                    return Err(());
+                }
+                let l = ffi::PyList_GET_ITEM(a, 0);
+                if ty(l) != &raw mut ffi::PyList_Type {
+                    return Err(());
+                }
+                for j in 0..ffi::PyList_GET_SIZE(l) {
+                    if !pure_key(ffi::PyList_GET_ITEM(l, j)) {
+                        return Err(());
+                    }
+                }
+                call1(rc.func, l)?
+            } else {
+                // A recognised `_datetime` type (exact, `datetime_reduce`): its C constructor
+                // takes the copies (bytes, ints, a tzinfo copied natively, a name).
+                let t = Own::new(ffi::PyList_AsTuple(a))?;
+                nn(ffi::PyObject_Call(rc.func, t.get(), null_mut()))?
+            };
+            rc.y = y;
+            self.memo.set(x, y);
+            if rc.state == ffi::Py_None() {
+                return Ok(Step::Done(std::mem::replace(&mut rc.y, null_mut())));
+            }
+            rc.phase = P_STATE;
+            Ok(Step::Child(rc.state))
         }
     }
 }

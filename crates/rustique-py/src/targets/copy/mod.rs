@@ -4,6 +4,7 @@
 
 pub mod dc;
 mod deep;
+mod known;
 mod memo;
 mod reduce;
 mod rt;
@@ -154,16 +155,31 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
             C_DEEPCOPY.fallback_streak(Reason::Tools);
             return original(func, args, nargsf, kw);
         }
-        let e = deep::Engine::new(st, memo, atomic_fast(st), recursion_remaining());
-        match e.run(*args) {
-            Some(y) => {
+        let x = *args;
+        let fast = atomic_fast(st);
+        let budget = recursion_remaining();
+        // `if cls in _atomic_types: return x` (deepcopy's frame only).
+        if is_quick(ty(x)) && fast && budget > 0 {
+            C_DEEPCOPY.hit_streak();
+            return incref(x);
+        }
+        let e = deep::Engine::new(st, memo, fast, budget);
+        match e.run(x) {
+            Ok(y) => {
                 C_DEEPCOPY.hit_streak();
                 y
             }
-            None => {
+            Err(abandoned) => {
                 // User code (or an error, or the recursion limit) ahead: CPython's own call,
-                // from scratch, with the unchanged arguments.
-                C_DEEPCOPY.fallback_streak(Reason::Deopt);
+                // from scratch, with the unchanged arguments. A restart that abandoned
+                // copies extends the suspension streak; one decided at the root itself (a
+                // hook object, typically reached again through the original's helpers)
+                // wasted nothing and is only counted.
+                if abandoned {
+                    C_DEEPCOPY.fallback_streak(Reason::Deopt);
+                } else {
+                    C_DEEPCOPY.fallback(Reason::Deopt);
+                }
                 original(func, args, nargsf, kw)
             }
         }
@@ -194,7 +210,9 @@ unsafe extern "C" fn vc_copy(func: O, args: *const O, nargsf: usize, kw: O) -> O
                 y
             }
             None => {
-                C_COPY.fallback_streak(Reason::Deopt);
+                // Decided before anything was built (copy.copy is one level deep): counted,
+                // not a streak.
+                C_COPY.fallback(Reason::Deopt);
                 original(func, args, nargsf, kw)
             }
         }
@@ -402,6 +420,23 @@ fn func3(o: &Bound<'_, PyAny>) -> PyResult<(O, O, O)> {
     }
 }
 
+/// `cx.fingerprint_code` without building the description string of a passing check (a
+/// third of its cost) unless fingerprints are being recorded.
+pub(crate) fn check_fp(
+    cx: &mut Prepare<'_>,
+    f: &Bound<'_, PyAny>,
+    expected: crate::accel::Fingerprints,
+) -> Result<(), Refusal> {
+    if !cx.record {
+        let (major, minor) = cx.version();
+        let got = cx.fingerprint_of(f)?;
+        if crate::accel::fingerprint::expected_for(expected, major, minor) == Some(got.as_str()) {
+            return Ok(());
+        }
+    }
+    cx.fingerprint_code(f, expected)
+}
+
 /// [`St`] if it was built from this very copy module and nothing it validated changed.
 fn current_state(cd: &Bound<'_, PyDict>, rd: &Bound<'_, PyDict>) -> Result<Option<&'static St>, Refusal> {
     let p = ST.load(Relaxed);
@@ -473,8 +508,8 @@ fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>
     }
     let deepcopy = get("deepcopy")?;
     let copy_fn = get("copy")?;
-    cx.fingerprint_code(&deepcopy, fp::DEEPCOPY)?;
-    cx.fingerprint_code(&copy_fn, fp::COPY)?;
+    check_fp(cx, &deepcopy, fp::DEEPCOPY)?;
+    check_fp(cx, &copy_fn, fp::COPY)?;
     let h_list = get("_deepcopy_list")?;
     let h_tuple = get("_deepcopy_tuple")?;
     let h_dict = get("_deepcopy_dict")?;
@@ -483,17 +518,17 @@ fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>
     let reconstruct = get("_reconstruct")?;
     let newobj = dget(&rd, "__newobj__")?;
     let slotnames = dget(&rd, "_slotnames")?;
-    cx.fingerprint_code(&slotnames, fp::SLOTNAMES)?;
-    cx.fingerprint_code(&h_list, fp::DEEPCOPY_LIST)?;
-    cx.fingerprint_code(&h_tuple, fp::DEEPCOPY_TUPLE)?;
-    cx.fingerprint_code(&h_dict, fp::DEEPCOPY_DICT)?;
-    cx.fingerprint_code(&h_method, fp::DEEPCOPY_METHOD)?;
-    cx.fingerprint_code(&keep_alive, fp::KEEP_ALIVE)?;
-    cx.fingerprint_code(&reconstruct, fp::RECONSTRUCT)?;
-    cx.fingerprint_code(&newobj, fp::NEWOBJ)?;
+    check_fp(cx, &slotnames, fp::SLOTNAMES)?;
+    check_fp(cx, &h_list, fp::DEEPCOPY_LIST)?;
+    check_fp(cx, &h_tuple, fp::DEEPCOPY_TUPLE)?;
+    check_fp(cx, &h_dict, fp::DEEPCOPY_DICT)?;
+    check_fp(cx, &h_method, fp::DEEPCOPY_METHOD)?;
+    check_fp(cx, &keep_alive, fp::KEEP_ALIVE)?;
+    check_fp(cx, &reconstruct, fp::RECONSTRUCT)?;
+    check_fp(cx, &newobj, fp::NEWOBJ)?;
     let h_frozendict = if minor >= 15 {
         let f = get("_deepcopy_frozendict")?;
-        cx.fingerprint_code(&f, fp::DEEPCOPY_FROZENDICT)?;
+        check_fp(cx, &f, fp::DEEPCOPY_FROZENDICT)?;
         Some(f)
     } else {
         None
@@ -578,6 +613,7 @@ fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>
         s_getnewargs_ex: intern(py, "__getnewargs_ex__"),
         s_slotnames: intern(py, "__slotnames__"),
         s_slots: intern(py, "__slots__"),
+        s_getinitargs: intern(py, "__getinitargs__"),
         s_del: intern(py, "__del__"),
         atomic_types: atomic.try_into().map_err(|_| Refusal::new("atomic types"))?,
         // SAFETY: static type objects.

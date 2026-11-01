@@ -2,13 +2,14 @@
 //! "restart in the original" (nothing observable happened).
 //!
 //! Native: `copy`'s atomic types, `list`/`dict`/`set`/`bytearray` (`cls.copy(x)`),
-//! `issubclass(cls, type)`, `__copy__` that is exactly `return self` (Enum), and plain
-//! objects (`object.__reduce_ex__(4)` emulated, then `y.__dict__.update(x.__dict__)` and
-//! the slots). Anything else — a user `__copy__`, a registered reductor, a custom reduce
+//! `issubclass(cls, type)`, `__copy__` that is exactly `return self` (Enum) or
+//! `Decimal`'s, plain objects (`object.__reduce_ex__(4)` emulated, then
+//! `y.__dict__.update(x.__dict__)` and the slots), and `_datetime` objects (`cls(*args)`). Anything else — a user `__copy__`, a registered reductor, a custom reduce
 //! protocol — restarts before anything was done.
 
 use pyo3::ffi;
 
+use super::known::{Known, datetime_reduce, known};
 use super::reduce::{object_new_alloc, plain_reduce};
 use super::rt::*;
 
@@ -30,10 +31,19 @@ unsafe fn in_type_set(fast: bool, known: &[*mut ffi::PyTypeObject], cls: *mut ff
     Ok(false)
 }
 
-/// `getattr(cls, "__copy__", None)` decided purely: Ok(true) when it is `return self`,
-/// Ok(false) when absent or None, Err otherwise.
+/// What `getattr(cls, "__copy__", None)` is, decided purely.
+#[derive(PartialEq)]
+enum Hook {
+    None,
+    /// A Python `def __copy__(self): return self` (Enum): one frame.
+    SelfPy,
+    /// `_decimal.Decimal.__copy__` (C, returns `self`).
+    SelfC,
+}
+
+/// `getattr(cls, "__copy__", None)`; Err when calling it could run user code.
 #[inline(always)]
-unsafe fn copy_hook(st: &St, cls: *mut ffi::PyTypeObject) -> R<bool> {
+unsafe fn copy_hook(st: &St, cls: *mut ffi::PyTypeObject) -> R<Hook> {
     // SAFETY: live type objects.
     unsafe {
         let meta = ty(cls.cast());
@@ -44,10 +54,13 @@ unsafe fn copy_hook(st: &St, cls: *mut ffi::PyTypeObject) -> R<bool> {
         }
         let d = _PyType_Lookup(cls, st.s_copy);
         if d.is_null() || d == ffi::Py_None() {
-            return Ok(false);
+            return Ok(Hook::None);
         }
         if is_return_self(d, 1) {
-            return Ok(true);
+            return Ok(Hook::SelfPy);
+        }
+        if ty(d) == &raw mut ffi::PyMethodDescr_Type && known(cls) == Some(Known::Decimal) {
+            return Ok(Hook::SelfC);
         }
         Err(())
     }
@@ -98,19 +111,33 @@ unsafe fn copy_body(st: &St, x: O, fast_sets: bool, budget: i32) -> R<O> {
         if ffi::PyType_IsSubtype(cls, &raw mut ffi::PyType_Type) != 0 {
             return Ok(incref(x));
         }
-        if copy_hook(st, cls)? {
-            // `def __copy__(self): return self` (Enum): its frame only.
-            if budget - 1 <= 0 {
-                return Err(());
+        match copy_hook(st, cls)? {
+            Hook::None => {}
+            Hook::SelfPy => {
+                // `def __copy__(self): return self` (Enum): its frame only.
+                if budget - 1 <= 0 {
+                    return Err(());
+                }
+                return Ok(incref(x));
             }
-            return Ok(incref(x));
+            Hook::SelfC => return Ok(incref(x)),
         }
         let r = dict_get(st.dispatch_table, cls.cast())?;
         if !r.is_null() {
             decref(r);
             return Err(());
         }
-        let Some(rv) = plain_reduce(st, x, cls, false, budget - 1 > 0)? else { return Err(()) };
+        let Some(rv) = plain_reduce(st, x, cls, false, budget - 1 > 0)? else {
+            // `_datetime` objects: `_reconstruct(x, None, cls, args)` is `cls(*args)`.
+            let Some(k) = known(cls) else { return Err(()) };
+            let slot_frame = budget - 1 > 0 && helper_intact(st, H_SLOTNAMES);
+            let Some(rv) = datetime_reduce(st, x, cls, k, slot_frame)? else { return Err(()) };
+            let rv = Own(rv);
+            if !helper_intact(st, H_RECONSTRUCT) || budget - 1 <= 0 {
+                return Err(());
+            }
+            return nn(ffi::PyObject_Call(cls.cast(), ffi::PyTuple_GET_ITEM(rv.get(), 1), std::ptr::null_mut()));
+        };
         let rv = Own(rv);
         if !helper_intact(st, H_RECONSTRUCT) || !helper_intact(st, H_NEWOBJ) {
             return Err(());

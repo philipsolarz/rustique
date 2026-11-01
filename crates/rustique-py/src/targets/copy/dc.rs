@@ -179,7 +179,7 @@ fn ensure_dc(py: Python<'_>, cx: &mut Prepare<'_>, which: Which) -> Result<(), R
     if !shared {
         for (k, f) in checks {
             let o = super::dget(&g, k)?;
-            cx.fingerprint_code(&o, f)?;
+            super::check_fp(cx, &o, f)?;
         }
     }
     if !shared {
@@ -484,10 +484,7 @@ impl Cx {
             }
             let st: &'static St = &*st;
             let e = deep::Engine::new(st, null_mut(), super::atomic_fast(st), self.budget - self.used);
-            match e.run(obj) {
-                Some(y) => Ok(y),
-                None => Err(()),
-            }
+            e.run(obj).map_err(|_| ())
         }
     }
 

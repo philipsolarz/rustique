@@ -909,3 +909,52 @@ def test_tool_attached_by_hook_sees_the_rest():
         return list(Ctx.events)
 
     S.compare(fn, lambda: ([TracingHook(), {"a": [1, (2, Plain())]}, Plain()], {}))
+
+
+# ---------------------------------------------------------------------------------------
+# Recognised C types of the standard library (datetime family, Decimal) and Enum hooks
+# ---------------------------------------------------------------------------------------
+
+
+def _stdlib_values():
+    import datetime as dtm
+    import decimal
+
+    class DTSub(dtm.datetime):
+        pass
+
+    class TZ(dtm.tzinfo):
+        def utcoffset(self, d):
+            return dtm.timedelta(hours=1)
+
+    utc = dtm.timezone.utc
+    named = dtm.timezone(dtm.timedelta(hours=-3, minutes=-30), "X")
+    d = dtm.datetime(2026, 3, 4, 5, 6, 7, 890, tzinfo=named, fold=1)
+    vals = {
+        "naive": dtm.datetime(2026, 1, 2, 3, 4, 5, 6),
+        "utc": dtm.datetime(2026, 1, 2, tzinfo=utc),
+        "named": d,
+        "date": dtm.date(2026, 12, 31),
+        "time": dtm.time(23, 59, 1, 5, tzinfo=named),
+        "td": dtm.timedelta(days=-3, seconds=7, microseconds=11),
+        "tz": named,
+        "utcz": utc,
+        "dec": decimal.Decimal("1.50"),
+        "enum": Color.RED,
+        "sub": DTSub(2026, 1, 1),
+        "usertz": dtm.datetime(2026, 1, 1, tzinfo=TZ()),
+    }
+    return vals
+
+
+@pytest.mark.parametrize("which", ["naive", "utc", "named", "date", "time", "td", "tz", "utcz", "dec", "enum", "sub",
+                                   "usertz", "all"])
+@pytest.mark.parametrize("fn", [deepcopy_root, deepcopy_memo, copy_root])
+def test_stdlib_c_types(which, fn):
+    def source():
+        v = _stdlib_values()
+        x = list(v.values()) if which == "all" else v[which]
+        root = [x, {"k": x}, (x, 1)]
+        return root, {"x": x, **v}
+
+    S.compare(fn, source)

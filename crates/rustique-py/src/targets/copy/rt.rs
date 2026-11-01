@@ -157,6 +157,7 @@ pub struct St {
     pub s_getnewargs_ex: O,
     pub s_slotnames: O,
     pub s_slots: O,
+    pub s_getinitargs: O,
     pub s_del: O,
     // types
     pub atomic_types: [*mut ffi::PyTypeObject; 16],
@@ -377,6 +378,7 @@ unsafe fn ret_self_ref(n: c_int) -> Option<(O, c_int)> {
                     return None;
                 }
                 REF_FLAGS.store((*c.cast::<crate::accel::version::RawCode>()).co_flags, Relaxed);
+                REF_UNITS[(n == 2) as usize].store(ffi::Py_SIZE(c), Relaxed);
                 if cell.compare_exchange(std::ptr::null_mut(), cc, Relaxed, Relaxed).is_err() {
                     decref(cc);
                 }
@@ -387,8 +389,15 @@ unsafe fn ret_self_ref(n: c_int) -> Option<(O, c_int)> {
     }
 }
 
+/// `Py_SIZE` (code units) of the reference code objects (1 and 2 parameters).
+static REF_UNITS: [std::sync::atomic::AtomicIsize; 2] = [const { std::sync::atomic::AtomicIsize::new(-1) }; 2];
+
 static RET_SELF1: [AtomicPtr<ffi::PyObject>; 8] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 8];
 static RET_SELF2: [AtomicPtr<ffi::PyObject>; 8] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 8];
+
+/// Code flags without effect on execution: `CO_HAS_DOCSTRING` and `CO_METHOD` (3.14+; the
+/// latter is set on functions defined in a class body).
+const CO_INERT: c_int = 0x400_0000 | 0x800_0000;
 
 /// Is `f` a Python function whose code is exactly `return self` with `n` positional
 /// parameters (`Enum.__deepcopy__`, `Enum.__copy__`, `Pattern`-like no-op hooks written
@@ -411,9 +420,12 @@ pub unsafe fn is_return_self(f: O, n: c_int) -> bool {
             return true;
         }
         let Some((want, flags)) = ret_self_ref(n) else { return false };
-        if (*rc).co_argcount != n
+        // Code units (`Py_SIZE` of a code object): `return self` is a handful; any other body
+        // is told apart without materialising `co_code`.
+        if ffi::Py_SIZE(code) != REF_UNITS[(n == 2) as usize].load(Relaxed)
+            || (*rc).co_argcount != n
             || (*rc).co_kwonlyargcount != 0
-            || (*rc).co_flags != flags
+            || (*rc).co_flags & !CO_INERT != flags & !CO_INERT
             || (*rc).co_nlocalsplus != n
         {
             return false;
