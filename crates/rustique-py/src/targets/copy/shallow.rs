@@ -101,6 +101,17 @@ pub unsafe fn call_func(st: &St, depth: &mut Depth, func: O, args: O, newobj_ok:
         };
         if func == st.newobj && n >= 1 && newobj_ok {
             depth.push()?;
+            if n == 1 {
+                let cls = if ty(args) == &raw mut ffi::PyTuple_Type {
+                    ffi::PyTuple_GET_ITEM(args, 0)
+                } else {
+                    ffi::PyList_GET_ITEM(args, 0)
+                };
+                if let Some(r) = super::reduce::object_new_alloc(st, cls) {
+                    depth.pop();
+                    return r;
+                }
+            }
             let r = (|| {
                 let t = if ty(args) == &raw mut ffi::PyTuple_Type {
                     Own(incref(args))
@@ -229,6 +240,8 @@ unsafe fn copy_body(st: &St, depth: &mut Depth, x: O, fast_sets: bool) -> R<O> {
             let reductor = Own(dict_get(st.dispatch_table, cls.cast())?);
             if !reductor.get().is_null() && truth(reductor.get())? {
                 call1(reductor.get(), x)?
+            } else if let Some(rv) = super::reduce::plain_reduce(st, x, cls)? {
+                rv
             } else {
                 drop(reductor);
                 let r = Own(getattr_opt(x, st.s_reduce_ex)?);

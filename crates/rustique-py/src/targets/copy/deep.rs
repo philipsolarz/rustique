@@ -369,6 +369,9 @@ impl Engine {
                 return call1(reductor.get(), x);
             }
             drop(reductor);
+            if let Some(rv) = super::reduce::plain_reduce(st, x, cls)? {
+                return Ok(rv);
+            }
             let r = Own(getattr_opt(x, st.s_reduce_ex)?);
             if !r.get().is_null() && r.get() != ffi::Py_None() {
                 return call1(r.get(), st.int4);

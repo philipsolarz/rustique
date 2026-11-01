@@ -5,6 +5,7 @@
 pub mod dc;
 pub mod deep;
 pub mod memo;
+pub mod reduce;
 pub mod rt;
 pub mod shallow;
 
@@ -50,6 +51,9 @@ pub static COPY: TargetSpec = TargetSpec {
 };
 
 pub static TARGETS: &[&TargetSpec] = &[&DEEPCOPY, &COPY];
+
+/// `_PyObject_GetMethod` of the running interpreter.
+static GET_METHOD: accel::Original<reduce::GetMethodFn> = accel::Original::new();
 
 #[inline(always)]
 pub unsafe fn original(func: O, args: *const O, nargsf: usize, kw: O) -> O {
@@ -432,6 +436,15 @@ pub fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyMod
     let (_, deepcopy_code, deepcopy_defaults) = func3(&deepcopy)?;
     let (_, copy_code, _) = func3(&copy_fn)?;
     let atomic_set = get("_atomic_types")?;
+    let get_method = cx.symbol(c"_PyObject_GetMethod", &GET_METHOD)?;
+    let object_attr = |name: &str| -> O {
+        let n = pyo3::types::PyString::intern(py, name);
+        // SAFETY: a ready static type; borrowed result kept alive by `object` (made strong).
+        unsafe {
+            let o = _PyType_Lookup(&raw mut ffi::PyBaseObject_Type, n.as_ptr());
+            if o.is_null() { o } else { incref(o) }
+        }
+    };
     let mut st = St {
         minor,
         copy_dict: cd.clone().into_ptr(),
@@ -458,7 +471,16 @@ pub fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyMod
         helpers,
         newobj: helpers[H_NEWOBJ].0,
         newobj_code: helpers[H_NEWOBJ].1,
-        object_new: nul,
+        object_new: object_attr("__new__"),
+        obj_reduce_ex: object_attr("__reduce_ex__"),
+        obj_reduce: object_attr("__reduce__"),
+        obj_getstate: object_attr("__getstate__"),
+        get_method,
+        get_method_addr: get_method as usize,
+        s_getstate: intern(py, "__getstate__"),
+        s_getnewargs: intern(py, "__getnewargs__"),
+        s_getnewargs_ex: intern(py, "__getnewargs_ex__"),
+        s_slotnames: intern(py, "__slotnames__"),
         atomic_types: atomic.try_into().map_err(|_| Refusal::new("atomic types"))?,
         // SAFETY: static type objects.
         method_type: &raw mut PyMethod_Type,

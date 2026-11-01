@@ -145,7 +145,17 @@ pub struct St {
     // copyreg
     pub newobj: O,
     pub newobj_code: O,
+    /// `object.__new__`, `object.__reduce_ex__`, `object.__reduce__`, `object.__getstate__`.
     pub object_new: O,
+    pub obj_reduce_ex: O,
+    pub obj_reduce: O,
+    pub obj_getstate: O,
+    pub get_method: super::reduce::GetMethodFn,
+    pub get_method_addr: usize,
+    pub s_getstate: O,
+    pub s_getnewargs: O,
+    pub s_getnewargs_ex: O,
+    pub s_slotnames: O,
     // types
     pub atomic_types: [*mut ffi::PyTypeObject; 16],
     pub method_type: *mut ffi::PyTypeObject,

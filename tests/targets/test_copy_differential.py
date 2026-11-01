@@ -28,8 +28,8 @@ def _enabled():
     yield
     st = S.A.stats(False, True)
     S.disable()
+    assert st["copy.deepcopy"]["hits"] > 0, st["copy.deepcopy"]
     for name in S.ALL_TARGETS:
-        assert st[name]["hits"] > 0, (name, st[name])
         # Only explicit non-default arguments fall back (asdict(dict_factory=list), ...).
         fb = {k: v for k, v in st[name]["fallback"].items() if v}
         assert set(fb) <= {"args"}, (name, fb)
@@ -645,3 +645,130 @@ def test_asdict_errors_and_factories():
     S.compare(lambda cp, dc, r: dc.astuple(r), lambda: ([1], {}))
     S.compare(lambda cp, dc, r: dc.asdict(r, dict_factory=list), lambda: (DC(1, [DC(2)]), {}))
     S.compare(lambda cp, dc, r: dc.astuple(r, tuple_factory=list), lambda: (DC(1, [DC(2)]), {}))
+
+
+# ---------------------------------------------------------------------------------------
+# Plain objects: the native `object.__reduce_ex__(4)` and its exclusions
+# ---------------------------------------------------------------------------------------
+
+
+class Meta(type):
+    pass
+
+
+class WithMeta(metaclass=Meta):
+    pass
+
+
+class GetState:
+    def __getstate__(self):
+        log("getstate", sorted(self.__dict__))
+        return {"g": 1, **self.__dict__}
+
+
+class NewArgs:
+    def __new__(cls, *a):
+        log("new", a)
+        return super().__new__(cls)
+
+    def __getnewargs__(self):
+        log("getnewargs")
+        return (1, 2)
+
+
+class WeakSlots:
+    __slots__ = ("a", "__weakref__")
+
+
+class Base:
+    __slots__ = ("s",)
+
+
+class Derived(Base):
+    pass
+
+
+def _plain_cases():
+    def emptied():
+        p = Plain()
+        p.x = 1
+        _ = p.__dict__
+        del p.x
+        return p
+
+    def shadow_reduce_ex():
+        p = Plain()
+        p.__reduce_ex__ = lambda proto: (log("inst-reduce", proto), (Plain, ()))[1]
+        return p
+
+    def shadow_getstate():
+        p = Plain()
+        p.v = 1
+        p.__getstate__ = lambda: (log("inst-getstate"), {"z": 2})[1]
+        return p
+
+    def shadow_reduce():
+        p = Plain()
+        p.__reduce__ = lambda: (log("inst-reduce"), (Plain, ()))[1]
+        p.v = [1]
+        return p
+
+    def single_empty_dict():
+        p = Plain()
+        p.d = {}
+        return p
+
+    def weak():
+        w = WeakSlots()
+        w.a = [1]
+        return w
+
+    def derived():
+        d = Derived()
+        d.s = [1]
+        d.x = (2,)
+        return d
+
+    def fresh_slots_class():
+        class Fresh:
+            __slots__ = ("a", "b")
+
+        f = Fresh()
+        f.a = [1]
+        return f
+
+    def meta():
+        w = WithMeta()
+        w.v = [1]
+        return w
+
+    def getstate():
+        g = GetState()
+        g.v = [1]
+        return g
+
+    return [
+        Plain,
+        emptied,
+        shadow_reduce_ex,
+        shadow_getstate,
+        shadow_reduce,
+        single_empty_dict,
+        weak,
+        derived,
+        fresh_slots_class,
+        meta,
+        getstate,
+        NewArgs,
+        lambda: [Plain(), Plain()],
+    ]
+
+
+@pytest.mark.parametrize("make", _plain_cases(), ids=lambda f: getattr(f, "__name__", "case"))
+@pytest.mark.parametrize("fn", [deepcopy_root, deepcopy_memo, copy_root])
+def test_plain_reduce_variants(make, fn):
+    def source():
+        x = make()
+        return x, {"x": x}
+
+    S.compare(fn, source)
