@@ -72,7 +72,17 @@ unsafe fn atomic_fast(st: &St) -> bool {
     match &st.atomic_snap {
         None => true,
         // SAFETY: live set.
-        Some(s) => unsafe { s.matches(st.atomic) },
+        Some(s) => unsafe { s.matches(st.atomic) || same_types(st.atomic, &st.atomic_types) },
+    }
+}
+
+/// Does the (mutable, 3.14) set hold exactly `known` (after an add/discard, its table can
+/// differ from the snapshot while its content is the validated one)?
+#[cold]
+unsafe fn same_types(set: O, known: &[*mut ffi::PyTypeObject]) -> bool {
+    // SAFETY: a live set; the known entries are builtin types (pointer hashes).
+    unsafe {
+        ffi::PySet_Size(set) == known.len() as isize && known.iter().all(|&t| ffi::PySet_Contains(set, t.cast()) == 1)
     }
 }
 
@@ -82,7 +92,10 @@ unsafe fn copy_sets_fast(st: &St) -> bool {
     // SAFETY: live sets.
     unsafe {
         match (&st.copy_atomic_snap, &st.copy_containers_snap) {
-            (Some(a), Some(b)) => a.matches(st.copy_atomic) && b.matches(st.copy_containers),
+            (Some(a), Some(b)) => {
+                (a.matches(st.copy_atomic) || same_types(st.copy_atomic, &st.copy_atomic_types))
+                    && (b.matches(st.copy_containers) || same_types(st.copy_containers, &st.copy_container_types))
+            }
             _ => true,
         }
     }
