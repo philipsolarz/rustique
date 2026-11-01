@@ -22,7 +22,7 @@ use super::common::*;
 use super::record::RECORDS;
 use crate::accel::guard::DepFlag;
 use crate::accel::stats::{Counters, Reason};
-use rustique_core::logging::{Tm, msec_suffix, percent_keys, strftime_numeric};
+use rustique_core::logging::{Dir, Piece, Tm, Val, dirs, msec_suffix, native_dir, parse_format, render, strftime_numeric};
 
 pub static TIME_DEPS: DepFlag = DepFlag::new();
 pub static TIME_STATS: Counters = Counters::new();
@@ -201,6 +201,24 @@ unsafe fn strftime_generic(conv: O, created_obj: O, fmt: O) -> Option<O> {
 /// # Safety
 /// Attached thread; `me`/`record` of validated types (time formatter, record).
 pub unsafe fn format_time(me: O, record: O, datefmt: O) -> Option<O> {
+    // SAFETY: per the caller.
+    unsafe {
+        format_time_with(
+            me,
+            &|name| {
+                let v = get(record, name);
+                (!v.is_null()).then_some(v)
+            },
+            datefmt,
+        )
+    }
+}
+
+/// [`format_time`] reading the record's `created`/`msecs` through `rec` (new references).
+///
+/// # Safety
+/// As [`format_time`].
+unsafe fn format_time_with(me: O, rec: &dyn Fn(O) -> Option<O>, datefmt: O) -> Option<O> {
     // SAFETY: per the caller; every call below is a plain read or a C function.
     unsafe {
         let n = n();
@@ -216,10 +234,7 @@ pub unsafe fn format_time(me: O, record: O, datefmt: O) -> Option<O> {
         } else {
             return None;
         };
-        let created_obj = get(record, o(n.created));
-        if created_obj.is_null() {
-            return None;
-        }
+        let created_obj = rec(o(n.created))?;
         let created_g = Owned1(created_obj);
         if !is_type(created_obj, &raw mut ffi::PyFloat_Type) {
             return None;
@@ -258,11 +273,7 @@ pub unsafe fn format_time(me: O, record: O, datefmt: O) -> Option<O> {
             _ => return None,
         };
         let msecs = if with_msecs {
-            let m = get(record, o(n.msecs));
-            if m.is_null() {
-                return None;
-            }
-            Owned1(m)
+            Owned1(rec(o(n.msecs))?)
         } else {
             Owned1(std::ptr::null_mut())
         };
@@ -364,54 +375,115 @@ pub unsafe extern "C" fn vc_format_time(func: O, args: *const O, nargsf: usize, 
 }
 
 // ---------------------------------------------------------------------------------------
-// Formatter.format
+// %-formatting
 // ---------------------------------------------------------------------------------------
 
-/// `record.getMessage()`: `str(msg) % args` for plain operands. `Some(new str)`.
-unsafe fn message(record: O) -> Option<O> {
-    // SAFETY: attached thread; record of a validated type.
+/// Latin-1 bytes of `str(v)` for `%s`, or the integer for `%d`, for plain values; `None`
+/// when the native renderer does not handle the value (the generic path then decides).
+/// Temporary strings are kept in `temps` (the bytes borrow them).
+unsafe fn to_val(v: O, conv: u8, temps: &mut Vec<Owned1>) -> Option<Val<'static>> {
+    // SAFETY: live object; returned bytes borrow `v` or a temp the caller keeps alive.
     unsafe {
-        let n = n();
-        let msg = get(record, o(n.msg));
-        if msg.is_null() {
-            return None;
-        }
-        let s = if exact_str(msg) {
-            msg
-        } else if pure_scalar(msg) {
-            let s = ffi::PyObject_Str(msg);
-            ffi::Py_DECREF(msg);
-            if s.is_null() {
-                ffi::PyErr_Clear();
-                return None;
+        let t = ffi::Py_TYPE(v);
+        if conv == b's' {
+            if t == &raw mut ffi::PyUnicode_Type {
+                return latin1(v).map(Val::Text);
             }
-            s
-        } else {
-            ffi::Py_DECREF(msg);
-            return None;
-        };
-        let s = Owned1(s);
-        let args = get(record, o(n.args));
-        if args.is_null() {
+            if t == &raw mut ffi::PyLong_Type {
+                let mut ov = 0;
+                let x = ffi::PyLong_AsLongLongAndOverflow(v, &mut ov);
+                if ov == 0 {
+                    return Some(Val::Int(x));
+                }
+            }
+            if v == ffi::Py_None() {
+                return Some(Val::Text(b"None"));
+            }
+            if v == ffi::Py_True() {
+                return Some(Val::Text(b"True"));
+            }
+            if v == ffi::Py_False() {
+                return Some(Val::Text(b"False"));
+            }
+            if t == &raw mut ffi::PyFloat_Type || t == &raw mut ffi::PyLong_Type {
+                let s = ffi::PyObject_Str(v);
+                if s.is_null() {
+                    ffi::PyErr_Clear();
+                    return None;
+                }
+                temps.push(Owned1(s));
+                return latin1(s).map(Val::Text);
+            }
             return None;
         }
-        let args = Owned1(args);
-        match pure_truth(args.0) {
-            Some(false) => return Some(s.take()),
-            Some(true) => {}
-            None => return None,
+        if t == &raw mut ffi::PyLong_Type {
+            let mut ov = 0;
+            let x = ffi::PyLong_AsLongLongAndOverflow(v, &mut ov);
+            return (ov == 0).then_some(Val::Int(x));
         }
-        let plain = if exact_tuple(args.0) {
-            (0..ffi::PyTuple_GET_SIZE(args.0)).all(|i| pure_scalar(ffi::PyTuple_GET_ITEM(args.0, i)))
-        } else if exact_dict(args.0) {
-            ffi::PyDict_Size(args.0) <= 64 && dict_all(args.0, |k, v| exact_str(k) && pure_scalar(v))
-        } else {
-            false
-        };
+        if v == ffi::Py_True() {
+            return Some(Val::Int(1));
+        }
+        if v == ffi::Py_False() {
+            return Some(Val::Int(0));
+        }
+        if t == &raw mut ffi::PyFloat_Type {
+            let x = ffi::PyFloat_AS_DOUBLE(v);
+            // int(x) truncates; NaN/inf raise (left to the generic path)
+            if x.is_finite() && x.abs() < 9.0e18 {
+                return Some(Val::Int(x.trunc() as i64));
+            }
+        }
+        None
+    }
+}
+
+/// `fmt % args` where every argument the format reads is plain. `vals` yields the value of
+/// each directive in order (borrowed; `None` if missing). `Some(new str)`, or `None` when
+/// the operation would raise or read a non-plain value (nothing observable happened).
+unsafe fn percent(fmt: O, args: O, pieces: Option<&[Piece]>, value: &mut dyn FnMut(usize, &Dir) -> Option<O>) -> Option<O> {
+    // SAFETY: attached thread; plain objects.
+    unsafe {
+        let mut temps: Vec<Owned1> = Vec::new();
+        let mut held: Vec<Owned1> = Vec::new();
+        let mut plain = true;
+        let mut native = pieces.is_some();
+        let mut vals: Vec<Val<'static>> = Vec::new();
+        if let Some(pieces) = pieces {
+            for (i, d) in dirs(pieces).enumerate() {
+                let Some(v) = value(i, d) else { return None };
+                held.push(Owned1(v));
+                if !pure_scalar(v) {
+                    plain = false;
+                    break;
+                }
+                if native {
+                    match to_val(v, d.conv, &mut temps) {
+                        Some(x) if native_dir(d) => vals.push(x),
+                        _ => native = false,
+                    }
+                }
+            }
+        }
         if !plain {
             return None;
         }
-        let r = ffi::PyUnicode_Format(s.0, args.0);
+        if native
+            && let Some(pieces) = pieces
+            && let Some(fb) = latin1(fmt)
+        {
+            let mut out: Vec<u8> = Vec::with_capacity(fb.len() + 64);
+            if render(fb, pieces, &vals, &mut out) {
+                let r = ffi::PyUnicode_DecodeLatin1(out.as_ptr().cast(), out.len() as _, std::ptr::null());
+                if r.is_null() {
+                    ffi::PyErr_Clear();
+                    return None;
+                }
+                return Some(r);
+            }
+        }
+        drop(held);
+        let r = ffi::PyUnicode_Format(fmt, args);
         if r.is_null() {
             ffi::PyErr_Clear();
             return None;
@@ -420,14 +492,139 @@ unsafe fn message(record: O) -> Option<O> {
     }
 }
 
-/// The key `fmt[a..b]` (Latin-1 bytes) equals the exact str `k`.
-unsafe fn key_is(fmt: &[u8], a: usize, b: usize, k: O) -> bool {
-    // SAFETY: exact str.
-    unsafe {
-        if ffi::PyUnicode_GET_LENGTH(k) as usize != b - a {
-            return false;
+// ---------------------------------------------------------------------------------------
+// Formatter.format
+// ---------------------------------------------------------------------------------------
+
+/// A parsed `PercentStyle._fmt`: its pieces and one key object per directive.
+struct Parsed {
+    fmt: usize,
+    pieces: Vec<Piece>,
+    keys: Vec<usize>,
+}
+
+impl Drop for Parsed {
+    fn drop(&mut self) {
+        // SAFETY: strong references taken in `parse_fmt`; dropped by an attached thread.
+        unsafe {
+            ffi::Py_DECREF(self.fmt as O);
+            for &k in &self.keys {
+                ffi::Py_DECREF(k as O);
+            }
         }
-        (a..b).enumerate().all(|(j, i)| ffi::PyUnicode_ReadChar(k, j as _) == fmt[i] as u32)
+    }
+}
+
+// SAFETY: plain addresses of objects whose references the entry owns.
+unsafe impl Send for Parsed {}
+unsafe impl Sync for Parsed {}
+
+static FMT_CACHE: parking_lot::Mutex<Vec<std::sync::Arc<Parsed>>> = parking_lot::Mutex::new(Vec::new());
+
+/// Parse `fmt` (an exact str of kind 1) for a mapping: every directive keyed. Cached by
+/// identity (the entry holds `fmt`, so the address cannot be reused while cached).
+unsafe fn parse_fmt(fmt: O) -> Option<std::sync::Arc<Parsed>> {
+    // SAFETY: attached thread.
+    unsafe {
+        if let Some(c) = FMT_CACHE.try_lock()
+            && let Some(p) = c.iter().find(|p| p.fmt == fmt as usize)
+        {
+            return Some(p.clone());
+        }
+        let b = latin1(fmt)?;
+        let pieces = parse_format(b)?;
+        let mut keys = Vec::new();
+        for d in dirs(&pieces) {
+            let (x, y) = d.key?;
+            let k = ffi::PyUnicode_DecodeLatin1(b[x..].as_ptr().cast(), (y - x) as _, std::ptr::null());
+            if k.is_null() {
+                ffi::PyErr_Clear();
+                for &k in &keys {
+                    ffi::Py_DECREF(k as O);
+                }
+                return None;
+            }
+            keys.push(k as usize);
+        }
+        ffi::Py_INCREF(fmt);
+        let p = std::sync::Arc::new(Parsed { fmt: fmt as usize, pieces, keys });
+        if let Some(mut c) = FMT_CACHE.try_lock() {
+            if c.len() >= 16 {
+                c.remove(0);
+            }
+            c.push(p.clone());
+        }
+        Some(p)
+    }
+}
+
+/// `record.getMessage()`: `str(msg) % args` for plain operands. `Some(new str)`.
+unsafe fn message(msg: O, args: O) -> Option<O> {
+    // SAFETY: attached thread; borrowed operands.
+    unsafe {
+        let s = if exact_str(msg) {
+            ffi::Py_NewRef(msg)
+        } else if pure_scalar(msg) {
+            let s = ffi::PyObject_Str(msg);
+            if s.is_null() {
+                ffi::PyErr_Clear();
+                return None;
+            }
+            s
+        } else {
+            return None;
+        };
+        let s = Owned1(s);
+        match pure_truth(args) {
+            Some(false) => return Some(s.take()),
+            Some(true) => {}
+            None => return None,
+        }
+        let pieces = latin1(s.0).and_then(parse_format);
+        if exact_tuple(args) {
+            let n = ffi::PyTuple_GET_SIZE(args) as usize;
+            if let Some(p) = &pieces
+                && (dirs(p).count() != n || dirs(p).any(|d| d.key.is_some()))
+            {
+                return None; // TypeError in CPython
+            }
+            if pieces.is_none() && !(0..n).all(|i| pure_scalar(ffi::PyTuple_GET_ITEM(args, i as _))) {
+                return None;
+            }
+            percent(s.0, args, pieces.as_deref(), &mut |i, _| Some(ffi::Py_NewRef(ffi::PyTuple_GET_ITEM(args, i as _))))
+        } else if exact_dict(args) {
+            if !str_keyed(args, 256) {
+                return None;
+            }
+            if let Some(p) = &pieces
+                && dirs(p).any(|d| d.key.is_none())
+            {
+                return None; // `%s` would format the whole dict
+            }
+            if pieces.is_none() && !dict_all(args, |_, v| pure_scalar(v)) {
+                return None;
+            }
+            let fb = latin1(s.0);
+            percent(s.0, args, pieces.as_deref(), &mut |_, d| {
+                let (x, y) = d.key?;
+                let fb = fb?;
+                let k = ffi::PyUnicode_DecodeLatin1(fb[x..].as_ptr().cast(), (y - x) as _, std::ptr::null());
+                if k.is_null() {
+                    ffi::PyErr_Clear();
+                    return None;
+                }
+                let mut v: O = std::ptr::null_mut();
+                let r = ffi::PyDict_GetItemRef(args, k, &mut v);
+                ffi::Py_DECREF(k);
+                if r != 1 {
+                    ffi::PyErr_Clear();
+                    return None;
+                }
+                Some(v)
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -435,6 +632,20 @@ enum Fmt {
     Done(O),
     /// Nothing observable happened, or only stores the original repeats.
     Fallback(Reason),
+}
+
+/// `d[key]` (new reference) for an exact dict with str keys.
+#[inline(always)]
+unsafe fn dget(d: O, key: O) -> Option<O> {
+    // SAFETY: attached thread; str keys only (checked by the caller).
+    unsafe {
+        let mut v: O = std::ptr::null_mut();
+        if ffi::PyDict_GetItemRef(d, key, &mut v) != 1 {
+            ffi::PyErr_Clear();
+            return None;
+        }
+        Some(v)
+    }
 }
 
 unsafe fn format(me: O, record: O) -> Fmt {
@@ -453,13 +664,22 @@ unsafe fn format(me: O, record: O) -> Fmt {
         {
             fb!(Reason::Args);
         }
+        // `record.__dict__` (CPython materialises it in PercentStyle._format; doing it first
+        // is unobservable). Record attributes are read from it: the record class has no
+        // descriptor for them (validated), so the instance dict is what getattr reads.
+        let d = ffi::PyObject_GenericGetDict(record, std::ptr::null_mut());
+        if d.is_null() {
+            ffi::PyErr_Clear();
+            fb!(Reason::Args);
+        }
+        let d = Owned1(d);
+        if !exact_dict(d.0) || !str_keyed(d.0, 256) {
+            fb!(Reason::Args);
+        }
         // exc_info / exc_text / stack_info must all be false: formatException and
         // formatStack (traceback formatting) stay CPython's.
         for a in [n.exc_info, n.exc_text, n.stack_info] {
-            let v = get(record, o(a));
-            if v.is_null() {
-                fb!(Reason::Args);
-            }
+            let Some(v) = dget(d.0, o(a)) else { fb!(Reason::Args) };
             let t = pure_truth(v);
             ffi::Py_DECREF(v);
             if t != Some(false) {
@@ -478,8 +698,12 @@ unsafe fn format(me: O, record: O) -> Fmt {
         {
             fb!(Reason::Args);
         }
-        let Some(msg) = message(record) else { fb!(Reason::Args) };
-        let msg = Owned1(msg);
+        let Some(msg) = dget(d.0, o(n.msg)) else { fb!(Reason::Args) };
+        let msg_o = Owned1(msg);
+        let Some(args) = dget(d.0, o(n.args)) else { fb!(Reason::Args) };
+        let args_o = Owned1(args);
+        let Some(message) = message(msg_o.0, args_o.0) else { fb!(Reason::Args) };
+        let message = Owned1(message);
         // usesTime: self._style._fmt.find(self._style.asctime_search) >= 0
         let sfmt = get(style.0, o(n.fmt));
         if sfmt.is_null() {
@@ -506,7 +730,7 @@ unsafe fn format(me: O, record: O) -> Fmt {
                 fb!(Reason::Args);
             }
             let datefmt = Owned1(datefmt);
-            let Some(a) = format_time(me, record, datefmt.0) else { fb!(Reason::Args) };
+            let Some(a) = format_time_with(me, &|name| dget(d.0, name), datefmt.0) else { fb!(Reason::Args) };
             Owned1(a)
         } else {
             Owned1(std::ptr::null_mut())
@@ -522,64 +746,40 @@ unsafe fn format(me: O, record: O) -> Fmt {
             Some(true) if exact_dict(defaults.0) => true,
             _ => fb!(Reason::Args),
         };
-        let Some(fbytes) = latin1(sfmt.0) else { fb!(Reason::Args) };
-        let Some(keys) = percent_keys(fbytes) else { fb!(Reason::Args) };
+        let Some(parsed) = parse_fmt(sfmt.0) else { fb!(Reason::Args) };
         // Observable from here on: stores into the record (the original repeats them).
-        if ffi::PyObject_SetAttr(record, o(n.message), msg.0) < 0 {
+        if ffi::PyObject_GenericSetAttr(record, o(n.message), message.0) < 0 {
             ffi::PyErr_Clear();
             fb!(Reason::Deopt);
         }
-        if uses_time && ffi::PyObject_SetAttr(record, o(n.asctime), asctime.0) < 0 {
+        if uses_time && ffi::PyObject_GenericSetAttr(record, o(n.asctime), asctime.0) < 0 {
             ffi::PyErr_Clear();
             fb!(Reason::Deopt);
         }
-        let d = ffi::PyObject_GenericGetDict(record, std::ptr::null_mut());
-        if d.is_null() {
-            ffi::PyErr_Clear();
-            fb!(Reason::Deopt);
-        }
-        let mut values = Owned1(d);
-        if merge {
+        let values = if merge {
             let v = ffi::PyDict_Copy(defaults.0);
-            if v.is_null() || ffi::PyDict_Update(v, values.0) < 0 {
+            if v.is_null() || ffi::PyDict_Update(v, d.0) < 0 {
                 ffi::PyErr_Clear();
                 ffi::Py_XDECREF(v);
                 fb!(Reason::Deopt);
             }
-            values = Owned1(v);
-        }
-        // Every key a str; the keys the format reads hold plain values.
-        let mut impure: [O; 8] = [std::ptr::null_mut(); 8];
-        let mut ni = 0;
-        let ok = ffi::PyDict_Size(values.0) <= 256
-            && dict_all(values.0, |k, v| {
-                if !exact_str(k) {
-                    return false;
-                }
-                if !pure_scalar(v) {
-                    if ni == impure.len() {
-                        return false;
-                    }
-                    impure[ni] = k;
-                    ni += 1;
-                }
-                true
-            });
-        if !ok {
+            Owned1(v)
+        } else {
+            Owned1(ffi::Py_NewRef(d.0))
+        };
+        if !str_keyed(values.0, 256) {
             fb!(Reason::Deopt);
         }
-        for &(a, b) in &keys {
-            if impure[..ni].iter().any(|&k| key_is(fbytes, a, b, k)) {
-                fb!(Reason::Deopt);
-            }
+        let keys = &parsed.keys;
+        match percent(sfmt.0, values.0, Some(&parsed.pieces), &mut |i, _| dget(values.0, keys[i] as O)) {
+            Some(s) => Fmt::Done(s),
+            None => Fmt::Fallback(Reason::Deopt),
         }
-        let s = ffi::PyUnicode_Format(sfmt.0, values.0);
-        if s.is_null() {
-            ffi::PyErr_Clear();
-            fb!(Reason::Deopt);
-        }
-        Fmt::Done(s)
     }
+}
+
+pub fn clear_fmt_cache() {
+    FMT_CACHE.lock().clear();
 }
 
 /// `Formatter.format(self, record)`.

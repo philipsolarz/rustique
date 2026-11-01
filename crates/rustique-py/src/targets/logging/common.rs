@@ -22,14 +22,6 @@ pub type Tp = *mut ffi::PyTypeObject;
 // CPython symbols pyo3-ffi does not bind
 // ---------------------------------------------------------------------------------------
 
-/// `PyMethodObject` (cpython/classobject.h, public layout).
-#[repr(C)]
-pub struct RawMethod {
-    pub ob_base: ffi::PyObject,
-    pub im_func: O,
-    pub im_self: O,
-}
-
 #[repr(C)]
 struct MonState {
     active: u8,
@@ -37,7 +29,6 @@ struct MonState {
 }
 
 unsafe extern "C" {
-    pub static mut PyMethod_Type: ffi::PyTypeObject;
     fn PyMonitoring_EnterScope(state: *mut MonState, version: *mut u64, events: *const u8, n: ffi::Py_ssize_t)
     -> c_int;
     /// Exported (cpython/object.h, 3.14 and 3.15): MRO lookup through the type cache.
@@ -347,13 +338,30 @@ pub unsafe fn generic_attrs(t: Tp, setattr_too: bool) -> bool {
 // Attribute helpers
 // ---------------------------------------------------------------------------------------
 
-/// `obj.name`, or NULL with no error set. Only for objects of validated types, where the
-/// lookup runs no Python code.
+/// `obj.name` through the generic attribute protocol, or NULL with no error set. Only for
+/// objects of validated types (generic `tp_getattro`, no descriptor for `name`), where
+/// this is exactly what `obj.name` does and runs no Python code.
 ///
 /// # Safety
 /// Attached thread.
 #[inline(always)]
 pub unsafe fn get(obj: O, name: O) -> O {
+    // SAFETY: per the caller.
+    unsafe {
+        let r = ffi::PyObject_GenericGetAttr(obj, name);
+        if r.is_null() {
+            ffi::PyErr_Clear();
+        }
+        r
+    }
+}
+
+/// `obj.name` for any object (modules), or NULL with no error set.
+///
+/// # Safety
+/// Attached thread; the lookup must not run Python code (callers check the type).
+#[inline(always)]
+pub unsafe fn get_any(obj: O, name: O) -> O {
     // SAFETY: per the caller.
     unsafe {
         let r = ffi::PyObject_GetAttr(obj, name);
@@ -364,22 +372,27 @@ pub unsafe fn get(obj: O, name: O) -> O {
     }
 }
 
-/// `obj.name` is the bound method `func.__get__(obj)`: the instance does not shadow the
-/// method its (validated) class provides.
+/// `_PyObject_GetMethod` (exported by 3.14 and 3.15): the method lookup `obj.name(...)`
+/// call sites use, without creating a bound method.
+pub static GET_METHOD: crate::accel::Original<unsafe extern "C" fn(O, O, *mut O) -> c_int> =
+    crate::accel::Original::new();
+
+/// `obj.name` resolves to the class's function `func` (the instance does not shadow it):
+/// what `self.name(...)` calls is `func`.
 ///
 /// # Safety
-/// Attached thread; `obj` of a validated type.
+/// Attached thread; `obj` of a validated type; `GET_METHOD` resolved.
 #[inline(always)]
 pub unsafe fn bound_to(obj: O, name: O, func: O) -> bool {
     // SAFETY: per the caller.
     unsafe {
-        let m = get(obj, name);
+        let mut m: O = std::ptr::null_mut();
+        let unbound = GET_METHOD.get()(obj, name, &mut m);
         if m.is_null() {
+            ffi::PyErr_Clear();
             return false;
         }
-        let ok = ffi::Py_TYPE(m) == &raw mut PyMethod_Type
-            && (*m.cast::<RawMethod>()).im_func == func
-            && (*m.cast::<RawMethod>()).im_self == obj;
+        let ok = unbound == 1 && m == func;
         ffi::Py_DECREF(m);
         ok
     }
@@ -530,14 +543,63 @@ pub unsafe fn int_keyed_get(d: O, key: O) -> Result<Option<O>, ()> {
     }
 }
 
+/// `PyDictObject` (cpython/dictobject.h).
+#[repr(C)]
+struct RawDict {
+    ob_base: ffi::PyObject,
+    ma_used: ffi::Py_ssize_t,
+    _ma_watcher_tag: u64,
+    ma_keys: *const u8,
+}
+
+/// `dk_kind` of `PyDictKeysObject` (pycore_dict.h, 3.14 and 3.15: after `dk_refcnt`,
+/// `dk_log2_size`, `dk_log2_index_bytes`): `DICT_KEYS_GENERAL` 0, `UNICODE` 1, `SPLIT` 2.
+/// A non-general dict holds only exact `str` keys (inserting anything else converts it).
+const DK_KIND_OFFSET: usize = size_of::<ffi::Py_ssize_t>() + 2;
+static DK_KIND_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// # Safety
+/// Exact dict.
+#[inline(always)]
+unsafe fn dk_kind(d: O) -> u8 {
+    // SAFETY: per the caller; the keys object outlives this read (QSBR on free-threaded
+    // builds, the GIL otherwise).
+    unsafe { *(*d.cast::<RawDict>()).ma_keys.add(DK_KIND_OFFSET) }
+}
+
+/// Verify the `dk_kind` layout on probe dicts (install time).
+pub fn calibrate_dict_kind(py: Python<'_>) -> bool {
+    let probe = || -> PyResult<bool> {
+        let s = pyo3::types::PyDict::new(py);
+        s.set_item("a", 1)?;
+        s.set_item("b", 2)?;
+        let g = pyo3::types::PyDict::new(py);
+        g.set_item(1, 1)?;
+        let mixed = pyo3::types::PyDict::new(py);
+        mixed.set_item("a", 1)?;
+        mixed.set_item(2, 1)?;
+        // SAFETY: exact dicts.
+        Ok(unsafe { dk_kind(s.as_ptr()) == 1 && dk_kind(g.as_ptr()) == 0 && dk_kind(mixed.as_ptr()) == 0 })
+    };
+    let ok = probe().unwrap_or(false);
+    DK_KIND_OK.store(ok, Relaxed);
+    ok
+}
+
 /// Every key of the exact dict `d` is an exact `str` (so lookups with `str` keys run no
-/// Python code). Bounded size.
+/// Python code): one byte read when the layout is calibrated, else a bounded scan.
 ///
 /// # Safety
 /// Attached thread; exact dict.
+#[inline(always)]
 pub unsafe fn str_keyed(d: O, max: isize) -> bool {
     // SAFETY: per the caller.
-    unsafe { ffi::PyDict_Size(d) <= max && dict_all(d, |k, _| exact_str(k)) }
+    unsafe {
+        if DK_KIND_OK.load(Relaxed) {
+            return dk_kind(d) != 0;
+        }
+        ffi::PyDict_Size(d) <= max && dict_all(d, |k, _| exact_str(k))
+    }
 }
 
 // ---------------------------------------------------------------------------------------

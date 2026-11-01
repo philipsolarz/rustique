@@ -297,8 +297,8 @@ unsafe fn capture_asyncio() -> bool {
             ffi::Py_XDECREF(aio);
             return false;
         }
-        let ct = get(aio, o(n().current_task));
-        let rl = get(aio, o(n().get_running_loop));
+        let ct = get_any(aio, o(n().current_task));
+        let rl = get_any(aio, o(n().get_running_loop));
         let task = ffi::PyObject_GetAttrString(aio, c"Task".as_ptr());
         if task.is_null() {
             ffi::PyErr_Clear();
@@ -338,7 +338,7 @@ unsafe fn task_name() -> Result<O, ()> {
             return Err(());
         }
         // `asyncio.current_task` must be the C function.
-        let ct = get(aio, o(n().current_task));
+        let ct = get_any(aio, o(n().current_task));
         ffi::Py_DECREF(aio);
         let same = ct == AIO_CURRENT_TASK.get();
         ffi::Py_XDECREF(ct);
@@ -512,7 +512,7 @@ unsafe fn init(me: O, a: *const O, n_args: usize) -> Outcome {
         ];
         let names = attr_names(nm);
         for i in 0..ATTRS {
-            if ffi::PyObject_SetAttr(me, o(names[i]), values[i]) < 0 {
+            if ffi::PyObject_GenericSetAttr(me, o(names[i]), values[i]) < 0 {
                 // Nothing observable yet except stores into `self`, which the original
                 // repeats (same keys, same order).
                 ffi::PyErr_Clear();

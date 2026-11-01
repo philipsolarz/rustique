@@ -98,64 +98,226 @@ pub fn msec_suffix(msecs: f64, out: &mut Vec<u8>) -> bool {
     true
 }
 
-/// The `%(key)` directives of a format string applied to a mapping, as `(start, end)`
-/// character ranges of each key, in order. Accepts only the plain subset
-/// `%%` and `%(key)[flags][width][.precision]conv` with flags in `-+ #0`, decimal width
-/// and precision, a key without parentheses and `conv` in `sradiuoxXeEfFgGc`; returns
-/// `None` for anything else (positional directives, `*`, length modifiers, nested
-/// parentheses, unknown conversions, a trailing `%`), which `PyUnicode_Format` may treat
-/// differently. For accepted strings, `PyUnicode_Format(fmt, mapping)` looks up exactly
-/// these keys, left to right, and nothing else.
-pub fn percent_keys(fmt: &[u8]) -> Option<Vec<(usize, usize)>> {
-    let mut keys = Vec::new();
-    let mut i = 0;
+/// One piece of a `%`-format string (`PyUnicode_Format` grammar).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Piece {
+    /// Literal text `fmt[start..end]`.
+    Lit(usize, usize),
+    /// `%%`.
+    Percent,
+    Dir(Dir),
+}
+
+/// A conversion `%[(key)][flags][width][.precision]conv`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Dir {
+    /// `fmt[start..end]` of a `%(key)`.
+    pub key: Option<(usize, usize)>,
+    /// `-`
+    pub ljust: bool,
+    /// `0`
+    pub zero: bool,
+    /// `+`, ` ` or `#` present (the native renderer declines these).
+    pub other_flags: bool,
+    pub width: Option<usize>,
+    pub prec: Option<usize>,
+    pub conv: u8,
+}
+
+/// Parse a format string into pieces. Accepts `%%` and
+/// `%[(key)][-+ #0]*[digits][.digits](s|r|a|d|i|u|o|x|X|e|E|f|F|g|G|c)` with a key that has
+/// no parentheses; returns `None` for `*`, length modifiers, nested parentheses, unknown
+/// conversions or a trailing `%` (which `PyUnicode_Format` handles differently or rejects).
+/// For accepted strings, `PyUnicode_Format` reads the same keys / positional arguments in
+/// the same order.
+pub fn parse_format(fmt: &[u8]) -> Option<Vec<Piece>> {
+    let mut out = Vec::new();
     let n = fmt.len();
+    let mut i = 0;
+    let mut lit = 0;
     while i < n {
         if fmt[i] != b'%' {
             i += 1;
             continue;
         }
-        i += 1;
-        match fmt.get(i)? {
-            b'%' => {
-                i += 1;
-                continue;
-            }
-            b'(' => {}
-            _ => return None,
+        if lit < i {
+            out.push(Piece::Lit(lit, i));
         }
         i += 1;
-        let start = i;
-        while i < n && fmt[i] != b')' {
-            if fmt[i] == b'(' {
+        if *fmt.get(i)? == b'%' {
+            out.push(Piece::Percent);
+            i += 1;
+            lit = i;
+            continue;
+        }
+        let mut key = None;
+        if fmt[i] == b'(' {
+            i += 1;
+            let start = i;
+            while i < n && fmt[i] != b')' {
+                if fmt[i] == b'(' {
+                    return None;
+                }
+                i += 1;
+            }
+            if i >= n {
                 return None;
             }
+            key = Some((start, i));
             i += 1;
         }
-        if i >= n {
-            return None;
-        }
-        keys.push((start, i));
-        i += 1;
-        while i < n && matches!(fmt[i], b'-' | b'+' | b' ' | b'#' | b'0') {
+        let (mut ljust, mut zero, mut other) = (false, false, false);
+        while i < n {
+            match fmt[i] {
+                b'-' => ljust = true,
+                b'0' => zero = true,
+                b'+' | b' ' | b'#' => other = true,
+                _ => break,
+            }
             i += 1;
         }
-        while i < n && fmt[i].is_ascii_digit() {
-            i += 1;
-        }
+        let digits = |i: &mut usize| -> Option<Option<usize>> {
+            let s = *i;
+            let mut v: usize = 0;
+            while *i < n && fmt[*i].is_ascii_digit() {
+                v = v.checked_mul(10)?.checked_add((fmt[*i] - b'0') as usize)?;
+                *i += 1;
+            }
+            Some((*i > s).then_some(v))
+        };
+        let width = digits(&mut i)?;
+        let mut prec = None;
         if i < n && fmt[i] == b'.' {
             i += 1;
-            while i < n && fmt[i].is_ascii_digit() {
-                i += 1;
-            }
+            prec = Some(digits(&mut i)?.unwrap_or(0));
         }
         let c = *fmt.get(i)?;
         if !b"sradiuoxXeEfFgGc".contains(&c) {
             return None;
         }
         i += 1;
+        out.push(Piece::Dir(Dir { key, ljust, zero, other_flags: other, width, prec, conv: c }));
+        lit = i;
     }
-    Some(keys)
+    if lit < n {
+        out.push(Piece::Lit(lit, n));
+    }
+    Some(out)
+}
+
+/// A converted argument, as the native renderer needs it.
+#[derive(Clone, Copy, Debug)]
+pub enum Val<'a> {
+    /// `str(value)` as Latin-1 bytes (for `%s`).
+    Text(&'a [u8]),
+    /// The integer value (for `%d`/`%i`/`%u`: `int(value)`).
+    Int(i64),
+}
+
+/// Widths and precisions the renderer accepts (larger ones go to `PyUnicode_Format`).
+pub const MAX_WIDTH: usize = 1 << 16;
+
+/// Whether the renderer handles this directive: `%s` (any flags: `+`, ` `, `#`, `0` have
+/// no effect on strings) and `%d`/`%i`/`%u` with only `-`/`0` flags and no precision.
+pub fn native_dir(d: &Dir) -> bool {
+    if d.width.is_some_and(|w| w > MAX_WIDTH) || d.prec.is_some_and(|p| p > MAX_WIDTH) {
+        return false;
+    }
+    match d.conv {
+        b's' => true,
+        b'd' | b'i' | b'u' => !d.other_flags && d.prec.is_none(),
+        _ => false,
+    }
+}
+
+fn pad(out: &mut Vec<u8>, c: u8, n: usize) {
+    out.extend(std::iter::repeat_n(c, n));
+}
+
+/// Append the output of one `%s` / `%d` directive exactly as
+/// `unicode_format_arg_output` writes it.
+fn render_dir(d: &Dir, v: Val<'_>, out: &mut Vec<u8>) -> bool {
+    let digits;
+    let v = match (d.conv, v) {
+        (b's', Val::Int(x)) => {
+            digits = x.to_string();
+            Val::Text(digits.as_bytes())
+        }
+        _ => v,
+    };
+    match (d.conv, v) {
+        (b's', Val::Text(t)) => {
+            let t = match d.prec {
+                Some(p) if p < t.len() => &t[..p],
+                _ => t,
+            };
+            let w = d.width.unwrap_or(0);
+            let fillc = w.saturating_sub(t.len());
+            if !d.ljust {
+                pad(out, b' ', fillc);
+            }
+            out.extend_from_slice(t);
+            if d.ljust {
+                pad(out, b' ', fillc);
+            }
+            true
+        }
+        (b'd' | b'i' | b'u', Val::Int(x)) => {
+            let digits = x.unsigned_abs().to_string();
+            let neg = x < 0;
+            let len = digits.len();
+            let mut width = d.width.unwrap_or(0).max(len + neg as usize);
+            let fill = if d.zero { b'0' } else { b' ' };
+            if neg {
+                if fill != b' ' {
+                    out.push(b'-');
+                }
+                // `if width > len: width--` (len excludes the sign here)
+                if width > len {
+                    width -= 1;
+                }
+            }
+            if width > len && !d.ljust {
+                pad(out, fill, width - len);
+                width = len;
+            }
+            if fill == b' ' && neg {
+                out.push(b'-');
+            }
+            out.extend_from_slice(digits.as_bytes());
+            if width > len {
+                pad(out, b' ', width - len);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Render `fmt` with one value per directive (in order), appending Latin-1 bytes to `out`.
+/// Every directive must satisfy [`native_dir`]. Returns false (output unspecified) if a
+/// value does not fit its directive.
+pub fn render(fmt: &[u8], pieces: &[Piece], vals: &[Val<'_>], out: &mut Vec<u8>) -> bool {
+    let mut k = 0;
+    for p in pieces {
+        match *p {
+            Piece::Lit(a, b) => out.extend_from_slice(&fmt[a..b]),
+            Piece::Percent => out.push(b'%'),
+            Piece::Dir(ref d) => {
+                let Some(&v) = vals.get(k) else { return false };
+                k += 1;
+                if !native_dir(d) || !render_dir(d, v, out) {
+                    return false;
+                }
+            }
+        }
+    }
+    k == vals.len()
+}
+
+/// The directives of `pieces`, in order.
+pub fn dirs(pieces: &[Piece]) -> impl Iterator<Item = &Dir> {
+    pieces.iter().filter_map(|p| if let Piece::Dir(d) = p { Some(d) } else { None })
 }
 
 /// `LogRecord.__init__`'s `filename = os.path.basename(pathname)` and
@@ -230,16 +392,69 @@ mod tests {
         assert!(s(f64::NAN).is_none());
     }
 
+    fn keys(f: &str) -> Option<Vec<String>> {
+        parse_format(f.as_bytes())
+            .map(|v| dirs(&v).map(|d| d.key.map_or("-".to_string(), |(a, b)| f[a..b].to_string())).collect())
+    }
+
     #[test]
-    fn percent() {
-        let k = |f: &str| percent_keys(f.as_bytes()).map(|v| v.iter().map(|&(a, b)| f[a..b].to_string()).collect::<Vec<_>>());
-        assert_eq!(k("%(asctime)s %(levelname)-8s [%(name)s] %(message)s").unwrap(), ["asctime", "levelname", "name", "message"]);
-        assert_eq!(k("%(msecs)03d %(created).3f %(x)+ #0-10.2e 100%%").unwrap(), ["msecs", "created", "x"]);
-        assert_eq!(k("no directives").unwrap(), Vec::<String>::new());
-        assert_eq!(k("%()s").unwrap(), [""]);
-        for f in ["%s", "%(a)", "%(a", "%(a(b))s", "%(a)*d", "%(a).*f", "%(a)ld", "%(a)k", "%", "abc%", "%(a)s %d"] {
-            assert!(k(f).is_none(), "{f:?}");
+    fn parse() {
+        assert_eq!(keys("%(asctime)s %(levelname)-8s [%(name)s] %(message)s").unwrap(), ["asctime", "levelname", "name", "message"]);
+        assert_eq!(keys("%(msecs)03d %(created).3f %(x)+ #0-10.2e 100%%").unwrap(), ["msecs", "created", "x"]);
+        assert_eq!(keys("no directives").unwrap(), Vec::<String>::new());
+        assert_eq!(keys("%()s").unwrap(), [""]);
+        assert_eq!(keys("x=%s y=%5.2f %%").unwrap(), ["-", "-"]);
+        for f in ["%(a)", "%(a", "%(a(b))s", "%(a)*d", "%(a).*f", "%(a)ld", "%(a)k", "%", "abc%", "%*d", "%.*s", "%hd"] {
+            assert!(keys(f).is_none(), "{f:?}");
         }
+        let p = parse_format(b"a%-08.3sb").unwrap();
+        assert_eq!(p[0], Piece::Lit(0, 1));
+        assert_eq!(
+            p[1],
+            Piece::Dir(Dir { key: None, ljust: true, zero: true, other_flags: false, width: Some(8), prec: Some(3), conv: b's' })
+        );
+        assert_eq!(p[2], Piece::Lit(8, 9));
+    }
+
+    fn r(f: &str, vals: &[Val<'_>]) -> Option<String> {
+        let p = parse_format(f.as_bytes())?;
+        let mut o = Vec::new();
+        render(f.as_bytes(), &p, vals, &mut o).then(|| String::from_utf8(o).unwrap())
+    }
+
+    #[test]
+    fn render_matches_python() {
+        // Expected strings are Python's `fmt % args`.
+        let t = |s: &'static str| Val::Text(s.as_bytes());
+        assert_eq!(r("%s", &[t("abc")]).unwrap(), "abc");
+        assert_eq!(r("[%-8s]", &[t("INFO")]).unwrap(), "[INFO    ]");
+        assert_eq!(r("[%8s]", &[t("INFO")]).unwrap(), "[    INFO]");
+        assert_eq!(r("[%.2s]", &[t("INFO")]).unwrap(), "[IN]");
+        assert_eq!(r("[%-6.2s]", &[t("INFO")]).unwrap(), "[IN    ]");
+        assert_eq!(r("[%05s]", &[t("ab")]).unwrap(), "[   ab]");
+        assert_eq!(r("[%+s]", &[t("ab")]).unwrap(), "[ab]");
+        assert_eq!(r("%d", &[Val::Int(-42)]).unwrap(), "-42");
+        assert_eq!(r("%05d", &[Val::Int(-42)]).unwrap(), "-0042");
+        assert_eq!(r("%05d", &[Val::Int(42)]).unwrap(), "00042");
+        assert_eq!(r("%-5d|", &[Val::Int(-42)]).unwrap(), "-42  |");
+        assert_eq!(r("%-05d|", &[Val::Int(42)]).unwrap(), "42   |");
+        assert_eq!(r("%5d|", &[Val::Int(-42)]).unwrap(), "  -42|");
+        assert_eq!(r("%03d", &[Val::Int(7)]).unwrap(), "007");
+        assert_eq!(r("%03d", &[Val::Int(1234)]).unwrap(), "1234");
+        assert_eq!(r("%1d", &[Val::Int(-5)]).unwrap(), "-5");
+        assert_eq!(r("%02d", &[Val::Int(-5)]).unwrap(), "-5");
+        assert_eq!(r("%03d", &[Val::Int(-5)]).unwrap(), "-05");
+        assert_eq!(r("%i %u", &[Val::Int(i64::MIN), Val::Int(0)]).unwrap(), "-9223372036854775808 0");
+        assert_eq!(r("100%% %s", &[t("x")]).unwrap(), "100% x");
+        assert_eq!(r("[%5s|%-4s|%.1s]", &[Val::Int(-42), Val::Int(7), Val::Int(123)]).unwrap(), "[  -42|7   |1]");
+        // declined
+        assert!(r("%+d", &[Val::Int(1)]).is_none());
+        assert!(r("%.3d", &[Val::Int(1)]).is_none());
+        assert!(r("%r", &[t("x")]).is_none());
+        assert!(r("%f", &[Val::Int(1)]).is_none());
+        assert!(r("%d", &[t("x")]).is_none());
+        assert!(r("%s %s", &[t("x")]).is_none());
+        assert!(r("%s", &[t("x"), t("y")]).is_none());
     }
 
     #[test]

@@ -100,6 +100,7 @@ fn c_function<'py>(cx: &mut Prepare<'py>, f: &Bound<'py, PyAny>, expected: fp::F
 
 fn prepare_level(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     init_names();
+    cx.symbol(c"_PyObject_GetMethod", &common::GET_METHOD)?;
     let g = cx.module()?.dict();
     let logger = ty(cx.module_attr("Logger")?)?;
     let ief = cx.type_attr(&logger, "isEnabledFor")?;
@@ -200,9 +201,10 @@ fn os_path<'py>(cx: &Prepare<'py>, g: &Bound<'py, PyDict>) -> Result<(Bound<'py,
 // logging.LogRecord.__init__
 // ---------------------------------------------------------------------------------------
 
-fn prepare_record(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn prepare_record(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     use std::sync::atomic::Ordering::Relaxed;
     init_names();
+    common::calibrate_dict_kind(py);
     let g = cx.module()?.dict();
     let lr = ty(cx.module_attr("LogRecord")?)?;
     let init = cx.type_attr(&lr, "__init__")?;
@@ -382,8 +384,11 @@ fn prepare_record_types(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     Ok(())
 }
 
-fn prepare_format(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn prepare_format(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     init_names();
+    cx.symbol(c"_PyObject_GetMethod", &common::GET_METHOD)?;
+    common::calibrate_dict_kind(py);
+    format::clear_fmt_cache();
     time_functions(cx, &format::FORMAT_DEPS)?;
     let g = cx.module()?.dict();
     cx.pin_global(&g, "str", &format::FORMAT_DEPS)?;
