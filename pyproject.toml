@@ -17,6 +17,14 @@ classifiers = [
 ]
 dynamic = ["version"]
 
+[project.urls]
+Documentation = "https://github.com/philipsolarz/rustique/blob/main/docs/USAGE.md"
+Repository = "https://github.com/philipsolarz/rustique"
+
+# `pytest --rustique` (inactive unless the flag is given; docs/USAGE.md).
+[project.entry-points.pytest11]
+rustique = "rustique.pytest_plugin"
+
 [dependency-groups]
 dev = [
     "maturin>=1.15.0",
@@ -35,7 +43,11 @@ profile = "release"
 editable-profile = "dev"
 exclude = ["**/__pycache__", "**/*.pyc", "**/*.pyo"]
 # uv/pip build wheels from the sdist; ship the toolchain pin so they use Rust 1.99.1.
-include = [{ path = "rust-toolchain.toml", format = "sdist" }]
+include = [
+    { path = "rust-toolchain.toml", format = "sdist" },
+    { path = "python/_rustique_startup.py", format = "wheel" },
+    { path = "python/_rustique_startup.pth", format = "wheel" },
+]
 
 [tool.uv]
 cache-keys = [

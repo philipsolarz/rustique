@@ -37,9 +37,11 @@ from rustique._rustique import (
     u64,
 )
 
-# The takeover (docs/TAKEOVER.md): `enable()` accelerates the builtin containers and
-# functions in place; `native` opts modules into Rustique containers for their literals.
-from rustique._takeover import disable, enable, native
+# The switch (docs/ACCELERATION.md, docs/USAGE.md): `enable()` puts Rust kernels behind
+# CPython's own entry points, process-wide, under the RUSTIQUE* environment variables
+# (RUSTIQUE=0 is the kill switch); `status()`/`stats()` show what runs; `native` opts modules
+# into Rustique containers for their literals (docs/TAKEOVER.md).
+from rustique._switch import disable, enable, native, stats, status
 
 __all__ = [
     "Dict",
@@ -64,6 +66,8 @@ __all__ = [
     "i32",
     "i64",
     "native",
+    "stats",
+    "status",
     "u8",
     "u16",
     "u32",
