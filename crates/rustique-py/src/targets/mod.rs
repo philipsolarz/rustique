@@ -13,6 +13,11 @@ pub mod containers;
 pub mod float;
 pub mod json;
 pub mod logging;
+pub mod random;
+pub mod statistics;
+pub mod textwrap;
+pub mod urllib;
+pub mod utils_kit;
 
 /// Every group's targets, in install order.
 pub static ALL: &[&[&TargetSpec]] = &[
@@ -21,6 +26,10 @@ pub static ALL: &[&[&TargetSpec]] = &[
     float::TARGETS,
     json::TARGETS,
     logging::TARGETS,
+    random::TARGETS,
+    statistics::TARGETS,
+    textwrap::TARGETS,
+    urllib::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,

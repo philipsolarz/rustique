@@ -1,0 +1,178 @@
+STATUS: wave 1, group `urllib` (workstream utils). Contract: `docs/ACCELERATION.md`.
+Code: `crates/rustique-py/src/targets/urllib/`, `crates/rustique-core/src/urlparse/`
+(`cargo test`). Tests: `tests/targets/test_urllib.py`, `tests/targets/test_utils_mechanics.py`.
+Benchmarks: `benches/targets/urllib_cells.py` (callgrind), `utils_pyperf.py urllib`.
+
+# Targets `urllib.parse.quote`, `quote_plus`, `unquote`, `unquote_plus`, `parse_qsl`, `parse_qs`, `_urlsplit`
+
+Vectorcall kernels on the module's function objects: the 63–90% of call sites that hold
+`from urllib.parse import quote` reach them (tested). `urlsplit` is wrapped in
+`functools.lru_cache`, whose `cache_info()` is public: the C wrapper stays CPython's and
+the kernel sits behind it, on `_urlsplit` — the uncached work under `urlsplit` (cache
+misses), `urlparse` (never cached) and `urljoin`. All seven are side-effect free and
+`checkable`.
+
+| target | validated | free-threaded | checkable |
+|---|---|---|---|
+| all seven | 3.14, 3.15 | yes | yes |
+
+The seven functions (and the helpers they call) are identical in 3.14.9 and 3.15.1 (the
+3.15 `missing_as_none` changes are in `urlsplit`/`urlparse`/`urlunsplit`, which stay
+CPython's).
+
+## 1. Exactness
+
+- **`quote(string, safe='/', encoding=None, errors=None)`**: `str` → UTF-8 (`strict`; text
+  with a lone surrogate falls back), or exact `bytes`; `safe` `str` (non-ASCII ignored, as
+  `safe.encode('ascii', 'ignore')`) or `bytes`; `_ALWAYS_SAFE` bytes and `safe` bytes kept,
+  others `%XX` (upper-case hex). `quote('')` returns its argument. `quote_plus`: if the input
+  has a space, `safe + ' '` then spaces to `+`; else `quote` itself.
+- **`unquote(string, encoding='utf-8', errors='replace')`**: no `%` → the argument itself;
+  otherwise CPython's split into ASCII runs and non-ASCII runs (`_asciire`), each ASCII run
+  percent-decoded with `_unquote_impl`'s rules (`%` + two hex digits of either case, else a
+  literal `%`) and decoded **by CPython's own UTF-8 decoder** (`PyUnicode_DecodeUTF8` with
+  `replace`, `strict`, `ignore` or `surrogateescape`), non-ASCII runs kept. A strict decode
+  error falls back (nothing observable happened). `unquote_plus` replaces `+` first.
+- **`parse_qsl`/`parse_qs`**: `qs.split(separator)`, `partition('=')`, blank handling,
+  `max_num_fields`, then `unquote_plus` on each name and value; names/values are slices of
+  `qs` made with `PyUnicode_Substring` (CPython's slicing), so a single field returns `qs`
+  itself where CPython does. `parse_qs` builds the dict of lists in CPython's order.
+- **`_urlsplit(url, scheme=None, allow_fragments=True)`**: `lstrip` of C0 controls and
+  space, removal of tab/CR/LF (`_UNSAFE_URL_BYTES_TO_REMOVE`, a mutable list checked per
+  call), the scheme rule (`url[0]` an ASCII letter, all of `url[:i]` in `scheme_chars`,
+  lower-cased by calling `str.lower`), `_splitnetloc`, `#`/`?` splits; components are
+  slices of the cleaned url (the argument itself when nothing was stripped), `None` where
+  CPython returns `None`. Netlocs with brackets (`ValueError` or `_check_bracketed_netloc`
+  via `ipaddress`) and non-ASCII netlocs (`_checknetloc`'s NFKC check) fall back.
+
+## 2. Exact subset and fallbacks
+
+Accelerated: exact `str` arguments (and `bytes` for `quote`/`quote_plus`); default codecs
+(UTF-8; `encoding` given as `'utf-8'`/`'utf8'` accepted); `parse_qsl`/`parse_qs` with a
+`str` separator, `strict_parsing` false, `keep_blank_values`/`allow_fragments`
+`bool`/`int`/`None`, `max_num_fields` `None` or int; inputs below 200,000 bytes for `quote`
+(CPython switches to a chunked join with `math.isqrt`).
+
+Falls back (`args`): str/bytes subclasses, `bytearray`, other codecs or error handlers,
+`strict_parsing=True`, bytes query strings, every error (bad separator, too many fields,
+encode errors), bracketed or non-ASCII netlocs. `deps`: a replaced dependency (§3).
+
+## 3. Dependencies
+
+Pinned once for the whole group (`GroupSpec`, flag `URLLIB_DEPS`; replacing any of them
+suspends all seven targets until it is back), identity, LOAD_GLOBAL semantics:
+`quote_from_bytes`, `_ALWAYS_SAFE_BYTES`,
+`_byte_quoter_factory` (quote, quote_plus), `quote` (quote_plus), `unquote`,
+`_unquote_impl`, `_generate_unquoted_parts`, `_asciire` (unquote*, parse_qs*),
+`unquote_plus` (parse_qsl), `parse_qsl` (parse_qs), `_WHATWG_C0_CONTROL_OR_SPACE`,
+`_UNSAFE_URL_BYTES_TO_REMOVE` (+ contents per call), `scheme_chars`, `_splitnetloc`,
+`_check_bracketed_netloc`, `_checknetloc` (_urlsplit), and the builtins they read.
+Constants' contents are checked at install.
+
+**Private state skipped:** `_byte_quoter_factory`'s `lru_cache` entries and the `_Quoter`
+dicts `quote` would create; the lazily built `_hextobyte` table (`unquote` would build it on
+its first call with a `%`).
+
+## 4. Version coverage
+
+3.14.9 and 3.15.1 and their free-threaded builds; refused elsewhere and on fingerprint or
+constant mismatch.
+
+Private CPython symbols and layouts: none (public C API only).
+
+## 5. Conformance
+
+`python tests/conformance/run_target_suites.py --targets urllib --modules ...` (CPython's own test
+modules from `$CPYTHON_SRC`, plain vs `enable(only=["urllib"])` before the tests import the
+module, per test id; every target asserted `installed`), on 3.15.1, 3.15.1t, 3.14.9 and
+3.14.9t: `test.test_urlparse`: 78 pass, 5 skip (3.15) / 74 pass, 5 skip (3.14); `test.test_urllib`: 104 pass, 2 skip — **identical outcome sets on all four builds, 0 differences**
+(`benches/targets/utils_matrix.sh`, which also runs `tests/targets` and the whole
+`pytest -q`). The runner normalizes object addresses in subTest ids (`0x…`), which differ
+between processes (`test_urlparse` parametrizes with function reprs).
+
+## 6. Measurements
+
+### 6.1 Instructions per call (callgrind)
+
+`python benches/targets/utils_cg.py urllib_cells [--jit]`, CPython 3.15.1, dev box (method:
+random.md §6.1). **M**.
+
+| cell | orig Ir | rq Ir | ratio | JIT orig | JIT rq | JIT ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| `quote('/api/v1/items/café list')` | 15368 | 3180 | 0.207 | 14225 | 3182 | 0.224 |
+| `quote('abc')` (all safe) | 4809 | 1637 | 0.340 | 3913 | 1639 | 0.419 |
+| `quote_plus('a b&c')` | 11164 | 1803 | 0.161 | 9221 | 1805 | 0.196 |
+| `unquote('a%20b%C3%A9')` | 21710 | 3703 | 0.171 | 20471 | 3622 | 0.177 |
+| `unquote('plain')` (no `%`: returns its argument) | 1365 | 831 | 0.609 | 1268 | 833 | 0.657 |
+| `unquote_plus('a+b')` | 2457 | 1407 | 0.573 | 2200 | 1409 | 0.640 |
+| `parse_qsl(5 fields)` | 38842 | 12839 | 0.331 | 33115 | 12910 | 0.390 |
+| `parse_qs(5 fields)` | 44455 | 14696 | 0.331 | 38930 | 14767 | 0.379 |
+| `urlparse(url)` (uncached; `_urlsplit` accelerated) | 27061 | 15740 | 0.582 | 23722 | 15277 | 0.644 |
+| `urlsplit(new url)` (lru_cache miss) | 25497 | 14138 | 0.554 | 22522 | 13522 | 0.600 |
+| `urlsplit(url)` (lru_cache hit: CPython's C wrapper, untouched) | 975 | 975 | 1.000 | 977 | 977 | 1.000 |
+| `_urlsplit(url)` | 18370 | 6930 | 0.377 | 16428 | 6894 | 0.420 |
+| `urljoin(base, '../x?y=1')` (two `urlparse`s inside) | 45178 | 30039 | 0.665 | 38121 | 27672 | 0.726 |
+| fallbacks (steady state): | | | | | | |
+| `quote(str subclass)` | 8422 | 8422 | 1.000 | 7522 | 7536 | 1.002 |
+| `quote(s, encoding='latin-1')` | 14737 | 14732 | 1.000 | 13639 | 13634 | 1.000 |
+| `unquote(s, encoding='latin-1')` | 16911 | 16583 | 0.981 | 15695 | 15871 | 1.011 |
+| `urlparse('http://[::1]:80/')` (brackets: `_urlsplit` falls back) | 50485 | 50620 | 1.003 | | | |
+| `parse_qsl(b'a=1&b=2')` | 23781 | 23856 | 1.003 | | | |
+
+The cheapest fallback (`quote` of a str subclass, ~7.5–8.4k Ir) is above the JIT threshold;
+every cell is ≤ 1.011, so the group is `jit_safe`.
+
+### Wall time, large inputs (pyperf)
+
+`python benches/targets/utils_pyperf.py urllib --fast` (busy shared box: only ≥ 1.5× claims). **M**.
+
+| cell | plain | rustique | ratio |
+|---|---:|---:|---:|
+| `quote(9 KB, non-ASCII)` | 159.3 µs | 16.2 µs | 0.102 |
+| `unquote(9 KB)` | 400.0 µs | 43.8 µs | 0.110 |
+| `parse_qsl(500 fields)` | 906.1 µs | 119.2 µs | 0.132 |
+| `parse_qs(500 fields)` | 945.4 µs | 141.6 µs | 0.150 |
+| `[urlparse(u) for u in 1000 urls]` | 1800.6 µs | 1180.8 µs | 0.656 |
+
+### Workloads
+
+`python benches/workloads/run.py compare data/report_render data/log_analytics
+data/billing_engine web/requests_local -n 5 -p 3 --only random,textwrap,urllib,statistics`
+(3.15.1, busy shared box; medians of steady-state runs; digests identical in every pair). **M**.
+
+| workload | plain | utils groups enabled | ratio | where the utils groups act |
+|---|---:|---:|---:|---|
+| `data/report_render` | 409.5 ms | 183.9 ms | **0.449** | `random` (choice/choices/sample/randint) + `textwrap` (fill/shorten/indent) |
+| `data/log_analytics` | 770.4 ms | 751.5 ms | 0.975 | `urllib` (`urlsplit` misses, `parse_qs`); `ipaddress` (20%) is not a target yet |
+| `web/requests_local` | 266.8 ms | 248.1 ms | 0.930 | `urllib` (`urlsplit`/`parse_qs` in the handler, `requests`' `quote`/`urlparse`) |
+| `data/billing_engine` | 1024.2 ms | 1021.0 ms | 0.997 | `statistics` on `Decimal` totals falls back (by design); `stdev` of floats accelerated |
+
+### Install cost (budget: lazy install ≤ max(5% of the module's import, 0.1M Ir))
+
+| | cold | warm | budget (max(5%, 0.1M Ir)) |
+|---|---:|---:|---:|
+| `import urllib.parse` plain | 9.55M Ir | 9.63M Ir | |
+| lazy install overhead | +212k (+2.2%) | **+175k (+1.8%)** | 481k: within |
+
+Before this pass: +523k cold (+5.9%), +306k warm.
+
+Method: `python benches/targets/utils_install_cost.py` (callgrind, fresh processes; the
+module removed from `sys.modules` first, its dependencies imported; every setup ends with
+`gc.collect()` so neither side is charged a collection the other's setup absorbed). *Cold*:
+the first group of the process. *Warm*: another group with an imported vectorcall target is
+enabled first, so the framework's one-time costs are not charged to this group
+(REGISTRY_ANNOUNCE_2 item 16). `enable(only=[group])` with the module not imported costs
+0.50M Ir, the same for every group (the registry's first `enable()`, not the group).
+
+The group's install (wave1 b162e61, accel-core's second install-cost pass) is one
+`GroupSpec` (`SHARED`): the statics, symbols, validations and **one set of pins for the
+whole group** are declared once, and each target adds only its function's fingerprint and
+its vectorcall site. Install-time keys are plain `str` objects (`utils_kit::key`): a
+`pyo3::intern!` costs ~1.3k Ir on first use, interning ~650 Ir, a plain `str` ~200 Ir, and
+dict lookups and the pin watcher compare keys by value.
+
+### First 64 fallback calls (before the registry suspends a target that keeps falling back)
+
+`python benches/targets/utils_first64.py` (Ir per call over 64 calls, fresh process):
+`quote(str subclass)`: 9,449 → 9,884 Ir/call (1.046, +435). After 64 consecutive fallbacks the target is suspended and the cells above
+measure 1.000 (steady state).

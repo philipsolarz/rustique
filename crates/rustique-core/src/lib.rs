@@ -17,7 +17,11 @@ pub mod kernels;
 pub mod logging;
 pub mod pyfmt;
 pub mod pyhash;
+pub mod random;
 pub mod slice;
+pub mod stats;
+pub mod textwrap;
+pub mod urlparse;
 
 pub use column::{Column, ColumnError, Element, Value};
 pub use compact_str::CompactString;
