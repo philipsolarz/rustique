@@ -255,7 +255,108 @@ target!(CAS, "_selftest.cas", None, C_NONE, prepare_cas);
 target!(SNAPSHOT, "_selftest.snapshot", Some(MODULE), C_SNAP, prepare_snapshot);
 target!(SAME, "_selftest.same", Some(MODULE), C_SAME, prepare_same);
 
-pub static TARGETS: &[&TargetSpec] = &[&METH, &VECTORCALL, &SLOT, &BADFP, &REFUSE, &CAS, &SNAPSHOT, &SAME];
+pub static TARGETS: &[&TargetSpec] =
+    &[&METH, &VECTORCALL, &SLOT, &BADFP, &REFUSE, &CAS, &SNAPSHOT, &SAME, &SHARED_A, &SHARED_B];
+
+// ---------------------------------------------------------------------------------------
+// _selftest.shared_a / shared_b: two targets with shared declarations (`GroupSpec`).
+// ---------------------------------------------------------------------------------------
+
+static SHARED_DEPS: DepFlag = DepFlag::new();
+static C_SHARED_A: Counters = Counters::new();
+static C_SHARED_B: Counters = Counters::new();
+static SHARED_TOOLS: Tools = Tools::new();
+
+fn prepare_shared_group(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let g = cx.module()?.dict();
+    if cx.get_opt(&g, "REFUSE_SHARED")?.is_some() {
+        return Err(Refusal::new("shared refusal"));
+    }
+    cx.pin(&g, "SEP", &SHARED_DEPS)?;
+    Ok(())
+}
+
+pub static SHARED: accel::GroupSpec = accel::GroupSpec { name: "_selftest.shared", prepare: prepare_shared_group };
+
+/// # Safety
+/// Vectorcall arguments from CPython; attached thread.
+unsafe fn shared_kernel(c: &Counters, f: O, args: *const O, nargsf: usize, kw: O) -> O {
+    // SAFETY: per the caller.
+    unsafe {
+        if !(kw.is_null() && nargsf & !ffi::PY_VECTORCALL_ARGUMENTS_OFFSET == 1) {
+            c.fallback_streak(Reason::Args);
+        } else if !SHARED_DEPS.ok() {
+            c.fallback_streak(Reason::Deps);
+        } else if !accel::tools_quiet(&SHARED_TOOLS, f) {
+            c.fallback_streak(Reason::Tools);
+        } else {
+            c.hit_streak();
+            return ffi::Py_NewRef(*args);
+        }
+        accel::FUNCTION_VECTORCALL.get()(f, args, nargsf, kw)
+    }
+}
+
+unsafe extern "C" fn k_shared_a(f: O, args: *const O, nargsf: usize, kw: O) -> O {
+    // SAFETY: forwarded.
+    unsafe { shared_kernel(&C_SHARED_A, f, args, nargsf, kw) }
+}
+
+unsafe extern "C" fn k_shared_b(f: O, args: *const O, nargsf: usize, kw: O) -> O {
+    // SAFETY: forwarded.
+    unsafe { shared_kernel(&C_SHARED_B, f, args, nargsf, kw) }
+}
+
+fn prepare_shared_a(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let f = cx.module_attr("same_a")?;
+    cx.vectorcall(&f, k_shared_a, &accel::FUNCTION_VECTORCALL)
+}
+
+fn prepare_shared_b(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let f = cx.module_attr("same_b")?;
+    cx.vectorcall(&f, k_shared_b, &accel::FUNCTION_VECTORCALL)
+}
+
+pub static SHARED_A: TargetSpec = TargetSpec {
+    name: "_selftest.shared_a",
+    group: "_selftest",
+    module: Some(MODULE),
+    versions: VERSIONS,
+    free_threaded: true,
+    counters: &C_SHARED_A,
+    prepare: prepare_shared_a,
+    shared: Some(&SHARED),
+    ..TargetSpec::DEFAULT
+};
+
+pub static SHARED_B: TargetSpec = TargetSpec {
+    name: "_selftest.shared_b",
+    group: "_selftest",
+    module: Some(MODULE),
+    versions: VERSIONS,
+    free_threaded: true,
+    counters: &C_SHARED_B,
+    prepare: prepare_shared_b,
+    shared: Some(&SHARED),
+    ..TargetSpec::DEFAULT
+};
+
+/// `accel::degrade` on the named self-test target.
+#[pyfunction]
+fn _selftest_degrade(name: &str, reason: &str) -> PyResult<()> {
+    let spec = TARGETS
+        .iter()
+        .find(|t| t.name == name)
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("unknown self-test target"))?;
+    accel::degrade(spec, reason);
+    Ok(())
+}
+
+/// The shared self-test group's dependency flag.
+#[pyfunction]
+fn _selftest_shared_ok() -> bool {
+    SHARED_DEPS.ok()
+}
 
 // ---------------------------------------------------------------------------------------
 // _selftest.same: an *exact* kernel (`def same(x): return x`) for the shared mechanics
@@ -428,5 +529,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_selftest_gen, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_overrides, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_watch_dict, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_shared_ok, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_degrade, m)?)?;
     Ok(())
 }

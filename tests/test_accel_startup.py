@@ -25,18 +25,21 @@ import pytest
 # only when RUSTIQUE is set. It runs through exec() in site's frame, where `sitedir` is
 # defined (3.14: addpackage's parameter; 3.15: injected by _exec_imports for
 # compatibility); the inner exec sees the same locals; it uses no nested scopes.
-# Compiled only when RUSTIQUE is set (and not "0"); kept small: 3.15's compiler costs ~140k
+# Compiled only when RUSTIQUE is set and not "0"; kept small: 3.15's compiler costs ~140k
 # Ir for a one-call statement, 0.43M for this one, 1.0M for an earlier walrus/filter chain.
 # `_frozen_importlib._load` is importlib's own spec loader (sys.modules insertion, module
 # attributes, cleanup on failure). Wheel installs: `sitedir/rustique/`; other layouts
-# (editable installs, where the package is on sys.path): a normal import. Other OFF values
-# ("off", "false", "no", "") load the extension and `startup()` enables nothing.
+# (editable installs, where the package is on sys.path): a normal import.
 LOADER = (
     "import sys,_imp;p=sitedir+'/rustique/_rustique'+_imp.extension_suffixes()[0];"
-    "sys.flags.ignore_environment or (sys.modules['_frozen_importlib']._load("
+    "os.environ['RUSTIQUE'].strip().lower() in ('', 'off', 'false', 'no') or sys.flags.ignore_environment or "
+    "(sys.modules['_frozen_importlib']._load("
     "sys.modules['_frozen_importlib_external'].spec_from_file_location('rustique._rustique',p)) "
     "if os.path.isfile(p) else __import__('rustique._rustique')._rustique)._accel.startup()"
 )
+# The gate stays as short as possible (every interpreter start compiles it): "0" and unset
+# stop here; the other OFF values (any case, surrounding spaces) and "" stop at the head of
+# the loader, which is compiled only then. Nothing is loaded for any of them.
 PTH_LINE = "import os; os.environ.get('RUSTIQUE', '0') != '0' and exec(" + repr(LOADER) + ")"
 
 SITEDIR = os.path.dirname(os.path.dirname(importlib.util.find_spec("rustique").origin))
@@ -64,8 +67,8 @@ def test_the_line_is_one_import_line():
     assert "\n" not in PTH_LINE and PTH_LINE.startswith("import ")
 
 
-@pytest.mark.parametrize("value", [None, "0"])
-def test_unset_or_0_imports_nothing(value):
+@pytest.mark.parametrize("value", [None, "0", "off", "", " No ", "FALSE", "Off"])
+def test_unset_and_off_values_load_nothing(value):
     r = run(
         "import sys\nnames = sorted(m for m in sys.modules if m.startswith('rustique'))\nprint(names)",
         {"RUSTIQUE": value},
@@ -73,6 +76,35 @@ def test_unset_or_0_imports_nothing(value):
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == "[]", r.stdout
     assert r.stderr == ""
+
+
+@pytest.mark.parametrize("value", ["0", "", "off", "No"])
+def test_off_values_are_the_kill_switch(value):
+    r = run(
+        """
+        import rustique._rustique as ext
+        ext._accel.switch_enable()
+        st = ext._accel.status()
+        print(st['process']['enabled'], st['process']['switch']['killed'], st['process']['switch']['killed_calls'])
+        """,
+        {"RUSTIQUE": value},
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["False", "True", "1"]
+
+
+def test_bad_value_warns_and_stays_off():
+    r = run(
+        """
+        import sys
+        st = sys.modules['rustique._rustique']._accel.status()
+        print(st['process']['enabled'], st['process']['switch']['killed'])
+        """,
+        {"RUSTIQUE": "maybe"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["False", "False"]
+    assert r.stderr.strip() == "rustique: ignoring RUSTIQUE='maybe' (expected 1 or 0)"
 
 
 def test_startup_loads_only_the_extension_and_enables():
@@ -100,40 +132,9 @@ def test_startup_loads_only_the_extension_and_enables():
     assert source == "RUSTIQUE=1" and int(n) >= 13
 
 
-@pytest.mark.parametrize("value", ["off", "", "No"])
-def test_other_off_values_enable_nothing(value):
-    r = run(
-        """
-        import sys
-        assert 'rustique' not in sys.modules
-        st = sys.modules['rustique._rustique']._accel.status()
-        print(st['process']['enabled'], st['process']['switch']['source'])
-        """,
-        {"RUSTIQUE": value},
-    )
-    assert r.returncode == 0, r.stderr
-    assert r.stdout.split() == ["False", "None"] and r.stderr == ""
-
-
 def test_ignore_environment_imports_nothing():
     r = run("import sys; print([m for m in sys.modules if m.startswith('rustique')])", {"RUSTIQUE": "1"}, "-E")
     assert r.returncode == 0 and r.stdout.strip() == "[]", (r.stdout, r.stderr)
-
-
-def test_kill_switch_and_bad_value():
-    r = run("import sys; print('rustique._rustique' in sys.modules)", {"RUSTIQUE": "maybe"})
-    assert r.returncode == 0
-    assert r.stderr.strip() == "rustique: ignoring RUSTIQUE='maybe' (expected 1 or 0)"
-    r = run(
-        """
-        import rustique
-        st = rustique.enable()
-        print(st['process']['enabled'], st['process']['switch']['killed'], st['process']['switch']['killed_calls'])
-        """,
-        {"RUSTIQUE": "false"},
-    )
-    assert r.returncode == 0, r.stderr
-    assert r.stdout.split() == ["False", "True", "1"]
 
 
 def test_selection_and_warnings_from_the_environment():

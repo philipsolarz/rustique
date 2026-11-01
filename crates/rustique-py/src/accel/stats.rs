@@ -8,7 +8,7 @@
 //! mode). Check mode (`check.rs`) shares the same byte, so a kernel that supports it still
 //! pays one load when everything is off ([`Counters::hit_check`]).
 
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, Ordering};
 
 /// Bit set: [`STATS`], [`CHECK`], [`CHECK_RAISE`].
 pub static MODE: AtomicU8 = AtomicU8::new(0);
@@ -40,19 +40,35 @@ pub enum Reason {
 
 pub const REASONS: [&str; 7] = ["args", "deps", "tools", "interp", "deopt", "error", "check"];
 
-/// Consecutive fallbacks after which a vectorcall target is suspended (its original
-/// vectorcall restored until the next `enable()`): see [`Counters::fallback_streak`].
-pub const STREAK_LIMIT: u32 = 64;
+/// Consecutive fallbacks, from a fresh (or balanced) state, after which a vectorcall target
+/// is suspended (its original vectorcall restored until the next `enable()`): the floor of
+/// the net-benefit score is `-STREAK_LIMIT × fallback_debit`. See [`Counters::fallback_streak`].
+pub const STREAK_LIMIT: i32 = 64;
+
+/// The net-benefit score's ceiling: after a long run of hits it takes
+/// `SCORE_CEILING / debit + STREAK_LIMIT` consecutive fallbacks to suspend.
+pub const SCORE_CEILING: i32 = 256;
+
+/// Default [`TargetSpec::hit_credit`](super::TargetSpec::hit_credit) /
+/// [`fallback_debit`](super::TargetSpec::fallback_debit): a target stays installed while
+/// hits are at least `debit / (credit + debit)` = 20% of its calls.
+pub const HIT_CREDIT: u8 = 4;
+pub const FALLBACK_DEBIT: u8 = 1;
 
 /// Hits and fallbacks by [`Reason`] of one target (or several sharing it), and the
-/// fallback streak of vectorcall targets.
+/// net-benefit score of vectorcall targets.
 #[derive(Debug)]
 pub struct Counters {
     pub hits: AtomicU64,
     pub fallback: [AtomicU64; 7],
-    /// Consecutive fallbacks (racy load/store: approximate under contention, by design).
-    pub streak: AtomicU32,
-    /// The streak reached [`STREAK_LIMIT`]: the registry suspends the target.
+    /// Net benefit of the kernel: a hit adds `credit`, a fallback (except `Deps`) subtracts
+    /// `debit`, clamped to `[floor, SCORE_CEILING]`; reaching the floor suspends. Racy
+    /// load/store: approximate under contention, by design.
+    pub score: AtomicI32,
+    credit: AtomicI32,
+    debit: AtomicI32,
+    floor: AtomicI32,
+    /// The score reached its floor: the registry suspends the target.
     pub suspend_requested: AtomicBool,
     /// Times the registry suspended the target for persistent fallback.
     pub suspensions: AtomicU64,
@@ -102,42 +118,78 @@ impl Counters {
         Counters {
             hits: AtomicU64::new(0),
             fallback: [const { AtomicU64::new(0) }; 7],
-            streak: AtomicU32::new(0),
+            score: AtomicI32::new(0),
+            credit: AtomicI32::new(HIT_CREDIT as i32),
+            debit: AtomicI32::new(FALLBACK_DEBIT as i32),
+            floor: AtomicI32::new(-STREAK_LIMIT * FALLBACK_DEBIT as i32),
             suspend_requested: AtomicBool::new(false),
             suspensions: AtomicU64::new(0),
         }
     }
 
-    /// [`Self::hit`] for vectorcall kernels: also ends a fallback streak (a load and a
-    /// branch when there is none).
+    /// Set the score policy (the registry, from the installing target's spec; counters
+    /// shared by several targets take the last installed one's) and start fresh.
+    pub(crate) fn arm(&self, credit: u8, debit: u8) {
+        let (credit, debit) = (i32::from(credit.max(1)), i32::from(debit.max(1)));
+        self.credit.store(credit, Ordering::Relaxed);
+        self.debit.store(debit, Ordering::Relaxed);
+        self.floor.store(-STREAK_LIMIT * debit, Ordering::Relaxed);
+        self.score.store(0, Ordering::Relaxed);
+        self.suspend_requested.store(false, Ordering::Relaxed);
+    }
+
+    /// Start the score fresh (resume after a dependency suspension).
+    pub(crate) fn rearm(&self) {
+        self.score.store(0, Ordering::Relaxed);
+    }
+
+    /// Credit a hit: a load and a compare at the ceiling (the steady state of a target that
+    /// pays off), a store below it.
+    #[inline(always)]
+    fn credit_hit(&self) {
+        let s = self.score.load(Ordering::Relaxed);
+        if s < SCORE_CEILING {
+            let c = self.credit.load(Ordering::Relaxed);
+            self.score.store((s + c).min(SCORE_CEILING), Ordering::Relaxed);
+        }
+    }
+
+    /// [`Self::hit`] for vectorcall kernels: credits the net-benefit score.
     #[inline(always)]
     pub fn hit_streak(&self) {
-        if self.streak.load(Ordering::Relaxed) != 0 {
-            self.streak.store(0, Ordering::Relaxed);
-        }
+        self.credit_hit();
         self.hit();
     }
 
-    /// [`Self::hit_check`] for vectorcall kernels (ends a fallback streak).
+    /// [`Self::hit_check`] for vectorcall kernels (credits the net-benefit score).
     #[inline(always)]
     pub fn hit_check_streak(&self) -> bool {
-        if self.streak.load(Ordering::Relaxed) != 0 {
-            self.streak.store(0, Ordering::Relaxed);
-        }
+        self.credit_hit();
         self.hit_check()
     }
 
     /// [`Self::fallback`] for vectorcall kernels: every fallback except `Deps` (which
-    /// suspends through the pins) extends the streak; at [`STREAK_LIMIT`] consecutive
-    /// fallbacks the registry suspends the target (original vectorcall restored, so the
-    /// remaining calls cost what CPython's do) until the next `enable()`.
+    /// suspends through the pins) debits the net-benefit score; when it reaches its floor
+    /// the registry suspends the target (original vectorcall restored, so the remaining
+    /// calls cost what CPython's do) until the next `enable()`. From a fresh state that is
+    /// [`STREAK_LIMIT`] consecutive fallbacks; with default policy, traffic where fewer
+    /// than 20% of the calls hit gets there too, however the hits are interleaved.
     #[inline(always)]
     pub fn fallback_streak(&self, why: Reason) {
         self.fallback(why);
         if !matches!(why, Reason::Deps) {
-            let s = self.streak.load(Ordering::Relaxed) + 1;
-            self.streak.store(s, Ordering::Relaxed);
-            if s == STREAK_LIMIT {
+            self.debit_fallback();
+        }
+    }
+
+    #[inline]
+    fn debit_fallback(&self) {
+        let s = self.score.load(Ordering::Relaxed);
+        let floor = self.floor.load(Ordering::Relaxed);
+        if s > floor {
+            let n = (s - self.debit.load(Ordering::Relaxed)).max(floor);
+            self.score.store(n, Ordering::Relaxed);
+            if n == floor {
                 self.request_suspend();
             }
         }
