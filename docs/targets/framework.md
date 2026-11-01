@@ -187,6 +187,30 @@ check` (dx) and `rustique._takeover` (native tier, compatibility) are thin wrapp
 
 ## 7. Measured
 
+**Install-time cost per primitive** (`benches/accel_primitives.py`, callgrind regions,
+3.15.1 dev-release; before → after the wave-1 trimming):
+
+| primitive | before | after |
+|---|---:|---:|
+| `fingerprint_code` per function (format v2: raw fields, word hash; cached for the process) | ~23k, unbounded with nested constants | 4.9k (`posixpath.join`), 6.5k (`json.dumps`), once per process |
+| `fingerprint_c` per C original | 3.3k | 2.1k |
+| `_PyFunction_Vectorcall` discovery | 140k (compiled a probe) | ~5k, once |
+| code-layout check | 10.9k per vectorcall site | once per process |
+| one vectorcall target + 1 pin, steady `enable()` | 21k | 16k (≈6k of it the target) |
+| each additional pin (incl. its lookup) | quadratic re-scan, a new `str` per key | ≈3.2k; shared per `(dict, key)` across targets, O(1) flag counters |
+| `status()` inside `_accel.enable()` | always built (~13k Ir per target) | only with `quiet=False` |
+| first `enable()` of a process with a module target | 174k | 64k |
+| groups `containers` (7 ml_meth/slot) / `builtins` (6), first enable | 123k / 60k | 109k / 63k |
+
+Lazy install of one Python-function target on its module's import: +61k Ir (was +171k).
+`Prepare::memo(key, f)` lets a group validate shared dependencies once per pass;
+identical pins of several targets share one watch slot.
+
+**3.14 note (from paths)**: on 3.14, `LOAD_ATTR_PROPERTY` inlines a property's getter
+without checking the function's version, so a vectorcall site on a property getter is
+never reached from specialized attribute loads: property targets are 3.15-only.
+
+
 **Per-call costs** (docs/atlas/mechanisms.md §1, unchanged): `ml_meth`/slot fallback +2 Ir,
 counters +3 Ir when off, tools guard 34 + ~4 Ir, a dependency flag one relaxed load, a
 vectorcall fallback +180–260 Ir (+250–350 under the JIT; hence deopt-while-unpinned and
@@ -215,7 +239,24 @@ importing the `rustique` package, and calls `_accel.startup()`; OFF values and `
 load nothing. A later `import rustique` reuses the loaded extension. The extension never
 imports itself by name (`PyImport_Import` uses an empty fromlist, which imports the
 parent package): it keeps its module object in a static. Tests:
-`tests/test_accel_startup.py`. Measured in fresh venvs: see below.
+`tests/test_accel_startup.py`. The loader is a string exec'd only when `RUSTIQUE` is set
+(`site` compiles every `.pth` line at each start; 3.15's compiler costs ~140k Ir even for
+one call, 0.43M for this loader, 1.0M for the first, longer version).
+
+`benches/startup_switch.py`, release wheel, fresh venvs (`uv venv`), 3.15.1, `python -c
+pass`, CPU-pinned, 40 interleaved runs, against the same venv without rustique,
+**measured**:
+
+| | Ir | wall | page faults |
+|---|---:|---:|---:|
+| bare venv, rustique installed, `RUSTIQUE` unset | 1.026 | 1.028 | +11 |
+| bare venv, `RUSTIQUE=1` | **1.060** | **1.084** | +86 |
+| venv with another `.pth`, unset | 1.005 | 1.009 | +6 |
+| venv with another `.pth`, `RUSTIQUE=1` | **1.035** | **1.062** | +80 |
+
+The `RUSTIQUE=1` increment (≈1.3M Ir, ≈0.55 ms): compiling the loader 0.43M, dlopen +
+`PyInit` of the 5.4 MB extension ≈0.3M plus most of the page faults, module exec ≈0.1M,
+`startup()` (environment, 13 targets) ≈0.3M.
 
 What remains in `import rustique` (lean): importlib's finder/loader floor for the package
 and an extension (a tiny two-module pure-Python package costs 0.65M Ir), dlopen of the

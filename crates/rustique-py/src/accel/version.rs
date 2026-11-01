@@ -211,6 +211,18 @@ pub fn target_gate(versions: &[(u8, u8)], free_threaded: bool) -> Result<(), Ref
     Ok(())
 }
 
+/// [`code_layout_ok_for`] once per process (the layout is the same for every code object):
+/// the first code object seen calibrates it.
+pub fn code_layout_cached(code: &Bound<'_, PyAny>) -> PyResult<bool> {
+    static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if let Some(ok) = OK.get() {
+        return Ok(*ok);
+    }
+    let ok = code_layout_ok_for(code)?;
+    let _ = OK.set(ok);
+    Ok(ok)
+}
+
 /// Check [`RawCode`] against the attributes CPython reports for `code` itself (no probe
 /// compilation, no Python code: safe inside the `sys.modules` watcher). The pointer fields
 /// make this a strong check even when the argument counts are all zero.
