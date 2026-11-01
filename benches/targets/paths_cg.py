@@ -97,9 +97,9 @@ names = ['main.py', 'utils_3.txt', 'config.json', 'models.pyc', 'README', 'index
 """
 
 RS = {
-    "posixpath": "from rustique._rustique import _t_posixpath as _T; _T.install()",
-    "fnmatch": "from rustique._rustique import _t_fnmatch as _T; _T.install()",
-    "pathlib": "from rustique._rustique import _t_pathlib as _T; _T.install()",
+    "posixpath": "from rustique._rustique import _t_posixpath as _T; _T.install(force_jit=True)",
+    "fnmatch": "from rustique._rustique import _t_fnmatch as _T; _T.install(force_jit=True)",
+    "pathlib": "from rustique._rustique import _t_pathlib as _T; _T.install(force_jit=True)",
 }
 
 PATCH_FSPATH = "_of = os.fspath; os.fspath = lambda x: _of(x)"

@@ -317,7 +317,6 @@ fn parse_set(text: &[u32]) -> Option<CharSet> {
                 T::Ch(RBRACKET) => {
                     set.items.push((code1, code1));
                     set.items.push((DASH, DASH));
-                    any_item = true;
                     break;
                 }
                 _ => {}
