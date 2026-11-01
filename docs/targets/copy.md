@@ -65,8 +65,11 @@ captured reference (`from copy import deepcopy`, `partial`, default arguments, t
 - **Natively computed, when provably identical:** atomic types (`_atomic_types`); `list`,
   `tuple`, `dict`, `frozendict` and bound methods through the original helpers;
   `issubclass(cls, type)`; `__deepcopy__`/`__copy__` methods whose code is exactly
-  `return self` (`Enum`) — only their frame's depth check remains; and
-  `object.__reduce_ex__(4)` for plain classes (§3).
+  `return self` (`Enum`) — only their frame's depth check remains;
+  `object.__reduce_ex__(4)` for plain classes (§3); and `set.__reduce__` for exact
+  `set`/`frozenset` (`(type(x), (list(x),), None)`, after the depth check of the
+  `copyreg._slotnames(cls)` frame CPython runs on every call there — pinned and
+  fingerprinted).
 
 ## 2. What is native and what calls CPython's code
 
@@ -76,7 +79,8 @@ captured reference (`from copy import deepcopy`, `partial`, default arguments, t
 | exact `list`, `dict`, `tuple`, `frozendict`, bound method | native (original helpers intact) |
 | plain class instances, dataclasses (incl. frozen), `__slots__` classes | native reduce + native `_reconstruct` (§3) |
 | `Enum` members, any `__deepcopy__`/`__copy__` that is `return self` | native |
-| `set`, `frozenset`, `bytearray`, `datetime`, `UUID`, `Decimal`, subclasses of builtins, objects with `__reduce_ex__`/`__getstate__`/`__setstate__`/`__getnewargs__` | the real hook is called; `_reconstruct` emulated natively |
+| exact `set`, `frozenset` | native `set.__reduce__` + native `_reconstruct` |
+| `bytearray`, `datetime`, `UUID`, `Decimal`, subclasses of builtins, objects with `__reduce_ex__`/`__getstate__`/`__setstate__`/`__getnewargs__` | the real hook is called; `_reconstruct` emulated natively |
 | user `__deepcopy__`, registered copiers | called with the (materialised) memo |
 | reduce value not a 2–5 tuple, `_reconstruct` modified | CPython's `_reconstruct` |
 | a `copy.py` helper whose code, defaults or local monitoring changed | that helper is called (as a registered copier would be) |
@@ -87,13 +91,16 @@ Whole-call fallback (the original function runs; `stats()` reason):
 - `deps`: a pinned dependency was replaced (deopt-while-unpinned then restores the original
   vectorcall until it is put back): `copy.deepcopy`, `_reconstruct`, `_keep_alive`,
   `_atomic_types`, `_deepcopy_dispatch`, `dispatch_table`, `_copy_atomic_types`,
-  `_copy_builtin_containers`, `copy`, `copyreg.__newobj__`, `sys.modules['copyreg']`, and
+  `_copy_builtin_containers`, `copy`, `copyreg.__newobj__`, `copyreg._slotnames`,
+  `sys.modules['copyreg']`, the `dataclasses` helpers and sentinels, and
   every builtin `copy.py`/`dataclasses.py` reads (`type`, `id`, `getattr`, `hasattr`,
   `isinstance`, `issubclass`, `len`, `setattr`, `zip`, `tuple`, `frozendict`, ...) through
   `pin_global` (so a module global shadowing a builtin counts too); also `deepcopy`'s own
   `__code__`/`__defaults__`.
-- `tools`: a `PY_START` listener (settrace/setprofile/cProfile/coverage) or local events on
-  the function's code.
+- `tools`: a `sys.monitoring` tool on any ungrouped event (settrace/setprofile/cProfile/
+  coverage, LINE- or RAISE-only tools) or local events on the function's code
+  (`accel::tools_quiet`); local events on a `copy.py`/`dataclasses.py` helper make the
+  kernel call that helper instead of emulating it.
 
 `copy._deepcopy_dispatch` and `copyreg.dispatch_table` are *not* pinned: they are read
 live at every node (their keys are types, which `pin_dict` does not cover), so
