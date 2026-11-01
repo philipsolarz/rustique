@@ -9,6 +9,7 @@
 //! | `datetime.date.strftime` (also `datetime.strftime`, `format()`, f-strings) | `date.strftime` | `_datetime` |
 //! | `datetime.time.strftime` | `time.strftime` method | `_datetime` |
 //! | `time.strftime` | `time.strftime` | `time` |
+//! | `datetime.datetime.isoformat` / `date.isoformat` / `time.isoformat` (also `str()`) | methods of `_datetime` | `_datetime` |
 //!
 //! The strptime kernels stand in for `_strptime`'s Python code: they fingerprint and watch
 //! whichever `_strptime` module object `sys.modules` holds when they first see it (the first
@@ -25,6 +26,7 @@ use crate::accel::{Prepare, Refusal, TargetSpec};
 pub mod env;
 mod fingerprints;
 pub mod format;
+pub mod iso;
 pub mod parse;
 mod ustr;
 pub mod watch;
@@ -280,6 +282,99 @@ fn prepare_time_fn_strftime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(),
 }
 
 // ---------------------------------------------------------------------------------------
+// isoformat
+// ---------------------------------------------------------------------------------------
+
+/// Kernel vs original on probe values (`cx.self_test`).
+fn iso_self_test(cx: &mut Prepare<'_>, which: u8) -> Result<(), Refusal> {
+    cx.self_test("isoformat", |py| {
+        let api = capi();
+        // SAFETY: C API loaded; the kernels and originals take these arguments.
+        unsafe {
+            let utc = (*api).TimeZone_UTC;
+            let mut ok = true;
+            let objs: Vec<Bound<'_, PyAny>> = match which {
+                0 => vec![
+                    Bound::from_owned_ptr_or_err(py, ((*api).DateTime_FromDateAndTime)(2024, 2, 29, 23, 59, 58, 4321, ffi::Py_None(), (*api).DateTimeType))?,
+                    Bound::from_owned_ptr_or_err(py, ((*api).DateTime_FromDateAndTime)(7, 1, 2, 3, 4, 5, 0, utc, (*api).DateTimeType))?,
+                ],
+                1 => vec![Bound::from_owned_ptr_or_err(py, ((*api).Date_FromDate)(987, 12, 31, (*api).DateType))?],
+                _ => vec![Bound::from_owned_ptr_or_err(py, ((*api).Time_FromTime)(7, 5, 9, 123, utc, (*api).TimeType))?],
+            };
+            for o in &objs {
+                let this = o.as_ptr();
+                let (k, orig) = match (which, cx_version_15()) {
+                    (1, _) => (iso::date_noargs(this, std::ptr::null_mut()), iso::ORIG_DATE.get()(this, std::ptr::null_mut())),
+                    (0, true) => (
+                        iso::datetime_fast(this, std::ptr::null(), 0, std::ptr::null_mut()),
+                        iso::ORIG_DATETIME_FAST.get()(this, std::ptr::null(), 0, std::ptr::null_mut()),
+                    ),
+                    (0, false) => {
+                        let t = pyo3::types::PyTuple::empty(py);
+                        (
+                            iso::datetime_var(this, t.as_ptr(), std::ptr::null_mut()),
+                            iso::ORIG_DATETIME_VAR.get()(this, t.as_ptr(), std::ptr::null_mut()),
+                        )
+                    }
+                    (_, true) => (
+                        iso::time_fast(this, std::ptr::null(), 0, std::ptr::null_mut()),
+                        iso::ORIG_TIME_FAST.get()(this, std::ptr::null(), 0, std::ptr::null_mut()),
+                    ),
+                    (_, false) => {
+                        let t = pyo3::types::PyTuple::empty(py);
+                        (
+                            iso::time_var(this, t.as_ptr(), std::ptr::null_mut()),
+                            iso::ORIG_TIME_VAR.get()(this, t.as_ptr(), std::ptr::null_mut()),
+                        )
+                    }
+                };
+                let k = Bound::from_owned_ptr_or_err(py, k)?;
+                let orig = Bound::from_owned_ptr_or_err(py, orig)?;
+                ok &= k.eq(&orig)?;
+            }
+            Ok(ok)
+        }
+    })
+}
+
+fn prepare_iso(cx: &mut Prepare<'_>, which: u8) -> Result<(), Refusal> {
+    common(cx)?;
+    let py = cx.py();
+    let api = capi();
+    // SAFETY: C API loaded by `common`.
+    let (t, label) = unsafe {
+        match which {
+            0 => ((*api).DateTimeType, "datetime.datetime.isoformat"),
+            1 => ((*api).DateType, "datetime.date.isoformat"),
+            _ => ((*api).TimeType, "datetime.time.isoformat"),
+        }
+    };
+    let desc = cx.type_attr(&api_type(py, t), "isoformat")?;
+    cx.fingerprint_c(&desc, fingerprints::c(label))?;
+    let v15 = cx.version().1 >= 15;
+    match which {
+        0 if v15 => cx.ml_meth(&desc, iso::datetime_fast as format::FastKw, &iso::ORIG_DATETIME_FAST)?,
+        0 => cx.ml_meth(&desc, iso::datetime_var as format::VarKw, &iso::ORIG_DATETIME_VAR)?,
+        1 => cx.ml_meth(&desc, iso::date_noargs as iso::NoArgs, &iso::ORIG_DATE)?,
+        _ if v15 => cx.ml_meth(&desc, iso::time_fast as format::FastKw, &iso::ORIG_TIME_FAST)?,
+        _ => cx.ml_meth(&desc, iso::time_var as format::VarKw, &iso::ORIG_TIME_VAR)?,
+    }
+    iso_self_test(cx, which)
+}
+
+fn prepare_datetime_iso(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    prepare_iso(cx, 0)
+}
+
+fn prepare_date_iso(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    prepare_iso(cx, 1)
+}
+
+fn prepare_time_iso(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    prepare_iso(cx, 2)
+}
+
+// ---------------------------------------------------------------------------------------
 // Specs
 // ---------------------------------------------------------------------------------------
 
@@ -377,6 +472,42 @@ pub(crate) fn spec(kind: &parse::Kind) -> &'static TargetSpec {
     }
 }
 
+pub static DATETIME_ISOFORMAT: TargetSpec = TargetSpec {
+    name: "datetime.datetime.isoformat",
+    group: "datetime",
+    module: Some("_datetime"),
+    versions: VERSIONS,
+    free_threaded: true,
+    checkable: true,
+    counters: &iso::C_DATETIME,
+    prepare: prepare_datetime_iso,
+    ..TargetSpec::DEFAULT
+};
+
+pub static DATE_ISOFORMAT: TargetSpec = TargetSpec {
+    name: "datetime.date.isoformat",
+    group: "datetime",
+    module: Some("_datetime"),
+    versions: VERSIONS,
+    free_threaded: true,
+    checkable: true,
+    counters: &iso::C_DATE,
+    prepare: prepare_date_iso,
+    ..TargetSpec::DEFAULT
+};
+
+pub static TIME_ISOFORMAT: TargetSpec = TargetSpec {
+    name: "datetime.time.isoformat",
+    group: "datetime",
+    module: Some("_datetime"),
+    versions: VERSIONS,
+    free_threaded: true,
+    checkable: true,
+    counters: &iso::C_TIME,
+    prepare: prepare_time_iso,
+    ..TargetSpec::DEFAULT
+};
+
 pub static TARGETS: &[&TargetSpec] = &[
     &DATETIME_STRPTIME,
     &DATE_STRPTIME,
@@ -385,6 +516,9 @@ pub static TARGETS: &[&TargetSpec] = &[
     &DATE_STRFTIME,
     &TIME_STRFTIME,
     &TIME_FN_STRFTIME,
+    &DATETIME_ISOFORMAT,
+    &DATE_ISOFORMAT,
+    &TIME_ISOFORMAT,
 ];
 
 /// `_accel._datetime_debug()`: the group's validation state (tests, diagnostics).

@@ -244,7 +244,7 @@ unsafe fn tz_texts(tzinfo: O, arg: O, needs: &Needs, is_datetime: bool) -> Optio
             }
             return Some(out);
         }
-        if is_datetime && t != 0 && t == ZI_TYPE.load(Ordering::Relaxed) {
+        if is_datetime && t != 0 && t == zoneinfo_type() {
             // timetuple(): dst(self) first (its value only feeds tm_isdst, unused here).
             let dst = call_pure(tzinfo, c"dst", arg)?;
             let ok = offset_fields(dst).is_ok();
@@ -283,6 +283,49 @@ unsafe fn tz_texts(tzinfo: O, arg: O, needs: &Needs, is_datetime: bool) -> Optio
         }
         None
     }
+}
+
+/// `format_utcoffset(..., ":", tzinfo, arg)` as `isoformat` appends it: exact `timezone`
+/// (fields read directly), or exact `ZoneInfo` for datetimes (its pure C `utcoffset`).
+/// `None`: fall back.
+///
+/// # Safety
+/// Attached thread; live objects.
+pub(super) unsafe fn utcoffset_colon(tzinfo: O, arg: O, is_datetime: bool) -> Option<Vec<u8>> {
+    // SAFETY: per the caller.
+    unsafe {
+        let t = ffi::Py_TYPE(tzinfo) as usize;
+        if t == TZ_TYPE.load(Ordering::Relaxed) && TZ_LAYOUT_OK.load(Ordering::Relaxed) == 1 {
+            let raw = &*tzinfo.cast::<RawTimeZone>();
+            return Some(offset_text(offset_fields(raw.offset).ok()?, b":"));
+        }
+        if is_datetime && t != 0 && t == zoneinfo_type() {
+            let r = call_pure(tzinfo, c"utcoffset", arg)?;
+            let f = offset_fields(r);
+            ffi::Py_DECREF(r);
+            return Some(offset_text(f.ok()?, b":"));
+        }
+        None
+    }
+}
+
+/// The captured `ZoneInfo` type (0 until seen imported; looked up at most once per
+/// dependency generation).
+fn zoneinfo_type() -> usize {
+    let t = ZI_TYPE.load(Ordering::Relaxed);
+    if t != 0 {
+        return t;
+    }
+    static TRIED: AtomicU64 = AtomicU64::new(0);
+    let g = watch::current();
+    if TRIED.swap(g, Ordering::Relaxed) == g {
+        return 0;
+    }
+    if let Some(e) = env::env() {
+        // SAFETY: called from kernels (attached thread).
+        capture_zoneinfo(unsafe { Python::assume_attached() }, e);
+    }
+    ZI_TYPE.load(Ordering::Relaxed)
 }
 
 // ---------------------------------------------------------------------------------------

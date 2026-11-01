@@ -33,6 +33,9 @@ TARGETS = [
     "datetime.date.strftime",
     "datetime.time.strftime",
     "time.strftime",
+    "datetime.datetime.isoformat",
+    "datetime.date.isoformat",
+    "datetime.time.isoformat",
 ]
 
 
@@ -493,15 +496,87 @@ def test_check_mode_agrees():
 
 
 # ---------------------------------------------------------------------------------------
+# isoformat
+# ---------------------------------------------------------------------------------------
+
+ISO_OBJS = [
+    D.datetime(2024, 3, 15, 13, 5, 9),
+    D.datetime(2024, 3, 15, 13, 5, 9, 1234),
+    D.datetime(1, 1, 1),
+    D.datetime(9999, 12, 31, 23, 59, 59, 999999),
+] + [D.datetime(2024, 3, 15, 13, 5, 9, 500, tzinfo=tz) for tz in TZS[1:]] + [
+    D.date(2024, 2, 29), D.date(7, 1, 1), D.time(0, 0), D.time(23, 59, 59, 5, tzinfo=UTC), D.time(1, 2, 3, 999000),
+    D.time(4, 5, tzinfo=D.timezone(D.timedelta(hours=-2, seconds=-1))),
+]
+
+
+@pytest.mark.parametrize("o", ISO_OBJS, ids=repr)
+def test_isoformat_cases(o):
+    same_as_original(o.isoformat)
+    same_as_original(str, o)
+    same_as_original(repr, o)
+    if isinstance(o, (D.datetime, D.time)):
+        for ts in ["auto", "hours", "minutes", "seconds", "milliseconds", "microseconds", "bogus", "é", b"x", None]:
+            same_as_original(lambda: o.isoformat(timespec=ts))
+    if isinstance(o, D.datetime):
+        for sep in ["T", " ", "x", "é", "", "ab", 1, None]:
+            same_as_original(lambda: o.isoformat(sep))
+            same_as_original(lambda: o.isoformat(sep=sep, timespec="minutes"))
+            same_as_original(lambda: o.isoformat(sep, "seconds"))
+        same_as_original(lambda: o.isoformat("T", timespec="hours"))
+        same_as_original(lambda: o.isoformat("T", sep="T"))
+        same_as_original(lambda: o.isoformat(bogus=1))
+
+
+def test_isoformat_hits_and_subclass():
+    D.datetime(2024, 1, 1).isoformat()
+    str(D.datetime(2024, 1, 1))
+    D.date(2024, 1, 1).isoformat()
+    D.time(1, 2).isoformat()
+    assert hits("datetime.datetime.isoformat") == 2
+    assert hits("datetime.date.isoformat") == 1
+    assert hits("datetime.time.isoformat") == 1
+
+    class Sub(D.datetime):
+        pass
+
+    same_as_original(Sub(2024, 1, 1).isoformat)
+    assert fallbacks("datetime.datetime.isoformat").get("args") == 1
+
+
+def test_isoformat_zoneinfo_and_custom_tzinfo():
+    zoneinfo = pytest.importorskip("zoneinfo")
+    try:
+        tz = zoneinfo.ZoneInfo("America/New_York")
+    except zoneinfo.ZoneInfoNotFoundError:
+        pytest.skip("no tz database")
+    for dt in [D.datetime(2024, 3, 10, 2, 30, tzinfo=tz), D.datetime(2024, 11, 3, 1, 30, fold=1, tzinfo=tz),
+               D.datetime(1, 1, 1, tzinfo=tz)]:
+        same_as_original(dt.isoformat)
+        same_as_original(lambda: dt.isoformat(timespec="minutes"))
+    log = []
+
+    class TZ(D.tzinfo):
+        def utcoffset(self, dt):
+            log.append(dt)
+            return D.timedelta(minutes=90)
+
+    same_as_original(D.datetime(2024, 1, 1, tzinfo=TZ()).isoformat)
+    same_as_original(D.time(1, tzinfo=TZ()).isoformat)
+    assert len(log) == 4
+
+
+# ---------------------------------------------------------------------------------------
 # Threads
 # ---------------------------------------------------------------------------------------
 
 
-def test_threads_with_enable_disable_and_locale_churn():
+def test_threads_with_enable_disable_churn():
     stop = threading.Event()
     errors: list = []
     want_p = D.datetime(2024, 3, 15, 13, 45, 30, tzinfo=D.timezone(D.timedelta(hours=1)))
     want_f = "Fri 15 Mar 2024 13:45:30 +0100"
+    want_i = "2024-03-15T13:45:30+01:00"
 
     def worker():
         try:
@@ -509,8 +584,9 @@ def test_threads_with_enable_disable_and_locale_churn():
                 p = D.datetime.strptime("15/Mar/2024:13:45:30 +0100", "%d/%b/%Y:%H:%M:%S %z")
                 f = p.strftime("%a %d %b %Y %H:%M:%S %z")
                 t = time.strptime("2024-03-15", "%Y-%m-%d")
-                if p != want_p or repr(p) != repr(want_p) or f != want_f or t.tm_yday != 75:
-                    errors.append((p, f, t))
+                i = p.isoformat()
+                if p != want_p or repr(p) != repr(want_p) or f != want_f or t.tm_yday != 75 or i != want_i:
+                    errors.append((p, f, t, i))
         except Exception as e:  # noqa: BLE001
             errors.append(e)
 

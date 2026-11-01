@@ -216,8 +216,23 @@ def test_strftime_against_disabled(fmt, dt, tz):
     assert got == want
 
 
+@settings(max_examples=300)
+@given(dt=datetimes, tz=tzinfos, sep=st.sampled_from(["T", " ", "x", "é"]),
+       ts=st.sampled_from(["auto", "hours", "minutes", "seconds", "milliseconds", "microseconds"]))
+def test_isoformat_check_mode(dt, tz, sep, ts):
+    dt = dt.replace(tzinfo=tz)
+    with check_raise():
+        dt.isoformat()
+        dt.isoformat(sep, ts)
+        str(dt)
+        dt.date().isoformat()
+        str(dt.date())
+        dt.timetz().isoformat(ts) if not ZONES or tz not in ZONES else dt.time().isoformat(ts)
+
+
 def test_zz_fast_paths_were_exercised():
     st = rq.stats()
     for name in ["datetime.datetime.strptime", "datetime.date.strptime", "datetime.time.strptime", "time.strptime",
-                 "datetime.date.strftime", "datetime.time.strftime", "time.strftime"]:
+                 "datetime.date.strftime", "datetime.time.strftime", "time.strftime",
+                 "datetime.datetime.isoformat", "datetime.date.isoformat", "datetime.time.isoformat"]:
         assert st[name]["hits"] > 20, (name, st[name])

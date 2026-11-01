@@ -41,6 +41,9 @@ pub fn c(name: &str) -> Fingerprints {
         "datetime.date.strftime" => &[(3, 14, "b6058113cdbbf30f"), (3, 15, "705b6fd647a2a764")],
         "datetime.time.strftime" => &[(3, 14, "b6058113cdbbf30f"), (3, 15, "a51ebd6066934d99")],
         "time.strftime" => &[(3, 14, "4aca0e0472e239e6"), (3, 15, "4aca0e0472e239e6")],
+        "datetime.datetime.isoformat" => &[(3, 14, "511c6d908f758edf"), (3, 15, "069a5dee65642efe")],
+        "datetime.date.isoformat" => &[(3, 14, "87ab1d9c116d8efc"), (3, 15, "87ab1d9c116d8efc")],
+        "datetime.time.isoformat" => &[(3, 14, "57b12d6ef247c404"), (3, 15, "5c4873762c2074ee")],
         _ => &[],
     }
 }

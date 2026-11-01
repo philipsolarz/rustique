@@ -108,6 +108,11 @@ CELLS = {
         "try:\n            datetime.strptime('2024-13-01', '%Y-%m-%d')\n        except ValueError:\n            pass", ""),
     "strptime fallback: LC_TIME en_US": ("datetime.strptime(ISO, ISOF)",
                                          "locale.setlocale(locale.LC_TIME, 'en_US.UTF-8')"),
+    "strptime fallback: dependency changed (deps)": ("datetime.strptime(ISO, ISOF)", "_strptime.isinstance = isinstance"),
+    "strptime fallback: _regex_cache miss (deopt)": ("_strptime._regex_cache.clear(); datetime.strptime(ISO, ISOF)", ""),
+    "strptime fallback: tracing tool (tools)": ("datetime.strptime(ISO, ISOF)",
+                                                "import sys; sys.monitoring.use_tool_id(3, 'x'); "
+                                                "sys.monitoring.set_events(3, sys.monitoring.events.PY_START)"),
     # --- strftime ---------------------------------------------------------------------
     "strftime %Y-%m-%d %H:%M:%S": ("dt.strftime(ISOF)", ""),
     "strftime %Y-%m (utc)": ("dtu.strftime('%Y-%m')", ""),
@@ -120,6 +125,7 @@ CELLS = {
     "f-string {dt:%Y-%m-%d}": ("f'{dt:%Y-%m-%d}'", ""),
     "time.strftime(fmt, struct_time)": ("time.strftime(ISOF, st)", ""),
     "time.strftime(fmt, tuple)": ("time.strftime(ISOF, tup)", ""),
+    "time.strftime fallback: year < 1000": ("time.strftime(ISOF, (999,) + tup[1:])", ""),
     "strftime fallback: subclass": ("sdt.strftime(ISOF)", ""),
     "strftime fallback: unsupported %U": ("dt.strftime('%Y %U')", ""),
     "strftime fallback: names in en_US": ("dt.strftime('%a %b')", "locale.setlocale(locale.LC_TIME, 'en_US.UTF-8')"),
@@ -131,7 +137,10 @@ CELLS = {
     "str(dt)": ("str(dt)", ""),
     "date.isoformat()": ("d0.isoformat()", ""),
     "time.isoformat()": ("t0.isoformat()", ""),
+    "isoformat(sep=' ', timespec='seconds')": ("dt.isoformat(sep=' ', timespec='seconds')", ""),
     "isoformat fallback: subclass": ("sdt.isoformat()", ""),
+    "isoformat fallback: unknown timespec (error)": (
+        "try:\n            dt.isoformat(timespec='bogus')\n        except ValueError:\n            pass", ""),
     "fromisoformat full tz": ("datetime.fromisoformat(ISOZ)", ""),
 }
 
@@ -153,7 +162,7 @@ def worker(idx, only):
     exec(COMMON, ns)
     exec(pre, ns)
     exec(setup, ns)
-    names = [k for k in ns if not k.startswith("__") and k.isidentifier() and k not in ("_t", "_rq")]
+    names = [k for k in ns if not k.startswith("__") and k.isidentifier() and k not in ("_t", "_rq", "_f")]
     binds = "".join(f"    {k} = _g[{k!r}]\n" for k in names)
     ns["_g"] = ns
     body = "".join(f"        {stmt}\n" for _ in range(UNROLL))
