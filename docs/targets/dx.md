@@ -12,7 +12,7 @@ layer. Usage: [`docs/USAGE.md`](../USAGE.md). Every number is **M** (measured; h
 | control | `RUSTIQUE=0` kill switch (overrides code), `RUSTIQUE_ONLY` / `RUSTIQUE_EXCLUDE` (narrow only), `-E`/`-I` honoured | §2 |
 | visibility | `RUSTIQUE_STATS`, `RUSTIQUE_REPORT` (stderr / file / JSON), `python -m rustique status`, `python -m rustique report -- <cmd>` | §3 |
 | CI | `python -m rustique diff -- <cmd>` (exit code, stdout/stderr, per-test outcomes, timing); pytest plugin `--rustique` (fails on unexpected refusals or check mismatches, xdist-aware); check mode `RUSTIQUE_CHECK=1\|raise` | §4 |
-| wheels | `.github/workflows/wheels.yml`: 8 platforms × cp314/cp314t/cp315/cp315t + sdist, each wheel `pip install`ed into a clean venv and smoke-tested; PR subset | local proof: manylinux_2_28 wheels (zig) on all 4 builds, 11/11 checks each (§5) |
+| wheels | `.github/workflows/wheels.yml`: 8 platforms × cp314/cp314t/cp315/cp315t + sdist, each wheel `pip install`ed into a clean venv and smoke-tested; PR subset | local proof: manylinux_2_28 wheels (zig, release) on all 4 builds, 14/14 checks each (§5) |
 | no-wheel interpreters | `requires-python = ">=3.14,<3.16"` | pip on PyPy 3.11 and CPython 3.16.0a1: "requires a different python version" (§5.3) |
 | docs | README top rewritten; `docs/USAGE.md` | placeholders `⟨Phase 3⟩` for the lead's measured numbers |
 | real projects | attrs, rich, sqlglot test suites: plain, `RUSTIQUE=1`, `--rustique`, `diff` | §7 |
@@ -373,6 +373,12 @@ from PyPI) for 3.15.1, 3.15.1t, 3.14.9, 3.14.9t → `rustique-0.2.0-cp31{4,5}-cp
 -manylinux_2_28_x86_64.whl`; `smoke_all.sh` with real `pip` into fresh venvs: **11/11
 checks on each of the 4 builds** (44 ok). The sdist contains `python/_rustique_startup.pth`.
 
+Final layout (extension-only startup), release wheels (`--release --zig`, fat LTO) for
+the 4 builds, same script. The smoke test now also checks that `RUSTIQUE=0` loads
+nothing, that `RUSTIQUE=1` loads only `rustique._rustique`, that `RUSTIQUE=1 pytest` adds
+no warning, and that `pytest --rustique` loads through the entry point: **14/14 on each of
+the 4 builds**.
+
 ### 5.3 Interpreters without a wheel
 
 Decision: **`requires-python = ">=3.14,<3.16"`** — refuse at install time, never by a failed
@@ -419,6 +425,9 @@ indicative only; **M**).
 | attrs (c8bb9bf, 2026-10-24) | 1413 | 6.96 s | 7.09 s | 7.14 s | identical (1413 outcomes), 7.58 vs 7.62 s (1.006) |
 | rich (9d8f9a3, 2026-06-23) | 981 | 3.78 s | 3.79 s | 3.79 s | identical (981 outcomes), 4.19 vs 4.18 s (0.998) |
 | sqlglot (6de2df3, 2026-10-31) | 1452 (+22,683 subtests) | 70.91 s | 69.41 s | 69.19 s | identical (1452 outcomes; 8 processes reported), 72.39 vs 70.52 s (0.974) |
+
+Rerun with the final layout (release cp315 wheel; `RUSTIQUE=1` loads only the extension),
+attrs and rich: identical again, `diff` ratio 1.005 and 1.000.
 
 Same pass/fail sets in every mode. attrs fails 2 packaging-metadata tests, rich 14 and
 sqlglot 21 tests in the *plain* runs as well (editable install / 3.15 environment); `diff` reports
