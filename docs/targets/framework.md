@@ -84,6 +84,8 @@ Dependency pins (one relaxed load per call: `if !DEPS.ok() { fallback(Reason::De
 | a class attribute along the MRO | `cx.pin_attr(&ty, "default", &DEPS)?` |
 | a whole dict (instance attributes incl. absent keys, a class dict) | `cx.pin_dict(&obj_dict, &DEPS)?` |
 | a value legitimately replaced at run time | `accel::guard::watch(&d, "key", &GEN)` (an `AtomicU64` generation: revalidate by value when it moves) |
+| a fact derived from a small dict (any key) | `accel::guard::watch_dict_generation(&d, &GEN)` |
+| "does this subclass override any of these names?" | `static C: accel::guard::OverrideCache` (`set_base`, `overrides(ty)`; keyed by `tp_version_tag`) |
 
 The target must validate what it pins (fingerprint, identity with a known object): a pin
 records the current object. Flags re-arm when the original state comes back
@@ -98,7 +100,7 @@ unsafe extern "C" fn k_join(f: O, args: *const O, nargsf: usize, kw: O) -> O {
             C.fallback_streak(Reason::Args);
         } else if !DEPS.ok() {
             C.fallback_streak(Reason::Deps);
-        } else if !accel::tools_quiet(&TOOLS, f) {     // Python targets only (34 + ~4 Ir)
+        } else if !accel::tools_quiet(&TOOLS, f) {     // Python targets only (~40 Ir)
             C.fallback_streak(Reason::Tools);
         } else {
             let r = join2(*args, *args.add(1));
@@ -123,6 +125,11 @@ unsafe extern "C" fn k_join(f: O, args: *const O, nargsf: usize, kw: O) -> O {
 - Check mode (`checkable` targets): `hit_check()` / `check::verify(...)`; mismatches count
   as `fallback["check"]` and return the original's result (`"warn"`) or raise
   `RustiqueCheckError` (`"raise"`).
+- Tools guard (`accel::tools_quiet`): falls back when any `sys.monitoring` tool listens
+  globally to any ungrouped event (PY_START … STOP_ITERATION, RAISE, EXCEPTION_HANDLED,
+  PY_UNWIND, PY_THROW, RERAISE; `settrace`/`setprofile`/cProfile/coverage are tools too;
+  the verdict is cached per monitoring version) or locally on the original's code object
+  (`_co_monitoring`: 11 local events on 3.14, 16 on 3.15, calibrated at `enable()`).
 - `accel::in_main_interpreter()` (~30 Ir) only for process-global sites that hold
   per-interpreter objects; better: be interpreter-agnostic (the extension refuses to load in
   subinterpreters, but static `ml_meth`/slot sites are reached from them).
@@ -158,6 +165,12 @@ check` (dx) and `rustique._takeover` (native tier, compatibility) are thin wrapp
   exclude, native}}`; `stats(enabled=None, reset=False) -> {name: {"hits", "fallback":
   {args, deps, tools, interp, deopt, error, check}, "suspensions"}}`; `check(mode)` /
   `check_mode()`; `RustiqueCheckError`.
+- The `RUSTIQUE*` switch (semantics: dx, docs/targets/dx.md; implementation:
+  `accel/switch.rs`): `startup()` (the `.pth` path; never raises),
+  `switch_enable(only=None, exclude=None, builtins=True, source=...)` (env-aware quiet
+  enable behind `rustique.enable()`), `killed()`, `report_to(target)`;
+  `status()["process"]["switch"]` = {source, only, exclude, killed_calls, report, killed,
+  stats, check, env}, plus `process["free_threaded"]`.
 - Diagnostics: `installed(names)`, `targets()`, `fingerprint(obj)`,
   `fingerprint_report(only)`, `pins(name)`, `func_version(f)`, `vectorcall_is_original(f)`.
 
@@ -173,6 +186,30 @@ check` (dx) and `rustique._takeover` (native tier, compatibility) are thin wrapp
   call, region-instrumented, fresh process), `region(stmt, setup)` (one-shot cost).
 
 ## 7. Measured
+
+**Install-time cost per primitive** (`benches/accel_primitives.py`, callgrind regions,
+3.15.1 dev-release; before → after the wave-1 trimming):
+
+| primitive | before | after |
+|---|---:|---:|
+| `fingerprint_code` per function (format v2: raw fields, word hash; cached for the process) | ~23k, unbounded with nested constants | 4.9k (`posixpath.join`), 6.5k (`json.dumps`), once per process |
+| `fingerprint_c` per C original | 3.3k | 2.1k |
+| `_PyFunction_Vectorcall` discovery | 140k (compiled a probe) | ~5k, once |
+| code-layout check | 10.9k per vectorcall site | once per process |
+| one vectorcall target + 1 pin, steady `enable()` | 21k | 16k (≈6k of it the target) |
+| each additional pin (incl. its lookup) | quadratic re-scan, a new `str` per key | ≈3.2k; shared per `(dict, key)` across targets, O(1) flag counters |
+| `status()` inside `_accel.enable()` | always built (~13k Ir per target) | only with `quiet=False` |
+| first `enable()` of a process with a module target | 174k | 64k |
+| groups `containers` (7 ml_meth/slot) / `builtins` (6), first enable | 123k / 60k | 109k / 63k |
+
+Lazy install of one Python-function target on its module's import: +61k Ir (was +171k).
+`Prepare::memo(key, f)` lets a group validate shared dependencies once per pass;
+identical pins of several targets share one watch slot.
+
+**3.14 note (from paths)**: on 3.14, `LOAD_ATTR_PROPERTY` inlines a property's getter
+without checking the function's version, so a vectorcall site on a property getter is
+never reached from specialized attribute loads: property targets are 3.15-only.
+
 
 **Per-call costs** (docs/atlas/mechanisms.md §1, unchanged): `ml_meth`/slot fallback +2 Ir,
 counters +3 Ir when off, tools guard 34 + ~4 Ir, a dependency flag one relaxed load, a
@@ -194,8 +231,51 @@ otherwise).
 | release, extension lazy, package `__init__` eager (current dx file) | 1.157 / 1.167 | 1.151 / 1.163 | +144 / +154 |
 | release, extension lazy, lean package `__init__` (patch sent to dx) | **1.038 / 1.047** (quiet 1.046) | **1.060 / 1.070** | +66 / +84 |
 
+**The `RUSTIQUE=1` path loads only the extension.** The `.pth` line (exec'd by `site`;
+`sitedir` is `addpackage`'s parameter on 3.14 and injected by 3.15's `_exec_imports`)
+loads `sitedir/rustique/_rustique<ABI suffix>` by file spec (falling back to `sys.path`
+for editable layouts), registers it as `sys.modules["rustique._rustique"]` without
+importing the `rustique` package, and calls `_accel.startup()`; OFF values and `-E`/`-I`
+load nothing. A later `import rustique` reuses the loaded extension. The extension never
+imports itself by name (`PyImport_Import` uses an empty fromlist, which imports the
+parent package): it keeps its module object in a static. Tests:
+`tests/test_accel_startup.py`. The loader is a string exec'd only when `RUSTIQUE` is set
+(`site` compiles every `.pth` line at each start; 3.15's compiler costs ~140k Ir even for
+one call, 0.43M for this loader, 1.0M for the first, longer version).
+
+`benches/startup_switch.py`, release wheel, fresh venvs (`uv venv`), 3.15.1, `python -c
+pass`, CPU-pinned, 40 interleaved runs, against the same venv without rustique,
+**measured**:
+
+| | Ir | wall | page faults |
+|---|---:|---:|---:|
+| bare venv, rustique installed, `RUSTIQUE` unset | 1.026 | 1.028 | +11 |
+| bare venv, `RUSTIQUE=1` | **1.060** | **1.084** | +86 |
+| venv with another `.pth`, unset | 1.005 | 1.009 | +6 |
+| venv with another `.pth`, `RUSTIQUE=1` | **1.035** | **1.062** | +80 |
+
+The `RUSTIQUE=1` increment (≈1.3M Ir, ≈0.55 ms): compiling the loader 0.43M, dlopen +
+`PyInit` of the 5.4 MB extension ≈0.3M plus most of the page faults, module exec ≈0.1M,
+`startup()` (environment, 13 targets) ≈0.3M.
+
 What remains in `import rustique` (lean): importlib's finder/loader floor for the package
 and an extension (a tiny two-module pure-Python package costs 0.65M Ir), dlopen of the
 5.4 MB `.so` (5756 relative + 322 symbol relocations, 0.36M Ir with the extension's
 `PyInit`), the extension's exec 0.2M; wall time adds the page faults of mapping and
 touching it.
+
+**Next step if the startup bar needs more (ranked; not done in wave 1).** Measured: loading
+our 6.8 MB extension costs +0.38 ms / +66 page faults / 0.37M Ir (dlopen + `PyInit`), a
+0.8 MB PyO3 extension +0.24 ms / +24 faults / 0.18M Ir; the opt-in engine (containers,
+typing, expressions, scalars, C-API; `rustique_core` containers) is ≈ 70% of the code.
+Splitting the engine into a second extension loaded on first access of the opt-in API
+would save ≈ 0.10–0.14 ms (1–1.4 points of `python -c pass`). Options:
+1. **setuptools-rust** as the build backend: several Rust extensions in one wheel natively;
+   cost: the dev/CI/`rbox` workflow moves from `maturin develop` to `pip install -e`.
+2. **Two distributions** (`rustique` = package + switch extension, `rustique-types` = engine,
+   a dependency): clean with maturin on every platform; cost: lockstep versions and a
+   versioned capsule ABI (engine type pointers and the builtins kernels' Rustique-container
+   entry points registered into the switch when the engine loads; zero cost on builtin
+   inputs, one indirect call on Rustique inputs).
+3. **An in-tree PEP 517 backend wrapping maturin** that also builds the second cdylib:
+   works for native builds, fragile for cross/manylinux/universal2 and sdist builds.

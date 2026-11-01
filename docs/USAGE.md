@@ -215,7 +215,7 @@ containing `--rustique`.
 | variable | values | effect |
 |---|---|---|
 | `RUSTIQUE` | `1`/`true`/`yes`/`on` | enable at interpreter startup (through `_rustique_startup.pth`) |
-| | `0`/`false`/`no`/`off` | kill switch: every enable path is a no-op |
+| | `0`/`false`/`no`/`off` | kill switch: every enable path is a no-op. Prefer `0`: at startup it loads nothing, while the other off values load the extension and enable nothing |
 | | unset or empty | nothing at startup; explicit `enable()` works |
 | `RUSTIQUE_ONLY` | `json,copy` (groups or targets) | narrow every enable path to these |
 | `RUSTIQUE_EXCLUDE` | `re,json.loads` | leave these out of every enable path |
@@ -235,6 +235,8 @@ rustique.enable(*, only=None, exclude=None, native=None, builtins=True) -> dict
 rustique.disable() -> dict
 rustique.status() -> dict
 rustique.stats(enabled=None, reset=False) -> dict
+rustique.check(mode=...) -> str | None        # "warn" | "raise" | "off"; no argument: current mode
+rustique.RustiqueCheckError                    # raised by check mode "raise" on a mismatch
 ```
 
 - `enable`: installs the selected targets. It is idempotent and additive.
@@ -251,6 +253,7 @@ rustique.stats(enabled=None, reset=False) -> dict
     how Rustique was turned on (`RUSTIQUE=1`, `rustique.enable()`, `python -m rustique`,
     `pytest --rustique`), whether the kill switch is set, and which `RUSTIQUE*` variables
     are set.
+- `check`: check mode from code, same as `RUSTIQUE_CHECK`. It returns the previous mode.
 - `stats`: returns `{name: {"hits": n, "fallback": {reason: n}}}`. `stats(True)` turns
   counting on, `stats(reset=True)` zeroes the counters after the snapshot.
 
@@ -346,5 +349,5 @@ Unlike everything above, this changes types, so it is never on by default.
   on autoloading.
 - **Rustique in `pip list`, but `import rustique` fails.** The wheel does not match the
   interpreter (`pip debug --verbose` lists supported tags), or the venv is broken. The
-  startup switch never breaks Python startup: it prints
-  `rustique: RUSTIQUE=1 ignored: cannot import rustique: ...` and continues plain.
+  startup switch never breaks Python startup. If the extension cannot be loaded, `site`
+  prints the failing `_rustique_startup.pth` line with the error and Python starts plain.

@@ -58,13 +58,20 @@ program hits, run `python -m rustique report -- python app.py`.
 - **Most program time is out of reach.** About two thirds of typical CPU time goes to the
   program's own bytecode, attribute lookups, allocation and garbage collection. Rustique
   does not change any of that. If your profile shows no time in the stdlib, expect ~1.0×.
-- **Startup.** Installed but off (`RUSTIQUE` unset), Rustique costs one `.pth` line read at
-  interpreter start. Measured on `python -c pass`:
-  - bare venv: +0.3 ms, 1.026× (3.15) and 1.045× (3.14). Most of it is the `utf-8-sig`
-    codec import that any `.pth` file costs;
-  - venv that already has a `.pth` (editable installs, setuptools): ≤ 1.012×.
+- **Startup costs something: with Rustique on, it exceeds our own 1.05 bar.** Measured on
+  `python -c pass` (release wheels, callgrind and wall time; [details](docs/targets/dx.md#14-startup-cells-release-build-m)):
+  - **Installed but off** (`RUSTIQUE` unset): one `.pth` line read at every interpreter
+    start, nothing imported.
+    - bare venv: +0.3 ms, 1.026× on 3.15 and 1.047× on 3.14. Most of it is the
+      `utf-8-sig` codec import that any `.pth` file costs;
+    - venv that already has a `.pth` (editable installs, setuptools): ≤ 1.014×.
+  - **On** (`RUSTIQUE=1`, against the same venv with it unset): +0.5 ms, 1.05× wall on
+    3.15, and +0.7 ms, 1.07× on 3.14. That is the extension loading (page faults and
+    relocations) plus installing the targets.
+  - `import rustique; rustique.enable()` in code costs about the same.
 
-  With `RUSTIQUE=1`: ⟨Phase 3: import + enable cost⟩. Details: [docs/targets/dx.md](docs/targets/dx.md).
+  This is a documented exceedance of the never-slower rule for wave 1. Short-lived
+  processes (CLI tools run thousands of times) may not gain enough to pay it back.
 - **Supported interpreters: CPython 3.14 and 3.15, including free-threaded (3.14t, 3.15t).**
   - Platforms: Linux x86_64/aarch64 (glibc and musl), macOS arm64/x86_64, Windows x64
     (arm64 experimental).

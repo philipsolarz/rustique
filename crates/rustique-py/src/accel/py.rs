@@ -25,11 +25,11 @@ fn names(v: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<String>>> {
 /// The switch: install the selected targets. `only`: groups or target names (a list or
 /// `"a,b"`; `None`: every non-hidden target); `exclude`: the same; `builtins=False`
 /// excludes the `builtins` group. Additive and idempotent; unknown names raise
-/// `ValueError` before anything changes. Returns `status()`, or `None` with `quiet=True`
-/// (the startup hook: no status dict built). Reads no environment variable and imports
-/// nothing.
+/// `ValueError` before anything changes. Returns None, or `status()` with `quiet=False`
+/// (building the status dict costs ~13k Ir per target: only on request). Reads no
+/// environment variable and imports nothing.
 #[pyfunction]
-#[pyo3(signature = (only=None, exclude=None, builtins=true, quiet=false))]
+#[pyo3(signature = (only=None, exclude=None, builtins=true, quiet=true))]
 fn enable<'py>(
     py: Python<'py>,
     only: Option<&Bound<'py, PyAny>>,
@@ -46,10 +46,10 @@ fn enable<'py>(
 }
 
 /// Restore the matching targets (all when `names` is None; then also stop the native
-/// tier's import rewriting if `rustique._takeover` started it). Returns `status()`, or
-/// `None` with `quiet=True`.
+/// tier's import rewriting if `rustique._takeover` started it). Returns None, or
+/// `status()` with `quiet=False`.
 #[pyfunction]
-#[pyo3(signature = (names=None, quiet=false))]
+#[pyo3(signature = (names=None, quiet=true))]
 fn disable<'py>(
     py: Python<'py>,
     names: Option<&Bound<'py, PyAny>>,
@@ -57,6 +57,9 @@ fn disable<'py>(
 ) -> PyResult<Option<Bound<'py, PyDict>>> {
     let all = names.is_none_or(|n| n.is_none());
     registry::disable(py, self::names(names)?)?;
+    if all {
+        super::switch::reset_source();
+    }
     if all && !NATIVE.lock().unwrap_or_else(|p| p.into_inner()).is_empty() {
         let modules = py.import("sys")?.getattr("modules")?;
         if let Ok(hook) = modules.get_item("rustique._takeover._hook") {
@@ -75,14 +78,23 @@ fn _set_native(patterns: Vec<String>) {
     *NATIVE.lock().unwrap_or_else(|p| p.into_inner()) = patterns;
 }
 
-/// `{"targets": [...], "process": {...}}` (docs/ACCELERATION.md §6.2).
+/// `{"targets": [...], "process": {...}}` (docs/ACCELERATION.md §6.2), including the
+/// switch state (`process["switch"]`), `process["free_threaded"]` and the native tier's
+/// patterns.
 #[pyfunction]
-fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
+pub(crate) fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     let st = registry::status(py)?;
-    let native = NATIVE.lock().unwrap_or_else(|p| p.into_inner()).clone();
-    st.get_item("process")?
+    let process = st
+        .get_item("process")?
         .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("status without process"))?
-        .set_item("native", PyTuple::new(py, native)?)?;
+        .cast_into::<PyDict>()?;
+    let hook = py.import("sys")?.getattr("modules")?.get_item("rustique._takeover._hook").ok();
+    let native: Vec<String> = match hook {
+        Some(h) => h.call_method0("patterns")?.extract()?,
+        None => NATIVE.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+    };
+    process.set_item("native", PyTuple::new(py, native)?)?;
+    super::switch::describe(py, &process)?;
     Ok(st)
 }
 
@@ -166,6 +178,28 @@ fn vectorcall_is_original(func: &Bound<'_, pyo3::types::PyFunction>) -> bool {
     vc.map_or(0, |f| f as usize) == super::prepare::function_vectorcall()
 }
 
+/// Diagnostics: run framework primitive `kind` on `obj` `n` times (for callgrind regions):
+/// "fingerprint", "fingerprint_c", "layout", "describe".
+#[pyfunction]
+fn _bench(kind: &str, obj: &Bound<'_, PyAny>, n: usize) -> PyResult<()> {
+    for _ in 0..n {
+        match kind {
+            "fingerprint" => {
+                fp::clear_cache();
+                fp::function(obj)?;
+            }
+            "fingerprint_c" => {
+                fp::c_object(obj)?;
+            }
+            "layout" => {
+                super::version::code_layout_ok_for(&obj.getattr("__code__")?)?;
+            }
+            _ => return Err(pyo3::exceptions::PyValueError::new_err("unknown kind")),
+        }
+    }
+    Ok(())
+}
+
 /// `func_version` of a function (0 unset, 1 cleared, >= 2 valid): tests of uninstall.
 #[pyfunction]
 fn func_version(func: &Bound<'_, pyo3::types::PyFunction>) -> u32 {
@@ -184,6 +218,7 @@ fn add_extras(sub: &Bound<'_, PyModule>) -> PyResult<()> {
         sub.add_function(wrap_pyfunction!(fingerprint_report, sub)?)?;
         sub.add_function(wrap_pyfunction!(pins, sub)?)?;
         sub.add_function(wrap_pyfunction!(func_version, sub)?)?;
+        sub.add_function(wrap_pyfunction!(_bench, sub)?)?;
         sub.add_function(wrap_pyfunction!(vectorcall_is_original, sub)?)?;
         sub.add("RustiqueCheckError", sub.py().get_type::<super::check::RustiqueCheckError>())?;
         crate::targets::register(sub)
@@ -195,7 +230,7 @@ fn add_extras(sub: &Bound<'_, PyModule>) -> PyResult<()> {
 #[pyfunction]
 #[pyo3(name = "__getattr__")]
 fn accel_getattr(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
-    let sub = py.import("rustique._rustique")?.getattr("_accel")?.cast_into::<PyModule>()?;
+    let sub = crate::module(py)?.getattr("_accel")?.cast_into::<PyModule>()?;
     if !(name.starts_with("__") && name.ends_with("__")) {
         add_extras(&sub)?;
         if let Some(v) = sub.dict().get_item(name)? {
@@ -218,6 +253,12 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(check, &sub)?)?;
     sub.add_function(wrap_pyfunction!(check_mode, &sub)?)?;
     sub.add_function(wrap_pyfunction!(accel_getattr, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(super::switch::startup, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(super::switch::py_switch_enable, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(super::switch::killed, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(super::switch::report_to, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(super::switch::record, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(super::switch::report_at_exit, &sub)?)?;
     sub.add("FREE_THREADED", super::version::FREE_THREADED)?;
     m.add("_accel", sub)
 }

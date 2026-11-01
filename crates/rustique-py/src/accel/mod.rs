@@ -57,6 +57,7 @@ pub mod registry;
 pub mod site;
 pub mod spec;
 pub mod stats;
+pub mod switch;
 pub mod version;
 
 pub use fingerprint::Fingerprints;
