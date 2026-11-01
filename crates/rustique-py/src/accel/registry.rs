@@ -1,0 +1,764 @@
+//! The target registry (docs/ACCELERATION.md §3, §6, §9): selection (`only`/`exclude`),
+//! the per-target gate, all-or-nothing install from `prepare`'s declarations, lazy
+//! activation on import, `disable()`, status and counters.
+//!
+//! Locking. One registry lock (a CPython `PyMutex`: a thread blocking on it detaches, so
+//! it never deadlocks against the GIL, a critical section or a stop-the-world). The
+//! `sys.modules` watcher must not block or release the GIL (it runs inside a dict
+//! mutation), so it only *tries* the lock; when the lock is busy it queues the module, and
+//! whoever holds the lock drains the queue before (and right after) releasing it.
+
+use std::cell::{Cell, UnsafeCell};
+use std::ffi::c_int;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::ffi;
+use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList, PyModule};
+
+use super::guard;
+use super::prepare::{self, FingerprintRecord, Prepare};
+use super::site::{Kind, Site};
+use super::spec::TargetSpec;
+use super::stats;
+use super::version;
+
+// ---------------------------------------------------------------------------------------
+// The lock
+// ---------------------------------------------------------------------------------------
+
+struct PyLock<T> {
+    bits: AtomicU8,
+    data: UnsafeCell<T>,
+}
+
+// SAFETY: `data` is only reached through a guard, which exists for one holder at a time.
+unsafe impl<T: Send> Sync for PyLock<T> {}
+
+struct Guard<'a, T> {
+    lock: &'a PyLock<T>,
+}
+
+thread_local! {
+    static HOLDING: Cell<bool> = const { Cell::new(false) };
+}
+
+impl<T> PyLock<T> {
+    const fn new(v: T) -> Self {
+        PyLock { bits: AtomicU8::new(0), data: UnsafeCell::new(v) }
+    }
+
+    fn raw(&self) -> *mut ffi::PyMutex {
+        // `PyMutex` is `#[repr(transparent)]` over its `AtomicU8` bits.
+        (&raw const self.bits).cast_mut().cast()
+    }
+
+    /// Blocking acquire (detaches while waiting). Errors on re-entry from the holder.
+    fn lock(&self, _py: Python<'_>) -> PyResult<Guard<'_, T>> {
+        if HOLDING.get() {
+            return Err(PyRuntimeError::new_err("rustique: re-entrant call into the accel registry"));
+        }
+        // SAFETY: a valid PyMutex that never moves (static).
+        unsafe { ffi::PyMutex_Lock(self.raw()) };
+        HOLDING.set(true);
+        Ok(Guard { lock: self })
+    }
+
+    /// Non-blocking acquire (CPython's own fast path: 0 → locked).
+    fn try_lock(&self) -> Option<Guard<'_, T>> {
+        if HOLDING.get() {
+            return None;
+        }
+        self.bits.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).ok()?;
+        HOLDING.set(true);
+        Some(Guard { lock: self })
+    }
+}
+
+impl<T> std::ops::Deref for Guard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        // SAFETY: exclusive while the guard lives.
+        unsafe { &*self.lock.data.get() }
+    }
+}
+
+impl<T> std::ops::DerefMut for Guard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: exclusive while the guard lives.
+        unsafe { &mut *self.lock.data.get() }
+    }
+}
+
+impl<T> Drop for Guard<'_, T> {
+    fn drop(&mut self) {
+        HOLDING.set(false);
+        // SAFETY: held by this guard.
+        unsafe { ffi::PyMutex_Unlock(self.lock.raw()) };
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    Disabled,
+    Pending,
+    Installed,
+    Refused,
+}
+
+impl State {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            State::Disabled => "disabled",
+            State::Pending => "pending-import",
+            State::Installed => "installed",
+            State::Refused => "refused",
+        }
+    }
+}
+
+struct Rt {
+    state: State,
+    reason: Option<String>,
+    /// Installed sites (empty unless `Installed`).
+    sites: Vec<Site>,
+    /// Names of the sites last declared (kept for status after refusal/disable).
+    site_names: Vec<String>,
+    /// Pin owner id of the installed pins (0: none).
+    pin_owner: u64,
+}
+
+impl Rt {
+    const fn new() -> Self {
+        Rt { state: State::Disabled, reason: None, sites: Vec::new(), site_names: Vec::new(), pin_owner: 0 }
+    }
+}
+
+struct Registry {
+    rt: Vec<Rt>,
+    only: Option<Vec<String>>,
+    exclude: Vec<String>,
+}
+
+static REG: PyLock<Option<Registry>> = PyLock::new(None);
+
+/// Every registered target, in `targets::ALL` order.
+pub fn all_specs() -> &'static [&'static TargetSpec] {
+    static ALL: OnceLock<Vec<&'static TargetSpec>> = OnceLock::new();
+    ALL.get_or_init(|| crate::targets::ALL.iter().flat_map(|g| g.iter().copied()).collect())
+}
+
+fn registry<'a>(g: &'a mut Guard<'_, Option<Registry>>) -> &'a mut Registry {
+    g.get_or_insert_with(|| Registry {
+        rt: all_specs().iter().map(|_| Rt::new()).collect(),
+        only: None,
+        exclude: Vec::new(),
+    })
+}
+
+// ---------------------------------------------------------------------------------------
+// Lazy activation bookkeeping (watcher side; plain Mutex, never held across Python code)
+// ---------------------------------------------------------------------------------------
+
+#[derive(Default)]
+struct Lazy {
+    /// Module names some target is waiting for.
+    pending: Vec<&'static str>,
+    /// Last module object popped from `sys.modules` per pending name (identity only).
+    popped: Vec<(&'static str, usize)>,
+    /// Modules that became ready while the registry was busy (strong references).
+    deferred: Vec<(&'static str, usize)>,
+}
+
+static LAZY: Mutex<Lazy> = Mutex::new(Lazy { pending: Vec::new(), popped: Vec::new(), deferred: Vec::new() });
+static PENDING_ANY: AtomicBool = AtomicBool::new(false);
+
+fn lazy() -> std::sync::MutexGuard<'static, Lazy> {
+    LAZY.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn set_pending(names: Vec<&'static str>) {
+    let mut l = lazy();
+    PENDING_ANY.store(!names.is_empty(), Ordering::Relaxed);
+    l.popped.retain(|(n, _)| names.contains(n));
+    l.pending = names;
+}
+
+/// The `sys.modules` part of the shared dict watcher.
+///
+/// # Safety
+/// Called from CPython's dict watcher callback (attached thread, inside a dict mutation:
+/// no Python code, no blocking, no GIL release).
+pub(crate) unsafe fn on_sys_modules_event(
+    event: c_int,
+    dict: *mut ffi::PyObject,
+    key: *mut ffi::PyObject,
+    new_value: *mut ffi::PyObject,
+) {
+    if !PENDING_ANY.load(Ordering::Relaxed) || key.is_null() {
+        return;
+    }
+    // SAFETY: attached thread; type checks and ASCII comparisons run no Python code.
+    unsafe {
+        if ffi::PyUnicode_CheckExact(key) == 0 {
+            return;
+        }
+        let name = {
+            let l = lazy();
+            l.pending.iter().copied().find(|n| {
+                let c = std::ffi::CString::new(*n).unwrap_or_default();
+                ffi::PyUnicode_CompareWithASCIIString(key, c.as_ptr()) == 0
+            })
+        };
+        let Some(name) = name else { return };
+        let saved = ffi::PyErr_GetRaisedException();
+        match event {
+            // DELETED: remember which module object leaves (importlib pops the module after
+            // exec, then re-inserts it).
+            2 => {
+                let mut cur: *mut ffi::PyObject = std::ptr::null_mut();
+                if ffi::PyDict_GetItemRef(dict, key, &mut cur) > 0 {
+                    let mut l = lazy();
+                    l.popped.retain(|(n, _)| *n != name);
+                    l.popped.push((name, cur as usize));
+                    drop(l);
+                    ffi::Py_DECREF(cur);
+                }
+            }
+            // ADDED / MODIFIED
+            0 | 1 if !new_value.is_null() && ffi::PyModule_Check(new_value) != 0 => {
+                let reinsert = {
+                    let mut l = lazy();
+                    let hit = l.popped.iter().any(|&(n, p)| n == name && p == new_value as usize);
+                    l.popped.retain(|(n, _)| *n != name);
+                    hit
+                };
+                let py = Python::assume_attached();
+                let module = Bound::from_borrowed_ptr(py, new_value).cast_into_unchecked::<PyModule>();
+                if reinsert || !prepare::module_initializing(&module) {
+                    module_ready(py, name, module, reinsert);
+                }
+            }
+            _ => {}
+        }
+        ffi::PyErr_SetRaisedException(saved);
+    }
+}
+
+/// A pending module finished executing (`definitive`: importlib's post-exec re-insert;
+/// otherwise a direct insert, where a refusal leaves the target pending).
+fn module_ready(py: Python<'_>, name: &'static str, module: Bound<'_, PyModule>, definitive: bool) {
+    match REG.try_lock() {
+        Some(mut g) => {
+            let reg = registry(&mut g);
+            let ml = activate_module(py, reg, name, &module, definitive);
+            let ml2 = drain_deferred(py, reg);
+            drop(g);
+            if ml || ml2 {
+                clear_internal_caches();
+            }
+            after_unlock(py);
+        }
+        None => {
+            // Busy: the holder drains this before or right after releasing the lock.
+            lazy().deferred.push((name, module.into_ptr() as usize));
+        }
+    }
+}
+
+/// Install every pending target of module `name` from `module`. Returns whether an
+/// `ml_meth` site was installed (JIT caches must then be cleared).
+fn activate_module(
+    py: Python<'_>,
+    reg: &mut Registry,
+    name: &str,
+    module: &Bound<'_, PyModule>,
+    definitive: bool,
+) -> bool {
+    let mut ml = false;
+    for (i, spec) in all_specs().iter().enumerate() {
+        if spec.module == Some(name) && reg.rt[i].state == State::Pending {
+            ml |= activate(py, reg, i, Some(module.clone()), definitive);
+        }
+    }
+    refresh_pending(reg);
+    ml
+}
+
+fn drain_deferred(py: Python<'_>, reg: &mut Registry) -> bool {
+    let mut ml = false;
+    loop {
+        let batch: Vec<(&'static str, usize)> = std::mem::take(&mut lazy().deferred);
+        if batch.is_empty() {
+            return ml;
+        }
+        for (name, ptr) in batch {
+            // SAFETY: the strong reference taken when queued.
+            let module =
+                unsafe { Bound::from_owned_ptr(py, ptr as *mut ffi::PyObject).cast_into_unchecked::<PyModule>() };
+            ml |= activate_module(py, reg, name, &module, true);
+        }
+    }
+}
+
+/// After releasing the lock: modules queued meanwhile are drained by whoever can take it.
+fn after_unlock(py: Python<'_>) {
+    while !lazy().deferred.is_empty() {
+        let Some(mut g) = REG.try_lock() else { return };
+        let ml = drain_deferred(py, registry(&mut g));
+        drop(g);
+        if ml {
+            clear_internal_caches();
+        }
+    }
+}
+
+fn refresh_pending(reg: &Registry) {
+    let names: Vec<&'static str> = all_specs()
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| reg.rt[*i].state == State::Pending)
+        .filter_map(|(_, s)| s.module)
+        .collect();
+    let mut names = names;
+    names.sort_unstable();
+    names.dedup();
+    if names.is_empty() {
+        guard::unwatch_sys_modules();
+    }
+    set_pending(names);
+}
+
+// ---------------------------------------------------------------------------------------
+// Install / uninstall of one target
+// ---------------------------------------------------------------------------------------
+
+fn jit_enabled(py: Python<'_>) -> bool {
+    // SAFETY: borrowed lookup in the sys module dict.
+    let jit = unsafe { ffi::PySys_GetObject(c"_jit".as_ptr()) };
+    if jit.is_null() {
+        return false;
+    }
+    // SAFETY: live borrowed object.
+    let jit = unsafe { Bound::from_borrowed_ptr(py, jit) };
+    jit.call_method0("is_enabled").and_then(|r| r.is_truthy()).unwrap_or(false)
+}
+
+static JIT: AtomicBool = AtomicBool::new(false);
+
+/// Gate, prepare and install target `i`. Returns whether an `ml_meth` site was installed.
+fn activate(
+    py: Python<'_>,
+    reg: &mut Registry,
+    i: usize,
+    module: Option<Bound<'_, PyModule>>,
+    definitive: bool,
+) -> bool {
+    let spec = all_specs()[i];
+    let refuse = |reg: &mut Registry, reason: String| {
+        let rt = &mut reg.rt[i];
+        if definitive {
+            rt.state = State::Refused;
+        }
+        rt.reason = Some(reason);
+        false
+    };
+    if let Err(r) = version::target_gate(spec.versions, spec.free_threaded) {
+        return refuse(reg, r);
+    }
+    if !spec.jit_safe && JIT.load(Ordering::Relaxed) {
+        return refuse(reg, "jit".into());
+    }
+    let mut cx = Prepare::new(py, spec, module, false);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.prepare)(py, &mut cx)));
+    let names: Vec<String> = cx.sites.iter().map(|d| site_label(&d.site)).collect();
+    reg.rt[i].site_names = names;
+    match outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(r)) => {
+            release_sites(cx.sites.into_iter().map(|d| d.site));
+            return refuse(reg, r.0.into_owned());
+        }
+        Err(_) => {
+            release_sites(cx.sites.into_iter().map(|d| d.site));
+            return refuse(reg, "prepare panicked".into());
+        }
+    }
+    if cx.sites.is_empty() {
+        return refuse(reg, "declared no sites".into());
+    }
+    // All-or-nothing: CAS each site from its validated original.
+    let mut installed: Vec<Site> = Vec::with_capacity(cx.sites.len());
+    let mut failure = None;
+    for d in cx.sites {
+        let mut s = d.site;
+        if failure.is_some() {
+            s.release();
+            continue;
+        }
+        match s.install() {
+            Ok(()) => installed.push(s),
+            Err(e) => {
+                failure = Some(format!("{}: {}", s.name, e.value(py)));
+                s.release();
+            }
+        }
+    }
+    if let Some(f) = failure {
+        for mut s in installed.into_iter().rev() {
+            s.uninstall(true);
+            s.release();
+        }
+        return refuse(reg, f);
+    }
+    let owner = match guard::activate(py, cx.pins) {
+        Ok(o) => o,
+        Err(e) => {
+            for mut s in installed.into_iter().rev() {
+                s.uninstall(true);
+                s.release();
+            }
+            return refuse(reg, format!("pins: {}", e.value(py)));
+        }
+    };
+    let ml = installed.iter().any(|s| s.kind == Kind::MlMeth);
+    let rt = &mut reg.rt[i];
+    rt.sites = installed;
+    rt.pin_owner = owner;
+    rt.state = State::Installed;
+    rt.reason = None;
+    ml
+}
+
+fn release_sites(sites: impl Iterator<Item = Site>) {
+    for s in sites {
+        s.release();
+    }
+}
+
+fn site_label(s: &Site) -> String {
+    let kind = match s.kind {
+        Kind::MlMeth => "ml_meth",
+        Kind::Slot => "slot",
+        Kind::Vectorcall => "vectorcall",
+    };
+    format!("{} ({kind})", s.name)
+}
+
+/// Restore target `i`'s sites and drop its pins. Returns whether an `ml_meth` site was
+/// restored.
+fn deactivate(reg: &mut Registry, i: usize) -> bool {
+    let rt = &mut reg.rt[i];
+    let ml = rt.sites.iter().any(|s| s.kind == Kind::MlMeth);
+    for mut s in rt.sites.drain(..).rev() {
+        s.uninstall(true);
+        s.release();
+    }
+    if rt.pin_owner != 0 {
+        guard::deactivate(rt.pin_owner);
+        rt.pin_owner = 0;
+    }
+    rt.state = State::Disabled;
+    rt.reason = None;
+    ml
+}
+
+/// `sys._clear_internal_caches()`: 3.15's tier 2 copies `ml_meth` into traces (M§4).
+fn clear_internal_caches() {
+    // SAFETY: attached thread; a C function from the sys module dict (no Python code).
+    unsafe {
+        let f = ffi::PySys_GetObject(c"_clear_internal_caches".as_ptr());
+        if f.is_null() {
+            return;
+        }
+        let r = ffi::PyObject_CallNoArgs(f);
+        if r.is_null() {
+            ffi::PyErr_Clear();
+        } else {
+            ffi::Py_DECREF(r);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Selection
+// ---------------------------------------------------------------------------------------
+
+fn matches(spec: &TargetSpec, names: &[String]) -> bool {
+    names.iter().any(|n| n == spec.name || n == spec.group)
+}
+
+fn selected(spec: &TargetSpec, only: Option<&[String]>, exclude: &[String]) -> bool {
+    let inc = match only {
+        Some(o) => matches(spec, o),
+        None => !spec.hidden(),
+    };
+    inc && !matches(spec, exclude)
+}
+
+fn check_names(names: &[String]) -> PyResult<()> {
+    let unknown: Vec<&String> =
+        names.iter().filter(|n| !all_specs().iter().any(|s| s.name == n.as_str() || s.group == n.as_str())).collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    let mut groups: Vec<&str> = all_specs().iter().filter(|s| !s.hidden()).map(|s| s.group).collect();
+    groups.sort_unstable();
+    groups.dedup();
+    Err(PyValueError::new_err(format!(
+        "unknown rustique target or group: {}; groups: {}",
+        unknown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+        groups.join(", ")
+    )))
+}
+
+// ---------------------------------------------------------------------------------------
+// Public operations
+// ---------------------------------------------------------------------------------------
+
+/// Install the selected targets (additive and idempotent: installed and pending targets
+/// stay; refused or disabled ones are retried). Module targets whose module is not
+/// imported yet become pending. Never imports anything.
+pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -> PyResult<()> {
+    if let Some(o) = &only {
+        check_names(o)?;
+    }
+    check_names(&exclude)?;
+    let mut g = REG.lock(py)?;
+    let reg = registry(&mut g);
+    JIT.store(jit_enabled(py), Ordering::Relaxed);
+    let sys_modules = prepare::sys_modules(py).map_err(|r| PyRuntimeError::new_err(r.0.into_owned()))?;
+    let mut ml = false;
+    let mut wait = false;
+    for (i, spec) in all_specs().iter().enumerate() {
+        if !selected(spec, only.as_deref(), &exclude) {
+            continue;
+        }
+        if matches!(reg.rt[i].state, State::Installed | State::Pending) {
+            continue;
+        }
+        match spec.module {
+            None => ml |= activate(py, reg, i, None, true),
+            Some(name) => {
+                let m = sys_modules.get_item(name)?.and_then(|m| m.cast_into::<PyModule>().ok());
+                match m {
+                    Some(m) if !prepare::module_initializing(&m) => ml |= activate(py, reg, i, Some(m), true),
+                    _ => {
+                        reg.rt[i].state = State::Pending;
+                        reg.rt[i].reason = None;
+                        wait = true;
+                    }
+                }
+            }
+        }
+    }
+    reg.only = only;
+    reg.exclude = exclude;
+    if wait {
+        guard::watch_sys_modules(py, sys_modules.as_any())?;
+    }
+    refresh_pending(reg);
+    ml |= drain_deferred(py, reg);
+    drop(g);
+    if ml {
+        clear_internal_caches();
+    }
+    after_unlock(py);
+    Ok(())
+}
+
+/// Restore every site of the matching targets (all when `names` is `None`) and forget
+/// pending ones.
+pub fn disable(py: Python<'_>, names: Option<Vec<String>>) -> PyResult<()> {
+    if let Some(n) = &names {
+        check_names(n)?;
+    }
+    let mut g = REG.lock(py)?;
+    let reg = registry(&mut g);
+    let mut ml = drain_deferred(py, reg);
+    let mut any = false;
+    for (i, spec) in all_specs().iter().enumerate() {
+        if let Some(n) = &names
+            && !matches(spec, n)
+        {
+            continue;
+        }
+        any |= reg.rt[i].state == State::Installed;
+        ml |= deactivate(reg, i);
+    }
+    if names.is_none() {
+        reg.only = None;
+        reg.exclude = Vec::new();
+    }
+    refresh_pending(reg);
+    drop(g);
+    if ml || (any && names.is_none()) {
+        clear_internal_caches();
+    }
+    after_unlock(py);
+    Ok(())
+}
+
+/// Names of the installed targets among `names` (groups or target names; all if `None`).
+pub fn installed(py: Python<'_>, names: Option<&[String]>) -> PyResult<Vec<&'static str>> {
+    let mut g = REG.lock(py)?;
+    let reg = registry(&mut g);
+    Ok(all_specs()
+        .iter()
+        .enumerate()
+        .filter(|(i, s)| reg.rt[*i].state == State::Installed && names.is_none_or(|n| matches(s, n)))
+        .map(|(_, s)| s.name)
+        .collect())
+}
+
+fn versions_of(spec: &TargetSpec) -> Vec<String> {
+    let mut v = Vec::new();
+    for (a, b) in spec.versions {
+        v.push(format!("{a}.{b}"));
+        if spec.free_threaded {
+            v.push(format!("{a}.{b}t"));
+        }
+    }
+    v
+}
+
+/// `{"targets": [...], "process": {...}}` (docs/ACCELERATION.md §6.2). The Python layer
+/// adds the native tier and the startup switch source.
+pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
+    let mut g = REG.lock(py)?;
+    let reg = registry(&mut g);
+    let targets = PyList::empty(py);
+    let mut enabled = false;
+    for (i, spec) in all_specs().iter().enumerate() {
+        let rt = &reg.rt[i];
+        if spec.hidden() && rt.state == State::Disabled && rt.reason.is_none() {
+            continue;
+        }
+        enabled |= matches!(rt.state, State::Installed | State::Pending);
+        let d = PyDict::new(py);
+        d.set_item("name", spec.name)?;
+        d.set_item("group", spec.group)?;
+        d.set_item("state", rt.state.as_str())?;
+        d.set_item("reason", rt.reason.as_deref())?;
+        d.set_item("sites", PyList::new(py, &rt.site_names)?)?;
+        d.set_item("versions", PyList::new(py, versions_of(spec))?)?;
+        if let Some(m) = spec.module {
+            d.set_item("module", m)?;
+        }
+        if rt.pin_owner != 0 {
+            let pins = guard::describe(py, rt.pin_owner);
+            let ok = pins.iter().all(|(_, _, intact, broken)| *intact && !*broken);
+            d.set_item("deps_intact", ok)?;
+        }
+        targets.append(d)?;
+    }
+    let process = PyDict::new(py);
+    // SAFETY: immutable after startup.
+    let hv = u64::from(unsafe { ffi::Py_Version });
+    process.set_item("python", format!("{}.{}.{}", (hv >> 24) & 0xff, (hv >> 16) & 0xff, (hv >> 8) & 0xff))?;
+    process.set_item("hexversion", hv)?;
+    process.set_item("build", if version::FREE_THREADED { "free-threaded" } else { "default" })?;
+    process.set_item("jit", jit_enabled(py))?;
+    process.set_item("rustique", env!("CARGO_PKG_VERSION"))?;
+    process.set_item("interpreter", version::process_gate().err())?;
+    process.set_item("enabled", enabled)?;
+    process.set_item("stats", stats::enabled())?;
+    process.set_item("only", reg.only.clone())?;
+    process.set_item("exclude", reg.exclude.clone())?;
+    let out = PyDict::new(py);
+    out.set_item("targets", targets)?;
+    out.set_item("process", process)?;
+    drop(g);
+    after_unlock(py);
+    Ok(out)
+}
+
+/// Counters of every target that counted something or is installed:
+/// `{name: {"hits": n, "fallback": {reason: n}}}`. `enabled` switches counting; `reset`
+/// zeroes the counters after the snapshot.
+pub fn stats(py: Python<'_>, enabled: Option<bool>, reset: bool) -> PyResult<Bound<'_, PyDict>> {
+    if let Some(on) = enabled {
+        stats::set_enabled(on);
+    }
+    let out = PyDict::new(py);
+    for spec in all_specs() {
+        let (hits, fb) = spec.counters.snapshot();
+        if spec.hidden() && hits == 0 && fb.iter().all(|(_, n)| *n == 0) {
+            continue;
+        }
+        let d = PyDict::new(py);
+        d.set_item("hits", hits)?;
+        let f = PyDict::new(py);
+        for (k, v) in fb {
+            f.set_item(k, v)?;
+        }
+        d.set_item("fallback", f)?;
+        out.set_item(spec.name, d)?;
+    }
+    if reset {
+        for spec in all_specs() {
+            spec.counters.reset();
+        }
+    }
+    Ok(out)
+}
+
+/// Dev tool: run `prepare` of the selected targets in record mode (nothing installed) and
+/// return every fingerprint they check: `[(target, what, observed, expected|None)]`.
+/// Module targets need their module imported (the dev tool imports them).
+pub fn fingerprint_report(
+    py: Python<'_>,
+    only: Option<Vec<String>>,
+) -> PyResult<Vec<(String, String, String, Option<String>)>> {
+    let sys_modules = prepare::sys_modules(py).map_err(|r| PyRuntimeError::new_err(r.0.into_owned()))?;
+    let _g = REG.lock(py)?;
+    let mut out = Vec::new();
+    for spec in all_specs() {
+        let sel = match &only {
+            Some(o) => matches(spec, o),
+            None => !spec.hidden(),
+        };
+        if !sel {
+            continue;
+        }
+        let module = match spec.module {
+            None => None,
+            Some(m) => match sys_modules.get_item(m)?.and_then(|m| m.cast_into::<PyModule>().ok()) {
+                Some(m) => Some(m),
+                None => {
+                    out.push((spec.name.to_owned(), format!("module {m} not imported"), String::new(), None));
+                    continue;
+                }
+            },
+        };
+        let mut cx = Prepare::new(py, spec, module, true);
+        let r = (spec.prepare)(py, &mut cx);
+        let recs: Vec<FingerprintRecord> = std::mem::take(&mut cx.records);
+        release_sites(cx.sites.into_iter().map(|d| d.site));
+        if let Err(e) = r {
+            out.push((spec.name.to_owned(), format!("prepare refused: {e}"), String::new(), None));
+        }
+        for rec in recs {
+            out.push((spec.name.to_owned(), rec.what, rec.observed, rec.expected.map(str::to_owned)));
+        }
+    }
+    Ok(out)
+}
+
+/// Pins of an installed target (diagnostics/tests): `[(key, absent, intact, broken)]`.
+pub fn pins(py: Python<'_>, name: &str) -> PyResult<Vec<(String, bool, bool, bool)>> {
+    let mut g = REG.lock(py)?;
+    let reg = registry(&mut g);
+    let i = all_specs()
+        .iter()
+        .position(|s| s.name == name)
+        .ok_or_else(|| PyValueError::new_err(format!("unknown target {name}")))?;
+    let owner = reg.rt[i].pin_owner;
+    Ok(if owner == 0 { Vec::new() } else { guard::describe(py, owner) })
+}

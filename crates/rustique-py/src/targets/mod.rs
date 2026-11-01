@@ -1,9 +1,29 @@
-//! Accelerated targets (docs/ACCELERATION.md §9): one directory per group.
+//! Accelerated targets, one module per group (docs/ACCELERATION.md §9).
+//!
+//! To register a group: add `pub mod <group>;` below and its `TARGETS` slice to [`ALL`].
+//! Each group's `TARGETS` is a `&'static [&'static TargetSpec]`.
 
+use pyo3::prelude::*;
+
+use crate::accel::TargetSpec;
+
+pub mod _selftest;
+pub mod builtins;
+pub mod containers;
 pub mod float;
 
-/// Register the targets' private Python modules (`rustique._rustique._t_<group>`).
-pub fn register(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
-    float::register(m)?;
-    Ok(())
+/// Every group's targets, in install order.
+pub static ALL: &[&[&TargetSpec]] = &[
+    containers::TARGETS,
+    builtins::TARGETS,
+    float::TARGETS,
+    // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
+    // named in `enable(only=...)`.
+    _selftest::TARGETS,
+];
+
+/// Python-visible helpers of targets (registered on `rustique._rustique._accel`).
+pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {
+    float::register(accel)?;
+    _selftest::register(accel)
 }
