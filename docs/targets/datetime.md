@@ -144,17 +144,20 @@ Per call (instruction counts from callgrind deltas, 3.15.1):
 The strptime guards total ~140 Ir on a ≥ 22,000 Ir original (< 1%), within the amended
 budget "≤ 40 Ir or ≤ 1% of the original's cheapest realistic call".
 
-**Dependencies** (watched with `accel::guard::watch` on Rustique's one dict watcher; any
-change bumps the group's generation, the next call revalidates by value and caches the
-outcome per generation): `builtins` entries the originals read (`__import__`, `isinstance`,
-`len`, `int`, `str`, `tuple`, `enumerate`, `range`, `ValueError`, `TypeError`,
-`KeyError`); `sys.modules` entries `time`, `_strptime`, `locale`, `zoneinfo`, `_zoneinfo`;
-`time` module `tzname`, `daylight`, `struct_time`, `strftime`, `_STRUCT_TM_ITEMS`; every
-`_strptime` global the steady state reads (functions, `time`, `locale`, `re`, the datetime
-types, `TimeRE`, `LocaleTime`, `_cache_lock`, `_TimeRE_cache`, `_regex_cache`,
-`_CACHE_MAX_SIZE`, and builtin names that a module global could shadow); `locale` globals
-(`getlocale`, `_parse_localename`, `normalize`, `_setlocale`, `locale_alias`, `LC_TIME`,
-`LC_ALL`) and `locale_alias['c']`. Per call, the code objects of the functions the original
+**Dependencies** (Rustique's one dict watcher bumps the group's generation; the next call
+revalidates by value and caches the outcome per generation): the `builtins` dict, the
+`time` module dict, the `_strptime` and `locale` module dicts and `locale.locale_alias`
+as whole dicts (`accel::guard::watch_dict_generation`: they change rarely), and the
+`sys.modules` entries `time`, `_strptime`, `locale`, `zoneinfo`, `_zoneinfo`
+(`accel::guard::watch`, per key: `sys.modules` changes on every import). Revalidation
+checks by identity or value what the originals read: the builtins they call (`__import__`,
+`isinstance`, `len`, `int`, `str`, `tuple`, `enumerate`, `range`, `ValueError`,
+`TypeError`, `KeyError`); `time.strftime`, `time.struct_time`, `time._STRUCT_TM_ITEMS`,
+`time.tzname`, `time.daylight`; every `_strptime` global the steady state reads
+(functions, `time`, `locale`, `re`, the datetime types, `TimeRE`, `LocaleTime`,
+`_cache_lock`, `_TimeRE_cache`, `_regex_cache`, `_CACHE_MAX_SIZE`, and builtin names a
+module global could shadow); `locale.getlocale`, `_parse_localename`, `normalize`,
+`_setlocale`, `locale_alias['c']`, `LC_TIME`, `LC_ALL`. Per call, the code objects of the functions the original
 runs must be the ones fingerprinted (`f.__code__ = ...` falls back) and
 `_strptime_time.__defaults__` unchanged (`time.strptime(s)`).
 
