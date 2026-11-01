@@ -14,6 +14,7 @@ pub mod index;
 pub mod kernels;
 pub mod pyfmt;
 pub mod pyhash;
+pub mod random;
 pub mod slice;
 
 pub use column::{Column, ColumnError, Element, Value};
