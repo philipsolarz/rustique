@@ -64,7 +64,27 @@ No public API exposes these.
 
 ## Measurements
 
-RESULTS_PLACEHOLDER
+Callgrind as in docs/targets/posixpath.md (`benches/targets/paths_cg.py`, CPython 3.15.1).
+`f` = `'test_api_12.py'`; `pats` = the 12 ignore patterns of `data/fs_inventory`; `names` =
+32 file names. `fnmatch(Path, …)` and `os.fspath patched` run the original `fnmatch` (suspended)
+whose inner `fnmatchcase` call is still accelerated.
+
+| cell | CPython Ir | Rustique Ir | ratio | first 60 calls |
+|---|---:|---:|---:|---:|
+| `fnmatch(f, '*.py')` | 4828 | 625 | 0.130 |  |
+| `fnmatch(f, 'coverage.*') miss` | 4258 | 663 | 0.156 |  |
+| `fnmatch(f, '[!t]*_[0-9]*.py')` | 4258 | 655 | 0.154 |  |
+| `fnmatch(fb, b'*.py') bytes` | 4920 | 586 | 0.119 |  |
+| `fnmatch(fs, '*.py') str subclass` | 4714 | 644 | 0.137 | 0.116 |
+| `fnmatch(Path, '*.py')` | 5348 | 2778 | 0.519 | 0.391 |
+| `fnmatch(f, '*.py') os.fspath patched` | 5300 | 2618 | 0.494 | 0.345 |
+| `fnmatch(f, '*.py') cProfile on` | 15197 | 15199 | 1.000 | 1.045 |
+| `fnmatchcase(f, '*.py')` | 3307 | 625 | 0.189 |  |
+| `fnmatchcase(fs, '*.py') str subclass` | 3305 | 644 | 0.195 | 0.141 |
+| `any(fnmatch(f, pat) for 12 pats)` | 58929 | 13518 | 0.229 |  |
+| `filter(32 names, '*.py')` | 61975 | 5319 | 0.086 |  |
+| `filter(iter, '*.py')` | 63373 | 60947 | 0.962 | 0.969 |
+
 
 ## Conformance
 

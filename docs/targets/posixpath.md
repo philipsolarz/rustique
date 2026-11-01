@@ -89,7 +89,75 @@ Callgrind, region-instrumented, Ir per call = (Ir(2n) − Ir(n)) / n, statements
 10×, each cell in a fresh process (`benches/targets/paths_cg.py`); CPython 3.15.1,
 dev-release build, dev box (c7a.8xlarge). `orig` = plain CPython, `rs` = `enable(only=["posixpath"])`.
 
-RESULTS_PLACEHOLDER
+Callgrind, region-instrumented, Ir per call = (Ir(2n) − Ir(n)) / n after ≥ 2,500 warm-up
+calls, statements unrolled 10×, each cell in a fresh process (`benches/targets/paths_cg.py`);
+CPython 3.15.1, `--profile dev-release`, dev box. "CPython" = plain; "Rustique" =
+`rustique.enable(only=["posixpath"])`. Steady state: fallback-class cells (user PathLike,
+`pathlib.Path` arguments, patched dependency, cProfile active) show the target suspended by
+the framework (≈ 1.00). "First 60 calls" = Ir per call over the first 60 calls after
+`enable()` in a fresh process (no warm-up, `--first`): the cost before suspension.
+`d`, `f`, `p` are a 36-char directory, a 14-char file name and their join; `pb`/`db`/`fb`
+bytes; `ps`/`ds`/`fs` instances of `class S(str): pass`; `PL` a minimal user PathLike.
+
+| cell | CPython Ir | Rustique Ir | ratio | first 60 calls |
+|---|---:|---:|---:|---:|
+| `join(d, f)` | 3540 | 977 | 0.276 |  |
+| `join(root, 'src', 'pkg', f)` | 7339 | 1362 | 0.186 |  |
+| `join(d, '/abs')` | 2380 | 600 | 0.252 |  |
+| `join(db, fb) bytes` | 3582 | 711 | 0.199 |  |
+| `join(latin1, f)` | 3565 | 993 | 0.279 |  |
+| `join(ucs2, ucs4)` | 2366 | 591 | 0.250 |  |
+| `join(ds, fs) str subclass` | 3920 | 2309 | 0.589 | 0.555 |
+| `join(PathLike, f)` | 4165 | 4165 | 1.000 | 1.048 |
+| `join(Path, f)` | 4177 | 4177 | 1.000 | 1.050 |
+| `join(d, f) os.fspath patched` | 4014 | 4014 | 1.000 | 1.001 |
+| `join(d, f) _get_sep patched` | 3603 | 3631 | 1.008 | 1.001 |
+| `join(d, f) cProfile on` | 13853 | 13852 | 1.000 | 1.046 |
+| `split(p)` | 3951 | 1099 | 0.278 |  |
+| `split(pb) bytes` | 4051 | 1010 | 0.249 |  |
+| `split(ps) str subclass` | 4455 | 1775 | 0.398 | 0.420 |
+| `split(PathLike)` | 4576 | 4557 | 0.996 | 1.049 |
+| `split(Path)` | 4583 | 4564 | 0.996 | 1.049 |
+| `split(p) os.fspath patched` | 4188 | 4169 | 0.995 | 0.997 |
+| `split(p) cProfile on` | 14482 | 14481 | 1.000 | 1.043 |
+| `splitext(f)` | 3921 | 1086 | 0.277 |  |
+| `splitext(p)` | 3872 | 1087 | 0.281 |  |
+| `splitext(pb) bytes` | 4140 | 979 | 0.237 |  |
+| `splitext(pw) ucs2` | 4321 | 1303 | 0.302 |  |
+| `splitext(ps) str subclass` | 4705 | 1763 | 0.375 | 0.409 |
+| `splitext(PathLike)` | 4497 | 4516 | 1.004 | 1.059 |
+| `splitext(Path)` | 4504 | 4523 | 1.004 | 1.058 |
+| `splitext(p) os.fspath patched` | 4109 | 4109 | 1.000 | 1.001 |
+| `basename(p)` | 2047 | 601 | 0.294 |  |
+| `basename(pb) bytes` | 1986 | 557 | 0.281 |  |
+| `basename(ps) str subclass` | 2375 | 1276 | 0.537 | 0.550 |
+| `basename(PathLike)` | 2672 | 2672 | 1.000 | 1.084 |
+| `basename(Path)` | 2679 | 2679 | 1.000 | 1.083 |
+| `basename(p) os.fspath patched` | 2284 | 2284 | 1.000 | 1.002 |
+| `basename(p) cProfile on` | 9400 | 9400 | 1.000 | 1.066 |
+| `dirname(p)` | 3385 | 613 | 0.181 |  |
+| `dirname(pb) bytes` | 3389 | 548 | 0.162 |  |
+| `dirname(ps) str subclass` | 3704 | 1288 | 0.348 | 0.357 |
+| `dirname(PathLike)` | 4010 | 3991 | 0.995 | 1.054 |
+| `dirname(p) os.fspath patched` | 3622 | 3603 | 0.995 | 0.997 |
+| `isabs(p)` | 1527 | 306 | 0.201 |  |
+| `isabs(pb) bytes` | 1389 | 290 | 0.209 |  |
+| `isabs(ps) str subclass` | 1670 | 982 | 0.588 | 0.594 |
+| `isabs(PathLike)` | 2152 | 2152 | 1.000 | 1.102 |
+| `isabs(p) os.fspath patched` | 1764 | 1764 | 1.000 | 1.003 |
+| `normcase(p)` | 517 | 517 | 1.000 |  |
+| `normcase(PathLike)` | 1142 | 1142 | 1.000 | 1.004 |
+| `relpath(p, root)` | 20872 | 6726 | 0.322 |  |
+| `relpath(pb, rootb) bytes` | 21428 | 4949 | 0.231 |  |
+| `relpath(f) relative` | 28418 | 5420 | 0.191 |  |
+| `relpath(ps, root) str subclass` | 21203 | 7425 | 0.350 | 0.352 |
+| `relpath(p, root) os.fspath patched` | 21817 | 21820 | 1.000 | 1.000 |
+| `abspath(p)` | 3071 | 2190 | 0.713 |  |
+| `abspath(f) relative` | 7417 | 3349 | 0.452 |  |
+| `abspath(ps) str subclass` | 3211 | 2866 | 0.893 | 0.810 |
+| `commonpath([p, d])` | 23109 | 23080 | 0.999 |  |
+| `commonpath((pb, db)) bytes` | 24737 | 24729 | 1.000 |  |
+
 
 ## Conformance
 

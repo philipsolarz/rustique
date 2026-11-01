@@ -589,7 +589,7 @@ pub unsafe fn guards(rt: &Rt, func: O) -> Option<O> {
 /// A vectorcall kernel: the body evaluates to `None` (outside the exact subset: decline
 /// before anything observable), `Some(GUARD_*)` (a guard failed), `Some(null)` (an error
 /// before anything observable: cleared, CPython re-runs and raises), or `Some(result)`.
-/// Successful results go through check mode when it is on.
+/// Successful results go through check mode when it is on and the target is checkable.
 #[macro_export]
 macro_rules! paths_kernel {
     ($name:ident, $rt:ident, $spec:ident, |$func:ident, $args:ident, $nargsf:ident, $n:ident, $kw:ident| $body:expr) => {
@@ -616,7 +616,9 @@ macro_rules! paths_kernel {
                         $rt.fallback(Reason::Deopt, $func, $args, $nargsf, $kw)
                     }
                     Some(r) => {
-                        if $rt.counters.hit_check_streak() {
+                        // Check mode re-runs the original only for side-effect-free
+                        // targets (`checkable`); pathlib's results are fresh objects.
+                        if $rt.counters.hit_check_streak() && $spec.checkable {
                             let nkw = if $kw.is_null() { 0 } else { pyo3::ffi::PyTuple_GET_SIZE($kw) as usize };
                             let all = std::slice::from_raw_parts($args, $n + nkw);
                             return $crate::accel::check::verify(&$spec, r, all, || {

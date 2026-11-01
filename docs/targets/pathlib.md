@@ -70,7 +70,45 @@ CPython would not fill them either.
 
 ## Measurements
 
-RESULTS_PLACEHOLDER
+Callgrind as in docs/targets/posixpath.md (`benches/targets/paths_cg.py`, CPython 3.15.1).
+`pp` = `Path(p)` with `str()` already computed; `pq` an equal path; `pw` a `PureWindowsPath`;
+`ms` an instance of `class MyP(type(pp)): pass` (subclass: falls back). `with_suffix`,
+`as_posix` are not targets themselves (they gain through `__str__`, `parent`, ...);
+`is_absolute` is unchanged.
+
+| cell | CPython Ir | Rustique Ir | ratio | first 60 calls |
+|---|---:|---:|---:|---:|
+| `Path(p)` | 4528 | 1803 | 0.398 | 0.433 |
+| `str(Path(p))` | 26211 | 6406 | 0.244 | 0.254 |
+| `Path(d) / f` | 10647 | 3217 | 0.302 | 0.322 |
+| `str(pp / f)` | 32525 | 9084 | 0.279 |  |
+| `pp.name` | 715 | 386 | 0.539 |  |
+| `pp.suffix` | 2080 | 676 | 0.325 |  |
+| `pp.stem` | 2208 | 650 | 0.294 |  |
+| `pp.parent` | 9215 | 2674 | 0.290 |  |
+| `pp.parts` | 2488 | 674 | 0.271 |  |
+| `pp.with_suffix('.txt')` | 13443 | 9397 | 0.699 |  |
+| `pp.relative_to(root)` | 108415 | 4901 | 0.045 |  |
+| `hash(Path(p))` | 38261 | 7135 | 0.186 | 0.194 |
+| `Path(p) == pp` | 33038 | 6530 | 0.198 | 0.203 |
+| `pp.as_posix()` | 1221 | 1010 | 0.827 |  |
+| `pp.is_absolute()` | 912 | 912 | 1.000 |  |
+| `PurePosixPath(d, f)` | 5475 | 1869 | 0.341 | 0.374 |
+| `MyP(p) subclass` | 4371 | 4385 | 1.003 | 1.035 |
+| `str(pp)` | 609 | 398 | 0.653 |  |
+| `os.fspath(pp)` | 895 | 684 | 0.764 |  |
+| `pp == pq` | 1595 | 480 | 0.301 |  |
+| `hash(pp)` | 830 | 597 | 0.719 |  |
+| `PurePosixPath(p).name (fresh)` | 18073 | 5215 | 0.289 | 0.298 |
+| `pw.name PureWindowsPath` | 715 | 715 | 1.000 | 1.282 |
+| `pw.parent PureWindowsPath` | 9156 | 9184 | 1.003 | 1.049 |
+| `ms.name subclass` | 715 | 715 | 1.000 | 1.277 |
+| `ms.suffix subclass` | 2080 | 2080 | 1.000 | 1.266 |
+| `ms.parent subclass` | 9338 | 9366 | 1.003 | 1.049 |
+| `str(ms / f) subclass` | 30966 | 31064 | 1.003 | 1.010 |
+| `pp.name cProfile on` | 2817 | 2817 | 1.000 | 1.099 |
+| `pp.relative_to(root) cProfile on` | 301414 | 301483 | 1.000 | 1.005 |
+
 
 ## Conformance
 
