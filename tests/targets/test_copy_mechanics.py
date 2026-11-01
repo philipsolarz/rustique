@@ -500,3 +500,32 @@ def test_deep_fallback_recursion_like_cpython(how):
         sys.setrecursionlimit(old)
     target = "copy.copy" if how == "copy_hooks" else "copy.deepcopy"
     assert S.A.stats()[target]["suspensions"] == 1
+
+
+@pytest.mark.skipif(sys.version_info >= (3, 15), reason="3.14: copy's type sets are mutable sets")
+def test_mutable_container_set_314():
+    """Membership of the hot types is decided from the slots CPython's lookup inspects: a
+    discarded type is seen (the reduce path builds the list by appends: another size)."""
+    big = list(range(5))
+    for _ in range(3):
+        copy._copy_builtin_containers.discard(list)
+        S.REF._copy_builtin_containers.discard(list)
+        try:
+            a, b = copy.copy(big), S.REF.copy(big)
+            assert a == b and sys.getsizeof(a) == sys.getsizeof(b)
+            copy._atomic_types.discard(int)
+            S.REF._atomic_types.discard(int)
+            try:
+                assert copy.deepcopy(7) == S.REF.deepcopy(7)
+            finally:
+                copy._atomic_types.add(int)
+                S.REF._atomic_types.add(int)
+        finally:
+            copy._copy_builtin_containers.add(list)
+            S.REF._copy_builtin_containers.add(list)
+        a, b = copy.copy(big), S.REF.copy(big)
+        assert sys.getsizeof(a) == sys.getsizeof(b)
+    h = hits("copy.copy")
+    copy.copy(big)
+    copy.copy(5)
+    assert hits("copy.copy") == h + 2

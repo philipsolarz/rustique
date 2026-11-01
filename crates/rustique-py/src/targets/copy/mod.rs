@@ -77,6 +77,26 @@ unsafe fn atomic_fast(st: &St) -> bool {
     }
 }
 
+/// `t in _atomic_types` for a quick type, decided from the inspected slots alone (3.14).
+#[inline(always)]
+unsafe fn quick_atomic(st: &St, t: *mut ffi::PyTypeObject) -> bool {
+    match &st.atomic_snap {
+        None => true,
+        // SAFETY: live set.
+        Some(s) => unsafe { s.probe(st.atomic, t).unwrap_or_else(|| atomic_fast(st)) },
+    }
+}
+
+/// `t in s` for copy's 3.14 sets: `Some(answer)` when decided from the inspected slots.
+#[inline(always)]
+pub(crate) unsafe fn copy_set_probe(snap: &Option<SetSnap>, set: O, t: *mut ffi::PyTypeObject) -> Option<bool> {
+    match snap {
+        None => None,
+        // SAFETY: live set.
+        Some(s) => unsafe { s.probe(set, t) },
+    }
+}
+
 /// Does the (mutable, 3.14) set hold exactly `known` (after an add/discard, its table can
 /// differ from the snapshot while its content is the validated one)?
 #[cold]
@@ -89,7 +109,7 @@ unsafe fn same_types(set: O, known: &[*mut ffi::PyTypeObject]) -> bool {
 
 /// Are `copy.copy`'s two type sets intact (3.14's are mutable sets)?
 #[inline(always)]
-unsafe fn copy_sets_fast(st: &St) -> bool {
+pub(crate) unsafe fn copy_sets_fast(st: &St) -> bool {
     // SAFETY: live sets.
     unsafe {
         match (&st.copy_atomic_snap, &st.copy_containers_snap) {
@@ -295,13 +315,13 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
             return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
         }
         let x = *args;
-        let fast = atomic_fast(st);
         let budget = recursion_remaining();
         // `if cls in _atomic_types: return x` (deepcopy's frame only).
-        if is_quick(ty(x)) && fast && budget > 0 {
+        if is_quick(ty(x)) && budget > 0 && quick_atomic(st, ty(x)) {
             C_DEEPCOPY.hit_streak();
             return incref(x);
         }
+        let fast = atomic_fast(st);
         // Inside a restarted call whose kernel already found user code below `x`: the
         // original's helpers reach `x` again, and the kernel would find it again.
         if RESTARTING.load(Relaxed) != 0 && skip::contains(x) {
@@ -362,7 +382,7 @@ unsafe extern "C" fn vc_copy(func: O, args: *const O, nargsf: usize, kw: O) -> O
             C_COPY.fallback_streak(Reason::Tools);
             return fallback_call(&C_COPY, &NEST_COPY, func, args, nargsf, kw);
         }
-        match shallow::copy(st, *args, copy_sets_fast(st), recursion_remaining()) {
+        match shallow::copy(st, *args, recursion_remaining()) {
             Some(y) => {
                 C_COPY.hit_streak();
                 y
@@ -403,12 +423,16 @@ mod fp {
 }
 
 /// The CPython 3.14 type sets in copy.py are mutable sets: a snapshot of the hash table.
-struct SetSnap {
+pub(crate) struct SetSnap {
     fill: isize,
     used: isize,
     mask: isize,
     table: usize,
     entries: Vec<[usize; 2]>,
+    /// For the types of [`PROBED`]: `(type, first, last, found)` — the slots CPython's lookup
+    /// of that type inspects (`set_do_lookup`: home slot, then the linear run) and its
+    /// outcome, when it ends inside the first run without calling `__eq__`.
+    probes: Vec<(usize, usize, usize, bool)>,
 }
 
 #[repr(C)]
@@ -420,19 +444,55 @@ struct RawSet {
     table: *mut [usize; 2],
 }
 
+/// `LINEAR_PROBES` of Objects/setobject.c.
+const LINEAR_PROBES: usize = 9;
+
+/// The types whose membership the kernels ask on every call (quick atomics, containers).
+fn probed() -> [*mut ffi::PyTypeObject; 9] {
+    // SAFETY: static type objects and singletons.
+    unsafe {
+        [
+            &raw mut ffi::PyUnicode_Type,
+            &raw mut ffi::PyLong_Type,
+            ty(ffi::Py_None()),
+            &raw mut ffi::PyFloat_Type,
+            &raw mut ffi::PyBool_Type,
+            &raw mut ffi::PyList_Type,
+            &raw mut ffi::PyDict_Type,
+            &raw mut ffi::PySet_Type,
+            &raw mut ffi::PyByteArray_Type,
+        ]
+    }
+}
+
 impl SetSnap {
     unsafe fn take(set: O) -> SetSnap {
         // SAFETY: a live set (public PySetObject layout).
         unsafe {
             with_cs(set, || {
                 let s = &*set.cast::<RawSet>();
-                SetSnap {
-                    fill: s.fill,
-                    used: s.used,
-                    mask: s.mask,
-                    table: s.table as usize,
-                    entries: std::slice::from_raw_parts(s.table, (s.mask + 1) as usize).to_vec(),
+                let entries = std::slice::from_raw_parts(s.table, (s.mask + 1) as usize).to_vec();
+                let mask = s.mask as usize;
+                let mut probes = Vec::new();
+                for t in probed() {
+                    // Type objects hash by address (metatype `type`).
+                    let h = ffi::PyObject_Hash(t.cast()) as usize;
+                    let home = h & mask;
+                    let run = if home + LINEAR_PROBES <= mask { LINEAR_PROBES } else { 0 };
+                    for (j, &[eh, ek]) in entries.iter().enumerate().skip(home).take(run + 1) {
+                        if eh == 0 && ek == 0 {
+                            probes.push((t as usize, home, j, false));
+                            break;
+                        }
+                        if eh == h {
+                            if ek == t as usize {
+                                probes.push((t as usize, home, j, true));
+                            }
+                            break; // found, or an `__eq__` call: not recorded
+                        }
+                    }
                 }
+                SetSnap { fill: s.fill, used: s.used, mask: s.mask, table: s.table as usize, entries, probes }
             })
         }
     }
@@ -448,6 +508,23 @@ impl SetSnap {
                     && s.mask == self.mask
                     && s.table as usize == self.table
                     && std::slice::from_raw_parts(s.table, (s.mask + 1) as usize) == &self.entries[..]
+            })
+        }
+    }
+
+    /// `t in set` for a probed type, exactly as CPython's lookup answers it, when the slots
+    /// it inspects are unchanged (`None`: ask [`Self::matches`]).
+    #[inline(always)]
+    unsafe fn probe(&self, set: O, t: *mut ffi::PyTypeObject) -> Option<bool> {
+        let &(_, first, last, found) = self.probes.iter().find(|p| p.0 == t as usize)?;
+        // SAFETY: as take.
+        unsafe {
+            with_cs(set, || {
+                let s = &*set.cast::<RawSet>();
+                (s.mask == self.mask
+                    && s.table as usize == self.table
+                    && std::slice::from_raw_parts(s.table.add(first), last - first + 1) == &self.entries[first..=last])
+                    .then_some(found)
             })
         }
     }
