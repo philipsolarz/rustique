@@ -25,11 +25,11 @@ fn names(v: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<String>>> {
 /// The switch: install the selected targets. `only`: groups or target names (a list or
 /// `"a,b"`; `None`: every non-hidden target); `exclude`: the same; `builtins=False`
 /// excludes the `builtins` group. Additive and idempotent; unknown names raise
-/// `ValueError` before anything changes. Returns `status()`, or `None` with `quiet=True`
-/// (the startup hook: no status dict built). Reads no environment variable and imports
-/// nothing.
+/// `ValueError` before anything changes. Returns None, or `status()` with `quiet=False`
+/// (building the status dict costs ~13k Ir per target: only on request). Reads no
+/// environment variable and imports nothing.
 #[pyfunction]
-#[pyo3(signature = (only=None, exclude=None, builtins=true, quiet=false))]
+#[pyo3(signature = (only=None, exclude=None, builtins=true, quiet=true))]
 fn enable<'py>(
     py: Python<'py>,
     only: Option<&Bound<'py, PyAny>>,
@@ -46,10 +46,10 @@ fn enable<'py>(
 }
 
 /// Restore the matching targets (all when `names` is None; then also stop the native
-/// tier's import rewriting if `rustique._takeover` started it). Returns `status()`, or
-/// `None` with `quiet=True`.
+/// tier's import rewriting if `rustique._takeover` started it). Returns None, or
+/// `status()` with `quiet=False`.
 #[pyfunction]
-#[pyo3(signature = (names=None, quiet=false))]
+#[pyo3(signature = (names=None, quiet=true))]
 fn disable<'py>(
     py: Python<'py>,
     names: Option<&Bound<'py, PyAny>>,
@@ -178,6 +178,28 @@ fn vectorcall_is_original(func: &Bound<'_, pyo3::types::PyFunction>) -> bool {
     vc.map_or(0, |f| f as usize) == super::prepare::function_vectorcall()
 }
 
+/// Diagnostics: run framework primitive `kind` on `obj` `n` times (for callgrind regions):
+/// "fingerprint", "fingerprint_c", "layout", "describe".
+#[pyfunction]
+fn _bench(kind: &str, obj: &Bound<'_, PyAny>, n: usize) -> PyResult<()> {
+    for _ in 0..n {
+        match kind {
+            "fingerprint" => {
+                fp::clear_cache();
+                fp::function(obj)?;
+            }
+            "fingerprint_c" => {
+                fp::c_object(obj)?;
+            }
+            "layout" => {
+                super::version::code_layout_ok_for(&obj.getattr("__code__")?)?;
+            }
+            _ => return Err(pyo3::exceptions::PyValueError::new_err("unknown kind")),
+        }
+    }
+    Ok(())
+}
+
 /// `func_version` of a function (0 unset, 1 cleared, >= 2 valid): tests of uninstall.
 #[pyfunction]
 fn func_version(func: &Bound<'_, pyo3::types::PyFunction>) -> u32 {
@@ -196,6 +218,7 @@ fn add_extras(sub: &Bound<'_, PyModule>) -> PyResult<()> {
         sub.add_function(wrap_pyfunction!(fingerprint_report, sub)?)?;
         sub.add_function(wrap_pyfunction!(pins, sub)?)?;
         sub.add_function(wrap_pyfunction!(func_version, sub)?)?;
+        sub.add_function(wrap_pyfunction!(_bench, sub)?)?;
         sub.add_function(wrap_pyfunction!(vectorcall_is_original, sub)?)?;
         sub.add("RustiqueCheckError", sub.py().get_type::<super::check::RustiqueCheckError>())?;
         crate::targets::register(sub)
