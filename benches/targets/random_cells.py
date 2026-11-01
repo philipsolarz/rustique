@@ -8,7 +8,7 @@ class Sub(random.Random):
 sub = Sub(7)
 class OwnRandom(random.Random):
     def random(self):
-        return 0.5
+        return super().random()
 own = OwnRandom(3)
 sysr = random.SystemRandom()
 L6 = ['payments', 'search', 'platform', 'mobile', 'data', 'growth']

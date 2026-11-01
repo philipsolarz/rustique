@@ -344,8 +344,37 @@ def test_materialized_instance_dict():
 
 
 # ---------------------------------------------------------------------------------------
-# Hypothesis: arguments and seeds
+# Hypothesis: arguments and seeds. The kernels stay enabled for a whole test; the
+# reference is CPython's own code run from copies of the original functions (same code,
+# globals and defaults: `_randbelow`, `getrandbits`, `random` are not patched), on a twin
+# generator with the same seed.
 # ---------------------------------------------------------------------------------------
+
+import types
+
+
+def _plain(name):
+    f = random.Random.__dict__[name]
+    g = types.FunctionType(f.__code__, f.__globals__, name, f.__defaults__, f.__closure__)
+    g.__kwdefaults__ = f.__kwdefaults__
+    return g
+
+
+PLAIN = {n: _plain(n) for n in ("randint", "randrange", "choice", "shuffle", "sample", "choices")}
+
+
+def twin(seed, ops):
+    """`ops`: list of (method name, args, kwargs); compare kernel vs original code."""
+    rt.enable(only=["random"])
+    a, b = random.Random(seed), random.Random(seed)
+    for name, args, kw in ops:
+        args_a = [list(x) if isinstance(x, list) else x for x in args]
+        args_b = [list(x) if isinstance(x, list) else x for x in args]
+        ra = outcome(lambda: getattr(a, name)(*args_a, **kw))
+        rb = outcome(lambda: PLAIN[name](b, *args_b, **kw))
+        assert ra == rb, (name, args, kw, ra, rb)
+        assert args_a == args_b
+        assert a.getstate() == b.getstate()
 
 ints = st.one_of(st.integers(-(2**20), 2**20), st.integers(-(2**130), 2**130), st.booleans())
 seqs = st.one_of(
@@ -363,33 +392,29 @@ weights = st.one_of(
 @settings(max_examples=200)
 @given(seed=st.integers(0, 2**64), a=ints, b=ints, c=st.one_of(st.none(), ints))
 def test_hyp_int_methods(seed, a, b, c):
-    same(
-        lambda: random.Random(seed),
-        lambda r: r.randint(a, b),
-        lambda r: r.randrange(a),
-        lambda r: r.randrange(a, b),
-        lambda r: r.randrange(a, b, c),
-    )
+    twin(seed, [("randint", (a, b), {}), ("randrange", (a,), {}), ("randrange", (a, b), {}), ("randrange", (a, b, c), {})])
 
 
 @settings(max_examples=200)
 @given(seed=st.integers(0, 2**32), s=seqs, k=st.integers(-2, 50), w=weights, cum=st.booleans())
 def test_hyp_sequence_methods(seed, s, k, w, cum):
     kw = {"cum_weights": w} if cum else {"weights": w}
-    same(
-        lambda: random.Random(seed),
-        lambda r: r.choice(s),
-        lambda r: r.sample(s, k),
-        lambda r: r.choices(s, k=k),
-        lambda r: r.choices(s, k=k, **kw),
-        lambda r: (lambda l: (r.shuffle(l), l))(list(s)),
+    twin(
+        seed,
+        [
+            ("choice", (s,), {}),
+            ("sample", (s, k), {}),
+            ("choices", (s,), {"k": k}),
+            ("choices", (s,), {"k": k, **kw}),
+            ("shuffle", (list(s),), {}),
+        ],
     )
 
 
 @settings(max_examples=60)
 @given(seed=st.integers(0, 2**32), n=st.integers(1, 3000), k=st.integers(0, 3000))
 def test_hyp_sample_pool_and_set_methods(seed, n, k):
-    same(lambda: random.Random(seed), lambda r: r.sample(range(n), min(k, n)), lambda r: r.sample(list(range(n)), min(k, n)))
+    twin(seed, [("sample", (range(n), min(k, n)), {}), ("sample", (list(range(n)), min(k, n)), {})])
 
 
 # ---------------------------------------------------------------------------------------

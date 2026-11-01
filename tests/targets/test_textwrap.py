@@ -53,6 +53,18 @@ def outcome(fn, args):
     return ("ok", type(r), r, ident)
 
 
+def checked(calls):
+    """Kernels enabled once, check mode raising on any difference from the original
+    (`accel::check::verify`: values, types, identity with arguments, exceptions)."""
+    rt.enable(only=["textwrap"])
+    rt.check("raise")
+    for f, _ in calls:
+        try:
+            f()
+        except Exception as e:  # noqa: BLE001
+            assert type(e).__name__ != "RustiqueCheckError", e
+
+
 def same(calls):
     """`calls`: list of (callable, args-for-identity). Runs all plain, then all enabled."""
     out = []
@@ -107,11 +119,11 @@ OPTION_SETS = [
 
 
 def hangs(t, w, o):
-    """CPython's `_wrap_chunks` never returns for whitespace-only text whose indent is at
-    least as wide as the width (the kernels detect it and let CPython loop)."""
-    ws = " \t\n\x0b\x0c\r"
+    """CPython's `_wrap_chunks` can loop forever when an indent is at least as wide as the
+    width (e.g. text starting with whitespace or a non-breaking space: the first line never
+    takes a chunk). The kernels detect the loop and let CPython run it; tests skip it."""
     indent = max(len(o.get("initial_indent", "")), len(o.get("subsequent_indent", "")))
-    return not t.strip(ws) and indent >= w
+    return indent >= w
 
 
 def test_module_functions_match():
@@ -288,7 +300,7 @@ def test_hyp_wrap(t, width, ii, si, flags, tabsize, max_lines, placeholder):
     if max_lines is None:
         kw2 = {k: v for k, v in kw.items() if k != "max_lines"}
         calls.append((lambda: textwrap.shorten(t, width + 5, **kw2), [t]))
-    same(calls)
+    checked(calls)
 
 
 @settings(max_examples=300)
@@ -296,7 +308,7 @@ def test_hyp_wrap(t, width, ii, si, flags, tabsize, max_lines, placeholder):
 def test_hyp_dedent_indent(lines, prefix):
     t = "\n".join(lines)
     t2 = "\r\n".join(lines) + "\x0b" + " ".join(lines)
-    same(
+    checked(
         [
             (lambda: textwrap.dedent(t), [t]),
             (lambda: textwrap.dedent(t2), [t2]),
@@ -309,7 +321,7 @@ def test_hyp_dedent_indent(lines, prefix):
 @settings(max_examples=200)
 @given(t=st.text(max_size=80), width=st.integers(1, 25))
 def test_hyp_any_unicode(t, width):
-    same([(lambda: textwrap.wrap(t, width), [t]), (lambda: textwrap.dedent(t), [t]), (lambda: textwrap.indent(t, "|"), [t])])
+    checked([(lambda: textwrap.wrap(t, width), [t]), (lambda: textwrap.dedent(t), [t]), (lambda: textwrap.indent(t, "|"), [t])])
 
 
 # ---------------------------------------------------------------------------------------

@@ -12,6 +12,7 @@ pub mod builtins;
 pub mod containers;
 pub mod random;
 pub mod textwrap;
+pub mod urllib;
 pub mod utils_kit;
 
 /// Every group's targets, in install order.
@@ -20,6 +21,7 @@ pub static ALL: &[&[&TargetSpec]] = &[
     builtins::TARGETS,
     random::TARGETS,
     textwrap::TARGETS,
+    urllib::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,
