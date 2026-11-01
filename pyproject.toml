@@ -21,9 +21,11 @@ dynamic = ["version"]
 Documentation = "https://github.com/philipsolarz/rustique/blob/main/docs/USAGE.md"
 Repository = "https://github.com/philipsolarz/rustique"
 
-# `pytest --rustique` (inactive unless the flag is given; docs/USAGE.md).
+# `pytest --rustique` (inactive unless the flag is given; docs/USAGE.md). The entry point is
+# named like the module so that `-p rustique.pytest_plugin` loads it through the entry point
+# instead of registering the module a second time.
 [project.entry-points.pytest11]
-rustique = "rustique.pytest_plugin"
+"rustique.pytest_plugin" = "rustique.pytest_plugin"
 
 [dependency-groups]
 dev = [

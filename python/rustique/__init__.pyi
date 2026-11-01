@@ -63,6 +63,8 @@ __all__ = [
     "i32",
     "i64",
     "native",
+    "stats",
+    "status",
     "u8",
     "u16",
     "u32",
@@ -952,14 +954,27 @@ def arange[S: (i8, i16, i32, i64, u8, u16, u32, u64)](
     start: SupportsIndex, stop: SupportsIndex | None = None, step: SupportsIndex = 1, *, dtype: type[S]
 ) -> List[S]: ...
 
-# --- the takeover (docs/TAKEOVER.md) -------------------------------------------------------
+# --- the switch (docs/ACCELERATION.md, docs/USAGE.md) ----------------------------------------
 
-def enable(*, native: str | Iterable[str] | None = None, builtins: bool = True) -> dict[str, Any]:
-    """Accelerate the builtin containers in place, process-wide (safe tier); optionally opt
-    modules matching ``native`` patterns into the native tier."""
+def enable(
+    *,
+    only: str | Iterable[str] | None = None,
+    exclude: str | Iterable[str] | None = None,
+    native: str | Iterable[str] | None = None,
+    builtins: bool = True,
+) -> dict[str, Any]:
+    """Put Rust kernels behind CPython's own entry points, process-wide (groups or target
+    names in ``only``/``exclude``); optionally opt modules matching ``native`` patterns into
+    the native tier. A no-op under ``RUSTIQUE=0``. Returns :func:`status`."""
 
 def disable() -> dict[str, Any]:
-    """Undo :func:`enable`."""
+    """Undo :func:`enable`. Returns :func:`status`."""
+
+def status() -> dict[str, Any]:
+    """``{"targets": [{name, group, state, reason, sites, versions}], "process": {...}}``."""
+
+def stats(enabled: bool | None = None, reset: bool = False) -> dict[str, dict[str, Any]]:
+    """Per-target counters ``{name: {"hits": n, "fallback": {reason: n}}}``."""
 
 @overload
 def native[F: Callable[..., Any]](obj: F, /) -> F:
