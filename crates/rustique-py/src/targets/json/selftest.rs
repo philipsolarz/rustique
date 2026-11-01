@@ -1,4 +1,5 @@
-//! Install-time self-test of the `json` encoder: probe documents built without running
+//! Self-test of the `json` encoder and decoder (run by the tests through
+//! `_t_json.selftest_all`; not at install, to keep within the install budget): probe documents built without running
 //! Python code (module targets prepare inside the `sys.modules` watcher), expected texts
 //! recorded from CPython 3.15.1 (identical on 3.14.9).
 
@@ -68,12 +69,7 @@ const DEFAULT: &str = "[null, true, false, 0, -7, 18446744073709551616, 1.5, -0.
 const UNICODE_INDENT2_SORTED: &str = "[\u{a}  null,\u{a}  true,\u{a}  false,\u{a}  0,\u{a}  -7,\u{a}  18446744073709551616,\u{a}  1.5,\u{a}  -0.0,\u{a}  1e+16,\u{a}  1e-07,\u{a}  NaN,\u{a}  Infinity,\u{a}  -Infinity,\u{a}  \"\",\u{a}  \"a\\\"b\\\\\\n\\u0000\u{7f}\u{e9}\u{20ac}\u{1f600}\",\u{a}  [],\u{a}  {},\u{a}  [\u{a}    1,\u{a}    [\u{a}      2,\u{a}      [\u{a}        3,\u{a}        {}\u{a}      ]\u{a}    ]\u{a}  ],\u{a}  {\u{a}    \"\": 0,\u{a}    \"k\": [\u{a}      1,\u{a}      2.5,\u{a}      null\u{a}    ],\u{a}    \"\u{e9}\": {\u{a}      \"x\": \"y\"\u{a}    }\u{a}  },\u{a}  [\u{a}    1,\u{a}    \"t\"\u{a}  ]\u{a}]";
 const INDENT0_COMPACT: &str = "[\u{a}null,\u{a}true,\u{a}false,\u{a}0,\u{a}-7,\u{a}18446744073709551616,\u{a}1.5,\u{a}-0.0,\u{a}1e+16,\u{a}1e-07,\u{a}NaN,\u{a}Infinity,\u{a}-Infinity,\u{a}\"\",\u{a}\"a\\\"b\\\\\\n\\u0000\\u007f\\u00e9\\u20ac\\ud83d\\ude00\",\u{a}[],\u{a}{},\u{a}[\u{a}1,\u{a}[\u{a}2,\u{a}[\u{a}3,\u{a}{}\u{a}]\u{a}]\u{a}],\u{a}{\u{a}\"k\":[\u{a}1,\u{a}2.5,\u{a}null\u{a}],\u{a}\"\\u00e9\":{\u{a}\"x\":\"y\"\u{a}},\u{a}\"\":0\u{a}},\u{a}[\u{a}1,\u{a}\"t\"\u{a}]\u{a}]";
 
-/// The encoder's text for the probe equals CPython's (the default options at install, all
-/// three option sets in the tests).
-pub(super) fn dumps_selftest(py: Python<'_>) -> PyResult<bool> {
-    dumps_selftest_n(py, 1)
-}
-
+/// The encoder's text for the probe equals CPython's in the first `n` option sets.
 pub(super) fn dumps_selftest_n(py: Python<'_>, n: usize) -> PyResult<bool> {
     let p = probe(py)?;
     let comma = PyString::new(py, ",");

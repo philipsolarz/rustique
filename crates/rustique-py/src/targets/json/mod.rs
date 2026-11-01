@@ -96,11 +96,28 @@ fn instance_dict<'py>(obj: &Bound<'py, PyAny>) -> Result<Bound<'py, PyDict>, Ref
     obj.getattr("__dict__")?.cast_into::<PyDict>().map_err(|_| refuse!(Deps: "__dict__ is not a dict"))
 }
 
-fn prepare_dumps(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    use dumps::{CODE, DEFAULT_ENCODER, DEPS, ENCODER_TYPE, FUNC, KW, KW_NAMES, KWDEFAULTS};
+/// Flag of the group-shared dependencies (checked by both kernels).
+pub(crate) static SHARED_DEPS: accel::DepFlag = accel::DepFlag::new();
+
+/// What `json.dumps` and `json.loads` both rely on, declared once: the str layouts the
+/// kernels read and write, the C accelerator module, and the builtins their Python code
+/// reads (`isinstance`, `str`, `list`, `tuple`, `float`, `bytes`, `bytearray`, `len`).
+fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if !crate::targets::float::calibrate_ascii(py) || !pystr::calibrate(py) {
         return Err(refuse!(Layout: "str layout not calibrated"));
     }
+    cx.loaded_module("_json")?;
+    let builtins = cx.builtins_of(&cx.module()?.dict())?;
+    for name in ["isinstance", "str", "list", "tuple", "float", "bytes", "bytearray", "len"] {
+        cx.pin(&builtins, name, &SHARED_DEPS)?;
+    }
+    Ok(())
+}
+
+pub static SHARED: accel::GroupSpec = accel::GroupSpec { name: "json", prepare: prepare_shared };
+
+fn prepare_dumps(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    use dumps::{CODE, DEFAULT_ENCODER, DEPS, ENCODER_TYPE, FUNC, KW, KW_NAMES, KWDEFAULTS};
     let json = cx.module()?.clone();
     let g = json.dict();
     let func = cx.module_attr("dumps")?;
@@ -124,13 +141,14 @@ fn prepare_dumps(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if !make.is(&cx.get(&c_json.dict(), "make_encoder")?) {
         return Err(refuse!(Deps: "json.encoder.c_make_encoder is not _json.make_encoder"));
     }
-    cx.pin_dict(&eg, &DEPS)?;
     // Globals `encode`/`iterencode` read (shadowing builtins included).
-    // Globals `encode`/`iterencode` read: one snapshot pin of `json.encoder`'s namespace
-    // (nothing adds to it at run time) plus the builtins they fall back to.
-    let builtins = cx.builtins_of(&eg)?;
+    // Globals `encode`/`iterencode` read in `json.encoder` (the builtins among them must
+    // stay unshadowed there; the builtins themselves are pinned by the group).
+    for name in ["c_make_encoder", "encode_basestring_ascii", "encode_basestring", "INFINITY"] {
+        cx.pin(&eg, name, &DEPS)?;
+    }
     for name in ["isinstance", "str", "list", "tuple", "float"] {
-        cx.pin(&builtins, name, &DEPS)?;
+        cx.pin_absent(&eg, name, &DEPS)?;
     }
 
     // The encoder class and the cached default instance.
@@ -203,8 +221,9 @@ fn prepare_dumps(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 
     cx.vectorcall(&func, dumps::kernel, &accel::FUNCTION_VECTORCALL)?;
 
-    // Self-test: the encoder's text for probe documents equals CPython's.
-    cx.self_test("json.dumps probes", selftest::dumps_selftest)
+    // No install self-test (install budget; the originals are Python functions, covered by
+    // their fingerprints): `_t_json.selftest_all` runs the probe texts in the tests.
+    Ok(())
 }
 
 fn prepare_loads(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
@@ -215,8 +234,10 @@ fn prepare_loads(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let g = cx.module()?.dict();
     let func = cx.module_attr("loads")?;
     cx.fingerprint_code(&func, fp::LOADS)?;
+    // Builtins `loads`/`detect_encoding` read: not shadowed in `json` (the builtins
+    // themselves are pinned by the group).
     for name in ["isinstance", "str", "bytes", "bytearray", "len"] {
-        cx.pin_global(&g, name, &DEPS)?;
+        cx.pin_absent(&g, name, &DEPS)?;
     }
     // `detect_encoding` (bytes input) and the BOM constants it reads.
     let detect = cx.pin_global(&g, "detect_encoding", &DEPS)?;
@@ -239,9 +260,9 @@ fn prepare_loads(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     // The decoder class, its methods and the cached default instance with its C scanner.
     let dec_mod = cx.loaded_module("json.decoder")?;
     let dg = dec_mod.dict();
-    // `json.decoder`'s namespace (snapshot) and the builtin `len` decode reads.
-    cx.pin_dict(&dg, &DEPS)?;
-    cx.pin(&cx.builtins_of(&dg)?, "len", &DEPS)?;
+    // `decode` reads the builtin `len` (unshadowed in `json.decoder`; the builtin is pinned
+    // by the group); `JSONDecodeError`/`StopIteration` only on error paths (the original).
+    cx.pin_absent(&dg, "len", &DEPS)?;
     let cls = cx.get(&dg, "JSONDecoder")?;
     let cls = cls.cast_into::<PyType>().map_err(|_| refuse!(Deps: "JSONDecoder is not a class"))?;
     let decode_fn = cx.type_attr(&cls, "decode")?;
@@ -305,7 +326,8 @@ fn prepare_loads(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     loads::RAW_DECODE.set(&raw_decode_fn);
 
     cx.vectorcall(&func, loads::kernel, &accel::FUNCTION_VECTORCALL)?;
-    cx.self_test("json.loads probes", selftest::loads_selftest)
+    // No install self-test (see `prepare_dumps`).
+    Ok(())
 }
 
 pub static DUMPS: TargetSpec = TargetSpec {
@@ -317,6 +339,7 @@ pub static DUMPS: TargetSpec = TargetSpec {
     counters: &dumps::COUNTERS,
     prepare: prepare_dumps,
     checkable: true,
+    shared: Some(&SHARED),
     ..TargetSpec::DEFAULT
 };
 
@@ -329,6 +352,7 @@ pub static LOADS: TargetSpec = TargetSpec {
     counters: &loads::COUNTERS,
     prepare: prepare_loads,
     checkable: true,
+    shared: Some(&SHARED),
     ..TargetSpec::DEFAULT
 };
 

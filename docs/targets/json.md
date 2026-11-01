@@ -102,10 +102,10 @@ re-installs it when restored):
   `JSONEncoder.encode`/`iterencode`/`__init__`, `json.loads`, `detect_encoding`,
   `JSONDecoder.decode`/`raw_decode`/`__init__`; C fingerprints of
   `_json.encode_basestring(_ascii)`.
-- Install-time self-tests run without Python code (module targets prepare inside the
-  `sys.modules` watcher): a 20-element probe document encoded in three option sets against
-  texts recorded from CPython, and a probe document decoded and checked (types, values,
-  float bits, small-int cache, key memo identity).
+- Self-tests built without Python code (a 20-element probe document encoded in three
+  option sets against texts recorded from CPython; a probe document decoded and checked:
+  types, values, float bits, small-int cache, key memo identity) run in the tests
+  (`_t_json.selftest_all`), not at install (install budget).
 - Fallbacks count streaks: 64 consecutive fallbacks (a program that always passes
   `default=`, or runs under a profiler) suspend the site until the next `enable()`.
 - Both targets are `checkable` (check mode re-runs the original and compares).
@@ -268,34 +268,31 @@ Measured on the shared box (wall time; pairs interleaved). `default=` callers (j
 logging, Flask/FastAPI-style providers) need a kernel behind `_json.make_encoder.tp_call`
 that calls `default` at the C encoder's points: the next step for this group.
 
-## Install cost (`benches/targets/json_install_cost.py`, 3.15.1, callgrind region, wave1 5a690e2)
+## Install cost (`benches/targets/json_install_cost.py`, 3.15.1, callgrind region, wave1 b162e61)
 
-Budget: ≤ 0.1M Ir per group at `enable()`, lazy install ≤ 5% of the module's import.
+Budget: ≤ 0.1M Ir per group at `enable()`; lazy install ≤ max(5% of the import, 0.1M Ir).
 
 | cell | Ir |
 |---|---:|
-| `rustique.enable(only=["float"])` whole call | 383,990 |
-| — of which `float.repr`'s `prepare` | **49,007** |
-| — of which the registry for the group (`registry::enable`, incl. prepare) | 60,341 |
-| `rustique.enable(only=["json"])` before `import json` (pending) | 360,878 |
-| `import json` plain | 4,378,080 |
-| `import json` with the json targets pending (installs both) | 4,806,088 (**+428,008, +9.8%**) |
-| — the two `prepare`s (incl. 10 code/C fingerprints ≈ 92k) | ≈ 280,000 |
-| — the registry (pins activation, sites, watcher) | ≈ 150,000 |
+| `rustique.enable(only=["float"])` whole call (incl. `float.repr` prepare ≈ 49k) | 327,272 |
+| `rustique.enable(only=["json"])` before `import json` (pending) | 277,783 |
+| `import json` plain | 4,377,693 |
+| `import json` with the json targets pending (installs both) | 4,660,845 (**+283,152, +6.5%**) |
+| — 8 code fingerprints (`Prepare::fingerprint_code`) | ≈ 67,000 |
+| — key interning for the declarations (`prepare::interned`) | ≈ 49,000 |
+| — pin activation (`guard::activate`) | ≈ 56,000 |
 
-`float` is within budget. `json` is above it (9.8% vs 5%): trimmed so far — snapshot pins
-of `json.encoder`/`json.decoder` instead of per-name pins, one-pass validation of the
-default encoder's attributes and of `dumps`/`loads` keyword defaults, no
-`JSONDecoder.__init__` fingerprint, install self-tests reduced to one option set (all three
-run in `test_selftest_texts`). What remains is the dependency surface the contract asks to
-pin (two classes, two instances, two modules, two keyword-default dicts, builtins, codecs
-BOMs) and 10 fingerprints; see the final report for options.
+Declarations shared by `json.dumps` and `json.loads` (str layout calibration, the `_json`
+module, the builtins both read) are one `GroupSpec` (`json`); module namespaces are pinned
+per name (no snapshot of `json.encoder`/`json.decoder`); validations of the default
+encoder's attributes and of the keyword defaults are one pass each; there is no install
+self-test (the originals are Python functions, covered by fingerprints; the probe texts run
+in `test_selftest_texts`). `json` stays 1.5 points above its budget (5% = 219k Ir).
 
 ## Open issues
 
-- **Install cost of `json`** above the 5% budget (see above): waiting for accel-core's
-  second pass (group-level pin/fingerprint declarations, cheaper pin registration); pins
-  and fingerprints stay (lead's ruling). Re-measure `import json` when it lands.
+- **Install cost of `json`**: +6.5% of `import json` after accel-core's second pass and the
+  group's trims (budget 5%); pins and fingerprints stay (lead's ruling).
 - **Unreproduced crash, 3.15.1 (GIL build).** In the first 4-build matrix run
   (`~/rustique-research/p2-json/matrix.sh`, log `~/rustique-research/p2-json/matrix.log`,
   section `=== 3.15.1 tests`, 2026-11-01 around 12:50 UTC on the dev box, commit 44cbe9c),

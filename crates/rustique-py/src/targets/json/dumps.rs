@@ -233,6 +233,7 @@ pub(super) unsafe extern "C" fn kernel(
             };
             let f = func.cast::<ffi::PyFunctionObject>();
             if !DEPS.ok()
+                || !super::SHARED_DEPS.ok()
                 || func != FUNC.load(Relaxed)
                 || (*f).func_code != CODE.load(Relaxed)
                 || (*f).func_kwdefaults != KWDEFAULTS.load(Relaxed)
