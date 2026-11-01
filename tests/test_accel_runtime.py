@@ -50,20 +50,27 @@ def f(l, n):
         c += l.count(2) + l.index(3)
     return c
 
+def g(l, n):  # same body; warmed only while enabled
+    c = 0
+    for _ in range(n):
+        c += l.count(2) + l.index(3)
+    return c
+
+def hits():
+    s = A.stats(None, True)
+    return tuple(s.get(k, {"hits": 0})["hits"] for k in ("list.count", "list.index"))
+
 l = [1, 2, 3, 2]
 assert f(l, 50000) == 50000 * 4          # traces built with the originals
 A.stats(True, True)
 rt.enable(only=["containers"])
 assert f(l, 1000) == 4000
-s = A.stats(None, True)
-pre = (s["list.count"]["hits"], s["list.index"]["hits"])
-
-assert f(l, 50000) == 50000 * 4          # traces built with the kernels
+pre = hits()                             # stale: (1, 1) without clearing
+assert g(l, 50000) == 50000 * 4          # traces built with the kernels
 rt.disable()
-A.stats(True, True)
-assert f(l, 1000) == 4000
-s = A.stats()
-post = (s.get("list.count", {"hits": 0})["hits"], s.get("list.index", {"hits": 0})["hits"])
+hits()
+assert g(l, 1000) == 4000
+post = hits()                            # stale: (1000, 1000) without clearing
 print(pre, post)
 """
 

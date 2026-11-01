@@ -8,7 +8,7 @@
 //! mode). Check mode (`check.rs`) shares the same byte, so a kernel that supports it still
 //! pays one load when everything is off ([`Counters::hit_check`]).
 
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 /// Bit set: [`STATS`], [`CHECK`], [`CHECK_RAISE`].
 pub static MODE: AtomicU8 = AtomicU8::new(0);
@@ -40,11 +40,22 @@ pub enum Reason {
 
 pub const REASONS: [&str; 7] = ["args", "deps", "tools", "interp", "deopt", "error", "check"];
 
-/// Hits and fallbacks by [`Reason`] of one target (or several sharing it).
+/// Consecutive fallbacks after which a vectorcall target is suspended (its original
+/// vectorcall restored until the next `enable()`): see [`Counters::fallback_streak`].
+pub const STREAK_LIMIT: u32 = 64;
+
+/// Hits and fallbacks by [`Reason`] of one target (or several sharing it), and the
+/// fallback streak of vectorcall targets.
 #[derive(Debug)]
 pub struct Counters {
     pub hits: AtomicU64,
     pub fallback: [AtomicU64; 7],
+    /// Consecutive fallbacks (racy load/store: approximate under contention, by design).
+    pub streak: AtomicU32,
+    /// The streak reached [`STREAK_LIMIT`]: the registry suspends the target.
+    pub suspend_requested: AtomicBool,
+    /// Times the registry suspended the target for persistent fallback.
+    pub suspensions: AtomicU64,
 }
 
 fn set_bits(bits: u8, on: bool) {
@@ -88,7 +99,54 @@ pub fn checking() -> bool {
 
 impl Counters {
     pub const fn new() -> Self {
-        Counters { hits: AtomicU64::new(0), fallback: [const { AtomicU64::new(0) }; 7] }
+        Counters {
+            hits: AtomicU64::new(0),
+            fallback: [const { AtomicU64::new(0) }; 7],
+            streak: AtomicU32::new(0),
+            suspend_requested: AtomicBool::new(false),
+            suspensions: AtomicU64::new(0),
+        }
+    }
+
+    /// [`Self::hit`] for vectorcall kernels: also ends a fallback streak (a load and a
+    /// branch when there is none).
+    #[inline(always)]
+    pub fn hit_streak(&self) {
+        if self.streak.load(Ordering::Relaxed) != 0 {
+            self.streak.store(0, Ordering::Relaxed);
+        }
+        self.hit();
+    }
+
+    /// [`Self::hit_check`] for vectorcall kernels (ends a fallback streak).
+    #[inline(always)]
+    pub fn hit_check_streak(&self) -> bool {
+        if self.streak.load(Ordering::Relaxed) != 0 {
+            self.streak.store(0, Ordering::Relaxed);
+        }
+        self.hit_check()
+    }
+
+    /// [`Self::fallback`] for vectorcall kernels: every fallback except `Deps` (which
+    /// suspends through the pins) extends the streak; at [`STREAK_LIMIT`] consecutive
+    /// fallbacks the registry suspends the target (original vectorcall restored, so the
+    /// remaining calls cost what CPython's do) until the next `enable()`.
+    #[inline(always)]
+    pub fn fallback_streak(&self, why: Reason) {
+        self.fallback(why);
+        if !matches!(why, Reason::Deps) {
+            let s = self.streak.load(Ordering::Relaxed) + 1;
+            self.streak.store(s, Ordering::Relaxed);
+            if s == STREAK_LIMIT {
+                self.request_suspend();
+            }
+        }
+    }
+
+    #[cold]
+    fn request_suspend(&self) {
+        self.suspend_requested.store(true, Ordering::Release);
+        super::registry::schedule_resync();
     }
 
     #[inline(always)]
@@ -133,6 +191,7 @@ impl Counters {
 
     pub fn reset(&self) {
         self.hits.store(0, Ordering::Relaxed);
+        self.suspensions.store(0, Ordering::Relaxed);
         for c in &self.fallback {
             c.store(0, Ordering::Relaxed);
         }
