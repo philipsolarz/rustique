@@ -23,19 +23,32 @@ pub enum Reason {
     Interp = 3,
     /// The kernel started, met something it cannot decide, and restarted in the original.
     Deopt = 4,
+    /// An error condition detected before anything observable: the original re-runs the
+    /// call and raises CPython's own error.
+    Error = 5,
 }
 
-pub const REASONS: [&str; 5] = ["args", "deps", "tools", "interp", "deopt"];
+pub const REASONS: [&str; 6] = ["args", "deps", "tools", "interp", "deopt", "error"];
 
+/// Hits and fallbacks by [`Reason`] of one target (or several sharing it).
 #[derive(Debug)]
 pub struct Counters {
     pub hits: AtomicU64,
-    pub fallback: [AtomicU64; 5],
+    pub fallback: [AtomicU64; 6],
+}
+
+/// Switch counting on or off for every target (`rustique.stats(True)`, `RUSTIQUE_STATS=1`).
+pub fn set_enabled(on: bool) {
+    ON.store(on, Ordering::Relaxed);
+}
+
+pub fn enabled() -> bool {
+    ON.load(Ordering::Relaxed)
 }
 
 impl Counters {
     pub const fn new() -> Self {
-        Counters { hits: AtomicU64::new(0), fallback: [const { AtomicU64::new(0) }; 5] }
+        Counters { hits: AtomicU64::new(0), fallback: [const { AtomicU64::new(0) }; 6] }
     }
 
     #[inline(always)]
