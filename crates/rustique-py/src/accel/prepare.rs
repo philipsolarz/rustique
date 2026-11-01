@@ -102,7 +102,7 @@ impl<'py> Prepare<'py> {
 
     /// `dict[key]` or `None` (exact dict read).
     pub fn get_opt(&self, dict: &Bound<'_, PyDict>, key: &str) -> Result<Option<Bound<'py, PyAny>>, Refusal> {
-        let k = PyString::intern(self.py, key);
+        let k = interned(self.py, key);
         let mut out: *mut ffi::PyObject = std::ptr::null_mut();
         // SAFETY: attached thread; exact dict and str key: no Python code runs.
         let r = unsafe { ffi::PyDict_GetItemRef(dict.as_ptr(), k.as_ptr(), &mut out) };
@@ -219,6 +219,19 @@ impl<'py> Prepare<'py> {
         Ok(fingerprint::any(obj)?)
     }
 
+    /// Run `f` once per registry pass (one `enable()`, one lazy activation) for `key`, and
+    /// replay its outcome for every other target that asks: lets a group validate shared
+    /// dependencies (fingerprints of common helpers, layouts, self-tests) once. Declarations
+    /// (sites, pins) must still be made by each target.
+    pub fn memo(&mut self, key: &'static str, f: impl FnOnce(&mut Self) -> Result<(), Refusal>) -> Result<(), Refusal> {
+        if let Some(r) = memo_get(key) {
+            return r;
+        }
+        let r = f(self);
+        memo_put(key, r.clone());
+        r
+    }
+
     /// Run a behavioural self-test (kernel vs original on probe inputs; the `Original`s of
     /// sites declared so far are already set). `Ok(false)` or an error refuses.
     pub fn self_test(&mut self, what: &str, f: impl FnOnce(Python<'py>) -> PyResult<bool>) -> Result<(), Refusal> {
@@ -259,7 +272,7 @@ impl<'py> Prepare<'py> {
             Refusal::with(Category::Conflict, format!("{}: not a builtin function or method", describe(obj)))
         })?;
         // SAFETY: a live method def.
-        unsafe { self.ml_meth_def(&describe(obj), def, kernel, original) }
+        unsafe { self.ml_meth_def(&c_name(obj, def), def, kernel, original) }
     }
 
     /// Declare the `ml_meth` of a method table entry found directly (e.g. by walking a
@@ -368,34 +381,36 @@ impl<'py> Prepare<'py> {
         kernel: ffi::vectorcallfunc,
         original: &'static Original<ffi::vectorcallfunc>,
     ) -> Result<(), Refusal> {
-        let what = describe(func);
+        let what = || describe(func);
         if func.cast_exact::<PyFunction>().is_err() {
-            return Err(Refusal::with(Category::Conflict, format!("{what}: not a pure-Python function")));
+            return Err(Refusal::with(Category::Conflict, format!("{}: not a pure-Python function", what())));
         }
-        let code = func.getattr("__code__")?;
+        // SAFETY: an exact function object: its code is a live code object.
+        let code =
+            unsafe { Bound::from_borrowed_ptr(self.py, (*func.as_ptr().cast::<ffi::PyFunctionObject>()).func_code) };
         if version::monitoring_layout_ok() != Some(true) {
-            return Err(Refusal::with(Category::Layout, format!("{what}: local monitoring layout not calibrated")));
+            return Err(Refusal::with(Category::Layout, format!("{}: local monitoring layout not calibrated", what())));
         }
-        if !version::code_layout_ok_for(&code)? {
-            return Err(Refusal::with(Category::Layout, format!("{what}: PyCodeObject layout differs")));
+        if !version::code_layout_cached(&code)? {
+            return Err(Refusal::with(Category::Layout, format!("{}: PyCodeObject layout differs", what())));
         }
-        let site = Site::vectorcall(func, kernel as usize).map_err(|e| Refusal::from(format!("{what}: {e}")))?;
+        let site = Site::vectorcall(func, kernel as usize).map_err(|e| Refusal::from(format!("{}: {e}", what())))?;
         let current = site.original;
         let reference = function_vectorcall();
         if current != reference {
             site.release();
             return Err(Refusal::with(
                 Category::Conflict,
-                format!("{what}: vectorcall is not _PyFunction_Vectorcall (patched?)"),
+                format!("{}: vectorcall is not _PyFunction_Vectorcall (patched?)", what()),
             ));
         }
         if let Err(r) = original.capture(current) {
             site.release();
-            return Err(Refusal::with(r.category(), format!("{what}: {r}")));
+            return Err(Refusal::with(r.category(), format!("{}: {r}", what())));
         }
         if self.sites.iter().any(|d| d.site.addr == site.addr && d.site.kind == Kind::Vectorcall) {
             site.release();
-            return Err(Refusal::from(format!("{what}: site declared twice")));
+            return Err(Refusal::from(format!("{}: site declared twice", what())));
         }
         self.sites.push(SiteDecl { site });
         Ok(())
@@ -423,7 +438,7 @@ impl<'py> Prepare<'py> {
         let value = self.get(dict, key)?;
         self.pins.push(PendingPin::Key {
             dict: dict.clone().unbind(),
-            key: PyString::intern(self.py, key).unbind(),
+            key: interned(self.py, key).unbind(),
             expected: Some(value.unbind()),
             flag,
             ty: None,
@@ -444,7 +459,7 @@ impl<'py> Prepare<'py> {
         }
         self.pins.push(PendingPin::Key {
             dict: dict.clone().unbind(),
-            key: PyString::intern(self.py, key).unbind(),
+            key: interned(self.py, key).unbind(),
             expected: None,
             flag,
             ty: None,
@@ -490,7 +505,7 @@ impl<'py> Prepare<'py> {
         // SAFETY: borrowed tuple kept alive by the type.
         let mro = unsafe { Bound::from_borrowed_ptr(self.py, mro) };
         let mro = mro.cast_into::<pyo3::types::PyTuple>().map_err(PyErr::from)?;
-        let key = PyString::intern(self.py, name).unbind();
+        let key = interned(self.py, name).unbind();
         for base in mro.iter() {
             let base = base.cast_into::<PyType>().map_err(PyErr::from)?;
             let d = type_dict(&base)?;
@@ -565,14 +580,53 @@ fn dlsym_default(_name: &CStr) -> usize {
     0
 }
 
+/// Interned key strings by content (process lifetime): pins and lookups reuse one `str`
+/// object per name (no allocation, cached hash).
+static KEYS: std::sync::Mutex<Option<std::collections::HashMap<String, Py<PyString>, foldhash::fast::FixedState>>> =
+    std::sync::Mutex::new(None);
+
+/// The interned `str` for `key`, created once per process.
+pub(crate) fn interned<'py>(py: Python<'py>, key: &str) -> Bound<'py, PyString> {
+    let mut g = KEYS.lock().unwrap_or_else(|p| p.into_inner());
+    let m = g.get_or_insert_with(Default::default);
+    if let Some(k) = m.get(key) {
+        return k.bind(py).clone();
+    }
+    let k = PyString::intern(py, key);
+    m.insert(key.to_owned(), k.clone().unbind());
+    k
+}
+
+static MEMO: std::sync::Mutex<Vec<(&'static str, Result<(), Refusal>)>> = std::sync::Mutex::new(Vec::new());
+
+fn memo_get(key: &str) -> Option<Result<(), Refusal>> {
+    MEMO.lock().ok()?.iter().find(|(k, _)| *k == key).map(|(_, r)| r.clone())
+}
+
+fn memo_put(key: &'static str, r: Result<(), Refusal>) {
+    if let Ok(mut m) = MEMO.lock() {
+        m.push((key, r));
+    }
+}
+
+/// Start/end of a registry pass: forget memoized validations and the loaded objects'
+/// segments (code fingerprints are cached for the process: the cache keeps the code objects
+/// alive, so an address is never reused).
+pub(crate) fn clear_pass_caches() {
+    if let Ok(mut m) = MEMO.lock() {
+        m.clear();
+    }
+    crate::patch::clear_snapshot();
+}
+
 fn refuse_missing(key: &str) -> Refusal {
     Refusal::with(Category::Deps, format!("missing {key}"))
 }
 
-/// `sys.modules` (borrowed from the sys module dict; no import).
+/// `sys.modules` (the interpreter's module dict; no import, no string lookup).
 pub(crate) fn sys_modules(py: Python<'_>) -> Result<Bound<'_, PyDict>, Refusal> {
-    // SAFETY: attached thread; borrowed reference from the sys module dict.
-    let m = unsafe { ffi::PySys_GetObject(c"modules".as_ptr()) };
+    // SAFETY: attached thread; a borrowed reference to the interpreter's modules dict.
+    let m = unsafe { ffi::PyImport_GetModuleDict() };
     if m.is_null() {
         return Err(Refusal::new("sys.modules missing"));
     }
@@ -595,12 +649,12 @@ pub(crate) fn type_dict<'py>(ty: &Bound<'py, PyType>) -> Result<Bound<'py, PyDic
 pub(crate) fn module_initializing(module: &Bound<'_, PyModule>) -> bool {
     let py = module.py();
     let d = module.dict();
-    let Ok(Some(spec)) = d.get_item("__spec__") else { return false };
+    let Ok(Some(spec)) = d.get_item(interned(py, "__spec__")) else { return false };
     if spec.is_none() {
         return false;
     }
     let mut out: *mut ffi::PyObject = std::ptr::null_mut();
-    let key = PyString::intern(py, "_initializing");
+    let key = interned(py, "_initializing");
     // SAFETY: attached thread; generic attribute read on a ModuleSpec instance (a plain
     // class: instance dict lookup, no Python code); `out` receives a new reference.
     let r = unsafe { ffi::PyObject_GetOptionalAttr(spec.as_ptr(), key.as_ptr(), &mut out) };
@@ -617,7 +671,8 @@ pub(crate) fn module_initializing(module: &Bound<'_, PyModule>) -> bool {
     v.is_truthy().unwrap_or(false)
 }
 
-/// `_PyFunction_Vectorcall`, read once from a live function object.
+/// `_PyFunction_Vectorcall`, read once from a fresh function object (`PyFunction_New` on
+/// an existing code object: no compilation).
 pub(crate) fn function_vectorcall() -> usize {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static VC: AtomicUsize = AtomicUsize::new(0);
@@ -625,17 +680,70 @@ pub(crate) fn function_vectorcall() -> usize {
     if v != 0 {
         return v;
     }
-    // A function object created by the interpreter at startup: the `__init__` of a
-    // builtin-module class is C, so use a lambda compiled once instead.
     Python::attach(|py| {
-        let f = py.eval(c"lambda: None", None, None).ok();
-        let v = f.map_or(0, |f| {
-            // SAFETY: an exact function object.
-            unsafe { (*f.as_ptr().cast::<ffi::PyFunctionObject>()).vectorcall }.map_or(0, |p| p as usize)
-        });
+        // Any code object will do: `list.__init__` has none, so take this module's
+        // `function_vectorcall`-independent probe: the code of `sys.modules`' loader is not
+        // guaranteed either; build a minimal code object instead.
+        // SAFETY: static C strings; new references checked; the function is dropped at once.
+        let v = unsafe {
+            let code = PyCode_NewEmpty(c"<rustique>".as_ptr(), c"probe".as_ptr(), 1);
+            if code.is_null() {
+                ffi::PyErr_Clear();
+                0
+            } else {
+                let globals = ffi::PyDict_New();
+                let f = if globals.is_null() { std::ptr::null_mut() } else { ffi::PyFunction_New(code, globals) };
+                let v = if f.is_null() {
+                    ffi::PyErr_Clear();
+                    0
+                } else {
+                    let v = (*f.cast::<ffi::PyFunctionObject>()).vectorcall.map_or(0, |p| p as usize);
+                    ffi::Py_DECREF(f);
+                    v
+                };
+                ffi::Py_XDECREF(globals);
+                ffi::Py_DECREF(code);
+                v
+            }
+        };
+        let _ = py;
         VC.store(v, Ordering::Relaxed);
         v
     })
+}
+
+unsafe extern "C" {
+    fn PyCode_NewEmpty(
+        filename: *const std::ffi::c_char,
+        funcname: *const std::ffi::c_char,
+        firstlineno: std::ffi::c_int,
+    ) -> *mut ffi::PyObject;
+}
+
+/// `Type.method` / `module.function` of a C original, without Python calls.
+fn c_name(obj: &Bound<'_, PyAny>, def: *mut ffi::PyMethodDef) -> String {
+    // SAFETY: a live method def; type-checked layout reads of descriptors / functions.
+    unsafe {
+        let name = std::ffi::CStr::from_ptr((*def).ml_name).to_string_lossy();
+        let p = obj.as_ptr();
+        let t = ffi::Py_TYPE(p);
+        if t == &raw mut ffi::PyMethodDescr_Type || t == &raw mut ffi::PyClassMethodDescr_Type {
+            let owner = (*p.cast::<ffi::PyDescrObject>()).d_type;
+            if !owner.is_null() {
+                let tn = std::ffi::CStr::from_ptr((*owner).tp_name).to_string_lossy();
+                return format!("{tn}.{name}");
+            }
+        } else if ffi::PyCFunction_Check(p) != 0 {
+            let m = (*p.cast::<ffi::PyCFunctionObject>()).m_module;
+            if !m.is_null()
+                && ffi::PyUnicode_Check(m) != 0
+                && let Ok(mn) = Bound::from_borrowed_ptr(obj.py(), m).cast_into::<PyString>()
+            {
+                return format!("{}.{name}", mn.to_string_lossy());
+            }
+        }
+        name.into_owned()
+    }
 }
 
 /// A readable name for an object in refusal reasons.
