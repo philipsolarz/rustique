@@ -44,12 +44,12 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 def main() -> int:
     expect_installed = "--expect-installed" in sys.argv
-    here = os.path.abspath(os.getcwd())
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     r = py("-c", "import rustique, os; print(os.path.dirname(rustique.__file__))")
     check("import rustique", r.returncode == 0, r.stderr)
     if r.returncode:
         return 1
-    check("installed package, not the source tree", not r.stdout.strip().startswith(here), r.stdout)
+    check("installed package, not the source tree", not r.stdout.strip().startswith(repo + os.sep), r.stdout)
 
     plain = py("-c", BATTERY)
     enabled = py("-c", "import rustique; st = rustique.enable()\n" + BATTERY)
