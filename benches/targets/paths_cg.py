@@ -8,7 +8,12 @@ A cell's setup may also define the input that sends the kernel to its fallback (
 subclass, PathLike, patched dependency, tool active): those cells must stay <= 1.05 too.
 
 Usage (on the dev box):
-    python benches/targets/paths_cg.py [--jit] [--only SUBSTR] [-j 4] [-o out.json]
+    python benches/targets/paths_cg.py [--jit] [--first] [--only SUBSTR] [-j 4] [-o out.json]
+
+`--first`: Ir per call over the first 60 calls after enable() in a fresh process (no
+warm-up; one region). Fallback-class cells of vectorcall targets are reported both in steady
+state (default: after >= 2500 calls, i.e. after adaptive suspension at 64 consecutive
+fallbacks) and with --first.
     python benches/targets/paths_cg.py list
     python benches/targets/paths_cg.py report out.json [more.json ...]
 """
@@ -25,6 +30,7 @@ import sysconfig
 import tempfile
 
 UNROLL = 10
+FIRST = os.environ.get("PATHS_CG_FIRST") == "1"
 
 HELPER_C = r"""
 #define PY_SSIZE_T_CLEAN
@@ -203,6 +209,19 @@ CELLS: list[tuple[str, str, str, str]] = [
     ("pathlib", "Path(p) == pp", "Path(p) == pp", ""),
     ("pathlib", "pp.as_posix()", "pp.as_posix()", ""),
     ("pathlib", "pp.is_absolute()", "pp.is_absolute()", ""),
+    ("pathlib", "str(pp)", "str(pp)", ""),
+    ("pathlib", "os.fspath(pp)", "os.fspath(pp)", ""),
+    ("pathlib", "pp == pq", "pp == pq", "pq = Path(p); str(pq)"),
+    ("pathlib", "hash(pp)", "hash(pp)", ""),
+    ("pathlib", "PurePosixPath(p).name (fresh)", "PurePosixPath(p).name", ""),
+    ("pathlib", "pw.name PureWindowsPath", "pw.name", "pw = pathlib.PureWindowsPath(p); pw.name"),
+    ("pathlib", "pw.parent PureWindowsPath", "pw.parent", "pw = pathlib.PureWindowsPath(p); pw.name"),
+    ("pathlib", "ms.name subclass", "ms.name", "class MyP(type(pp)): pass\nms = MyP(p); ms.name"),
+    ("pathlib", "ms.suffix subclass", "ms.suffix", "class MyP(type(pp)): pass\nms = MyP(p); ms.name"),
+    ("pathlib", "ms.parent subclass", "ms.parent", "class MyP(type(pp)): pass\nms = MyP(p); ms.name"),
+    ("pathlib", "str(ms / f) subclass", "str(ms / f)", "class MyP(type(pp)): pass\nms = MyP(p); ms.name"),
+    ("pathlib", "pp.name cProfile on", "pp.name", TOOLS),
+    ("pathlib", "pp.relative_to(root) cProfile on", "pp.relative_to(root)", TOOLS),
 ]
 
 
@@ -237,6 +256,14 @@ def worker(idx, only):
     n = 200
     if tools:
         exec(extra, ns)
+    if FIRST:
+        # The first 60 calls after enable() (before adaptive suspension can kick in at 64
+        # consecutive fallbacks): one region, no warm-up.
+        h.start()
+        fn(6)
+        h.dump("a")
+        h.stop()
+        return
     fn(30000 if jit_on else 50)
     fn(n)
     h.start()
@@ -272,6 +299,8 @@ def run_cell(idx, only, env):
                         break
             if name:
                 tot[name] = t
+        if "b" not in tot:
+            return tot["a"] / (6 * UNROLL), None
         return (tot["b"] - tot["a"]) / (200 * UNROLL), None
 
 
@@ -292,7 +321,8 @@ def main():
     out = args[args.index("-o") + 1] if "-o" in args else None
     jobs = int(args[args.index("-j") + 1]) if "-j" in args else 4
     variants = args[args.index("--variants") + 1].split(",") if "--variants" in args else ["orig", "rs"]
-    env = {**os.environ, "PYTHONHASHSEED": "0", "PYTHON_JIT": "1" if jit else "0"}
+    first = "--first" in args
+    env = {**os.environ, "PYTHONHASHSEED": "0", "PYTHON_JIT": "1" if jit else "0", "PATHS_CG_FIRST": "1" if first else "0"}
     todo = [(i, c) for i, c in enumerate(cells(only)) if c[2] in variants]
     rows: dict = {}
     with cf.ThreadPoolExecutor(jobs) as ex:

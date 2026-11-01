@@ -337,7 +337,8 @@ impl Rt {
     /// Vectorcall arguments as received by the kernel.
     #[inline(always)]
     pub unsafe fn fallback(&self, why: Reason, func: O, args: *const O, nargsf: usize, kw: O) -> O {
-        self.counters.fallback(why);
+        // Consecutive fallbacks (except Deps) suspend the target (adaptive suspension).
+        self.counters.fallback_streak(why);
         // SAFETY: set by the registry before any kernel is reachable.
         unsafe { accel::FUNCTION_VECTORCALL.get()(func, args, nargsf, kw) }
     }
@@ -431,6 +432,31 @@ pub fn check_c(
 
 unsafe extern "C" {
     fn _PyType_Lookup(ty: *mut ffi::PyTypeObject, name: *mut ffi::PyObject) -> *mut ffi::PyObject;
+    /// Public since 3.13: visits a managed `__dict__`, or the inline values (attributes
+    /// stored without a dict object) when there is none.
+    fn PyObject_VisitManagedDict(
+        obj: *mut ffi::PyObject,
+        visit: ffi::visitproc,
+        arg: *mut std::ffi::c_void,
+    ) -> std::ffi::c_int;
+}
+
+unsafe extern "C" fn count_visit(_o: *mut ffi::PyObject, arg: *mut std::ffi::c_void) -> std::ffi::c_int {
+    // SAFETY: `arg` is the `usize` counter passed by `has_inline_attrs`.
+    unsafe { *arg.cast::<usize>() += 1 };
+    0
+}
+
+/// Whether a managed-dict instance without a dict object has attributes in its inline
+/// values.
+///
+/// # Safety
+/// Attached thread; live instance of a managed-dict type.
+unsafe fn has_inline_attrs(op: O) -> bool {
+    let mut n = 0usize;
+    // SAFETY: per the caller; the visitor only counts.
+    unsafe { PyObject_VisitManagedDict(op, count_visit, (&raw mut n).cast()) };
+    n != 0
 }
 
 /// Methods looked up on str subclass instances by the path functions (and `__class__`, read
@@ -469,18 +495,25 @@ fn calibrate_plain(py: Python<'_>) -> PyResult<Option<PlainInfo>> {
         PyDict::new(py),
     ))?;
     // SAFETY: a heap type object.
-    let flags = unsafe { (*ty.as_ptr().cast::<ffi::PyTypeObject>()).tp_flags };
+    let flags = unsafe { ffi::PyType_GetFlags(ty.as_ptr().cast::<ffi::PyTypeObject>()) };
     if flags & MANAGED_DICT == 0 {
         return Ok(None);
     }
     let inst = ty.call1(("x",))?;
     // SAFETY: a live instance of a managed-dict type.
-    let before = unsafe { *(inst.as_ptr().cast::<u8>().offset(off) as *const usize) };
-    inst.setattr("a", 1)?;
+    let read = |o: &Bound<'_, PyAny>| unsafe { *(o.as_ptr().cast::<u8>().offset(off) as *const usize) };
+    // SAFETY: live instances of a managed-dict type.
+    let (empty_inline, set_inline) = unsafe {
+        let e = has_inline_attrs(inst.as_ptr());
+        inst.setattr("a", 1)?;
+        (e, has_inline_attrs(inst.as_ptr()))
+    };
+    let before = read(&inst);
     let d = inst.getattr("__dict__")?;
-    // SAFETY: as above.
-    let after = unsafe { *(inst.as_ptr().cast::<u8>().offset(off) as *const usize) };
-    if before != 0 || after != d.as_ptr() as usize {
+    let after = read(&inst);
+    // No attribute → nothing visited; an attribute is seen either in the inline values
+    // (no dict object yet) or in the dict; touching `__dict__` materializes it at `off`.
+    if empty_inline || !(set_inline || before != 0) || after != d.as_ptr() as usize {
         return Ok(None);
     }
     Ok(Some(PlainInfo { names, managed_dict_offset: off }))
@@ -533,7 +566,7 @@ pub unsafe fn plain_str_subclass(op: O) -> bool {
             }
         }
         // No instance attribute may shadow a method: the instance dict is absent or empty.
-        let flags = (*tp).tp_flags;
+        let flags = ffi::PyType_GetFlags(tp);
         let dict = if flags & MANAGED_DICT != 0 {
             let cell =
                 op.cast::<u8>().offset(info.managed_dict_offset) as *const std::sync::atomic::AtomicPtr<ffi::PyObject>;
@@ -547,7 +580,12 @@ pub unsafe fn plain_str_subclass(op: O) -> bool {
         } else {
             return false;
         };
-        dict.is_null() || ffi::PyDict_Size(dict) == 0
+        if dict.is_null() {
+            // Attributes may live in the inline values without a dict object.
+            flags & MANAGED_DICT == 0 || !has_inline_attrs(op)
+        } else {
+            ffi::PyDict_Size(dict) == 0
+        }
     }
 }
 
@@ -613,7 +651,7 @@ macro_rules! paths_kernel {
                         $rt.fallback(Reason::Deopt, $func, $args, $nargsf, $kw)
                     }
                     Some(r) => {
-                        if $rt.counters.hit_check() {
+                        if $rt.counters.hit_check_streak() {
                             let nkw = if $kw.is_null() { 0 } else { pyo3::ffi::PyTuple_GET_SIZE($kw) as usize };
                             let all = std::slice::from_raw_parts($args, $n + nkw);
                             return $crate::accel::check::verify(&$spec, r, all, || {

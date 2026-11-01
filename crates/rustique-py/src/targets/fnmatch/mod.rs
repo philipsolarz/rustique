@@ -33,8 +33,8 @@ pub(crate) const FPS: &[(&str, Fingerprints)] = &[
     ("re.escape", &[(3, 14, "4112f39d484aa40d"), (3, 15, "c721420afec3ed91")]),
     ("re.compile", &[(3, 14, "84ef376a8f8d11c3"), (3, 15, "f744bd5c1c6c821f")]),
     ("re._compile", &[(3, 14, "ee2108f8069d004a"), (3, 15, "97249c2720f5b6a5")]),
-    ("re._parser._parse", &[(3, 14, "?"), (3, 15, "?")]),
-    ("re._parser._class_escape", &[(3, 14, "?"), (3, 15, "?")]),
+    ("re._parser._parse", &[(3, 14, "c983b21f16b51ed5"), (3, 15, "9adcebe371aec858")]),
+    ("re._parser._class_escape", &[(3, 14, "7fc2558ee17ca545"), (3, 15, "86b79b5449bf7d98")]),
     ("posixpath.normcase", &[(3, 14, "4430685c31fdf17c"), (3, 15, "b8ae21472a1996ce")]),
 ];
 

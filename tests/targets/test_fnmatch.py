@@ -48,6 +48,15 @@ def hits(name):
     return rt.stats()[name]["hits"]
 
 
+def rearm():
+    """Fallback-heavy tests suspend targets (adaptive suspension, re-armed by enable());
+    re-arm before counting hits."""
+    rt.enable(only="fnmatch")
+    for _ in range(2000):
+        pass
+    rt.stats(reset=True)
+
+
 def outcome(f, *args):
     try:
         with warnings.catch_warnings(record=True) as w:
@@ -141,7 +150,7 @@ def test_filter_differential(ns, pat, container):
 
 
 def test_hits_on_realistic_calls():
-    rt.stats(reset=True)
+    rearm()
     assert fnmatch.fnmatch("main.py", "*.py")
     assert not fnmatch.fnmatchcase("main.pyc", "*.py")
     assert fnmatch.filter(["a.py", "b.txt", "c.py"], "*.py") == ["a.py", "c.py"]
@@ -155,7 +164,7 @@ def test_hits_on_realistic_calls():
 def test_mechanics():
     from fnmatch import fnmatch as captured  # bound before enable() (module import)
 
-    rt.stats(reset=True)
+    rearm()
     assert captured("a.py", "*.py")
     assert hits("fnmatch.fnmatch") == 1
     assert pickle.loads(pickle.dumps(fnmatch.filter)) is fnmatch.filter
@@ -180,7 +189,7 @@ def test_patched_normcase_is_called():
         assert fnmatch.fnmatch("A.PY", "*.PY")
         assert seen == ["A.PY", "*.PY"]
     settle()
-    rt.stats(reset=True)
+    rearm()
     fnmatch.fnmatch("a", "a")
     assert hits("fnmatch.fnmatch") == 1
 

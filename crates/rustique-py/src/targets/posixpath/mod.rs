@@ -396,10 +396,17 @@ macro_rules! units {
     };
 }
 
-crate::paths_kernel!(k_split, RT_SPLIT, SPLIT, |func, args, nargsf, n, kw| one_arg!(RT_SPLIT, func, args, n, kw, |p, t| {
-    let ((i, h), len) = units!(t, p, |s| (posix::tail_start(s), posix::head_len(s)));
-    pair(slice(t, p, 0, h), slice(t, p, i, len))
-}));
+crate::paths_kernel!(k_split, RT_SPLIT, SPLIT, |func, args, nargsf, n, kw| one_arg!(
+    RT_SPLIT,
+    func,
+    args,
+    n,
+    kw,
+    |p, t| {
+        let ((i, h), len) = units!(t, p, |s| (posix::tail_start(s), posix::head_len(s)));
+        pair(slice(t, p, 0, h), slice(t, p, i, len))
+    }
+));
 
 crate::paths_kernel!(k_splitext, RT_SPLITEXT, SPLITEXT, |func, args, nargsf, n, kw| one_arg!(
     RT_SPLITEXT,
@@ -428,15 +435,29 @@ crate::paths_kernel!(k_basename, RT_BASENAME, BASENAME, |func, args, nargsf, n, 
     }
 ));
 
-crate::paths_kernel!(k_dirname, RT_DIRNAME, DIRNAME, |func, args, nargsf, n, kw| one_arg!(RT_DIRNAME, func, args, n, kw, |p, t| {
-    let (h, _len) = units!(t, p, |s| posix::head_len(s));
-    slice(t, p, 0, h)
-}));
+crate::paths_kernel!(k_dirname, RT_DIRNAME, DIRNAME, |func, args, nargsf, n, kw| one_arg!(
+    RT_DIRNAME,
+    func,
+    args,
+    n,
+    kw,
+    |p, t| {
+        let (h, _len) = units!(t, p, |s| posix::head_len(s));
+        slice(t, p, 0, h)
+    }
+));
 
-crate::paths_kernel!(k_isabs, RT_ISABS, ISABS, |func, args, nargsf, n, kw| one_arg!(RT_ISABS, func, args, n, kw, |p, t| {
-    let (abs, _len) = units!(t, p, |s| posix::is_abs(s));
-    ffi::Py_NewRef(if abs { ffi::Py_True() } else { ffi::Py_False() })
-}));
+crate::paths_kernel!(k_isabs, RT_ISABS, ISABS, |func, args, nargsf, n, kw| one_arg!(
+    RT_ISABS,
+    func,
+    args,
+    n,
+    kw,
+    |p, t| {
+        let (abs, _len) = units!(t, p, |s| posix::is_abs(s));
+        ffi::Py_NewRef(if abs { ffi::Py_True() } else { ffi::Py_False() })
+    }
+));
 
 // ---------------------------------------------------------------------------------------
 // abspath, relpath (normpath ported from C, os.getcwd through the pinned function)
@@ -637,39 +658,46 @@ fn to_u32(t: Text<'_>) -> Vec<u32> {
     crate::with_text!(t, |s| s.iter().map(|c| c.cp()).collect())
 }
 
-crate::paths_kernel!(k_abspath, RT_ABSPATH, ABSPATH, |func, args, nargsf, n, kw| one_arg!(RT_ABSPATH, func, args, n, kw, |p, t| {
-    match t {
-        Ty::Str => {
-            let v = to_u32(str_view(p).text);
-            let mut cwd = None;
-            let mut get = || match cwd_units(Ty::Str) {
-                Some(CwdBuf::Str(c)) => Some(c),
-                _ => None,
-            };
-            match abs_units(&v, &mut cwd, &mut get) {
-                None => std::ptr::null_mut(),
-                Some(norm) if norm.is_empty() => ffi::PyUnicode_FromOrdinal(b'.' as i32),
-                Some(norm) => str_from_units(&norm),
+crate::paths_kernel!(k_abspath, RT_ABSPATH, ABSPATH, |func, args, nargsf, n, kw| one_arg!(
+    RT_ABSPATH,
+    func,
+    args,
+    n,
+    kw,
+    |p, t| {
+        match t {
+            Ty::Str => {
+                let v = to_u32(str_view(p).text);
+                let mut cwd = None;
+                let mut get = || match cwd_units(Ty::Str) {
+                    Some(CwdBuf::Str(c)) => Some(c),
+                    _ => None,
+                };
+                match abs_units(&v, &mut cwd, &mut get) {
+                    None => std::ptr::null_mut(),
+                    Some(norm) if norm.is_empty() => ffi::PyUnicode_FromOrdinal(b'.' as i32),
+                    Some(norm) => str_from_units(&norm),
+                }
             }
-        }
-        Ty::Bytes => {
-            if !BYTES_OK.load(Relaxed) {
-                return RT_ABSPATH.fallback(Reason::Args, func, args, nargsf, kw);
-            }
-            let v = bytes_view(p);
-            let mut cwd = None;
-            let mut get = || match cwd_units(Ty::Bytes) {
-                Some(CwdBuf::Bytes(c)) => Some(c),
-                _ => None,
-            };
-            match abs_units(v, &mut cwd, &mut get) {
-                None => std::ptr::null_mut(),
-                Some(norm) if norm.is_empty() => ffi::PyBytes_FromStringAndSize(c".".as_ptr(), 1),
-                Some(norm) => ffi::PyBytes_FromStringAndSize(norm.as_ptr().cast(), norm.len() as ffi::Py_ssize_t),
+            Ty::Bytes => {
+                if !BYTES_OK.load(Relaxed) {
+                    return RT_ABSPATH.fallback(Reason::Args, func, args, nargsf, kw);
+                }
+                let v = bytes_view(p);
+                let mut cwd = None;
+                let mut get = || match cwd_units(Ty::Bytes) {
+                    Some(CwdBuf::Bytes(c)) => Some(c),
+                    _ => None,
+                };
+                match abs_units(v, &mut cwd, &mut get) {
+                    None => std::ptr::null_mut(),
+                    Some(norm) if norm.is_empty() => ffi::PyBytes_FromStringAndSize(c".".as_ptr(), 1),
+                    Some(norm) => ffi::PyBytes_FromStringAndSize(norm.as_ptr().cast(), norm.len() as ffi::Py_ssize_t),
+                }
             }
         }
     }
-}));
+));
 
 /// Components of `relpath(path, start)` relative to `start` (already absolute and
 /// normalized), CPython's list `[pardir] * (len(start_list)-i) + path_list[i:]`.

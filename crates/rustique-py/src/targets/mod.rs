@@ -11,6 +11,7 @@ pub mod _selftest;
 pub mod builtins;
 pub mod containers;
 pub mod fnmatch;
+pub mod pathlib;
 pub mod posixpath;
 
 /// Every group's targets, in install order.
@@ -19,6 +20,7 @@ pub static ALL: &[&[&TargetSpec]] = &[
     builtins::TARGETS,
     posixpath::TARGETS,
     fnmatch::TARGETS,
+    pathlib::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,

@@ -68,7 +68,7 @@ def provenance(x, args):
         if x == "" or (ord(x) < 256 and x is chr(ord(x))):
             return ("single",)
     if isinstance(x, bytes) and len(x) <= 1:
-        if x == b"" and x is b"":
+        if x == b"" and x is ALLB[:0]:
             return ("single",)
         if len(x) == 1 and x is ALLB[x[0] : x[0] + 1]:
             return ("single",)
@@ -103,6 +103,15 @@ def enabled():
 
 def hits(name):
     return rt.stats()[name]["hits"]
+
+
+def rearm():
+    """Fallback-heavy tests suspend targets (adaptive suspension, re-armed by enable());
+    re-arm before counting hits."""
+    rt.enable(only="posixpath")
+    for _ in range(2000):
+        pass
+    rt.stats(reset=True)
 
 
 # ---------------------------------------------------------------------------------------
@@ -217,7 +226,7 @@ def test_kind_widening():
 
 
 def test_plain_subclass_hits():
-    rt.stats(reset=True)
+    rearm()
     posixpath.join(S("/a"), S("b"))
     posixpath.split(S("/a/b"))
     assert hits("posixpath.join") == 1 and hits("posixpath.split") == 1
@@ -265,7 +274,7 @@ def test_captured_references_and_introspection():
     from os.path import join as captured  # bound at test import time, before enable()
 
     assert captured is posixpath.join is os.path.join
-    rt.stats(reset=True)
+    rearm()
     assert captured("/a", "b") == "/a/b"
     assert hits("posixpath.join") == 1
     assert pickle.loads(pickle.dumps(posixpath.join)) is posixpath.join
@@ -281,7 +290,7 @@ def test_tools_see_the_original():
         if event == "call" and frame.f_code is posixpath.split.__code__:
             calls.append(event)
 
-    rt.stats(reset=True)
+    rearm()
     sys.setprofile(prof)
     try:
         posixpath.split("/a/b")
@@ -309,7 +318,7 @@ def test_patched_dependency_falls_back_and_rearms():
         assert posixpath.basename("/a/b") == "b"
         assert seen == ["/a/b"]
     settle()
-    rt.stats(reset=True)
+    rearm()
     assert posixpath.basename("/a/b") == "b"
     assert hits("posixpath.basename") == 1
 
@@ -326,7 +335,9 @@ def test_builtin_shadowed_in_module_globals():
     posixpath.isinstance = lambda o, t: False  # posixpath code now resolves this one
     try:
         settle()
-        check("split", b"/a/b")
+        ref = clone(posixpath)  # sees the shadowing global, like the original does
+        assert outcome(posixpath.split, (b"/a/b",)) == outcome(ref["split"], (b"/a/b",))
+        assert outcome(posixpath.split, (b"/a/b",))[0] == "raise"
     finally:
         del posixpath.isinstance
     settle()
@@ -340,7 +351,7 @@ def test_disable_restores():
         assert hits("posixpath.join") == 0
     finally:
         rt.enable(only="posixpath")
-    rt.stats(reset=True)
+    rearm()
     posixpath.join("a", "b")
     assert hits("posixpath.join") == 1
 
