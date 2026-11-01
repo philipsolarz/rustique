@@ -36,7 +36,9 @@ except Exception:  # noqa: BLE001
 @pytest.fixture(autouse=True, scope="module")
 def enabled():
     rq.enable(only=[GROUP])
+    rq.stats(True, reset=True)
     yield
+    rq.stats(False)
     rq.disable()
 
 
@@ -212,3 +214,10 @@ def test_strftime_against_disabled(fmt, dt, tz):
         rq.enable(only=[GROUP])
     assume(True)
     assert got == want
+
+
+def test_zz_fast_paths_were_exercised():
+    st = rq.stats()
+    for name in ["datetime.datetime.strptime", "datetime.date.strptime", "datetime.time.strptime", "time.strptime",
+                 "datetime.date.strftime", "datetime.time.strftime", "time.strftime"]:
+        assert st[name]["hits"] > 20, (name, st[name])

@@ -4,14 +4,15 @@
 //!
 //! | target | site | module (install trigger) |
 //! |---|---|---|
-//! | `datetime.datetime.strptime` / `datetime.date.strptime` / `datetime.time.strptime` | classmethods of `_datetime` | `_strptime` |
-//! | `time.strptime` | `time.strptime` | `_strptime` |
+//! | `datetime.datetime.strptime` / `datetime.date.strptime` / `datetime.time.strptime` | classmethods of `_datetime` | `_datetime` |
+//! | `time.strptime` | `time.strptime` | `_datetime` (results need its types) |
 //! | `datetime.date.strftime` (also `datetime.strftime`, `format()`, f-strings) | `date.strftime` | `_datetime` |
 //! | `datetime.time.strftime` | `time.strftime` method | `_datetime` |
 //! | `time.strftime` | `time.strftime` | `time` |
 //!
-//! The strptime targets wait for `_strptime` (imported by the first call of any of them),
-//! because their kernels stand in for its Python code and must fingerprint it.
+//! The strptime kernels stand in for `_strptime`'s Python code: they fingerprint and watch
+//! whichever `_strptime` module object `sys.modules` holds when they first see it (the first
+//! call imports it), and fall back until it is in a validated steady state.
 
 use std::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 
@@ -45,7 +46,12 @@ fn load_capi(cx: &Prepare<'_>) -> Result<(), Refusal> {
     if !capi().is_null() {
         return Ok(());
     }
-    let m = cx.loaded_module("_datetime")?;
+    // The target's own module when `_datetime` triggered the install (it is not in
+    // `sys.modules` while importlib re-inserts it), else the already imported one.
+    let m = match cx.module() {
+        Ok(m) if m.name().is_ok_and(|n| n == "_datetime") => m.clone(),
+        _ => cx.loaded_module("_datetime")?,
+    };
     let cap = cx.get(&m.dict(), "datetime_CAPI")?;
     // SAFETY: attached thread; the capsule name is checked by PyCapsule_GetPointer.
     let p = unsafe { ffi::PyCapsule_GetPointer(cap.as_ptr(), ffi::PyDateTime_CAPSULE_NAME.as_ptr()) };
@@ -59,14 +65,20 @@ fn load_capi(cx: &Prepare<'_>) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Everything every datetime target needs.
-fn common(cx: &Prepare<'_>) -> Result<&'static env::Env, Refusal> {
+/// What every datetime target needs.
+fn common_base(cx: &Prepare<'_>) -> Result<&'static env::Env, Refusal> {
     if !cfg!(all(target_os = "linux", target_env = "gnu")) {
         return Err(Refusal::new("glibc strftime/locale behaviour only validated on Linux/glibc"));
     }
     let e = env::capture(cx)?;
-    load_capi(cx)?;
     ustr::calibrate(cx.py());
+    Ok(e)
+}
+
+/// ... plus the datetime C API (every target but `time.strftime`).
+fn common(cx: &Prepare<'_>) -> Result<&'static env::Env, Refusal> {
+    let e = common_base(cx)?;
+    load_capi(cx)?;
     if TZ_CALIBRATED.load(Ordering::Relaxed) == 0 {
         let ok = format::calibrate_timezone(cx.py())?;
         TZ_CALIBRATED.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
@@ -226,7 +238,7 @@ fn prepare_time_strftime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Re
 }
 
 fn prepare_time_fn_strftime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    let e = common(cx)?;
+    let e = common_base(cx)?;
     let py = cx.py();
     // SAFETY: captured module.
     let time = unsafe { env::obj(py, e.time_mod) }.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?;
@@ -255,7 +267,7 @@ fn prepare_time_fn_strftime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(),
 pub static DATETIME_STRPTIME: TargetSpec = TargetSpec {
     name: "datetime.datetime.strptime",
     group: "datetime",
-    module: Some("_strptime"),
+    module: Some("_datetime"),
     versions: VERSIONS,
     free_threaded: true,
     checkable: true,
@@ -267,7 +279,7 @@ pub static DATETIME_STRPTIME: TargetSpec = TargetSpec {
 pub static DATE_STRPTIME: TargetSpec = TargetSpec {
     name: "datetime.date.strptime",
     group: "datetime",
-    module: Some("_strptime"),
+    module: Some("_datetime"),
     versions: VERSIONS,
     free_threaded: true,
     checkable: true,
@@ -279,7 +291,7 @@ pub static DATE_STRPTIME: TargetSpec = TargetSpec {
 pub static TIME_STRPTIME: TargetSpec = TargetSpec {
     name: "datetime.time.strptime",
     group: "datetime",
-    module: Some("_strptime"),
+    module: Some("_datetime"),
     versions: VERSIONS,
     free_threaded: true,
     checkable: true,
@@ -291,7 +303,7 @@ pub static TIME_STRPTIME: TargetSpec = TargetSpec {
 pub static TIME_FN_STRPTIME: TargetSpec = TargetSpec {
     name: "time.strptime",
     group: "datetime",
-    module: Some("_strptime"),
+    module: Some("_datetime"),
     versions: VERSIONS,
     free_threaded: true,
     checkable: true,

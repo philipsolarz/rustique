@@ -551,14 +551,15 @@ def test_regex_cache_evolves_as_in_cpython():
     assert dict(_strptime._regex_cache) == before
 
 
-@pytest.mark.skipif(sys.version_info < (3, 15), reason="3.15: %e without a year warns")
 def test_warning_on_compile_only():
+    # 3.15: '%e' without a year warns; 3.14: '%d' without a year warns.
+    fmt = "%e" if sys.version_info >= (3, 15) else "%d"
     _strptime._regex_cache.clear()
-    a = outcome(D.datetime.strptime, "5", "%e")
-    b = outcome(D.datetime.strptime, "5", "%e")
+    a = outcome(D.datetime.strptime, "5", fmt)
+    b = outcome(D.datetime.strptime, "5", fmt)
     _strptime._regex_cache.clear()
     with original():
-        a2 = outcome(D.datetime.strptime, "5", "%e")
-        b2 = outcome(D.datetime.strptime, "5", "%e")
+        a2 = outcome(D.datetime.strptime, "5", fmt)
+        b2 = outcome(D.datetime.strptime, "5", fmt)
     assert (a, b) == (a2, b2)
     assert a[1] and not b[1]

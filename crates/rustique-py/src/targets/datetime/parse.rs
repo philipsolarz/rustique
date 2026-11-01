@@ -8,8 +8,7 @@
 use std::cell::RefCell;
 use std::ffi::c_int;
 use std::rc::Rc;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use pyo3::ffi;
 use pyo3::prelude::*;
@@ -92,7 +91,11 @@ pub struct SpDeps {
     shadows: Vec<(u8, &'static str, Option<usize>)>,
 }
 
-static SP: OnceLock<SpDeps> = OnceLock::new();
+/// Captured `_strptime` module objects (normally one; `test_datetime` imports fresh copies).
+const MAX_SP: usize = 32;
+static SPS: [AtomicPtr<SpDeps>; MAX_SP] = [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_SP];
+static SP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// `(generation << 8) | index into SPS` of the last successful validation (0: none).
 static SP_OK: AtomicU64 = AtomicU64::new(0);
 static SP_BAD: AtomicU64 = AtomicU64::new(0);
 
@@ -100,49 +103,86 @@ fn keep(o: &Bound<'_, PyAny>) -> usize {
     o.clone().into_ptr() as usize
 }
 
-/// Capture and fingerprint `_strptime` (the target's module) and `locale`, once. Runs in
-/// `prepare` (maybe inside the `sys.modules` watcher): dict reads and C getters only.
-fn capture_sp(cx: &mut Prepare<'_>) -> Result<&'static SpDeps, Refusal> {
-    let m = cx.module()?.clone();
-    if let Some(sp) = SP.get() {
-        if sp.module != m.as_ptr() as usize {
-            return Err(Refusal::new("_strptime was re-imported (a different module object)"));
-        }
-        return Ok(sp);
+/// Dict entry without running Python code.
+fn get<'py>(d: &Bound<'py, PyDict>, key: &str) -> Result<Bound<'py, PyAny>, String> {
+    item(d, key).ok_or_else(|| format!("missing {key}"))
+}
+
+fn fp_ok(name: &str, f: &Bound<'_, PyAny>) -> Result<(), String> {
+    let (major, minor) = crate::accel::version::running();
+    let observed = crate::accel::fingerprint::function(f).map_err(|e| e.to_string())?;
+    match crate::accel::fingerprint::expected_for(fingerprints::code(name), major, minor) {
+        Some(x) if x == observed => Ok(()),
+        _ => Err(format!("{name}: fingerprint {observed} not validated for {major}.{minor}")),
     }
-    let py = cx.py();
-    let locale = cx.loaded_module("locale")?;
-    let clocale = cx.loaded_module("_locale")?;
+}
+
+/// Capture one `_strptime` module object: fingerprints of the code the kernels
+/// reimplement, the objects its steady state depends on, and generation watches on them.
+/// Plain dict reads and C getters only (it may run inside `prepare` or a kernel).
+fn capture_module(py: Python<'_>, m: &Bound<'_, pyo3::types::PyModule>) -> Result<SpDeps, String> {
+    let pe = |e: PyErr| e.to_string();
     let d = m.dict();
+    if crate::accel::prepare::module_initializing(m) {
+        return Err("_strptime is still initializing".into());
+    }
+    let locale = get(&d, "locale")?.cast_into::<pyo3::types::PyModule>().map_err(|e| pe(e.into()))?;
     let ld = locale.dict();
     let mut codes = [(0usize, 0usize); 10];
     for (i, name) in FUNCS.iter().chain(LOCALE_FUNCS.iter()).enumerate() {
-        let f = if i < FUNCS.len() { cx.get(&d, name)? } else { cx.get(&ld, name)? };
+        let f = if i < FUNCS.len() { get(&d, name)? } else { get(&ld, name)? };
         if f.cast_exact::<pyo3::types::PyFunction>().is_err() {
-            return Err(Refusal::from(format!("{name} is not a Python function")));
+            return Err(format!("{name} is not a Python function"));
         }
-        cx.fingerprint_code(&f, fingerprints::code(name))?;
-        let code = f.getattr("__code__")?;
-        if !crate::accel::version::code_layout_ok_for(&code)? {
-            return Err(Refusal::new("PyCodeObject layout differs"));
+        fp_ok(name, &f)?;
+        let code = f.getattr("__code__").map_err(pe)?;
+        if !crate::accel::version::code_layout_ok_for(&code).map_err(pe)? {
+            return Err("PyCodeObject layout differs".into());
         }
         codes[i] = (keep(&f), keep(&code));
     }
-    cx.fingerprint_code(&cx.get(&d, "_fixmonths")?, fingerprints::code("_fixmonths"))?;
+    fp_ok("_fixmonths", &get(&d, "_fixmonths")?)?;
     for (cls, meth) in CLASS_METHODS {
-        let ty = cx.get(&d, cls)?.cast_into::<pyo3::types::PyType>().map_err(PyErr::from)?;
-        let f = cx.type_attr(&ty, meth)?;
-        cx.fingerprint_code(&f, fingerprints::code(&format!("{cls}.{meth}")))?;
+        let ty = get(&d, cls)?.cast_into::<pyo3::types::PyType>().map_err(|e| pe(e.into()))?;
+        let td = crate::accel::prepare::type_dict(&ty).map_err(|r| r.reason().to_string())?;
+        fp_ok(&format!("{cls}.{meth}"), &get(&td, meth)?)?;
     }
-    let setlocale = cx.get(&ld, "_setlocale")?;
-    if !setlocale.is(&cx.get(&clocale.dict(), "setlocale")?) {
-        return Err(Refusal::new("locale._setlocale is not _locale.setlocale"));
+    // locale._setlocale is the C function _locale.setlocale.
+    let setlocale = get(&ld, "_setlocale")?;
+    // SAFETY: type-checked reads of a builtin function.
+    let c_ok = unsafe {
+        let p = setlocale.as_ptr();
+        ffi::PyCFunction_Check(p) != 0 && {
+            let f = p.cast::<ffi::PyCFunctionObject>();
+            let def = (*f).m_ml;
+            let owner = (*f).m_self;
+            !def.is_null()
+                && std::ffi::CStr::from_ptr((*def).ml_name).to_bytes() == b"setlocale"
+                && !owner.is_null()
+                && ffi::PyModule_Check(owner) != 0
+                && Bound::from_borrowed_ptr(py, owner).getattr("__name__").is_ok_and(|n| n.eq("_locale").unwrap_or(false))
+        }
+    };
+    if !c_ok {
+        return Err("locale._setlocale is not _locale.setlocale".into());
     }
-    let time_strptime = cx.get(&d, "_strptime_time")?;
-    let defaults = time_strptime.getattr("__defaults__")?;
-    if !defaults.eq(("%a %b %d %H:%M:%S %Y",))? {
-        return Err(Refusal::new("_strptime_time default format differs"));
+    let time_strptime = get(&d, "_strptime_time")?;
+    let defaults = time_strptime.getattr("__defaults__").map_err(pe)?;
+    if !defaults.eq(("%a %b %d %H:%M:%S %Y",)).unwrap_or(false) {
+        return Err("_strptime_time default format differs".into());
     }
+    let rc = get(&d, "_regex_cache")?;
+    if !rc.is_exact_instance_of::<PyDict>() {
+        return Err("_strptime._regex_cache is not a dict".into());
+    }
+    let re = get(&d, "re")?.cast_into::<pyo3::types::PyModule>().map_err(|e| pe(e.into()))?;
+    let mut shadows = Vec::new();
+    for (which, dict) in [(0u8, &d), (1u8, &ld)] {
+        for name in SHADOWS {
+            shadows.push((which, name, item(dict, name).map(|o| keep(&o))));
+        }
+    }
+    let alias = get(&ld, "locale_alias")?;
     let sp = SpDeps {
         module: keep(m.as_any()),
         dict: keep(d.as_any()),
@@ -150,28 +190,14 @@ fn capture_sp(cx: &mut Prepare<'_>) -> Result<&'static SpDeps, Refusal> {
         time_defaults: keep(&defaults),
         locale_mod: keep(locale.as_any()),
         locale_dict: keep(ld.as_any()),
-        locale_alias: keep(&cx.get(&ld, "locale_alias")?),
+        locale_alias: keep(&alias),
         setlocale: keep(&setlocale),
-        time_re_cls: keep(&cx.get(&d, "TimeRE")?),
-        locale_time_cls: keep(&cx.get(&d, "LocaleTime")?),
-        cache_lock_type: keep(cx.get(&d, "_cache_lock")?.get_type().as_any()),
-        regex_cache: {
-            let rc = cx.get(&d, "_regex_cache")?;
-            if !rc.is_exact_instance_of::<PyDict>() {
-                return Err(Refusal::new("_strptime._regex_cache is not a dict"));
-            }
-            keep(&rc)
-        },
-        pattern_type: keep(&cx.get(&cx.loaded_module("re")?.dict(), "Pattern")?),
-        shadows: {
-            let mut v = Vec::new();
-            for (which, dict) in [(0u8, &d), (1u8, &ld)] {
-                for name in SHADOWS {
-                    v.push((which, name, cx.get_opt(dict, name)?.map(|o| keep(&o))));
-                }
-            }
-            v
-        },
+        time_re_cls: keep(&get(&d, "TimeRE")?),
+        locale_time_cls: keep(&get(&d, "LocaleTime")?),
+        cache_lock_type: keep(get(&d, "_cache_lock")?.get_type().as_any()),
+        regex_cache: keep(&rc),
+        pattern_type: keep(&get(&re.dict(), "Pattern")?),
+        shadows,
     };
     let keys_m: Vec<&str> = FUNCS
         .iter()
@@ -180,6 +206,7 @@ fn capture_sp(cx: &mut Prepare<'_>) -> Result<&'static SpDeps, Refusal> {
             [
                 "time",
                 "locale",
+                "re",
                 "datetime_date",
                 "datetime_timedelta",
                 "datetime_timezone",
@@ -200,12 +227,34 @@ fn capture_sp(cx: &mut Prepare<'_>) -> Result<&'static SpDeps, Refusal> {
         .chain(["_setlocale", "locale_alias", "LC_TIME", "LC_ALL"].iter())
         .copied()
         .collect();
-    let _ = py;
-    watch::watch(&d, &keys_m)?;
-    watch::watch(&ld, &keys_l)?;
-    let alias = cx.get(&ld, "locale_alias")?.cast_into::<PyDict>().map_err(PyErr::from)?;
-    watch::watch(&alias, &["c"])?;
-    Ok(SP.get_or_init(|| sp))
+    watch::watch(&d, &keys_m).map_err(pe)?;
+    watch::watch(&ld, &keys_l).map_err(pe)?;
+    watch::watch(&alias.cast_into::<PyDict>().map_err(|e| pe(e.into()))?, &["c"]).map_err(pe)?;
+    Ok(sp)
+}
+
+/// The captured deps of module `m` (capturing it on first sight): (index, deps).
+fn find_or_capture(py: Python<'_>, m: &Bound<'_, pyo3::types::PyModule>) -> Result<(usize, &'static SpDeps), String> {
+    let find = || {
+        (0..MAX_SP).find_map(|i| {
+            let p = SPS[i].load(Ordering::Acquire);
+            // SAFETY: leaked, never freed.
+            (!p.is_null() && unsafe { (*p).module } == m.as_ptr() as usize).then(|| (i, unsafe { &*p }))
+        })
+    };
+    if let Some(hit) = find() {
+        return Ok(hit);
+    }
+    let sp = capture_module(py, m)?;
+    let _g = SP_LOCK.lock().map_err(|_| "poisoned".to_string())?;
+    if let Some(hit) = find() {
+        return Ok(hit);
+    }
+    let i = (0..MAX_SP).find(|&i| SPS[i].load(Ordering::Acquire).is_null()).ok_or("too many _strptime modules")?;
+    let p = Box::into_raw(Box::new(sp));
+    SPS[i].store(p, Ordering::Release);
+    // SAFETY: just leaked.
+    Ok((i, unsafe { &*p }))
 }
 
 const SHADOWS: [&str; 10] = ["isinstance", "enumerate", "str", "len", "int", "tuple", "ValueError", "TypeError", "KeyError", "range"];
@@ -223,7 +272,7 @@ fn list_is(o: &Bound<'_, PyAny>, expected: &[&str], leading_empty: bool) -> bool
 pub static LAST_FAILURE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 /// Everything the original reads in its steady state is what the kernel assumes.
-fn validate(py: Python<'_>, e: &Env) -> Result<(), String> {
+fn validate(py: Python<'_>, e: &Env) -> Result<usize, String> {
     macro_rules! need {
         ($c:expr, $why:expr) => {
             if !$c {
@@ -233,23 +282,31 @@ fn validate(py: Python<'_>, e: &Env) -> Result<(), String> {
     }
     let pe = |r: PyErr| format!("error: {}", r.value(py));
     need!(env::common_ok(py, e), "builtins / time dependencies changed");
-    let Some(sp) = SP.get() else { return Err("_strptime not captured".into()) };
     // SAFETY: captured objects.
-    let (modules, d, tdict, ldict) = unsafe {
+    let (modules, tdict) = unsafe {
         (
             obj(py, e.sys_modules).cast_into::<PyDict>().map_err(|e| pe(e.into()))?,
-            obj(py, sp.dict).cast_into::<PyDict>().map_err(|e| pe(e.into()))?,
             obj(py, e.time_dict).cast_into::<PyDict>().map_err(|e| pe(e.into()))?,
-            obj(py, sp.locale_dict).cast_into::<PyDict>().map_err(|e| pe(e.into()))?,
         )
     };
     let is = |o: Option<Bound<'_, PyAny>>, addr: usize| o.is_some_and(|o| o.as_ptr() as usize == addr);
+    // The `_strptime` that `PyImport_Import` would return now.
+    let m = item(&modules, "_strptime").ok_or("_strptime not imported")?;
+    let m = m.cast_into::<pyo3::types::PyModule>().map_err(|_| "sys.modules['_strptime'] is not a module")?;
+    let (index, sp) = find_or_capture(py, &m)?;
+    // SAFETY: captured objects.
+    let (d, ldict) = unsafe {
+        (
+            obj(py, sp.dict).cast_into::<PyDict>().map_err(|e| pe(e.into()))?,
+            obj(py, sp.locale_dict).cast_into::<PyDict>().map_err(|e| pe(e.into()))?,
+        )
+    };
     let int_is = |o: Option<Bound<'_, PyAny>>, v: i64| {
         o.is_some_and(|o| o.is_exact_instance_of::<pyo3::types::PyInt>() && o.eq(v).unwrap_or(false))
     };
     // SAFETY: captured modules.
     let (mt, lt_mod) = unsafe { (ffi::Py_TYPE(sp.module as *mut _) as usize, ffi::Py_TYPE(sp.locale_mod as *mut _) as usize) };
-    need!(is(item(&modules, "_strptime"), sp.module) && mt == e.module_type, "sys.modules['_strptime'] changed");
+    need!(mt == e.module_type, "_strptime module type changed");
     need!(lt_mod == e.module_type, "locale module type changed");
     for (i, name) in FUNCS.iter().enumerate() {
         need!(is(item(&d, name), sp.codes[i].0), format!("_strptime.{name} changed"));
@@ -334,36 +391,47 @@ fn validate(py: Python<'_>, e: &Env) -> Result<(), String> {
             && names("am_pm", &AM_PM, false),
         "cached LocaleTime names are not the C locale's"
     );
-    Ok(())
+    Ok(index)
 }
 
-/// Is `_strptime` in the validated steady state? One relaxed load in the common case.
 #[inline(always)]
-fn ready(py: Python<'_>, e: &Env) -> bool {
+fn sp_at(i: usize) -> Option<&'static SpDeps> {
+    let p = SPS[i].load(Ordering::Acquire);
+    // SAFETY: leaked, never freed.
+    (!p.is_null()).then(|| unsafe { &*p })
+}
+
+/// The deps of `sys.modules['_strptime']` if it is in the validated steady state. One
+/// relaxed load in the common case.
+#[inline(always)]
+fn ready(py: Python<'_>, e: &Env) -> Option<&'static SpDeps> {
     let g = watch::current();
-    if g == SP_OK.load(Ordering::Relaxed) {
-        return true;
+    let ok = SP_OK.load(Ordering::Acquire);
+    if ok >> 8 == g {
+        return sp_at((ok & 0xff) as usize);
     }
     if g == SP_BAD.load(Ordering::Relaxed) {
-        return false;
+        return None;
     }
     revalidate(py, e, g)
 }
 
 #[cold]
 #[inline(never)]
-fn revalidate(py: Python<'_>, e: &Env, g: u64) -> bool {
-    let r = validate(py, e);
-    let ok = r.is_ok();
-    if let (Err(why), Ok(mut last)) = (r, LAST_FAILURE.lock()) {
-        *last = why;
+fn revalidate(py: Python<'_>, e: &Env, g: u64) -> Option<&'static SpDeps> {
+    match validate(py, e) {
+        Ok(i) => {
+            SP_OK.store(g << 8 | i as u64, Ordering::Release);
+            sp_at(i)
+        }
+        Err(why) => {
+            SP_BAD.store(g, Ordering::Relaxed);
+            if let Ok(mut last) = LAST_FAILURE.lock() {
+                *last = why;
+            }
+            None
+        }
     }
-    if ok {
-        SP_OK.store(g, Ordering::Relaxed);
-    } else {
-        SP_BAD.store(g, Ordering::Relaxed);
-    }
-    ok
 }
 
 /// The original's Python functions for this call are unchanged and nobody listens locally.
@@ -455,7 +523,7 @@ unsafe fn run(kind: Kind, cls: *mut ffi::PyObject, s: *mut ffi::PyObject, fmt: *
             c.fallback(Reason::Args);
             return None;
         }
-        if ffi::PyUnicode_CheckExact(s) == 0 || ffi::PyUnicode_CheckExact(fmt) == 0 {
+        if ffi::PyUnicode_CheckExact(s) == 0 || !fmt.is_null() && ffi::PyUnicode_CheckExact(fmt) == 0 {
             c.fallback(Reason::Args);
             return None;
         }
@@ -465,15 +533,27 @@ unsafe fn run(kind: Kind, cls: *mut ffi::PyObject, s: *mut ffi::PyObject, fmt: *
             return None;
         }
         let py = Python::assume_attached();
-        if !ready(py, e) || !env::lc_time_is_c() {
+        let Some(sp) = ready(py, e).filter(|_| env::lc_time_is_c()) else {
             c.fallback(Reason::Deps);
             return None;
-        }
-        let sp = SP.get()?;
+        };
         if !TOOLS.quiet() || !codes_ok(sp, kind, false) {
             c.fallback(Reason::Tools);
             return None;
         }
+        // `time.strptime(s)`: `_strptime_time`'s default format, from its (unchanged)
+        // `__defaults__`.
+        let fmt = if fmt.is_null() {
+            let f = sp.codes[Kind::TimeFn as usize].0 as *mut ffi::PyFunctionObject;
+            let d = (*f).func_defaults;
+            if d as usize != sp.time_defaults {
+                c.fallback(Reason::Deps);
+                return None;
+            }
+            ffi::PyTuple_GET_ITEM(d, 0)
+        } else {
+            fmt
+        };
         // The original's private cache: it clears `_regex_cache` when it holds more than
         // `_CACHE_MAX_SIZE` (5) entries and compiles (and may warn) on a miss. Take the fast
         // path only when it would do neither, so the cache evolves exactly as in CPython.
@@ -675,21 +755,12 @@ pub unsafe extern "C" fn time_fn(module: *mut ffi::PyObject, args: *mut ffi::PyO
         let e = env::env();
         if e.is_some_and(|e| e.time_mod == module as usize) && (n == 2 || n == 1) {
             let s = ffi::PyTuple_GET_ITEM(args, 0);
-            let fmt = if n == 2 {
-                Some(ffi::PyTuple_GET_ITEM(args, 1))
-            } else {
-                // `_strptime_time`'s default, read from its (unchanged) __defaults__.
-                SP.get().and_then(|sp| {
-                    let f = sp.codes[Kind::TimeFn as usize].0 as *mut ffi::PyFunctionObject;
-                    let d = (*f).func_defaults;
-                    (d as usize == sp.time_defaults && ffi::PyTuple_GET_SIZE(d) == 1).then(|| ffi::PyTuple_GET_ITEM(d, 0))
-                })
-            };
-            if let Some(fmt) = fmt
-                && let Some(r) = run(Kind::TimeFn, module, s, fmt)
-            {
+            // NULL: the default format.
+            let fmt = if n == 2 { ffi::PyTuple_GET_ITEM(args, 1) } else { std::ptr::null_mut() };
+            if let Some(r) = run(Kind::TimeFn, module, s, fmt) {
                 if COUNTERS[Kind::TimeFn as usize].hit_check() {
-                    return check::verify(super::spec(&Kind::TimeFn), r, &[s, fmt], || {
+                    let a: &[*mut ffi::PyObject] = if n == 2 { &[s, fmt] } else { &[s] };
+                    return check::verify(super::spec(&Kind::TimeFn), r, a, || {
                         ORIG_VAR[Kind::TimeFn as usize].get()(module, args)
                     });
                 }
@@ -702,25 +773,45 @@ pub unsafe extern "C" fn time_fn(module: *mut ffi::PyObject, args: *mut ffi::PyO
     }
 }
 
-/// Setup shared by the strptime targets (their module is `_strptime`).
+/// Setup shared by the strptime targets. `_strptime` itself is captured (fingerprinted,
+/// watched) when the kernels first see it in `sys.modules`; when it is already imported,
+/// its fingerprints are checked here too, so a mismatch shows as a refusal in `status()`.
 pub fn prepare_common(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let (_, minor) = cx.version();
     VERSION.store(usize::from(minor), Ordering::Relaxed);
     let api = super::capi();
     // SAFETY: datetime C API filled by the caller.
-    unsafe {
+    let date_t = unsafe {
         TYPES[0].store((*api).DateTimeType as usize, Ordering::Relaxed);
         TYPES[1].store((*api).DateType as usize, Ordering::Relaxed);
         TYPES[2].store((*api).TimeType as usize, Ordering::Relaxed);
+        (*api).DateType as usize
+    };
+    let Ok(m) = cx.loaded_module("_strptime") else { return Ok(()) };
+    let d = m.dict();
+    // Only the stdlib's C-datetime flavour (not one imported against `_pydatetime`).
+    if !cx.get_opt(&d, "datetime_date")?.is_some_and(|t| t.as_ptr() as usize == date_t) {
+        return Ok(());
     }
-    capture_sp(cx)?;
+    let locale = cx.get(&d, "locale")?.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?;
+    for name in FUNCS {
+        cx.fingerprint_code(&cx.get(&d, name)?, fingerprints::code(name))?;
+    }
+    for name in LOCALE_FUNCS {
+        cx.fingerprint_code(&cx.get(&locale.dict(), name)?, fingerprints::code(name))?;
+    }
+    cx.fingerprint_code(&cx.get(&d, "_fixmonths")?, fingerprints::code("_fixmonths"))?;
+    for (cls, meth) in CLASS_METHODS {
+        let ty = cx.get(&d, cls)?.cast_into::<pyo3::types::PyType>().map_err(PyErr::from)?;
+        cx.fingerprint_code(&cx.type_attr(&ty, meth)?, fingerprints::code(&format!("{cls}.{meth}")))?;
+    }
     Ok(())
 }
 
 /// (ok generation, failed generation, last failure reason).
 pub fn validation_state() -> (u64, u64, String) {
     (
-        SP_OK.load(Ordering::Relaxed),
+        SP_OK.load(Ordering::Relaxed) >> 8,
         SP_BAD.load(Ordering::Relaxed),
         LAST_FAILURE.lock().map(|s| s.clone()).unwrap_or_default(),
     )
