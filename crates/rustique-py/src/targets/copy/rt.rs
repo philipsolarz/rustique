@@ -160,7 +160,6 @@ pub struct St {
     pub atomic_types: [*mut ffi::PyTypeObject; 16],
     pub method_type: *mut ffi::PyTypeObject,
     pub frozendict_type: *mut ffi::PyTypeObject,
-    pub default_type_hash: usize,
     // interned names
     pub s_deepcopy: O,
     pub s_copy: O,
@@ -179,12 +178,7 @@ pub struct St {
     pub s_new: O,
     pub s_error: O,
     pub int4: O,
-    /// Byte code of `def f(self, memo): return self` / `def f(self): return self` on this
-    /// interpreter, with their flags (used to recognise `Enum.__deepcopy__`-style hooks).
-    pub ret_self2: (O, c_int),
-    pub ret_self1: (O, c_int),
     // tstate layout
-    pub rem_off: usize,
 }
 
 // SAFETY: immutable after construction; the objects it points to are kept alive.
@@ -229,14 +223,30 @@ pub unsafe fn helper_intact(st: &St, i: usize) -> bool {
 /// `str`, `int`, `NoneType`, `float`, `bool`: the atomic types copied inline by the
 /// container loops (when the atomic set is known intact).
 #[inline(always)]
-pub fn is_quick(st: &St, t: *mut ffi::PyTypeObject) -> bool {
-    let a = &st.atomic_types;
-    t == a[0] || t == a[1] || t == a[2] || t == a[3] || t == a[4]
+pub fn is_quick(t: *mut ffi::PyTypeObject) -> bool {
+    // SAFETY: static type objects and an immortal singleton.
+    unsafe {
+        t == &raw mut ffi::PyUnicode_Type
+            || t == &raw mut ffi::PyLong_Type
+            || t == ty(ffi::Py_None())
+            || t == &raw mut ffi::PyFloat_Type
+            || t == &raw mut ffi::PyBool_Type
+    }
+}
+
+/// `type.__hash__` (what a metatype without its own `__hash__` uses), as an address.
+#[inline(always)]
+pub fn default_type_hash() -> usize {
+    // SAFETY: static type object read.
+    unsafe { ffi::PyType_Type.tp_hash.map_or(0, |f| f as usize) }
 }
 
 // ---------------------------------------------------------------------------------------
 // Python-frame recursion counter (`tstate->py_recursion_remaining`)
 // ---------------------------------------------------------------------------------------
+
+/// Offset of `py_recursion_remaining` in `PyThreadState` (calibrated at install).
+pub static REM_OFF: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Emulates the `_Py_EnterRecursivePy`/`_Py_LeaveRecursiveCallPy` pair CPython runs for
 /// each Python frame of `copy.py` the kernel does not actually execute, on the real
@@ -250,11 +260,12 @@ pub struct Depth {
 
 impl Depth {
     #[inline(always)]
-    pub unsafe fn new(st: &St) -> Depth {
-        // SAFETY: attached thread; offsets calibrated at install.
+    pub unsafe fn new() -> Depth {
+        let off = REM_OFF.load(Relaxed);
+        // SAFETY: attached thread; offset calibrated at install (`calibrate_tstate`).
         unsafe {
             let ts = ffi::PyThreadState_Get().cast::<u8>();
-            Depth { rem: ts.add(st.rem_off).cast(), headroom: ts.add(st.rem_off + 8).cast(), pushed: 0 }
+            Depth { rem: ts.add(off).cast(), headroom: ts.add(off + 8).cast(), pushed: 0 }
         }
     }
 
@@ -571,6 +582,51 @@ pub unsafe fn raise_obj(exc: O) -> R<O> {
     }
 }
 
+static REF1: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
+static REF2: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
+static REF_FLAGS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// `(co_code, co_flags)` of `def f(self[, memo]): return self` on this interpreter, compiled
+/// on first use (compiling only; kept for the process).
+unsafe fn ret_self_ref(n: c_int) -> Option<(O, c_int)> {
+    let cell = if n == 2 { &REF2 } else { &REF1 };
+    let have = cell.load(Relaxed);
+    if !have.is_null() {
+        return Some((have, REF_FLAGS.load(Relaxed)));
+    }
+    let src = if n == 2 { c"def f(self, memo):\n    return self\n" } else { c"def f(self):\n    return self\n" };
+    // SAFETY: attached thread; the compiler runs no Python code.
+    unsafe {
+        let m = ffi::Py_CompileString(src.as_ptr(), c"<rustique>".as_ptr(), ffi::Py_file_input);
+        if m.is_null() {
+            ffi::PyErr_Clear();
+            return None;
+        }
+        let m = Own(m);
+        let consts = Own(ffi::PyObject_GetAttrString(m.get(), c"co_consts".as_ptr()));
+        if consts.get().is_null() || ty(consts.get()) != &raw mut ffi::PyTuple_Type {
+            ffi::PyErr_Clear();
+            return None;
+        }
+        for i in 0..ffi::PyTuple_GET_SIZE(consts.get()) {
+            let c = ffi::PyTuple_GET_ITEM(consts.get(), i);
+            if ty(c) == &raw mut ffi::PyCode_Type {
+                let cc = ffi::PyObject_GetAttrString(c, c"co_code".as_ptr());
+                if cc.is_null() {
+                    ffi::PyErr_Clear();
+                    return None;
+                }
+                REF_FLAGS.store((*c.cast::<crate::accel::version::RawCode>()).co_flags, Relaxed);
+                if cell.compare_exchange(std::ptr::null_mut(), cc, Relaxed, Relaxed).is_err() {
+                    decref(cc);
+                }
+                return Some((cell.load(Relaxed), REF_FLAGS.load(Relaxed)));
+            }
+        }
+        None
+    }
+}
+
 static RET_SELF1: [AtomicPtr<ffi::PyObject>; 8] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 8];
 static RET_SELF2: [AtomicPtr<ffi::PyObject>; 8] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 8];
 
@@ -578,10 +634,7 @@ static RET_SELF2: [AtomicPtr<ffi::PyObject>; 8] = [const { AtomicPtr::new(std::p
 /// parameters (`Enum.__deepcopy__`, `Enum.__copy__`, `Pattern`-like no-op hooks written
 /// in Python)? Calling it has no effect besides its frame.
 #[inline]
-pub unsafe fn is_return_self(st: &St, f: O, n: c_int) -> bool {
-    if st.ret_self2.0.is_null() {
-        return false;
-    }
+pub unsafe fn is_return_self(f: O, n: c_int) -> bool {
     // SAFETY: live object; layouts of function/code objects (public cpython headers).
     unsafe {
         if ty(f) != &raw mut ffi::PyFunction_Type {
@@ -589,7 +642,6 @@ pub unsafe fn is_return_self(st: &St, f: O, n: c_int) -> bool {
         }
         let code = (*f.cast::<ffi::PyFunctionObject>()).func_code;
         let rc = code.cast::<crate::accel::version::RawCode>();
-        let (want, flags) = if n == 2 { st.ret_self2 } else { st.ret_self1 };
         if !crate::accel::guard::code_locally_quiet(code) {
             return false;
         }
@@ -598,6 +650,7 @@ pub unsafe fn is_return_self(st: &St, f: O, n: c_int) -> bool {
         if cache.iter().any(|c| c.load(Relaxed) == code) {
             return true;
         }
+        let Some((want, flags)) = ret_self_ref(n) else { return false };
         if (*rc).co_argcount != n
             || (*rc).co_kwonlyargcount != 0
             || (*rc).co_flags != flags

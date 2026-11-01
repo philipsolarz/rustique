@@ -134,7 +134,7 @@ impl Engine {
         Engine {
             st,
             // SAFETY: attached thread.
-            depth: unsafe { Depth::new(st) },
+            depth: unsafe { Depth::new() },
             // SAFETY: live dict.
             memo: if memo.is_null() { Memo::Native(Native::new()) } else { Memo::Dict(unsafe { incref(memo) }) },
             stack: SVec::new(),
@@ -169,7 +169,7 @@ impl Engine {
             }
             // SAFETY: live type object.
             unsafe {
-                if meta_hash(cls.cast()) == st.default_type_hash {
+                if meta_hash(cls.cast()) == default_type_hash() {
                     // A pointer-hashed type: the set lookup is pure, decide by identity.
                     return Ok(a[5..].contains(&cls));
                 }
@@ -342,7 +342,7 @@ impl Engine {
             let cp = Own(getattr_opt(x, st.s_deepcopy)?);
             if !cp.get().is_null() && cp.get() != ffi::Py_None() {
                 let c = cp.get();
-                if ty(c) == &raw mut PyMethod_Type && is_return_self(st, method_func(c), 2) {
+                if ty(c) == &raw mut PyMethod_Type && is_return_self(method_func(c), 2) {
                     // `def __deepcopy__(self, memo): return self` (Enum, ...): its frame only.
                     self.depth.touch()?;
                     return self.ready(x, d.into_raw(), incref(method_self(c)));
@@ -549,7 +549,7 @@ impl Engine {
                         match list_item(x, *i) {
                             Some(item) => {
                                 *i += 1;
-                                if inline && is_quick(st, ty(item)) {
+                                if inline && is_quick(ty(item)) {
                                     let r = ffi::PyList_Append(*y, item);
                                     decref(item);
                                     if r < 0 {
@@ -574,7 +574,7 @@ impl Engine {
                     while *i < n {
                         let item = ffi::PyTuple_GET_ITEM(x, *i);
                         *i += 1;
-                        if inline && is_quick(st, ty(item)) {
+                        if inline && is_quick(ty(item)) {
                             if !y.is_null() && ffi::PyList_Append(*y, item) < 0 {
                                 return Err(());
                             }
@@ -637,8 +637,8 @@ impl Engine {
                     while let Some((k, v)) = it.next_borrowed()? {
                         // Strong references for whatever outlives this iteration.
                         let own = |o: O| if DictIt::OWNED { o } else { incref(o) };
-                        if inline && is_quick(st, ty(v)) {
-                            if is_quick(st, ty(k)) {
+                        if inline && is_quick(ty(v)) {
+                            if is_quick(ty(k)) {
                                 let r = ffi::PyDict_SetItem(*y, k, v);
                                 if DictIt::OWNED {
                                     decref(k);

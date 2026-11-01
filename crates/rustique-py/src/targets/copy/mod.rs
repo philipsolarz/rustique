@@ -311,31 +311,17 @@ fn same_type_set(set: &Bound<'_, PyAny>, want: &[*mut ffi::PyTypeObject]) -> PyR
     Ok(true)
 }
 
-/// `(co_code, co_flags)` of `src`'s first function, compiled (no code runs).
-fn ret_self_code(py: Python<'_>, src: &std::ffi::CStr) -> PyResult<(O, c_int)> {
-    {
-        // SAFETY: compiles only.
-        let m = unsafe { ffi::Py_CompileString(src.as_ptr(), c"<rustique>".as_ptr(), ffi::Py_file_input) };
-        // SAFETY: new reference or error.
-        let m = unsafe { Bound::from_owned_ptr_or_err(py, m)? };
-        for c in m.getattr("co_consts")?.try_iter()? {
-            let c = c?;
-            if c.get_type().name()? == "code" {
-                return Ok((c.getattr("co_code")?.into_ptr(), c.getattr("co_flags")?.extract()?));
-            }
-        }
-        Err(pyo3::exceptions::PyRuntimeError::new_err("no code object"))
-    }
-}
-
 fn intern(py: Python<'_>, s: &str) -> O {
     pyo3::types::PyString::intern(py, s).into_ptr()
 }
 
 /// The offset of `py_recursion_remaining` in `PyThreadState` (public cpython/pystate.h
 /// layout: 3.15 added `gil_requested`), checked against `sys.getrecursionlimit()`.
-fn tstate_offset(cx: &Prepare<'_>, minor: u8) -> Result<usize, Refusal> {
+pub(crate) fn tstate_offset(cx: &Prepare<'_>, minor: u8) -> Result<usize, Refusal> {
     let off = if minor >= 15 { 52 } else { 48 };
+    if REM_OFF.load(Relaxed) == off {
+        return Ok(off);
+    }
     let sys = cx.loaded_module("sys")?;
     let limit: c_int = sys.getattr("getrecursionlimit")?.call0()?.extract()?;
     // SAFETY: attached thread; reads within PyThreadState.
@@ -346,6 +332,7 @@ fn tstate_offset(cx: &Prepare<'_>, minor: u8) -> Result<usize, Refusal> {
     if lim != limit || rem <= 0 || rem > limit {
         return Err(crate::refuse!("PyThreadState layout differs (limit {lim} vs {limit}, remaining {rem})"));
     }
+    REM_OFF.store(off, Relaxed);
     Ok(off)
 }
 
@@ -354,25 +341,88 @@ fn dget<'py>(d: &Bound<'py, PyDict>, k: &str) -> Result<Bound<'py, PyAny>, Refus
     d.get_item(k)?.ok_or_else(|| crate::refuse!("{k} missing"))
 }
 
+/// (function, code, defaults) of a pure-Python function, read from the struct (strong refs).
 fn func3(o: &Bound<'_, PyAny>) -> PyResult<(O, O, O)> {
-    let code = o.getattr("__code__")?;
-    let defaults = o.getattr("__defaults__")?;
-    Ok((
-        o.clone().into_ptr(),
-        code.into_ptr(),
-        if defaults.is_none() { std::ptr::null_mut() } else { defaults.into_ptr() },
-    ))
+    if o.cast::<pyo3::types::PyFunction>().is_err() {
+        return Err(pyo3::exceptions::PyTypeError::new_err("not a function"));
+    }
+    // SAFETY: an exact function object; its code/defaults are kept alive by the strong refs.
+    unsafe {
+        let f = o.as_ptr().cast::<ffi::PyFunctionObject>();
+        let d = (*f).func_defaults;
+        Ok((incref(o.as_ptr()), incref((*f).func_code), if d.is_null() { d } else { incref(d) }))
+    }
+}
+
+/// [`St`] if it was built from this very copy module and nothing it validated changed.
+fn current_state(cd: &Bound<'_, PyDict>, rd: &Bound<'_, PyDict>) -> Result<Option<&'static St>, Refusal> {
+    let p = ST.load(Relaxed);
+    if p.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: never freed.
+    let st: &'static St = unsafe { &*p };
+    if st.copy_dict != cd.as_ptr() {
+        return Ok(None);
+    }
+    let names = [
+        "_deepcopy_list",
+        "_deepcopy_tuple",
+        "_deepcopy_dict",
+        "_deepcopy_frozendict",
+        "_deepcopy_method",
+        "_keep_alive",
+        "_reconstruct",
+    ];
+    for (i, n) in names.iter().enumerate() {
+        let (f, code, _) = st.helpers[i];
+        if f.is_null() {
+            continue;
+        }
+        let cur = dget(cd, n)?;
+        // SAFETY: a function object (identity-checked).
+        if cur.as_ptr() != f || unsafe { (*f.cast::<ffi::PyFunctionObject>()).func_code } != code {
+            return Ok(None);
+        }
+    }
+    for (i, n) in [(H_NEWOBJ, "__newobj__"), (H_SLOTNAMES, "_slotnames")] {
+        let (f, code, _) = st.helpers[i];
+        let cur = dget(rd, n)?;
+        // SAFETY: as above.
+        if cur.as_ptr() != f || unsafe { (*f.cast::<ffi::PyFunctionObject>()).func_code } != code {
+            return Ok(None);
+        }
+    }
+    let same = |k: &str, want: O| -> Result<bool, Refusal> { Ok(dget(cd, k)?.as_ptr() == want) };
+    // SAFETY: function objects.
+    let code_of = |f: &Bound<'_, PyAny>| unsafe { (*f.as_ptr().cast::<ffi::PyFunctionObject>()).func_code };
+    let ok = same("deepcopy", st.deepcopy_fn)?
+        && code_of(&dget(cd, "deepcopy")?) == st.deepcopy_code
+        && code_of(&dget(cd, "copy")?) == st.copy_code
+        && same("_atomic_types", st.atomic)?
+        && same("_copy_atomic_types", st.copy_atomic)?
+        && same("_copy_builtin_containers", st.copy_containers)?
+        && same("_deepcopy_dispatch", st.dispatch)?
+        && same("dispatch_table", st.dispatch_table)?;
+    Ok(if ok { Some(st) } else { None })
 }
 
 /// Validate the copy module and build [`St`] (shared by both targets and by the
 /// dataclasses group); refuses on any difference from the validated sources.
 fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>) -> Result<&'static St, Refusal> {
     let (_, minor) = cx.version();
-    let rem_off = tstate_offset(cx, minor)?;
+    tstate_offset(cx, minor)?;
     let copyreg = cx.loaded_module("copyreg")?;
     let cd = copy.dict();
     let rd = copyreg.dict();
     let get = |k: &str| dget(&cd, k);
+    // The group's other target already validated this module: same functions and code
+    // objects (the fingerprinted ones), same sets.
+    if !cx.record
+        && let Some(st) = current_state(&cd, &rd)?
+    {
+        return Ok(st);
+    }
     let deepcopy = get("deepcopy")?;
     let copy_fn = get("copy")?;
     cx.fingerprint_code(&deepcopy, fp::DEEPCOPY)?;
@@ -484,7 +534,6 @@ fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>
         method_type: &raw mut PyMethod_Type,
         frozendict_type: frozendict_type(),
         // SAFETY: static type object read.
-        default_type_hash: unsafe { ffi::PyType_Type.tp_hash.map_or(0, |f| f as usize) },
         s_deepcopy: intern(py, "__deepcopy__"),
         s_copy: intern(py, "__copy__"),
         s_copy_method: intern(py, "copy"),
@@ -508,9 +557,6 @@ fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>
         s_error: intern(py, "Error"),
         // SAFETY: attached thread.
         int4: unsafe { ffi::PyLong_FromLong(4) },
-        ret_self2: ret_self_code(py, c"def f(self, memo):\n    return self\n")?,
-        ret_self1: ret_self_code(py, c"def f(self):\n    return self\n")?,
-        rem_off,
     };
     if minor < 15 {
         // SAFETY: a live set.
@@ -521,29 +567,22 @@ fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>
     Ok(st)
 }
 
-/// Pin the globals and builtins copy.py reads at call time (shared flag of the group).
+/// Pin what copy.py reads at call time (shared flag of the group): copy's globals as one
+/// snapshot (every binding the kernels validated, and the absence of any global that would
+/// shadow a builtin), the builtins it uses, `copyreg.__newobj__`/`_slotnames`, and
+/// `sys.modules['copyreg']` (what `object.__reduce_ex__` imports).
 fn pin_deps(cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>) -> Result<(), Refusal> {
     let (_, minor) = cx.version();
     let g = copy.dict();
-    for k in [
-        "deepcopy",
-        "_reconstruct",
-        "_keep_alive",
-        "_atomic_types",
-        "_deepcopy_dispatch",
-        "dispatch_table",
-        "_copy_atomic_types",
-        "_copy_builtin_containers",
-    ] {
-        cx.pin(&g, k, &DEPS_COPY)?;
-    }
+    cx.pin_dict(&g, &DEPS_COPY)?;
+    let builtins = cx.builtins_of(&g)?;
     let mut names =
         vec!["type", "id", "issubclass", "getattr", "isinstance", "hasattr", "len", "setattr", "zip", "tuple"];
     if minor >= 15 {
         names.push("frozendict");
     }
     for k in names {
-        cx.pin_global(&g, k, &DEPS_COPY)?;
+        cx.pin(&builtins, k, &DEPS_COPY)?;
     }
     let copyreg = cx.loaded_module("copyreg")?;
     cx.pin(&copyreg.dict(), "__newobj__", &DEPS_COPY)?;
@@ -566,7 +605,6 @@ fn prepare_copy(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let copy = cx.module()?.clone();
     ensure_state(py, cx, &copy)?;
     pin_deps(cx, &copy)?;
-    cx.pin(&copy.dict(), "copy", &DEPS_COPY)?;
     let f = cx.module_attr("copy")?;
     cx.vectorcall(&f, vc_copy, &accel::FUNCTION_VECTORCALL)
 }
@@ -579,7 +617,7 @@ fn copy_recursion_remaining() -> PyResult<c_int> {
         return Err(pyo3::exceptions::PyRuntimeError::new_err("copy group never prepared"));
     }
     // SAFETY: attached thread.
-    Ok(unsafe { Depth::new(&*p) }.remaining())
+    Ok(unsafe { Depth::new() }.remaining())
 }
 
 /// Python-visible helpers (on `rustique._rustique._accel`).

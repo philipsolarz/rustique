@@ -145,9 +145,17 @@ unsafe fn intact(f: (O, O, O), kw: bool) -> bool {
     unsafe { same_code(f, kw) && accel::code_locally_quiet(f.1) }
 }
 
+/// (function, code, defaults or kwdefaults) of a pure-Python function, from the struct.
 fn func3(o: &Bound<'_, PyAny>, kw: bool) -> PyResult<(O, O, O)> {
-    let d = o.getattr(if kw { "__kwdefaults__" } else { "__defaults__" })?;
-    Ok((o.clone().into_ptr(), o.getattr("__code__")?.into_ptr(), if d.is_none() { null_mut() } else { d.into_ptr() }))
+    if o.cast::<pyo3::types::PyFunction>().is_err() {
+        return Err(pyo3::exceptions::PyTypeError::new_err("not a function"));
+    }
+    // SAFETY: an exact function object (strong references taken).
+    unsafe {
+        let f = o.as_ptr().cast::<ffi::PyFunctionObject>();
+        let d = if kw { (*f).func_kwdefaults } else { (*f).func_defaults };
+        Ok((incref(o.as_ptr()), incref((*f).func_code), if d.is_null() { d } else { incref(d) }))
+    }
 }
 
 /// `dataclasses._ATOMIC_TYPES`.
@@ -175,12 +183,18 @@ fn dc_atomic_types() -> [*mut ffi::PyTypeObject; 15] {
 }
 
 /// Validate the dataclasses module and build [`DcSt`]; pin what the helpers read.
-fn ensure_dc(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn ensure_dc(py: Python<'_>, cx: &mut Prepare<'_>, which: Which) -> Result<(), Refusal> {
     let m = cx.module()?.clone();
-    let copy = cx.loaded_module("copy")?;
-    super::ensure_state(py, cx, &copy)?;
     let (_, minor) = cx.version();
+    super::tstate_offset(cx, minor)?;
     let g = m.dict();
+    // Built by another target of the group from this very module, with the same (already
+    // fingerprinted) functions: share it, its pins are declared below anyway.
+    let shared = !cx.record && {
+        let p = DST.load(Relaxed);
+        // SAFETY: never freed.
+        !p.is_null() && unsafe { (*p).globals } == g.as_ptr() && unsafe { same_functions(&*p, &g) }?
+    };
 
     let checks: [(&str, crate::accel::Fingerprints); 8] = [
         ("asdict", fp::ASDICT),
@@ -192,10 +206,21 @@ fn ensure_dc(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         ("replace", fp::REPLACE),
         ("_replace", fp::REPLACE_INNER),
     ];
-    for (k, f) in checks {
-        let o = super::dget(&g, k)?;
-        cx.fingerprint_code(&o, f)?;
+    if !shared {
+        for (k, f) in checks {
+            let o = super::dget(&g, k)?;
+            cx.fingerprint_code(&o, f)?;
+        }
     }
+    if !shared {
+        build_dc(py, cx, &g, minor)?;
+    }
+    pin_dc(cx, &g, minor, which)
+}
+
+/// Validate `dataclasses`' globals and store [`DcSt`].
+fn build_dc(py: Python<'_>, cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, minor: u8) -> Result<(), Refusal> {
+    let g = g.clone();
     let atomic = dc_atomic_types();
     let at = super::dget(&g, "_ATOMIC_TYPES")?;
     // SAFETY: a static type object.
@@ -250,61 +275,94 @@ fn ensure_dc(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if PyString::intern(py, "__dataclass_fields__").as_ptr() != s.s_fields {
         return Err("dataclasses._FIELDS differs".into());
     }
-    for k in [
-        "_asdict_inner",
-        "_astuple_inner",
-        "fields",
-        "_FIELDS",
-        "_FIELD",
-        "_FIELD_CLASSVAR",
-        "_FIELD_INITVAR",
-        "MISSING",
-        "_ATOMIC_TYPES",
-        "_is_dataclass_instance",
-        "_replace",
-    ] {
-        cx.pin(&g, k, &DEPS_DC)?;
-    }
-    let kw = asdict.getattr("__kwdefaults__")?.cast_into::<PyDict>().map_err(PyErr::from)?;
-    cx.pin(&kw, "dict_factory", &DEPS_DC)?;
-    let kw = astuple.getattr("__kwdefaults__")?.cast_into::<PyDict>().map_err(PyErr::from)?;
-    cx.pin(&kw, "tuple_factory", &DEPS_DC)?;
-    let mut names = vec![
-        "type",
-        "hasattr",
-        "getattr",
-        "issubclass",
-        "isinstance",
-        "tuple",
-        "list",
-        "dict",
-        "TypeError",
-        "AttributeError",
-    ];
-    if minor >= 15 {
-        names.push("frozendict");
-    }
-    for k in names {
-        cx.pin_global(&g, k, &DEPS_DC)?;
-    }
     DST.store(Box::leak(Box::new(s)), Relaxed);
     Ok(())
 }
 
+/// Pin what the emulated helpers of `which` read at call time.
+fn pin_dc(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, minor: u8, which: Which) -> Result<(), Refusal> {
+    let (globals, builtins): (&[&str], &[&str]) = match which {
+        Which::Asdict => (
+            &["_asdict_inner", "fields", "_FIELDS", "_FIELD", "_ATOMIC_TYPES", "_is_dataclass_instance"],
+            &["type", "hasattr", "getattr", "issubclass", "list", "dict", "tuple", "TypeError", "AttributeError"],
+        ),
+        Which::Astuple => (
+            &["_astuple_inner", "fields", "_FIELDS", "_FIELD", "_ATOMIC_TYPES", "_is_dataclass_instance"],
+            &["type", "hasattr", "getattr", "isinstance", "list", "dict", "tuple", "TypeError", "AttributeError"],
+        ),
+        Which::Replace => (
+            &["_replace", "_FIELDS", "_FIELD_CLASSVAR", "_FIELD_INITVAR", "MISSING", "_is_dataclass_instance"],
+            &["type", "hasattr", "getattr", "TypeError"],
+        ),
+    };
+    for k in globals {
+        cx.pin(g, k, &DEPS_DC)?;
+    }
+    match which {
+        Which::Asdict => {
+            let f = super::dget(g, "asdict")?;
+            let kw = f.getattr("__kwdefaults__")?.cast_into::<PyDict>().map_err(PyErr::from)?;
+            cx.pin(&kw, "dict_factory", &DEPS_DC)?;
+        }
+        Which::Astuple => {
+            let f = super::dget(g, "astuple")?;
+            let kw = f.getattr("__kwdefaults__")?.cast_into::<PyDict>().map_err(PyErr::from)?;
+            cx.pin(&kw, "tuple_factory", &DEPS_DC)?;
+        }
+        Which::Replace => {}
+    }
+    for k in builtins {
+        cx.pin_global(g, k, &DEPS_DC)?;
+    }
+    if minor >= 15 && !matches!(which, Which::Replace) {
+        cx.pin_global(g, "frozendict", &DEPS_DC)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum Which {
+    Asdict,
+    Astuple,
+    Replace,
+}
+
+/// The module still holds the function objects (and code objects) `d` was validated with.
+unsafe fn same_functions(d: &DcSt, g: &Bound<'_, PyDict>) -> Result<bool, Refusal> {
+    let pairs = [
+        ("asdict", d.asdict),
+        ("_asdict_inner", d.asdict_inner),
+        ("astuple", d.astuple),
+        ("_astuple_inner", d.astuple_inner),
+        ("fields", d.fields),
+        ("_is_dataclass_instance", d.is_dc),
+        ("replace", d.replace),
+        ("_replace", d.replace_inner),
+    ];
+    for (k, f) in pairs {
+        let cur = super::dget(g, k)?;
+        // SAFETY: a function object (identity-checked).
+        if cur.as_ptr() != f.0 || unsafe { (*f.0.cast::<ffi::PyFunctionObject>()).func_code } != f.1 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn prepare_asdict(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    ensure_dc(py, cx)?;
+    ensure_dc(py, cx, Which::Asdict)?;
     let f = cx.module_attr("asdict")?;
     cx.vectorcall(&f, vc_asdict, &accel::FUNCTION_VECTORCALL)
 }
 
 fn prepare_astuple(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    ensure_dc(py, cx)?;
+    ensure_dc(py, cx, Which::Astuple)?;
     let f = cx.module_attr("astuple")?;
     cx.vectorcall(&f, vc_astuple, &accel::FUNCTION_VECTORCALL)
 }
 
 fn prepare_replace(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    ensure_dc(py, cx)?;
+    ensure_dc(py, cx, Which::Replace)?;
     let f = cx.module_attr("replace")?;
     cx.vectorcall(&f, vc_replace, &accel::FUNCTION_VECTORCALL)
 }
@@ -314,7 +372,6 @@ fn prepare_replace(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> 
 // ---------------------------------------------------------------------------------------
 
 struct Cx {
-    st: &'static St,
     d: &'static DcSt,
     depth: Depth,
     /// `_asdict_inner` / `_astuple_inner` (whichever this call uses) is intact.
@@ -357,7 +414,7 @@ impl Cx {
         }
         // SAFETY: live type; pinned frozenset.
         unsafe {
-            if meta_hash(t.cast()) == self.st.default_type_hash {
+            if meta_hash(t.cast()) == default_type_hash() {
                 return Ok(false);
             }
             match ffi::PySet_Contains(self.d.atomic_set, t.cast()) {
@@ -458,7 +515,6 @@ impl Cx {
     /// lazy import), `LOAD_ATTR deepcopy`, call. `None`: the global is missing (the caller
     /// lets CPython's helper raise).
     unsafe fn deepcopy(&mut self, obj: O) -> R<Option<O>> {
-        let st = self.st;
         let d = self.d;
         // SAFETY: live objects.
         unsafe {
@@ -474,7 +530,10 @@ impl Cx {
                 g = Own::new(reify(ffi::PyThreadState_Get(), g.get(), d.s_copy_name, d.globals))?;
             }
             let f = Own::new(ffi::PyObject_GetAttr(g.get(), d.s_deepcopy_attr))?;
-            if super::deepcopy_direct(st, f.get()) && accel::tools_quiet(&TOOLS_DC, f.get()) {
+            // The copy group's engine directly, when its kernel is installed and intact.
+            let st = super::rt::ST.load(Relaxed);
+            if !st.is_null() && super::deepcopy_direct(&*st, f.get()) && accel::tools_quiet(&TOOLS_DC, f.get()) {
+                let st: &'static St = &*st;
                 super::C_DEEPCOPY.hit_streak();
                 let mut e = deep::Engine::new(st, null_mut(), super::atomic_fast(st));
                 return e.run(obj).map(Some);
@@ -498,7 +557,7 @@ impl Cx {
                 return call2(d.asdict_inner.0, obj, (&raw mut ffi::PyDict_Type).cast());
             }
             // An atomic value: the helper's frame could be entered and returns it.
-            if is_quick(self.st, ty(obj)) && *self.depth.rem > 0 {
+            if is_quick(ty(obj)) && *self.depth.rem > 0 {
                 return Ok(incref(obj));
             }
             self.depth.push()?;
@@ -576,7 +635,7 @@ impl Cx {
             let sub = ffi::PyType_GetFlags(t)
                 & (ffi::Py_TPFLAGS_TUPLE_SUBCLASS | ffi::Py_TPFLAGS_DICT_SUBCLASS | ffi::Py_TPFLAGS_LIST_SUBCLASS)
                 != 0
-                || (self.st.minor >= 15 && ffi::PyType_IsSubtype(t, self.st.frozendict_type) != 0);
+                || (!super::frozendict_type().is_null() && ffi::PyType_IsSubtype(t, super::frozendict_type()) != 0);
             if !sub && let Some(y) = self.deepcopy(obj)? {
                 return Ok(y);
             }
@@ -615,15 +674,13 @@ fn nargs(nargsf: usize) -> usize {
 unsafe fn enter(f: (O, O, O), kw: bool, func: O) -> Result<Cx, Reason> {
     // SAFETY: attached thread.
     unsafe {
-        let st = super::rt::ST.load(Relaxed);
-        if st.is_null() || !DEPS_DC.ok() || func != f.0 || !same_code(f, kw) {
+        if !DEPS_DC.ok() || func != f.0 || !same_code(f, kw) {
             return Err(Reason::Deps);
         }
         if !accel::tools_quiet(&TOOLS_DC, func) {
             return Err(Reason::Tools);
         }
-        let st: &'static St = &*st;
-        Ok(Cx { st, d: dst(), depth: Depth::new(st), inner_ok: false })
+        Ok(Cx { d: dst(), depth: Depth::new(), inner_ok: false })
     }
 }
 
@@ -679,7 +736,7 @@ impl Cx {
                 return call2(d.astuple_inner.0, obj, (&raw mut ffi::PyTuple_Type).cast());
             }
             // An atomic value: the helper's frame could be entered and returns it.
-            if is_quick(self.st, ty(obj)) && *self.depth.rem > 0 {
+            if is_quick(ty(obj)) && *self.depth.rem > 0 {
                 return Ok(incref(obj));
             }
             self.depth.push()?;
@@ -763,7 +820,7 @@ impl Cx {
             let sub = ffi::PyType_GetFlags(t)
                 & (ffi::Py_TPFLAGS_TUPLE_SUBCLASS | ffi::Py_TPFLAGS_DICT_SUBCLASS | ffi::Py_TPFLAGS_LIST_SUBCLASS)
                 != 0
-                || (self.st.minor >= 15 && ffi::PyType_IsSubtype(t, self.st.frozendict_type) != 0);
+                || (!super::frozendict_type().is_null() && ffi::PyType_IsSubtype(t, super::frozendict_type()) != 0);
             if !sub && let Some(y) = self.deepcopy(obj)? {
                 return Ok(y);
             }

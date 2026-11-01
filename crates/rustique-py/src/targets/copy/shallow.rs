@@ -10,7 +10,6 @@ use super::rt::*;
 /// the set is known intact (`fast`), the real set lookup otherwise.
 #[inline(always)]
 pub unsafe fn in_type_set(
-    st: &St,
     set: O,
     fast: bool,
     known: &[*mut ffi::PyTypeObject],
@@ -22,7 +21,7 @@ pub unsafe fn in_type_set(
             if known.contains(&cls) {
                 return Ok(true);
             }
-            if meta_hash(cls.cast()) == st.default_type_hash {
+            if meta_hash(cls.cast()) == default_type_hash() {
                 return Ok(false);
             }
         }
@@ -199,7 +198,7 @@ unsafe fn reconstruct_shallow(st: &St, depth: &mut Depth, x: O, rv: O) -> R<O> {
 pub unsafe fn copy(st: &St, x: O, fast_sets: bool) -> R<O> {
     // SAFETY: attached thread, live x.
     unsafe {
-        let mut depth = Depth::new(st);
+        let mut depth = Depth::new();
         depth.push()?; // copy's own frame
         let r = copy_body(st, &mut depth, x, fast_sets);
         depth.unwind();
@@ -211,10 +210,10 @@ unsafe fn copy_body(st: &St, depth: &mut Depth, x: O, fast_sets: bool) -> R<O> {
     // SAFETY: as copy.
     unsafe {
         let cls = ty(x);
-        if in_type_set(st, st.copy_atomic, fast_sets, &st.copy_atomic_types, cls)? {
+        if in_type_set(st.copy_atomic, fast_sets, &st.copy_atomic_types, cls)? {
             return Ok(incref(x));
         }
-        if in_type_set(st, st.copy_containers, fast_sets, &st.copy_container_types, cls)? {
+        if in_type_set(st.copy_containers, fast_sets, &st.copy_container_types, cls)? {
             // cls.copy(x)
             if cls == &raw mut ffi::PyList_Type {
                 return nn(ffi::PyList_GetSlice(x, 0, ffi::PY_SSIZE_T_MAX));
@@ -230,7 +229,7 @@ unsafe fn copy_body(st: &St, depth: &mut Depth, x: O, fast_sets: bool) -> R<O> {
         }
         let copier = Own(getattr_opt(cls.cast(), st.s_copy)?);
         if !copier.get().is_null() && copier.get() != ffi::Py_None() {
-            if is_return_self(st, copier.get(), 1) {
+            if is_return_self(copier.get(), 1) {
                 depth.touch()?;
                 return Ok(incref(x));
             }

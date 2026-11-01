@@ -280,6 +280,30 @@ dependencies (suspended immediately by deopt-while-unpinned) and tools.
 | geometric mean | | | 0.863 | |
 
 
+### 7.6 Install cost (3.15.1, `benches/targets/copy_install.py`, callgrind regions)
+
+| cell | Ir |
+|---|---:|
+| `rustique.enable(only=['copy'])`, copy imported | 1,192,743 |
+| `rustique.enable(only=['dataclasses'])`, imported | 1,434,513 |
+| `rustique.enable(only=['copy', 'dataclasses'])`, imported | 1,976,981 |
+| `import copy`: plain / with the lazy install | 538,725 / 1,163,674 (+116%) |
+| `import dataclasses` (copy imported): plain / lazy install | 5,545,192 / 6,386,106 (+15.2%) |
+
+Over the 0.1M Ir / 5% budget (item 13). Trimmed from 2.39M / 4.39M Ir: the `return self`
+reference code is compiled on first use instead of at install (0.69M), the group's second
+target reuses the first one's validated state instead of re-fingerprinting (copy: 10
+functions, dataclasses: 8 functions plus copy's 10 before decoupling), copy's globals are
+one `pin_dict` snapshot instead of 20 pins, each dataclasses target pins only what its
+emulated helpers read. What remains, inside `registry::enable` for the copy group
+(0.63M Ir of the 1.19M; the rest is the Python-level `enable()`): fingerprinting the 10
+`copy.py`/`copyreg` functions the kernels emulate 0.28M, vectorcall-site setup 0.15M (a
+one-time `py.eval` in `function_vectorcall`), state validation 0.06M, pins 0.12M (each of
+the two targets declares its own: disabling one target must not unprotect the other). The
+fingerprints are required (every emulated function is checked) and accel-core is making
+`fingerprint_code` cheaper; the per-target pins could be shared if the registry kept a
+shared flag's pins alive while any target using it is installed.
+
 ## 8. Tests
 
 - `tests/targets/test_copy_differential.py`: Hypothesis graphs (shared references,
