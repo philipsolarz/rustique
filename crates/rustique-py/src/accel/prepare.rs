@@ -22,7 +22,7 @@ use pyo3::types::{PyDict, PyFunction, PyModule, PyString, PyType};
 use super::fingerprint::{self, Fingerprints};
 use super::guard::{DepFlag, PendingPin};
 use super::site::{self, Kind, Site, SlotName};
-use super::spec::{FnPtr, Original, Refusal, TargetSpec};
+use super::spec::{Category, FnPtr, Original, Refusal, TargetSpec};
 use super::version;
 
 /// One declared site (its `Original` cell already holds the original entry point).
@@ -83,7 +83,7 @@ impl<'py> Prepare<'py> {
 
     /// The fully executed module of a module target (`TargetSpec::module`).
     pub fn module(&self) -> Result<&Bound<'py, PyModule>, Refusal> {
-        self.module.as_ref().ok_or_else(|| Refusal::new("target has no module"))
+        self.module.as_ref().ok_or_else(|| Refusal::with(Category::Other, "target has no module"))
     }
 
     /// The running `(major, minor)`.
@@ -123,11 +123,14 @@ impl<'py> Prepare<'py> {
     /// (never imports).
     pub fn loaded_module(&self, name: &str) -> Result<Bound<'py, PyModule>, Refusal> {
         let modules = sys_modules(self.py)?;
-        let m = self.get_opt(&modules, name)?.ok_or_else(|| Refusal::from(format!("module {name} not imported")))?;
-        let m =
-            m.cast_into::<PyModule>().map_err(|_| Refusal::from(format!("sys.modules[{name:?}] is not a module")))?;
+        let m = self
+            .get_opt(&modules, name)?
+            .ok_or_else(|| Refusal::with(Category::Deps, format!("module {name} not imported")))?;
+        let m = m
+            .cast_into::<PyModule>()
+            .map_err(|_| Refusal::with(Category::Deps, format!("sys.modules[{name:?}] is not a module")))?;
         if module_initializing(&m) {
-            return Err(Refusal::from(format!("module {name} is still initializing")));
+            return Err(Refusal::with(Category::Deps, format!("module {name} is still initializing")));
         }
         Ok(m)
     }
@@ -167,8 +170,13 @@ impl<'py> Prepare<'py> {
         }
         match want {
             _ if ok => Ok(()),
-            None => Err(Refusal::from(format!("{what}: no fingerprint recorded for CPython {major}.{minor}"))),
-            Some(w) => Err(Refusal::from(format!("{what}: fingerprint {observed} != expected {w}"))),
+            None => Err(Refusal::with(
+                Category::Version,
+                format!("{what}: no fingerprint recorded for CPython {major}.{minor}"),
+            )),
+            Some(w) => {
+                Err(Refusal::with(Category::Fingerprint, format!("{what}: fingerprint {observed} != expected {w}")))
+            }
         }
     }
 
@@ -216,8 +224,8 @@ impl<'py> Prepare<'py> {
     pub fn self_test(&mut self, what: &str, f: impl FnOnce(Python<'py>) -> PyResult<bool>) -> Result<(), Refusal> {
         match f(self.py) {
             Ok(true) => Ok(()),
-            Ok(false) => Err(Refusal::from(format!("self-test failed: {what}"))),
-            Err(e) => Err(Refusal::from(format!("self-test error: {what}: {}", e.value(self.py)))),
+            Ok(false) => Err(Refusal::with(Category::Selftest, format!("self-test failed: {what}"))),
+            Err(e) => Err(Refusal::with(Category::Selftest, format!("self-test error: {what}: {}", e.value(self.py)))),
         }
     }
 
@@ -232,7 +240,7 @@ impl<'py> Prepare<'py> {
         if site.original == 0 {
             return Err(Refusal::from(format!("{}: empty entry point", site.name)));
         }
-        original.capture(site.original).map_err(|r| Refusal::from(format!("{}: {r}", site.name)))?;
+        original.capture(site.original).map_err(|r| Refusal::with(r.category(), format!("{}: {r}", site.name)))?;
         self.sites.push(SiteDecl { site });
         Ok(())
     }
@@ -247,8 +255,9 @@ impl<'py> Prepare<'py> {
         original: &'static Original<F>,
     ) -> Result<(), Refusal> {
         // SAFETY: attached thread.
-        let def = unsafe { site::method_def(obj.as_ptr()) }
-            .ok_or_else(|| Refusal::from(format!("{}: not a builtin function or method", describe(obj))))?;
+        let def = unsafe { site::method_def(obj.as_ptr()) }.ok_or_else(|| {
+            Refusal::with(Category::Conflict, format!("{}: not a builtin function or method", describe(obj)))
+        })?;
         // SAFETY: a live method def.
         unsafe { self.ml_meth_def(&describe(obj), def, kernel, original) }
     }
@@ -270,17 +279,17 @@ impl<'py> Prepare<'py> {
         match meth_arity(flags) {
             Some(a) if a == F::ARITY => {}
             Some(a) => {
-                return Err(Refusal::from(format!(
-                    "{what}: ml_flags {flags:#x} take {a} arguments, kernel takes {}",
-                    F::ARITY
-                )));
+                return Err(Refusal::with(
+                    Category::Conflict,
+                    format!("{what}: ml_flags {flags:#x} take {a} arguments, kernel takes {}", F::ARITY),
+                ));
             }
-            None => return Err(Refusal::from(format!("{what}: unsupported ml_flags {flags:#x}"))),
+            None => return Err(Refusal::with(Category::Conflict, format!("{what}: unsupported ml_flags {flags:#x}"))),
         }
         // SAFETY: field address of a live def.
         let addr = unsafe { (&raw mut (*def).ml_meth) as usize };
         if !crate::patch::writable(addr, size_of::<usize>()) {
-            return Err(Refusal::from(format!("{what}: method table is read-only")));
+            return Err(Refusal::with(Category::Layout, format!("{what}: method table is read-only")));
         }
         // SAFETY: aligned pointer-sized field.
         let current =
@@ -309,20 +318,22 @@ impl<'py> Prepare<'py> {
         let tp = ty.as_type_ptr();
         let what = format!("{}.{}", ty.qualname().map(|q| q.to_string()).unwrap_or_default(), slot.c_name());
         if slot.arity() != F::ARITY {
-            return Err(Refusal::from(format!(
-                "{what}: slot takes {} arguments, kernel takes {}",
-                slot.arity(),
-                F::ARITY
-            )));
+            return Err(Refusal::with(
+                Category::Conflict,
+                format!("{what}: slot takes {} arguments, kernel takes {}", slot.arity(), F::ARITY),
+            ));
         }
         if tp == &raw mut ffi::PyDict_Type && matches!(slot, SlotName::MpSubscript | SlotName::MpAssSubscript) {
-            return Err(Refusal::from(format!("{what}: compared by pointer in the specializer (contract §3.6)")));
+            return Err(Refusal::with(
+                Category::Other,
+                format!("{what}: compared by pointer in the specializer (contract §3.6)"),
+            ));
         }
         // SAFETY: a ready type.
-        let addr =
-            unsafe { site::slot_addr(tp, slot) }.ok_or_else(|| Refusal::from(format!("{what}: slot is empty")))?;
+        let addr = unsafe { site::slot_addr(tp, slot) }
+            .ok_or_else(|| Refusal::with(Category::Layout, format!("{what}: slot is empty")))?;
         if !crate::patch::writable(addr, size_of::<usize>()) {
-            return Err(Refusal::from(format!("{what}: type object is read-only")));
+            return Err(Refusal::with(Category::Layout, format!("{what}: type object is read-only")));
         }
         // SAFETY: aligned pointer-sized field.
         let current =
@@ -335,7 +346,10 @@ impl<'py> Prepare<'py> {
             // SAFETY: exact wrapper descriptor.
             let wrapped = unsafe { (*w.as_ptr().cast::<ffi::PyWrapperDescrObject>()).d_wrapped } as usize;
             if wrapped != current {
-                return Err(Refusal::from(format!("{what}: slot differs from its wrapper descriptor (patched?)")));
+                return Err(Refusal::with(
+                    Category::Conflict,
+                    format!("{what}: slot differs from its wrapper descriptor (patched?)"),
+                ));
             }
         }
         let site =
@@ -356,22 +370,25 @@ impl<'py> Prepare<'py> {
     ) -> Result<(), Refusal> {
         let what = describe(func);
         if func.cast_exact::<PyFunction>().is_err() {
-            return Err(Refusal::from(format!("{what}: not a pure-Python function")));
+            return Err(Refusal::with(Category::Conflict, format!("{what}: not a pure-Python function")));
         }
         let code = func.getattr("__code__")?;
         if !version::code_layout_ok_for(&code)? {
-            return Err(Refusal::from(format!("{what}: PyCodeObject layout differs")));
+            return Err(Refusal::with(Category::Layout, format!("{what}: PyCodeObject layout differs")));
         }
         let site = Site::vectorcall(func, kernel as usize).map_err(|e| Refusal::from(format!("{what}: {e}")))?;
         let current = site.original;
         let reference = function_vectorcall();
         if current != reference {
             site.release();
-            return Err(Refusal::from(format!("{what}: vectorcall is not _PyFunction_Vectorcall (patched?)")));
+            return Err(Refusal::with(
+                Category::Conflict,
+                format!("{what}: vectorcall is not _PyFunction_Vectorcall (patched?)"),
+            ));
         }
         if let Err(r) = original.capture(current) {
             site.release();
-            return Err(Refusal::from(format!("{what}: {r}")));
+            return Err(Refusal::with(r.category(), format!("{what}: {r}")));
         }
         if self.sites.iter().any(|d| d.site.addr == site.addr && d.site.kind == Kind::Vectorcall) {
             site.release();
@@ -401,7 +418,7 @@ impl<'py> Prepare<'py> {
         flag: &'static DepFlag,
     ) -> Result<&'static DepFlag, Refusal> {
         let value = self.get(dict, key)?;
-        self.pins.push(PendingPin {
+        self.pins.push(PendingPin::Key {
             dict: dict.clone().unbind(),
             key: PyString::intern(self.py, key).unbind(),
             expected: Some(value.unbind()),
@@ -420,9 +437,9 @@ impl<'py> Prepare<'py> {
         flag: &'static DepFlag,
     ) -> Result<&'static DepFlag, Refusal> {
         if self.get_opt(dict, key)?.is_some() {
-            return Err(Refusal::from(format!("{key} is present (expected absent)")));
+            return Err(Refusal::with(Category::Deps, format!("{key} is present (expected absent)")));
         }
-        self.pins.push(PendingPin {
+        self.pins.push(PendingPin::Key {
             dict: dict.clone().unbind(),
             key: PyString::intern(self.py, key).unbind(),
             expected: None,
@@ -465,7 +482,7 @@ impl<'py> Prepare<'py> {
         // SAFETY: a ready type: tp_mro is a tuple.
         let mro = unsafe { (*ty.as_type_ptr()).tp_mro };
         if mro.is_null() {
-            return Err(Refusal::from(format!("{name}: type has no MRO")));
+            return Err(Refusal::with(Category::Layout, format!("{name}: type has no MRO")));
         }
         // SAFETY: borrowed tuple kept alive by the type.
         let mro = unsafe { Bound::from_borrowed_ptr(self.py, mro) };
@@ -475,7 +492,7 @@ impl<'py> Prepare<'py> {
             let base = base.cast_into::<PyType>().map_err(PyErr::from)?;
             let d = type_dict(&base)?;
             let v = self.get_opt(&d, name)?;
-            self.pins.push(PendingPin {
+            self.pins.push(PendingPin::Key {
                 dict: d.unbind(),
                 key: key.clone_ref(self.py),
                 expected: v.as_ref().map(|v| v.clone().unbind()),
@@ -489,6 +506,24 @@ impl<'py> Prepare<'py> {
         Err(refuse_missing(name))
     }
 
+    /// Snapshot pin: `flag` is intact while `dict`'s contents equal their current state
+    /// (keys by str equality, values by identity): any added, replaced or deleted key
+    /// deviates, and the pin re-arms exactly when every deviation is undone (`mock.patch`
+    /// exiting). Clearing or wholesale replacement breaks it until re-pinned. Covers
+    /// instance dicts (materialize `obj.__dict__` first), class dicts and module dicts.
+    /// Every key must be an exact `str`; at most 64 simultaneous deviations are tracked
+    /// (beyond that the pin breaks).
+    pub fn pin_dict(&mut self, dict: &Bound<'_, PyDict>, flag: &'static DepFlag) -> Result<&'static DepFlag, Refusal> {
+        let mut snap = Vec::with_capacity(dict.len());
+        for (k, v) in dict.iter() {
+            let k =
+                k.cast_into_exact::<PyString>().map_err(|_| Refusal::with(Category::Deps, "pin_dict: non-str key"))?;
+            snap.push((k.unbind(), v.unbind()));
+        }
+        self.pins.push(PendingPin::Dict { dict: dict.clone().unbind(), snap, flag });
+        Ok(flag)
+    }
+
     // -----------------------------------------------------------------------------------
     // Internal-but-exported symbols.
     // -----------------------------------------------------------------------------------
@@ -499,9 +534,12 @@ impl<'py> Prepare<'py> {
     pub fn symbol<F: FnPtr>(&mut self, name: &CStr, cell: &'static Original<F>) -> Result<F, Refusal> {
         let addr = dlsym_default(name);
         if addr == 0 {
-            return Err(Refusal::from(format!("symbol {} not exported by this interpreter", name.to_string_lossy())));
+            return Err(Refusal::with(
+                Category::Symbol,
+                format!("symbol {} not exported by this interpreter", name.to_string_lossy()),
+            ));
         }
-        cell.capture(addr)?;
+        cell.capture(addr).map_err(|r| r.or_category(Category::Symbol))?;
         Ok(cell.get())
     }
 }
@@ -525,7 +563,7 @@ fn dlsym_default(_name: &CStr) -> usize {
 }
 
 fn refuse_missing(key: &str) -> Refusal {
-    Refusal::from(format!("missing {key}"))
+    Refusal::with(Category::Deps, format!("missing {key}"))
 }
 
 /// `sys.modules` (borrowed from the sys module dict; no import).
