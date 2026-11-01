@@ -25,17 +25,29 @@ import pytest
 # only when RUSTIQUE is set. It runs through exec() in site's frame, where `sitedir` is
 # defined (3.14: addpackage's parameter; 3.15: injected by _exec_imports for
 # compatibility); the inner exec sees the same locals; it uses no nested scopes.
-PTH_LINE = 'import os; os.environ.get(\'RUSTIQUE\', \'0\') != \'0\' and exec("import sys, _imp; os.environ.get(\'RUSTIQUE\', \'0\').strip().lower() not in (\'\', \'0\', \'false\', \'no\', \'off\') and not sys.flags.ignore_environment and \'rustique._rustique\' not in sys.modules and (p := next(filter(os.path.isfile, map(os.path.join, [sitedir, *sys.path], [os.path.join(\'rustique\', \'_rustique\' + _imp.extension_suffixes()[0])] * (len(sys.path) + 1))), None)) and (s := sys.modules[\'_frozen_importlib_external\'].spec_from_file_location(\'rustique._rustique\', p)) and (m := sys.modules[\'_frozen_importlib\'].module_from_spec(s)) and not s.loader.exec_module(m) and not sys.modules.__setitem__(\'rustique._rustique\', m) and m._accel.startup()")'
+# Compiled only when RUSTIQUE is set (and not "0"); kept small: 3.15's compiler costs ~140k
+# Ir for a one-call statement, 0.43M for this one, 1.0M for an earlier walrus/filter chain.
+# `_frozen_importlib._load` is importlib's own spec loader (sys.modules insertion, module
+# attributes, cleanup on failure). Wheel installs: `sitedir/rustique/`; other layouts
+# (editable installs, where the package is on sys.path): a normal import. Other OFF values
+# ("off", "false", "no", "") load the extension and `startup()` enables nothing.
+LOADER = (
+    "import sys,_imp;p=sitedir+'/rustique/_rustique'+_imp.extension_suffixes()[0];"
+    "sys.flags.ignore_environment or (sys.modules['_frozen_importlib']._load("
+    "sys.modules['_frozen_importlib_external'].spec_from_file_location('rustique._rustique',p)) "
+    "if os.path.isfile(p) else __import__('rustique._rustique')._rustique)._accel.startup()"
+)
+PTH_LINE = "import os; os.environ.get('RUSTIQUE', '0') != '0' and exec(" + repr(LOADER) + ")"
 
 SITEDIR = os.path.dirname(os.path.dirname(importlib.util.find_spec("rustique").origin))
 
 
-def run(body: str, env: dict[str, str | None], *flags: str) -> subprocess.CompletedProcess[str]:
+def run(body: str, env: dict[str, str | None], *flags: str, sitedir: str = SITEDIR) -> subprocess.CompletedProcess[str]:
     """Run the `.pth` line as site would, then `body`, in a fresh interpreter."""
     prologue = (
         "def _site(sitedir):\n"
         f"    exec({PTH_LINE!r})\n"
-        f"_site({SITEDIR!r})\n"
+        f"_site({sitedir!r})\n"
     )
     e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
     e.update({k: v for k, v in env.items() if v is not None})
@@ -52,8 +64,8 @@ def test_the_line_is_one_import_line():
     assert "\n" not in PTH_LINE and PTH_LINE.startswith("import ")
 
 
-@pytest.mark.parametrize("value", [None, "0", "off", ""])
-def test_unset_or_off_imports_nothing(value):
+@pytest.mark.parametrize("value", [None, "0"])
+def test_unset_or_0_imports_nothing(value):
     r = run(
         "import sys\nnames = sorted(m for m in sys.modules if m.startswith('rustique'))\nprint(names)",
         {"RUSTIQUE": value},
@@ -86,6 +98,21 @@ def test_startup_loads_only_the_extension_and_enables():
     assert r.stderr == ""
     source, n = r.stdout.split()
     assert source == "RUSTIQUE=1" and int(n) >= 13
+
+
+@pytest.mark.parametrize("value", ["off", "", "No"])
+def test_other_off_values_enable_nothing(value):
+    r = run(
+        """
+        import sys
+        assert 'rustique' not in sys.modules
+        st = sys.modules['rustique._rustique']._accel.status()
+        print(st['process']['enabled'], st['process']['switch']['source'])
+        """,
+        {"RUSTIQUE": value},
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["False", "None"] and r.stderr == ""
 
 
 def test_ignore_environment_imports_nothing():
@@ -157,3 +184,19 @@ def test_report_at_exit_imports_formatting_only_then(tmp_path):
     rec = json.loads(files[0].read_text().splitlines()[0])
     assert rec["status"]["process"]["switch"]["source"] == "RUSTIQUE=1"
     assert rec["stats"]["list.index"]["hits"] >= 1
+
+
+def test_other_layouts_fall_back_to_a_normal_import(tmp_path):
+    # The `.pth` sits in a site dir without the package (editable installs): the extension
+    # comes through the package on sys.path.
+    r = run(
+        """
+        import sys
+        st = sys.modules['rustique._rustique']._accel.status()
+        print(st['process']['switch']['source'], 'rustique' in sys.modules)
+        """,
+        {"RUSTIQUE": "1"},
+        sitedir=str(tmp_path),
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["RUSTIQUE=1", "True"]

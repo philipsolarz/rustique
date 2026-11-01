@@ -27,11 +27,14 @@ import time
 
 
 def pth_line(path: str) -> str:
-    tree = ast.parse(open(path).read())
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "PTH_LINE":
-            return ast.literal_eval(node.value)
-    raise SystemExit("PTH_LINE not found")
+    """`PTH_LINE` of the test module (its module-level constant assignments evaluated)."""
+    ns: dict[str, object] = {}
+    for node in ast.parse(open(path).read()).body:
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") in ("LOADER", "PTH_LINE"):
+            exec(compile(ast.Module([node], []), path, "exec"), ns)
+    if "PTH_LINE" not in ns:
+        raise SystemExit("PTH_LINE not found")
+    return str(ns["PTH_LINE"])
 
 
 def venv(work: str, name: str, python: str, wheel: str | None, other: bool, line: str) -> str:
