@@ -215,7 +215,7 @@ containing `--rustique`.
 | variable | values | effect |
 |---|---|---|
 | `RUSTIQUE` | `1`/`true`/`yes`/`on` | enable at interpreter startup (through `_rustique_startup.pth`) |
-| | `0`/`false`/`no`/`off` | kill switch: every enable path is a no-op |
+| | `0`/`false`/`no`/`off` | kill switch: every enable path is a no-op. Prefer `0`: at startup it loads nothing, while the other off values load the extension and enable nothing |
 | | unset or empty | nothing at startup; explicit `enable()` works |
 | `RUSTIQUE_ONLY` | `json,copy` (groups or targets) | narrow every enable path to these |
 | `RUSTIQUE_EXCLUDE` | `re,json.loads` | leave these out of every enable path |
