@@ -90,7 +90,7 @@ def test_kill_switch_native_returns_the_object(real, monkeypatch):
     assert rustique.native()(f) is f
 
 
-@pytest.mark.parametrize("value", ["1", "", "yes", "anything"])
+@pytest.mark.parametrize("value", ["1", "yes", "anything"])
 def test_only_off_values_kill(real, monkeypatch, value):
     monkeypatch.setenv("RUSTIQUE", value)
     assert installed(rustique.enable()) >= CONTAINERS
@@ -347,10 +347,11 @@ def test_startup_kill_switch_imports_nothing(sitedir):
     assert out["loaded"] == [] and err == ""
 
 
-@pytest.mark.parametrize("value", ["off", "false", ""])
-def test_startup_other_off_values_do_not_enable(sitedir, value):
+@pytest.mark.parametrize("value", ["off", "FALSE", "no", "", " Off "])
+def test_startup_off_values_load_nothing(sitedir, value):
+    """Every OFF value is the kill switch, like 0: the startup line loads nothing."""
     out, err = probe(sitedir, RUSTIQUE=value)
-    assert out.get("source") is None and not out.get("installed") and err == ""
+    assert out["loaded"] == [] and err == ""
 
 
 @pytest.mark.parametrize("value", ["1", "true", "ON"])
