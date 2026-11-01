@@ -171,12 +171,16 @@ pub unsafe fn bytes_view<'a>(op: O) -> &'a [u8] {
     }
 }
 
+/// # Safety
+/// Live object.
 #[inline(always)]
 pub unsafe fn exact_str(o: O) -> bool {
     // SAFETY: live object.
     unsafe { ffi::Py_TYPE(o) == &raw mut ffi::PyUnicode_Type }
 }
 
+/// # Safety
+/// Live object.
 #[inline(always)]
 pub unsafe fn exact_bytes(o: O) -> bool {
     // SAFETY: live object.
@@ -223,9 +227,15 @@ pub unsafe fn write_units<S: Unit>(dst: *mut c_void, kind: u32, at: usize, src: 
     unsafe {
         let n = src.len();
         match kind {
-            1 if size_of::<S>() == 1 => std::ptr::copy_nonoverlapping(src.as_ptr().cast::<u8>(), dst.cast::<u8>().add(at), n),
-            2 if size_of::<S>() == 2 => std::ptr::copy_nonoverlapping(src.as_ptr().cast::<u16>(), dst.cast::<u16>().add(at), n),
-            4 if size_of::<S>() == 4 => std::ptr::copy_nonoverlapping(src.as_ptr().cast::<u32>(), dst.cast::<u32>().add(at), n),
+            1 if size_of::<S>() == 1 => {
+                std::ptr::copy_nonoverlapping(src.as_ptr().cast::<u8>(), dst.cast::<u8>().add(at), n)
+            }
+            2 if size_of::<S>() == 2 => {
+                std::ptr::copy_nonoverlapping(src.as_ptr().cast::<u16>(), dst.cast::<u16>().add(at), n)
+            }
+            4 if size_of::<S>() == 4 => {
+                std::ptr::copy_nonoverlapping(src.as_ptr().cast::<u32>(), dst.cast::<u32>().add(at), n)
+            }
             1 => {
                 let d = dst.cast::<u8>().add(at);
                 for (k, &c) in src.iter().enumerate() {
@@ -369,7 +379,7 @@ pub fn leak(o: &Bound<'_, PyAny>) -> usize {
 pub fn code_const<'py>(func: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, PyAny>>> {
     let consts = func.getattr("__code__")?.getattr("co_consts")?;
     for c in consts.cast_into::<PyTuple>()?.iter() {
-        if c.get_type().is(&value.get_type()) && c.eq(value)? {
+        if c.get_type().is(value.get_type()) && c.eq(value)? {
             return Ok(Some(c));
         }
     }
@@ -383,7 +393,11 @@ pub fn check_fp(
     name: &str,
     obj: &Bound<'_, PyAny>,
 ) -> Result<(), Refusal> {
-    let fps = table.iter().find(|(n, _)| *n == name).map(|(_, f)| *f).ok_or_else(|| refuse!("{name}: no fingerprint table"))?;
+    let fps = table
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, f)| *f)
+        .ok_or_else(|| refuse!("{name}: no fingerprint table"))?;
     cx.fingerprint_code(obj, fps)
 }
 
@@ -399,7 +413,11 @@ pub fn check_c(
     name: &str,
     obj: &Bound<'_, PyAny>,
 ) -> Result<(), Refusal> {
-    let fps = table.iter().find(|(n, _)| *n == name).map(|(_, f)| *f).ok_or_else(|| refuse!("{name}: no fingerprint table"))?;
+    let fps = table
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, f)| *f)
+        .ok_or_else(|| refuse!("{name}: no fingerprint table"))?;
     cx.fingerprint_c(obj, fps)
 }
 
@@ -443,7 +461,8 @@ fn calibrate_plain(py: Python<'_>) -> PyResult<Option<PlainInfo>> {
     }
     // Probe: a str subclass instance with one attribute; its managed dict must be found at
     // MANAGED_DICT_OFFSET (pycore_object.h: -3 words on GIL builds, -1 free-threaded).
-    let off: isize = if cfg!(Py_GIL_DISABLED) { -(size_of::<usize>() as isize) } else { -3 * size_of::<usize>() as isize };
+    let off: isize =
+        if cfg!(Py_GIL_DISABLED) { -(size_of::<usize>() as isize) } else { -3 * size_of::<usize>() as isize };
     let ty = py.get_type::<pyo3::types::PyType>().call1((
         "_RustiquePlainProbe",
         (py.get_type::<PyString>(),),
@@ -476,7 +495,11 @@ macro_rules! same_sub_slot {
     ($tp:expr, $base:expr, $table:ident . $slot:ident) => {{
         let a = (*$tp).$table;
         let b = (*$base).$table;
-        if a.is_null() || b.is_null() { a.is_null() && b.is_null() } else { (*a).$slot == (*b).$slot }
+        if a.is_null() || b.is_null() {
+            a.is_null() && b.is_null()
+        } else {
+            (*a).$slot.map(|f| f as usize) == (*b).$slot.map(|f| f as usize)
+        }
     }};
 }
 
@@ -491,8 +514,8 @@ pub unsafe fn plain_str_subclass(op: O) -> bool {
     unsafe {
         let tp = ffi::Py_TYPE(op);
         let base = &raw mut ffi::PyUnicode_Type;
-        if (*tp).tp_getattro != (*base).tp_getattro
-            || (*tp).tp_richcompare != (*base).tp_richcompare
+        if (*tp).tp_getattro.map(|f| f as usize) != (*base).tp_getattro.map(|f| f as usize)
+            || (*tp).tp_richcompare.map(|f| f as usize) != (*base).tp_richcompare.map(|f| f as usize)
             || !same_sub_slot!(tp, base, tp_as_number.nb_bool)
             || !same_sub_slot!(tp, base, tp_as_number.nb_add)
             || !same_sub_slot!(tp, base, tp_as_number.nb_inplace_add)
@@ -512,12 +535,14 @@ pub unsafe fn plain_str_subclass(op: O) -> bool {
         // No instance attribute may shadow a method: the instance dict is absent or empty.
         let flags = (*tp).tp_flags;
         let dict = if flags & MANAGED_DICT != 0 {
-            let cell = op.cast::<u8>().offset(info.managed_dict_offset) as *const std::sync::atomic::AtomicPtr<ffi::PyObject>;
+            let cell =
+                op.cast::<u8>().offset(info.managed_dict_offset) as *const std::sync::atomic::AtomicPtr<ffi::PyObject>;
             (*cell).load(std::sync::atomic::Ordering::Acquire)
         } else if (*tp).tp_dictoffset == 0 {
             std::ptr::null_mut()
         } else if (*tp).tp_dictoffset > 0 {
-            let cell = op.cast::<u8>().offset((*tp).tp_dictoffset) as *const std::sync::atomic::AtomicPtr<ffi::PyObject>;
+            let cell =
+                op.cast::<u8>().offset((*tp).tp_dictoffset) as *const std::sync::atomic::AtomicPtr<ffi::PyObject>;
             (*cell).load(std::sync::atomic::Ordering::Acquire)
         } else {
             return false;

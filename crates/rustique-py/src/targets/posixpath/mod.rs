@@ -64,6 +64,8 @@ static RT_ABSPATH: Rt = Rt::new();
 
 macro_rules! target {
     ($stat:ident, $name:literal, $rt:ident, $prep:ident) => {
+        // `..DEFAULT` keeps the spec additive when the registry grows fields.
+        #[allow(clippy::needless_update)]
         pub static $stat: TargetSpec = TargetSpec {
             name: $name,
             group: "posixpath",
@@ -73,6 +75,7 @@ macro_rules! target {
             counters: &$rt.counters,
             prepare: $prep,
             jit_safe: false,
+            checkable: true,
             ..TargetSpec::DEFAULT
         };
     };
@@ -206,7 +209,7 @@ unsafe fn ty_of(o: O) -> Option<Ty> {
 /// Common kernel skeleton: shape check, guards, body; a body returning `Ok(None)` declines
 /// before anything observable, a null result clears the error and re-runs CPython.
 macro_rules! kernel {
-    ($name:ident, $rt:ident, |$func:ident, $args:ident, $nargsf:ident, $n:ident, $kw:ident| $body:expr) => {
+    ($name:ident, $rt:ident, $spec:ident, |$func:ident, $args:ident, $nargsf:ident, $n:ident, $kw:ident| $body:expr) => {
         unsafe extern "C" fn $name($func: O, $args: *const O, $nargsf: usize, $kw: O) -> O {
             // SAFETY: vectorcall arguments from CPython; attached thread.
             unsafe {
@@ -221,7 +224,13 @@ macro_rules! kernel {
                         $rt.fallback(Reason::Deopt, $func, $args, $nargsf, $kw)
                     }
                     Some(r) => {
-                        $rt.counters.hit();
+                        if $rt.counters.hit_check() {
+                            let nkw = if $kw.is_null() { 0 } else { ffi::PyTuple_GET_SIZE($kw) as usize };
+                            let all = std::slice::from_raw_parts($args, $n + nkw);
+                            return accel::check::verify(&$spec, r, all, || {
+                                accel::FUNCTION_VECTORCALL.get()($func, $args, $nargsf, $kw)
+                            });
+                        }
                         r
                     }
                 }
@@ -251,7 +260,7 @@ unsafe fn guards(rt: &Rt, func: O) -> Option<O> {
 
 const MAXA: usize = 8;
 
-kernel!(k_join, RT_JOIN, |func, args, nargsf, n, kw| {
+kernel!(k_join, RT_JOIN, JOIN, |func, args, nargsf, n, kw| {
     if !kw.is_null() || n == 0 {
         None
     } else {
@@ -309,7 +318,7 @@ unsafe fn join_str(args: *const O, n: usize) -> O {
                 let mut at = 0;
                 for p in pieces {
                     if p.sep_before {
-                        rt::write_units(data, kind, at, &[b'/']);
+                        rt::write_units(data, kind, at, b"/");
                         at += 1;
                     }
                     let v = views[p.arg];
@@ -337,8 +346,8 @@ unsafe fn join_bytes(args: *const O, n: usize) -> O {
             pieces_h = vec![Piece::default(); n];
             (&mut jargs_h[..], &mut pieces_h[..])
         };
-        for k in 0..n {
-            jargs[k] = JoinArg::of(bytes_view(*args.add(k)));
+        for (k, j) in jargs.iter_mut().enumerate() {
+            *j = JoinArg::of(bytes_view(*args.add(k)));
         }
         match posix::join_plan(jargs, pieces) {
             Joined::Arg(k) => ffi::Py_NewRef(*args.add(k)),
@@ -435,30 +444,44 @@ macro_rules! units {
     };
 }
 
-kernel!(k_split, RT_SPLIT, |func, args, nargsf, n, kw| one_arg!(RT_SPLIT, func, args, n, kw, |p, t| {
+kernel!(k_split, RT_SPLIT, SPLIT, |func, args, nargsf, n, kw| one_arg!(RT_SPLIT, func, args, n, kw, |p, t| {
     let ((i, h), len) = units!(t, p, |s| (posix::tail_start(s), posix::head_len(s)));
     pair(slice(t, p, 0, h), slice(t, p, i, len))
 }));
 
-kernel!(k_splitext, RT_SPLITEXT, |func, args, nargsf, n, kw| one_arg!(RT_SPLITEXT, func, args, n, kw, |p, t| {
-    let (dot, len) = units!(t, p, |s| posix::splitext(s));
-    match dot {
-        Some(d) => pair(slice(t, p, 0, d), slice(t, p, d, len)),
-        None => pair(ffi::Py_NewRef(p), slice(t, p, 0, 0)),
+kernel!(k_splitext, RT_SPLITEXT, SPLITEXT, |func, args, nargsf, n, kw| one_arg!(
+    RT_SPLITEXT,
+    func,
+    args,
+    n,
+    kw,
+    |p, t| {
+        let (dot, len) = units!(t, p, |s| posix::splitext(s));
+        match dot {
+            Some(d) => pair(slice(t, p, 0, d), slice(t, p, d, len)),
+            None => pair(ffi::Py_NewRef(p), slice(t, p, 0, 0)),
+        }
     }
-}));
+));
 
-kernel!(k_basename, RT_BASENAME, |func, args, nargsf, n, kw| one_arg!(RT_BASENAME, func, args, n, kw, |p, t| {
-    let (i, len) = units!(t, p, |s| posix::tail_start(s));
-    slice(t, p, i, len)
-}));
+kernel!(k_basename, RT_BASENAME, BASENAME, |func, args, nargsf, n, kw| one_arg!(
+    RT_BASENAME,
+    func,
+    args,
+    n,
+    kw,
+    |p, t| {
+        let (i, len) = units!(t, p, |s| posix::tail_start(s));
+        slice(t, p, i, len)
+    }
+));
 
-kernel!(k_dirname, RT_DIRNAME, |func, args, nargsf, n, kw| one_arg!(RT_DIRNAME, func, args, n, kw, |p, t| {
+kernel!(k_dirname, RT_DIRNAME, DIRNAME, |func, args, nargsf, n, kw| one_arg!(RT_DIRNAME, func, args, n, kw, |p, t| {
     let (h, _len) = units!(t, p, |s| posix::head_len(s));
     slice(t, p, 0, h)
 }));
 
-kernel!(k_isabs, RT_ISABS, |func, args, nargsf, n, kw| one_arg!(RT_ISABS, func, args, n, kw, |p, t| {
+kernel!(k_isabs, RT_ISABS, ISABS, |func, args, nargsf, n, kw| one_arg!(RT_ISABS, func, args, n, kw, |p, t| {
     let (abs, _len) = units!(t, p, |s| posix::is_abs(s));
     ffi::Py_NewRef(if abs { ffi::Py_True() } else { ffi::Py_False() })
 }));
@@ -491,9 +514,25 @@ fn check_normpath(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, deps: &'static De
     cx.pin(g, "normpath", deps)?;
     cx.self_test("normpath port", |_py| {
         let probes = [
-            "", "/", "//", "///", ".", "..", "./", "a/..", "a/../..", "/../a", "//x/../..", "a//b/./c/../d/",
-            "\u{e9}/\u{4f60}/..", "./../a", "../../a/b/../..", "/a/b/c/../../../../d", "a/./.b/..c/...",
-            "\u{1F600}//./\u{1F600}", "\0/x/../\0",
+            "",
+            "/",
+            "//",
+            "///",
+            ".",
+            "..",
+            "./",
+            "a/..",
+            "a/../..",
+            "/../a",
+            "//x/../..",
+            "a//b/./c/../d/",
+            "\u{e9}/\u{4f60}/..",
+            "./../a",
+            "../../a/b/../..",
+            "/a/b/c/../../../../d",
+            "a/./.b/..c/...",
+            "\u{1F600}//./\u{1F600}",
+            "\0/x/../\0",
         ];
         for p in probes {
             let want: String = c_np.call1((p,))?.extract()?;
@@ -646,7 +685,7 @@ fn to_u32(t: Text<'_>) -> Vec<u32> {
     crate::with_text!(t, |s| s.iter().map(|c| c.cp()).collect())
 }
 
-kernel!(k_abspath, RT_ABSPATH, |func, args, nargsf, n, kw| one_arg!(RT_ABSPATH, func, args, n, kw, |p, t| {
+kernel!(k_abspath, RT_ABSPATH, ABSPATH, |func, args, nargsf, n, kw| one_arg!(RT_ABSPATH, func, args, n, kw, |p, t| {
     match t {
         Ty::Str => {
             let v = to_u32(str_view(p).text);
@@ -689,7 +728,7 @@ fn rel_parts<'a, T: Unit>(path_abs: &'a [T], start_abs: &'a [T]) -> (usize, Vec<
     (start_list.len() - i, path_list[i..].to_vec())
 }
 
-kernel!(k_relpath, RT_RELPATH, |func, args, nargsf, n, kw| {
+kernel!(k_relpath, RT_RELPATH, RELPATH, |func, args, nargsf, n, kw| {
     // relpath(path), relpath(path, start), relpath(path, start=...)
     let start_kw = !kw.is_null()
         && n == 1

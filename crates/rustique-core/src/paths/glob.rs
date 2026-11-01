@@ -179,8 +179,7 @@ fn bracket_text<T: Unit>(pat: &[T], i: usize, j: usize) -> Option<Vec<u32>> {
     let mut chunks: Vec<Vec<u32>> = Vec::new();
     let mut i = i;
     let mut k = if at(i) == BANG { i + 2 } else { i + 1 };
-    loop {
-        let Some(found) = (if k <= j { find_dash(k) } else { None }) else { break };
+    while let Some(found) = if k <= j { find_dash(k) } else { None } {
         chunks.push((i..found).map(at).collect());
         i = found + 1;
         k = found + 3;
@@ -279,11 +278,7 @@ fn parse_set(text: &[u32]) -> Option<CharSet> {
     // Literal value of an escape inside a set (`_class_escape`), for the escapes
     // `_translate` emits.
     let esc = |e: u32| -> Option<u32> {
-        if e == BACKSLASH || [b'-', b'&', b'~', b'|', b'^', b'['].iter().any(|&x| e == x as u32) {
-            Some(e)
-        } else {
-            None
-        }
+        if e == BACKSLASH || b"-&~|^[".iter().any(|&x| e == x as u32) { Some(e) } else { None }
     };
     // `source.next == '['` right after the opening bracket: FutureWarning.
     if peek(pos)? == T::Ch(LBRACKET) {
@@ -302,7 +297,7 @@ fn parse_set(text: &[u32]) -> Option<CharSet> {
             T::Ch(RBRACKET) if any_item => break,
             T::Esc(e) => esc(e)?,
             T::Ch(c) => {
-                let setop = [b'-', b'&', b'~', b'|'].iter().any(|&x| c == x as u32);
+                let setop = b"-&~|".iter().any(|&x| c == x as u32);
                 if any_item && setop && peek(pos)? == T::Ch(c) {
                     return None;
                 }
