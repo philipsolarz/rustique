@@ -115,10 +115,6 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
             return original(func, args, nargsf, kw);
         };
         let memo = if memo == ffi::Py_None() { std::ptr::null_mut() } else { memo };
-        if !memo.is_null() && ty(memo) != &raw mut ffi::PyDict_Type {
-            C_DEEPCOPY.fallback_streak(Reason::Args);
-            return original(func, args, nargsf, kw);
-        }
         let fo = func.cast::<ffi::PyFunctionObject>();
         if !DEPS_COPY.ok() || (*fo).func_code != st.deepcopy_code || (*fo).func_defaults != st.deepcopy_defaults {
             C_DEEPCOPY.fallback_streak(Reason::Deps);
@@ -493,6 +489,14 @@ fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>
         s_copy: intern(py, "__copy__"),
         s_copy_method: intern(py, "copy"),
         s_memo: intern(py, "memo"),
+        s_get: intern(py, "get"),
+        // SAFETY: a live tuple (3.14: `(None, [])`).
+        nil: if minor < 15 && !deepcopy_defaults.is_null() && unsafe { ffi::PyTuple_GET_SIZE(deepcopy_defaults) } == 2 {
+            // SAFETY: as above.
+            unsafe { incref(ffi::PyTuple_GET_ITEM(deepcopy_defaults, 1)) }
+        } else {
+            nul
+        },
         s_reduce_ex: intern(py, "__reduce_ex__"),
         s_reduce: intern(py, "__reduce__"),
         s_setstate: intern(py, "__setstate__"),

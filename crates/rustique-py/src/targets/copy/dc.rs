@@ -128,15 +128,21 @@ fn dst() -> &'static DcSt {
     unsafe { &*DST.load(Relaxed) }
 }
 
+/// The function still has the code and defaults validated at install.
 #[inline(always)]
-unsafe fn intact(f: (O, O, O), kw: bool) -> bool {
+unsafe fn same_code(f: (O, O, O), kw: bool) -> bool {
     // SAFETY: live function (strong ref in DcSt).
     unsafe {
         let fo = f.0.cast::<ffi::PyFunctionObject>();
-        (*fo).func_code == f.1
-            && (if kw { (*fo).func_kwdefaults == f.2 } else { (*fo).func_defaults == f.2 })
-            && accel::code_locally_quiet(f.1)
+        (*fo).func_code == f.1 && (if kw { (*fo).func_kwdefaults == f.2 } else { (*fo).func_defaults == f.2 })
     }
+}
+
+/// [`same_code`], and no tool listens locally on that code: safe to emulate.
+#[inline(always)]
+unsafe fn intact(f: (O, O, O), kw: bool) -> bool {
+    // SAFETY: live function (strong ref in DcSt).
+    unsafe { same_code(f, kw) && accel::code_locally_quiet(f.1) }
 }
 
 fn func3(o: &Bound<'_, PyAny>, kw: bool) -> PyResult<(O, O, O)> {
@@ -610,7 +616,7 @@ unsafe fn enter(f: (O, O, O), kw: bool, func: O) -> Result<Cx, Reason> {
     // SAFETY: attached thread.
     unsafe {
         let st = super::rt::ST.load(Relaxed);
-        if st.is_null() || !DEPS_DC.ok() || func != f.0 || !intact(f, kw) {
+        if st.is_null() || !DEPS_DC.ok() || func != f.0 || !same_code(f, kw) {
             return Err(Reason::Deps);
         }
         if !accel::tools_quiet(&TOOLS_DC, func) {
@@ -908,7 +914,12 @@ unsafe extern "C" fn vc_replace(func: O, args: *const O, nargsf: usize, kw: O) -
         let mut cx = match enter(d.replace, false, func) {
             Ok(cx) if intact(d.replace_inner, false) && intact(d.is_dc, false) => cx,
             Ok(_) => {
-                C_REPLACE.fallback_streak(Reason::Deps);
+                let why = if same_code(d.replace_inner, false) && same_code(d.is_dc, false) {
+                    Reason::Tools
+                } else {
+                    Reason::Deps
+                };
+                C_REPLACE.fallback_streak(why);
                 return original(func, args, nargsf, kw);
             }
             Err(r) => {
@@ -920,9 +931,9 @@ unsafe extern "C" fn vc_replace(func: O, args: *const O, nargsf: usize, kw: O) -
         // `__dataclass_fields__` must be a dict for the native loop: probe it purely
         // (class attribute, no instance override) before anything observable.
         let t = ty(obj);
-        let fs = _PyType_Lookup(t, d.s_fields);
-        if fs.is_null()
-            || ty(fs) != &raw mut ffi::PyDict_Type
+        let fs = Own(_PyType_LookupRef(t, d.s_fields));
+        if fs.get().is_null()
+            || ty(fs.get()) != &raw mut ffi::PyDict_Type
             || (*t).tp_getattro.map(|f| f as usize) != ffi::PyBaseObject_Type.tp_getattro.map(|f| f as usize)
         {
             C_REPLACE.fallback_streak(Reason::Args);

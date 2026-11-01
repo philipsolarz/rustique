@@ -155,7 +155,52 @@ RESULTS_CONFORMANCE
 
 ## 7. Measurements
 
-RESULTS_MEASUREMENTS
+### 7.1 Callgrind, 3.15.1 (Ir per call, `benches/targets/copy_cells.py`, region-instrumented, steady state)
+
+| cell | CPython | Rustique | ratio |
+|---|---:|---:|---:|
+| deepcopy int | 712 | 496 | 0.696 |
+| deepcopy str | 714 | 496 | 0.694 |
+| deepcopy record (10 fields) | 24,230 | 4,123 | 0.170 |
+| deepcopy list of 5 records | 119,216 | 20,502 | 0.172 |
+| deepcopy cfg (3 keys, nested) | 25,442 | 4,510 | 0.177 |
+| deepcopy tuple of immutables | 19,354 | 2,367 | 0.122 |
+| deepcopy small dataclass | 29,376 | 7,833 | 0.267 |
+| deepcopy dataclass tree | 141,272 | 46,009 | 0.326 |
+| deepcopy plain object | 35,373 | 8,994 | 0.254 |
+| deepcopy slotted object | 38,220 | 9,852 | 0.258 |
+| deepcopy enum member | 3,002 | 1,784 | 0.594 |
+| deepcopy frozenset | 29,082 | 5,696 | 0.196 |
+| deepcopy set | 27,941 | 5,362 | 0.192 |
+| deepcopy datetime | 13,104 | 4,193 | 0.320 |
+| deepcopy uuid | 27,280 | 11,322 | 0.415 |
+| deepcopy Decimal (C __deepcopy__) | 2,836 | 1,313 | 0.463 |
+| deepcopy __deepcopy__ hook | 14,042 | 7,155 | 0.510 |
+| deepcopy registered copier | 13,128 | 6,695 | 0.510 |
+| deepcopy copyreg reductor | 18,958 | 5,390 | 0.284 |
+| deepcopy dict subclass | 26,027 | 9,660 | 0.371 |
+| deepcopy OrderedDict | 22,509 | 12,763 | 0.567 |
+| deepcopy memo=OrderedDict (fallback args) | 28,583 | 28,474 | 0.996 |
+| deepcopy explicit {} memo | 25,502 | 8,617 | 0.338 |
+| copy int | 645 | 386 | 0.598 |
+| copy list100 | 3,123 | 2,686 | 0.860 |
+| copy dict100 | 5,146 | 4,620 | 0.898 |
+| copy record | 1,688 | 1,242 | 0.735 |
+| copy plain object | 12,688 | 4,725 | 0.372 |
+| copy small dataclass | 12,796 | 4,764 | 0.372 |
+| copy enum member | 1,911 | 1,133 | 0.593 |
+| copy __copy__ hook | 2,926 | 2,029 | 0.693 |
+| copy set | 1,477 | 1,275 | 0.863 |
+| copy datetime | 6,629 | 2,653 | 0.400 |
+| copy (fallback args: kw) | 1,840 | 1,840 | 1.000 |
+| asdict small dataclass | 12,605 | 4,635 | 0.368 |
+| asdict dataclass tree | 76,314 | 27,221 | 0.357 |
+| astuple small dataclass | 12,483 | 4,210 | 0.337 |
+| replace small dataclass | 10,431 | 7,550 | 0.724 |
+| replace no changes | 10,001 | 8,059 | 0.806 |
+| asdict (fallback: dict_factory) | 16,547 | 16,528 | 0.999 |
+
+RESULTS_MORE
 
 ## 8. Tests
 

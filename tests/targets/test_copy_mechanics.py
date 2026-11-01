@@ -21,6 +21,7 @@ import pytest
 
 import _copy_support as S
 import rustique as rt
+from _mechanics import assert_tools_see_original
 
 partial_deepcopy = functools.partial(copy.deepcopy)
 SIG = str(inspect.signature(copy.deepcopy))
@@ -310,3 +311,18 @@ def test_enable_disable_under_load():
     for t in threads:
         t.join()
     assert not errors, errors
+
+
+@pytest.mark.parametrize(
+    "name,func,call",
+    [
+        ("copy.deepcopy", copy.deepcopy, lambda: copy.deepcopy({"a": [1, (2, 3)], "b": P(1, [2])})),
+        ("copy.copy", copy.copy, lambda: copy.copy([1, 2, {"a": 1}])),
+        ("dataclasses.asdict", dataclasses.asdict, lambda: dataclasses.asdict(P(1, [2, {"k": 3}]))),
+        ("dataclasses.astuple", dataclasses.astuple, lambda: dataclasses.astuple(P(1, [2]))),
+        ("dataclasses.replace", dataclasses.replace, lambda: dataclasses.replace(P(1, [2]), x=3)),
+    ],
+)
+def test_tools_guard_shared(name, func, call):
+    S.disable()
+    assert_tools_see_original(name, func, call)

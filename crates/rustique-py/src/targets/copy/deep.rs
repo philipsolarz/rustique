@@ -128,7 +128,7 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// `memo`: null (`deepcopy(x)`) or an exact dict (borrowed).
+    /// `memo`: null (`deepcopy(x)`) or the caller's memo object (borrowed).
     #[inline(always)]
     pub unsafe fn new(st: &'static St, memo: O, atomic_fast: bool) -> Engine {
         Engine {
@@ -286,7 +286,7 @@ impl Engine {
             let d = if root && self.memo.is_native() {
                 null_mut()
             } else {
-                match self.memo.lookup(x, st.minor) {
+                match self.memo.lookup(x, st.minor, st) {
                     Ok(Look::Hit(y)) => {
                         self.depth.pop();
                         return Ok(Began::Ready(y));

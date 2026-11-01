@@ -171,7 +171,8 @@ impl Drop for Native {
 #[allow(clippy::large_enum_variant)]
 pub enum Memo {
     Native(Native),
-    /// A real dict (the caller's, or materialised). Strong reference.
+    /// The caller's memo (any object: `copy.py` only uses `in`, `[]`, `[]=` and, on 3.14,
+    /// `.get`), or the materialised dict. Strong reference.
     Dict(O),
 }
 
@@ -186,7 +187,7 @@ pub enum Look {
 impl Memo {
     /// `if d in memo: return memo[d]` (3.15) / `y = memo.get(d, _nil)` (3.14).
     #[inline(always)]
-    pub unsafe fn lookup(&mut self, x: O, minor: u8) -> R<Look> {
+    pub unsafe fn lookup(&mut self, x: O, minor: u8, st: &St) -> R<Look> {
         match self {
             Memo::Native(n) => Ok(match n.get(x) {
                 // SAFETY: live value.
@@ -195,16 +196,35 @@ impl Memo {
             }),
             // SAFETY: exact dict memo; the same dict operations as copy.py.
             Memo::Dict(m) => unsafe {
+                let m = *m;
                 let d = Own::new(ffi::PyLong_FromVoidPtr(x.cast()))?;
+                let exact = ty(m) == &raw mut ffi::PyDict_Type;
                 if minor >= 15 {
-                    match ffi::PyDict_Contains(*m, d.get()) {
+                    // `if d in memo: return memo[d]`
+                    let r = if exact { ffi::PyDict_Contains(m, d.get()) } else { ffi::PySequence_Contains(m, d.get()) };
+                    match r {
                         r if r < 0 => Err(()),
                         0 => Ok(Look::Miss(d.into_raw())),
-                        _ => Ok(Look::Hit(nn(ffi::PyObject_GetItem(*m, d.get()))?)),
+                        _ => Ok(Look::Hit(nn(ffi::PyObject_GetItem(m, d.get()))?)),
                     }
-                } else {
-                    let y = dict_get(*m, d.get())?;
+                } else if exact {
+                    // `y = memo.get(d, _nil)` on an exact dict.
+                    let y = dict_get(m, d.get())?;
                     if y.is_null() { Ok(Look::Miss(d.into_raw())) } else { Ok(Look::Hit(y)) }
+                } else {
+                    let args = [m, d.get(), st.nil];
+                    let y = nn(ffi::PyObject_VectorcallMethod(
+                        st.s_get,
+                        args.as_ptr(),
+                        3 | ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
+                        std::ptr::null_mut(),
+                    ))?;
+                    if y == st.nil {
+                        decref(y);
+                        Ok(Look::Miss(d.into_raw()))
+                    } else {
+                        Ok(Look::Hit(y))
+                    }
                 }
             },
         }

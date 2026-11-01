@@ -18,6 +18,8 @@ pub type R<T> = Result<T, ()>;
 unsafe extern "C" {
     /// Borrowed MRO lookup through the type cache (cpython/object.h, exported).
     pub fn _PyType_Lookup(t: *mut ffi::PyTypeObject, name: O) -> O;
+    /// Strong-reference variant (safe on free-threaded builds).
+    pub fn _PyType_LookupRef(t: *mut ffi::PyTypeObject, name: O) -> O;
     /// `types.MethodType` (cpython/classobject.h).
     pub static mut PyMethod_Type: ffi::PyTypeObject;
 }
@@ -164,6 +166,9 @@ pub struct St {
     pub s_copy: O,
     pub s_copy_method: O,
     pub s_memo: O,
+    pub s_get: O,
+    /// 3.14: `deepcopy`'s `_nil` default (the sentinel of `memo.get(d, _nil)`).
+    pub nil: O,
     pub s_reduce_ex: O,
     pub s_reduce: O,
     pub s_setstate: O,

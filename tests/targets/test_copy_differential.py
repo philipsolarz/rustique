@@ -781,3 +781,50 @@ def test_replace_instance_shadows_fields():
         return p, {"p": p}
 
     S.compare(lambda cp, dc, r: dc.replace(r, x=2), source)
+
+
+# ---------------------------------------------------------------------------------------
+# Memos that are not exact dicts: every operation copy.py performs on them, in order.
+# ---------------------------------------------------------------------------------------
+
+
+class LoggingMemo(dict):
+    def __contains__(self, k):
+        log("memo-in", Ctx.lab.key(k))
+        return super().__contains__(k)
+
+    def __getitem__(self, k):
+        log("memo-get", Ctx.lab.key(k))
+        return super().__getitem__(k)
+
+    def __setitem__(self, k, v):
+        log("memo-set", Ctx.lab.key(k), Ctx.lab.obj(v))
+        super().__setitem__(k, v)
+
+    def get(self, k, default=None):
+        log("memo-.get", Ctx.lab.key(k))
+        return super().get(k, default)
+
+
+def deepcopy_memo_of(factory):
+    def fn(cp, dc, root):
+        memo = factory()
+        Ctx.lab.ids[id(memo)] = "MEMO"
+        y = cp.deepcopy(root, memo)
+        return (y, Ctx.lab.memo(dict(memo)))
+
+    return fn
+
+
+@settings(max_examples=150)
+@given(graphs())
+def test_deepcopy_logging_memo(spec):
+    S.compare(deepcopy_memo_of(LoggingMemo), build(spec))
+
+
+@settings(max_examples=100)
+@given(graphs())
+def test_deepcopy_ordereddict_memo(spec):
+    import collections
+
+    S.compare(deepcopy_memo_of(collections.OrderedDict), build(spec))
