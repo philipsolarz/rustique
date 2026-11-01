@@ -10,11 +10,13 @@ use crate::accel::TargetSpec;
 pub mod _selftest;
 pub mod builtins;
 pub mod containers;
+pub mod datetime;
 
 /// Every group's targets, in install order.
 pub static ALL: &[&[&TargetSpec]] = &[
     containers::TARGETS,
     builtins::TARGETS,
+    datetime::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,
