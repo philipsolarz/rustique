@@ -361,3 +361,48 @@ def test_persistent_fallback_suspends_until_next_enable(selftest_module):
     assert A._selftest_vectorcall(m.ident) == "kernel"
     assert "suspended" not in target("_selftest.vectorcall")
     assert m.ident(1) == ("kernel", 1)
+
+
+def test_override_verdict_cache():
+    class Base:
+        def join(self):
+            pass
+
+    class Plain(Base):
+        pass
+
+    class Over(Base):
+        def __fspath__(self):
+            return ""
+
+    class Deep(Over):
+        pass
+
+    class Other:
+        pass
+
+    assert A._selftest_overrides(Plain, Base) is False
+    assert A._selftest_overrides(Over) is True
+    assert A._selftest_overrides(Deep) is True
+    assert A._selftest_overrides(Other) is None
+    assert A._selftest_overrides(Plain) is False  # cached
+    Plain.join = lambda self: None  # modification resets the version tag
+    assert A._selftest_overrides(Plain) is True
+    del Plain.join
+    assert A._selftest_overrides(Plain) is False
+    Base.__fspath__ = lambda self: ""  # defined on the base itself: not an override
+    assert A._selftest_overrides(Plain) is False
+
+
+def test_whole_dict_generation_watch():
+    d = {"a": 1}
+    g = A._selftest_watch_dict(d)
+    assert A._selftest_watch_dict(d) == g  # idempotent, no event
+    d["b"] = 2
+    d["a"] = 3
+    del d["b"]
+    assert A._selftest_watch_dict(d) == g + 3
+    d["a"] = 3  # same object: CPython sends no event
+    assert A._selftest_watch_dict(d) == g + 3
+    d.clear()
+    assert A._selftest_watch_dict(d) == g + 4
