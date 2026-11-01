@@ -100,7 +100,7 @@ def test_status_installed_with_sites():
     assert set(st) == set(TARGETS)
     for t in st.values():
         assert t["state"] == "installed", t
-    assert len(st["logging.Logger.level"]["sites"]) == 7
+    assert len(st["logging.Logger.level"]["sites"]) == 6
 
 
 def test_introspection_unchanged():

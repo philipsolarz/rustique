@@ -1,5 +1,7 @@
-//! `Logger.isEnabledFor` and the level methods `debug`/`info`/`warning`/`error`/
-//! `critical`/`log` (target `logging.Logger.level`).
+//! The level methods `debug`/`info`/`warning`/`error`/`critical`/`log` (target
+//! `logging.Logger.level`). `Logger.isEnabledFor` itself is not a site: called directly it
+//! is ~600 Ir and a kernel gains nothing there (1.36 on free-threaded builds, where
+//! attribute reads go through `PyObject_GenericGetAttr`); its logic is inlined here.
 //!
 //! The kernels decide `self.isEnabledFor(level)` from `self.disabled` and the logger's
 //! level cache exactly as CPython does, and return `None` for a **disabled** call: the most
@@ -100,45 +102,6 @@ unsafe fn kw_ok(kw: O, with_level: bool) -> bool {
             }
         }
         true
-    }
-}
-
-/// `Logger.isEnabledFor(self, level)`.
-///
-/// # Safety
-/// Installed as the function's vectorcall: CPython calls it with vectorcall arguments.
-pub unsafe extern "C" fn vc_is_enabled_for(func: O, args: *const O, nargsf: usize, kw: O) -> O {
-    // SAFETY: vectorcall arguments; attached thread.
-    unsafe {
-        let why = 'fb: {
-            if !(kw.is_null() && nargs(nargsf) == 2) {
-                break 'fb Reason::Args;
-            }
-            let (me, level) = (*args, *args.add(1));
-            if !exact_int(level) {
-                break 'fb Reason::Args;
-            }
-            let Some(e) = LOGGERS.entry(ffi::Py_TYPE(me)) else { break 'fb Reason::Args };
-            if !DEPS.ok() {
-                break 'fb Reason::Deps;
-            }
-            if !TOOLS.quiet() || !CODES[0].ok() {
-                break 'fb Reason::Tools;
-            }
-            if let Some(v) = decide(e, me, level) {
-                if STATS.hit_check_streak() {
-                    let a = std::slice::from_raw_parts(args, 2);
-                    return crate::accel::check::verify(&super::LEVEL, v, a, || original(func, args, nargsf, kw));
-                }
-                return v;
-            }
-            // A cache miss: CPython's path takes the lock and fills the cache, so the next
-            // call hits. Transient: not a fallback streak.
-            STATS.fallback(Reason::Deopt);
-            return original(func, args, nargsf, kw);
-        };
-        STATS.fallback_streak(why);
-        original(func, args, nargsf, kw)
     }
 }
 

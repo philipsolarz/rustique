@@ -2,7 +2,7 @@
 //!
 //! | target | site(s) | kernel |
 //! |---|---|---|
-//! | `logging.Logger.level` | `Logger.isEnabledFor`, `.debug/.info/.warning/.error/.critical/.log` | disabled calls return without a frame |
+//! | `logging.Logger.level` | `Logger.debug/.info/.warning/.error/.critical/.log` | disabled calls return without a frame |
 //! | `logging.Logger.findCaller` | `Logger.findCaller` | frame walk |
 //! | `logging.LogRecord.__init__` | `LogRecord.__init__` | the record's attributes |
 //! | `logging.Formatter.formatTime` | `Formatter.formatTime` | localtime + strftime + msecs |
@@ -163,7 +163,6 @@ fn prepare_level(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         let m = cx.type_attr(&logger, name)?;
         function(cx, &m, f, &level::CODES[i + 1])?;
     }
-    cx.vectorcall(&ief, level::vc_is_enabled_for, &accel::FUNCTION_VECTORCALL)?;
     for (name, _, k) in methods {
         let m = cx.type_attr(&logger, name)?;
         cx.vectorcall(&m, k, &accel::FUNCTION_VECTORCALL)?;
@@ -522,8 +521,8 @@ macro_rules! target {
     };
 }
 
-// Checkable: the kernel's exact subset has no side effects (a disabled level call, a
-// cache hit of isEnabledFor, the frame walk, formatTime). `format` and `__init__` store
+// Checkable: the kernel's exact subset has no side effects (a disabled level call, the
+// frame walk, formatTime). `format` and `__init__` store
 // into the record.
 target!(LEVEL, "logging.Logger.level", &level::STATS, prepare_level, true);
 target!(FIND_CALLER, "logging.Logger.findCaller", &caller::STATS, prepare_caller, true);

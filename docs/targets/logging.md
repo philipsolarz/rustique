@@ -16,7 +16,7 @@ no Python code runs below the kernel.
 
 | target | sites | the kernel |
 |---|---|---|
-| `logging.Logger.level` | `Logger.isEnabledFor`, `.debug`, `.info`, `.warning`, `.error`, `.critical`, `.log` | decides `self.isEnabledFor(level)` from `self.disabled` and the level cache; a **disabled** call returns `None`; an enabled call runs CPython's method |
+| `logging.Logger.level` | `Logger.debug`, `.info`, `.warning`, `.error`, `.critical`, `.log` | decides `self.isEnabledFor(level)` from `self.disabled` and the level cache; a **disabled** call returns `None`; an enabled call runs CPython's method |
 | `logging.Logger.findCaller` | `Logger.findCaller` | the frame walk with `_is_internal_frame` semantics, `(co_filename, f_lineno, co_name, None)` |
 | `logging.LogRecord.__init__` | `LogRecord.__init__` | every record attribute, stored in CPython's order |
 | `logging.Formatter.formatTime` | `Formatter.formatTime` | `converter(created)` + `strftime` + `default_msec_format` |
@@ -87,19 +87,32 @@ call (1.10) whenever an argument is not plain.
    `multiprocessing.process.current_process`, `BaseProcess.name`) is fingerprinted per
    minor version (canonical code hash; C functions by `ml_name/ml_flags/ml_doc`), and its
    `__code__`/`__defaults__` are checked per call (assignment falls back).
-7. **Tools**: any `sys.monitoring` tool listening to *any* global event (not only
-   `PY_START`: line-only, raise-only tools too), or locally on any of those code objects
-   (breakpoints; 16 local events on 3.15, 11 on 3.14), makes every kernel fall back, so
-   tracers, profilers, coverage and debuggers see CPython's frames.
+7. **Tools**: any `sys.monitoring` tool listening to *any* global event (the framework's
+   `accel::Tools`: line-only, raise-only tools too), or locally on any of those code
+   objects (`accel::code_locally_quiet` on each: breakpoints; 16 local events on 3.15, 11
+   on 3.14), makes every kernel fall back, so tracers, profilers, coverage and debuggers
+   see CPython's frames.
+8. **Ruling 15** (restart before user code): no kernel calls user code. Every input that
+   would reach user code (a handler, filter, stream, factory, formatter or style override,
+   an argument's `__str__`, a converter function) is recognised before anything observable
+   and runs CPython's original from the start.
+9. **Attribute reads** of validated objects use `PyObject_GenericGetAttr`; GIL builds read
+   the instance's inline values directly (`_PyObject_InlineValues`, index in the type's
+   shared keys, falling back to the class's plain value), as
+   `_PyObject_TryGetInstanceAttribute` does — the layout (pycore_dict.h, pycore_object.h,
+   identical in 3.14 and 3.15) is calibrated at install against `PyObject_GenericGetAttr`
+   on `logging.root`, and a failed calibration only turns the fast reads off. Stores use
+   `PyObject_GenericSetAttr`.
 
 ### Per target
 
 **`Logger.level`.** Exact subset: `self` of a validated logger class, `level` an exact
 `int` (the module constant for `debug`..`critical`), no keyword naming a positional
 parameter (CPython raises "multiple values"), `self.isEnabledFor` CPython's, `disabled` a
-plain truth value, `_cache` an exact dict with exact-int keys (so the lookup runs no
-`__eq__`) holding the level. Disabled → `None` (no frame, no `*args`/`**kwargs` objects).
-`isEnabledFor` returns the cached object itself. A cache miss (CPython takes
+plain truth value, `_cache` an exact dict whose keys are all exact ints (scanned: a level
+cache holds a handful of entries; so the lookup runs no `__eq__`) holding the level. Disabled → `None` (no frame, no `*args`/`**kwargs` objects).
+`Logger.isEnabledFor` itself is not a site (≈600 Ir when called directly: 0.97 on GIL
+builds, 1.36 on free-threaded ones, where attribute reads cannot use inline values). A cache miss (CPython takes
 `logging._lock` and computes `getEffectiveLevel`) and every enabled call run the original;
 both are counted as non-streak fallbacks (an enabled call is not a failure: the kernel
 decided, and costs ≈ 1% of the record).
@@ -119,8 +132,10 @@ validated record class, `args` an exact tuple, `level` an exact int or `None`
 (`makeLogRecord`), `pathname` an exact str. Values: `time.time_ns()` → `PyTime_Time`
 (what `time_ns` calls), `created = ct / 1e9` (int → double correctly rounded, as
 `PyLong_AsDouble`), `msecs = (ct % 10**9) // 10**6 + 0.0` with the gh-89047 reset,
-`relativeCreated = (ct - _startTime) / 1e6`; `getLevelName` (scan of `_levelToName`
-verifying exact-int keys, `_nameToLevel` exact-str keys, `"Level %s" % level`);
+`relativeCreated = (ct - _startTime) / 1e6`; `getLevelName` (`_levelToName.get(level)`
+once every key is verified to be an exact int — re-verified only when the dict changes,
+through the registry's whole-dict generation watch —, `_nameToLevel` with exact-str keys,
+`"Level %s" % level`);
 `basename`/`splitext` on the str (`rustique_core::logging::split_path`, result identity
 kept: `filename is pathname` when there is no `/`); `threading.get_ident()` →
 `PyThread_get_thread_ident`; `current_thread()` → `threading._active[ident]` (a thread
@@ -173,13 +188,88 @@ flags, width and (for `%s`) precision, Latin-1 text — byte-for-byte
 - `func_version` of the patched functions (the specializer stops inlining calls to them;
   restored on `disable()`), and the kernels' own caches (validated types, parsed format
   strings, line numbers, ABC answers).
-- `Task.get_name()` and `PyFrame_GetLineNumber` are called exactly when CPython calls them.
+- `PyFrame_GetLineNumber` is skipped on a line-number memo hit (for a frame whose
+  `f_lineno` field is 0 it has no side effect); `Task.get_name()` is called when CPython
+  calls it (it caches the generated `Task-N` name, as in CPython).
 
 ## 4. Measured
 
 ### callgrind (instructions per call, region-instrumented, 3.15.1, `benches/targets/logging_cg.py`)
 
-MEASUREMENTS
+`benches/targets/logging_cg.py` (orig: plain CPython; enabled: `rustique.enable(only=
+["logging"])` before `import logging`), Ir per statement, (Ir(2n) − Ir(n)) / n with 10×
+unrolling, 3.15.1, dev-release build. Records go through a `StreamHandler` to an
+`io.StringIO` from a caller function with ~40 locals. JIT columns: `PYTHON_JIT=1`, warmed
+30 000 statements (subset). "[fallback, steady]" cells run a fallback path 1000s of times
+in a row: after 64 consecutive fallbacks the target suspends itself (CPython's code at
+1.00); "[fallback, alternating]" cells interleave the fallback with a fast call so the
+target never suspends (the first-64-calls cost). "[deps]": a pinned dependency replaced
+(the targets that pin it are suspended).
+
+| cell | CPython | enabled | ratio | JIT CPython | JIT enabled | JIT ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| info %(message)s | 54,428 | 27,844 | **0.512** | 46,279 | 26,507 | 0.573 |
+| info BASIC_FORMAT | 57,093 | 28,875 | **0.506** | | | |
+| info asctime fmt | 71,258 | 32,269 | **0.453** | 61,696 | 30,582 | 0.496 |
+| info asctime fmt, child logger | 70,902 | 32,555 | **0.459** | 62,437 | 31,070 | 0.498 |
+| info asctime fmt, 3 args | 71,223 | 34,995 | **0.491** | 62,751 | 33,725 | 0.537 |
+| info asctime fmt, no args | 66,768 | 30,496 | **0.457** | 58,395 | 28,870 | 0.494 |
+| info asctime fmt, extra= | 76,930 | 36,313 | **0.472** | 68,445 | 34,818 | 0.509 |
+| info JSON formatter (subclass) | 83,513 | 48,505 | **0.581** | | | |
+| info JSON __dict__ formatter | 117,985 | 82,824 | **0.702** | | | |
+| info {-style | 79,550 | 44,293 | **0.557** | | | |
+| info, time.strftime replaced [deps] | 71,318 | 45,380 | **0.636** | | | |
+| info Formatter subclass [fallback] | 70,766 | 32,199 | **0.455** | | | |
+| info obj arg [fallback] | 71,260 | 47,546 | **0.667** | | | |
+| info %(message)s, obj arg [fallback] | 54,653 | 40,194 | **0.735** | 46,613 | 34,369 | 0.737 |
+| info stack_info=True [fallback] | 349,389 | 330,462 | **0.946** | | | |
+| exception [fallback] | 714,290 | 678,561 | **0.950** | | | |
+| adapter info | 87,864 | 44,037 | **0.501** | | | |
+| logging.info root (disabled) | 3,846 | 3,132 | **0.815** | | | |
+| debug disabled | 1,343 | 836 | **0.623** | 1,314 | 839 | 0.638 |
+| info disabled | 1,343 | 836 | **0.623** | | | |
+| debug disabled, no args | 1,172 | 803 | **0.685** | 1,150 | 806 | 0.700 |
+| debug disabled, kwargs | 1,932 | 957 | **0.495** | 1,897 | 960 | 0.506 |
+| isEnabledFor | 612 | 596 | **0.974** | 689 | 599 | 0.869 |
+| LogRecord() | 19,339 | 7,685 | **0.397** | 15,744 | 7,687 | 0.488 |
+| makeRecord | 19,802 | 8,106 | **0.409** | | | |
+| findCaller | 12,491 | 4,100 | **0.328** | 11,585 | 4,103 | 0.354 |
+| getMessage | 2,049 | 2,062 | **1.007** | | | |
+| getMessage obj arg | 2,253 | 2,266 | **1.006** | | | |
+| format %(message)s | 7,441 | 5,776 | **0.776** | 6,819 | 5,746 | 0.843 |
+| format BASIC_FORMAT | 10,094 | 6,743 | **0.668** | | | |
+| format asctime | 23,704 | 9,674 | **0.408** | 22,830 | 9,667 | 0.423 |
+| format datefmt | 18,780 | 8,234 | **0.438** | | | |
+| format {-style [fallback] | 32,143 | 22,638 | **0.704** | | | |
+| format formatTime overridden [fallback, steady] | 11,932 | 11,959 | **1.002** | 11,254 | 11,230 | 0.998 |
+| format formatTime overridden + plain [fallback, alternating] | 36,703 | 22,403 | **0.610** | 34,272 | 21,627 | 0.631 |
+| formatTime custom converter [fallback, steady] | 11,813 | 11,908 | **1.008** | 11,672 | 11,642 | 0.997 |
+| formatTime custom converter + plain [fallback, alternating] | 23,804 | 14,877 | **0.625** | 23,549 | 14,631 | 0.621 |
+| debug disabled, isEnabledFor overridden [fallback] | 1,110 | 1,110 | **1.000** | 985 | 985 | 1.000 |
+| LogRecord(keywords) [fallback] | 19,104 | 19,256 | **1.008** | | | |
+| LogRecord(keywords) + plain [fallback, alternating] | 35,929 | 26,153 | **0.728** | 33,736 | 25,559 | 0.758 |
+| findCaller(stack_info=True) [fallback] | 286,477 | 286,946 | **1.002** | 259,768 | 260,036 | 1.001 |
+| format subclass [fallback] | 23,669 | 9,682 | **0.409** | | | |
+| format obj arg [fallback] | 23,911 | 14,399 | **0.602** | | | |
+| format %(message)s, obj arg [fallback, steady] | 7,650 | 7,650 | **1.000** | 7,122 | 7,108 | 0.998 |
+| format %(message)s, obj arg + plain [fallback, alternating] | 14,211 | 13,894 | **0.978** | 12,896 | 13,346 | 1.035 |
+| formatTime | 11,926 | 2,506 | **0.210** | 11,777 | 2,509 | 0.213 |
+| formatTime datefmt | 9,346 | 2,094 | **0.224** | 9,315 | 2,097 | 0.225 |
+| formatTime subclass | 11,806 | 2,505 | **0.212** | 11,769 | 2,508 | 0.213 |
+
+Readings:
+- An enabled record through a `StreamHandler` costs **0.45–0.51** of CPython's
+  instructions (0.47–0.49 with `extra=`/several arguments, 0.58 with a JSON formatter
+  subclass, 0.50 through a `LoggerAdapter`); under the JIT 0.50–0.57.
+- A **disabled** `logger.debug(...)` costs **0.62** (0.50 with keyword arguments, 0.69
+  without arguments); `logging.info()` through the root logger 0.82.
+- Pieces: `LogRecord(...)` 0.40, `findCaller` 0.33 (line numbers memoised; CPython
+  recomputes them from the line table on every call), `Formatter.format` 0.41–0.78,
+  `formatTime` 0.21–0.22.
+- Every fallback cell is ≤ 1.008 (steady) and ≤ 0.98 when alternating (≤ 1.035 under the
+  JIT); `getMessage` is not a site: 1.007 is +13 Ir, inside the ±15 Ir noise floor.
+- Where a target falls back, the pieces below it still run their kernels (a formatter with
+  arguments that are not plain: `format` falls back, its `formatTime` call does not → 0.60).
 
 ### Workload
 
