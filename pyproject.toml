@@ -50,9 +50,8 @@ exclude = ["**/__pycache__", "**/*.pyc", "**/*.pyo"]
 # uv/pip build wheels from the sdist; ship the toolchain pin so they use Rust 1.99.1.
 include = [
     { path = "rust-toolchain.toml", format = "sdist" },
-    # The startup switch (docs/USAGE.md): placed at the root of site-packages, outside the
-    # package. In the sdist too, so that wheels built from it ship them.
-    { path = "python/_rustique_startup.py", format = ["sdist", "wheel"] },
+    # The startup switch (docs/USAGE.md): one .pth line at the root of site-packages. In the
+    # sdist too, so that wheels built from it ship it.
     { path = "python/_rustique_startup.pth", format = ["sdist", "wheel"] },
 ]
 

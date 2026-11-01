@@ -80,9 +80,14 @@ _KEY = pytest.StashKey[_Session]()
 
 
 def _record() -> dict:
+    import os
+    import sys
+
     import rustique
 
-    return rustique._record()
+    # through rustique.status()/stats(), not the extension's _record (tests substitute _accel)
+    return {"pid": os.getpid(), "argv": list(sys.argv), "status": rustique.status(), "stats": rustique.stats(),
+            "counters": True}
 
 
 def _mismatches(rec: dict) -> dict[str, int]:

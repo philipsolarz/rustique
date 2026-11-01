@@ -582,6 +582,22 @@ impl Driver for Locked {
     }
 }
 
+/// A needle no fast path can decide: an instance of a class defined in Python (heap type),
+/// or anything [`maybe_scalar`] rejects. Used where such a needle delegates at once.
+///
+/// # Safety
+/// `op` must be a live object.
+#[inline(always)]
+unsafe fn needs_generic(op: *mut ffi::PyObject) -> bool {
+    // SAFETY: type object reads of a live object.
+    unsafe {
+        let t = ffi::Py_TYPE(op);
+        // Instances of classes defined in Python (heap types) are never plain scalars, and
+        // they are the common non-scalar needle: one flag test rejects them.
+        ffi::PyType_HasFeature(t, ffi::Py_TPFLAGS_HEAPTYPE) != 0 || !maybe_scalar(op)
+    }
+}
+
 /// A cheap pre-filter for the types the fast paths decide (exact `int`/`bool`/`float`/
 /// `str`/`None`): `int`/`bool`/`str` and their subclasses by type flag, exact `float`,
 /// `None`. Subclasses pass here and are rejected by the exact checks of the scan (which
@@ -1160,7 +1176,7 @@ unsafe extern "C" fn k_list_count(slf: *mut ffi::PyObject, value: *mut ffi::PyOb
     // A needle that needs CPython's comparison: no scan can decide, delegate at once (a
     // plain tail call: the fallback costs a few instructions).
     // SAFETY: METH_O: a live object.
-    if unsafe { !maybe_scalar(value) } {
+    if unsafe { needs_generic(value) } {
         C_LIST_COUNT.fallback(Reason::Args);
         // SAFETY: same arguments to the original METH_O function.
         return unsafe { ORIG_LIST_COUNT.get()(slf, value) };
@@ -1184,7 +1200,7 @@ unsafe extern "C" fn k_tuple_count(slf: *mut ffi::PyObject, value: *mut ffi::PyO
     // A needle that needs CPython's comparison: no scan can decide, delegate at once (a
     // plain tail call: the fallback costs a few instructions).
     // SAFETY: METH_O: a live object.
-    if unsafe { !maybe_scalar(value) } {
+    if unsafe { needs_generic(value) } {
         C_TUPLE_COUNT.fallback(Reason::Args);
         // SAFETY: same arguments to the original METH_O function.
         return unsafe { ORIG_TUPLE_COUNT.get()(slf, value) };
