@@ -55,11 +55,12 @@ pub static COPY: TargetSpec = TargetSpec {
     counters: &C_COPY,
     prepare: prepare_copy,
     shared: Some(&SHARED),
-    // Measured: a fallback costs ~420 Ir over CPython; a hit saves 250 Ir (an atomic) to
-    // ~420 (a record or container; 8k for a plain object): installed while half the calls
-    // hit.
+    // Measured: a fallback costs 420 Ir (3.15) to 690 Ir (3.14) over CPython (the C call
+    // the interpreter cannot inline, then the original's own frame); a hit saves 250 Ir (an
+    // atomic) to ~420 (a record or container; 8k for a plain object): installed while two
+    // thirds of the calls hit.
     hit_credit: 1,
-    fallback_debit: 1,
+    fallback_debit: 2,
     ..TargetSpec::DEFAULT
 };
 

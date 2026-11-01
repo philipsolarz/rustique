@@ -37,7 +37,8 @@ Restarts and suspension (net-benefit policy, contract §5.3: hits credit the sco
 fallbacks debit it; per target from the measured savings and penalties of §5: a fallback
 costs ~420 Ir over CPython — the C call the interpreter cannot inline — while a hit saves
 400 Ir to 20k+ in `deepcopy` (credit 2, debit 1: installed while a third of the calls
-hit) and 250–420 Ir for the common `copy.copy` hits (credit 1, debit 1: half);
+hit) and 250–420 Ir for the common `copy.copy` hits against a 420–690 Ir fallback
+(credit 1, debit 2: two thirds);
 `asdict`/`astuple` keep 4/1). A restart that abandoned copies always debits. Every other fallback
 debits when it is a direct call, and is only counted when it is a call the original's
 helpers (or hooks) make inside a fallback of the same target: those repeat the outer
