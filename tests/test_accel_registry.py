@@ -493,3 +493,59 @@ def test_degrade_annotates_status():
     A.disable(["_selftest.meth"])
     rt.enable(only=["_selftest.meth"])
     assert "degraded" not in target("_selftest.meth")
+
+
+# --- interpreter exit (the registry's atexit hook) -------------------------------------
+
+
+def test_exit_hook_releases_everything(selftest_module):
+    m = importlib.import_module(MOD)
+    before = A.installed()
+    base = (sys.getrefcount(m.DEP), sys.getrefcount(m.__dict__), sys.getrefcount(m.K), sys.getrefcount(m.ident))
+    rt.enable(only=["_selftest.vectorcall", "_selftest.snapshot", "_selftest.same"])
+    A._selftest_watch(m.__dict__, "SEP")  # a process-lifetime generation watch
+    assert A.exit_hook_registered()
+    assert A._selftest_vectorcall(m.ident) == "kernel" and A._selftest_deps_ok()
+    held = (sys.getrefcount(m.DEP), sys.getrefcount(m.__dict__), sys.getrefcount(m.K), sys.getrefcount(m.ident))
+    assert all(h > b for h, b in zip(held, base)), (held, base)
+    released, gen = A._selftest_released(), A._selftest_gen()
+    try:
+        A._exit_hook()
+        assert not A.exit_hook_registered()
+        assert not any(n.startswith("_selftest") for n in A.installed())
+        assert A._selftest_released() == released + 1  # one call for the shared function
+        assert A._selftest_gen() > gen  # cached validations revalidate once more
+        now = (sys.getrefcount(m.DEP), sys.getrefcount(m.__dict__), sys.getrefcount(m.K), sys.getrefcount(m.ident))
+        assert now == base, (now, base)
+        # Restored, and a kernel reached on a stale path falls back (its flag is false).
+        assert A._selftest_vectorcall(m.ident) == "original" and m.ident(1) == ("orig", 1)
+        assert not A._selftest_deps_ok()
+        assert A._selftest_call_kernel(m.ident, 1) == ("orig", 1)
+        # A later enable() works again and registers the hook again.
+        rt.enable(only=["_selftest.vectorcall"])
+        assert A._selftest_vectorcall(m.ident) == "kernel" and A._selftest_deps_ok() and A.exit_hook_registered()
+    finally:
+        if before:
+            A.enable(before)
+
+
+def test_non_str_and_str_subclass_keys_reach_the_pins(selftest_module):
+    m = importlib.import_module(MOD)
+    rt.enable(only=["_selftest.vectorcall"])
+    dep = m.DEP
+
+    class S(str):
+        pass
+
+    m.__dict__[S("DEP")] = object()  # replaces DEP's value through an equal str subclass key
+    assert not A._selftest_deps_ok()
+    m.DEP = dep
+    assert A._selftest_deps_ok()
+    m.__dict__[1] = 2  # a non-str key could alias any pinned key: every pin breaks
+    assert not A._selftest_deps_ok()
+    rt.enable(only=["_selftest.vectorcall"])  # stays broken while installed
+    assert not A._selftest_deps_ok()
+    del m.__dict__[1]
+    A.disable(["_selftest"])
+    rt.enable(only=["_selftest.vectorcall"])
+    assert A._selftest_deps_ok()

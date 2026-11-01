@@ -677,6 +677,17 @@ pub(crate) fn interned<'py>(py: Python<'py>, key: &str) -> Bound<'py, PyString> 
 
 static MEMO: std::sync::Mutex<Vec<(&'static str, Result<(), Refusal>)>> = std::sync::Mutex::new(Vec::new());
 
+/// Interpreter exit: drop the interned keys, memoized validations and cached code
+/// fingerprints (which hold the code objects).
+pub(crate) fn teardown() {
+    let keys = KEYS.lock().unwrap_or_else(|p| p.into_inner()).take();
+    drop(keys);
+    if let Ok(mut m) = MEMO.lock() {
+        m.clear();
+    }
+    super::fingerprint::clear_cache();
+}
+
 fn memo_get(key: &str) -> Option<Result<(), Refusal>> {
     MEMO.lock().ok()?.iter().find(|(k, _)| *k == key).map(|(_, r)| r.clone())
 }

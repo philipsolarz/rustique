@@ -49,6 +49,7 @@
 //! ```
 
 pub mod check;
+pub mod exit;
 pub mod fingerprint;
 pub mod guard;
 pub mod prepare;
