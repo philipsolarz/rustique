@@ -132,7 +132,7 @@ fn check(mode: Option<&Bound<'_, PyAny>>) -> PyResult<Option<&'static str>> {
     let prev = mode_name(super::stats::check_mode());
     let m: Option<String> = match mode {
         None => None,
-        Some(v) if v.is_none() || v.is(&pyo3::types::PyBool::new(v.py(), false)) => None,
+        Some(v) if v.is_none() || v.is(pyo3::types::PyBool::new(v.py(), false)) => None,
         Some(v) => Some(v.extract::<String>()?),
     };
     super::stats::set_check(match m.as_deref() {
