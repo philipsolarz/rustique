@@ -104,8 +104,8 @@ def run(argv: list[str]) -> None:
     opts, rest = _parse_run(argv)
     import rustique
 
-    if opts.report and rustique._report_target() is None:
-        rustique._report_to("stderr")
+    if opts.report and not os.environ.get("RUSTIQUE_REPORT", "").strip():
+        rustique._accel.report_to("stderr")
     if (opts.check or opts.check_raise) and not rustique._killed():
         rustique.check("raise" if opts.check_raise else "warn")
     rustique._enable(opts.only, opts.exclude, opts.native or None, not opts.no_builtins, source="python -m rustique")
