@@ -165,8 +165,9 @@ fallback call) the next call revalidates and keeps the fast path when the values
 
 **`_strptime` module objects.** The kernels act for whichever `_strptime` `sys.modules`
 holds (what `PyImport_Import` returns): each module object is fingerprinted and snapshotted
-when first seen (`test_datetime` imports fresh copies; one built against `_pydatetime`
-fails validation and falls back).
+when the kernels first see it (`test_datetime` imports fresh copies; one built against
+`_pydatetime` fails validation and falls back). The first call with `_strptime` not yet
+imported, and the first call with each format (a `_regex_cache` miss), run the original.
 
 **Locale, thread safety.** glibc returns the `LC_TIME` name pointer without locking; the
 kernel only compares it with `_nl_C_name` (static, never freed; found via
@@ -174,18 +175,52 @@ kernel only compares it with `_nl_C_name` (static, never freed; found via
 cannot make it read freed memory. "C" and "POSIX" both use `_nl_C_name`; "C.UTF-8" and
 every other locale fall back.
 
-## 4. Fingerprints and self-tests
+## 4. Fingerprints, self-tests, install cost
 
-`fingerprints.rs`: canonical code fingerprints (3.14, 3.15; identical on free-threaded
-builds) of `_strptime._strptime`, `_strptime_datetime_{datetime,date,time}`,
-`_strptime_time`, `_getlang`, `_parse_tz`, `_fixmonths`, `TimeRE.{__init__, __seqToRE,
-pattern, compile}`, `LocaleTime.{__init__, __calc_weekday, __calc_month, __calc_am_pm,
-__calc_alt_digits}`, `locale.{getlocale, _parse_localename, normalize}`; and `ml_name`/
-`ml_flags`/`ml_doc` fingerprints of the 10 C methods. Self-tests at install compare kernel
-and original on probe values for the strftime and isoformat targets (C originals). The
-strptime originals run Python code, which `prepare` may not do inside the `sys.modules`
-watcher: they rely on the fingerprints, the matcher's exhaustive tests and the
-differential fuzzing.
+Fingerprints (`fingerprints.rs`, values for 3.14 and 3.15, identical on free-threaded
+builds) use the group's cheap canonical hash (`fastfp.rs`: the fields of the contract's
+canonical code fingerprint — bytecode, names, local names and kinds, flags, argument counts,
+exception table, constants recursively, defaults — read from the code object and hashed
+8 bytes at a time; ~10k Ir per function instead of ~250k through the generic
+`fingerprint_code`):
+
+- the 10 C methods (`ml_name`, `ml_flags`, `ml_doc`): checked in `prepare`; a mismatch
+  refuses that target (category `fingerprint`);
+- the Python code the strptime kernels reimplement: `_strptime._strptime`,
+  `_strptime_datetime_{datetime,date,time}`, `_strptime_time`, `_getlang`, `_parse_tz`,
+  `_fixmonths`, `TimeRE.{__init__, __seqToRE, pattern, compile}`,
+  `locale.{getlocale, _parse_localename, normalize}` (`LocaleTime`'s code is not: its
+  output is checked by value). Checked when the kernels first see a `_strptime` module
+  object (the call after the one that imported it), together with the dependency
+  snapshot; a mismatch makes the strptime kernels fall back (reason in
+  `_accel._datetime_debug()["strptime_last_failure"]`), it does not show as a refusal in
+  `status()` (open point for the registry: a "degraded" state).
+- `benches/targets/_dt_fp_report.py` prints the current values.
+
+Self-tests (kernel vs original on a probe) only for `time.strftime` and
+`date.isoformat` (one call each); the strptime originals run Python code, which `prepare`
+may not run inside the `sys.modules` watcher. Behaviour is covered by CPython's suites
+(§7), the matcher's exhaustive tests against the regex tables, and the differential
+fuzzing.
+
+Install cost (`benches/targets/datetime_install.py`, callgrind, 3.15.1; the registry's own
+cost measured with `enable(only=["_selftest.meth"])` = 279,800 Ir, most of it the
+`status()` it returns):
+
+| region | Ir | group's share |
+|---|---:|---:|
+| `enable(only=["datetime"])`, `datetime`/`_strptime`/`zoneinfo` imported (10 targets install) | 422,000 | ~142,000 |
+| `enable(only=["datetime"])`, nothing imported (`time.strftime` installs, 9 pending) | 349,900 | ~70,000 |
+| `import datetime` after `enable()` (9 targets install lazily) | 434,200 → 532,700 | +98,500 (+22.7%) |
+| the strptime call after `_strptime` was imported (captures it once) | 41,800 → 288,800 | +247,000 (once) |
+
+Before trimming the first row was 6.35M Ir (fingerprints through the generic hash, four
+times, plus self-tests of every target). The budget (≤ 0.1M Ir per group at `enable()`,
+≤ 5% of the triggering import) is not met yet: of the remaining cost, the group's own part
+is the cheap fingerprints, ten `ml_meth` declarations, the environment capture (builtins,
+`time`, glibc locale, `str`/`timezone` layout calibration) and two probes; the rest is the
+registry's per-target activation (~2–3k Ir per target) and its `sys.modules` watcher.
+`_strptime`'s capture (~0.25M Ir) is ~3% of its own import (8.6M Ir).
 
 ## 5. Private state
 

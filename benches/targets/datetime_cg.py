@@ -108,7 +108,9 @@ CELLS = {
         "try:\n            datetime.strptime('2024-13-01', '%Y-%m-%d')\n        except ValueError:\n            pass", ""),
     "strptime fallback: LC_TIME en_US": ("datetime.strptime(ISO, ISOF)",
                                          "locale.setlocale(locale.LC_TIME, 'en_US.UTF-8')"),
-    "strptime fallback: dependency changed (deps)": ("_strptime.isinstance = isinstance; datetime.strptime(ISO, ISOF)", ""),
+    # `_strptime._getlang` replaced (after the kernels captured `_strptime`) by a copy with the
+    # same code: the original runs the copy; the kernel's cached validation fails (deps).
+    "strptime fallback: dependency changed (deps)": ("datetime.strptime(ISO, ISOF)", "DEPS"),
     "strptime fallback: _regex_cache miss (deopt)": ("_strptime._regex_cache.clear(); datetime.strptime(ISO, ISOF)", ""),
     "strptime fallback: tracing tool (tools)": ("datetime.strptime(ISO, ISOF)",
                                                 "import sys; sys.monitoring.use_tool_id(3, 'x'); "
@@ -155,13 +157,23 @@ def cells(only=None):
     return out
 
 
+DEPS_PRE = ("import types; G = types.FunctionType(_strptime._getlang.__code__, _strptime.__dict__, '_getlang'); "
+            "datetime.strptime(ISO, ISOF); datetime.strptime(ISO, ISOF)")
+
+
 def worker(idx, only):
     h = helper()
     c, v, stmt, pre, setup = cells(only)[idx]
     ns = {}
     exec(COMMON, ns)
-    exec(pre, ns)
-    exec(setup, ns)
+    if pre == "DEPS":
+        # capture first (Rustique variant), then replace the dependency
+        exec(DEPS_PRE.split("; datetime")[0], ns)
+        exec(setup, ns)
+        exec("datetime.strptime(ISO, ISOF); datetime.strptime(ISO, ISOF); _strptime._getlang = G", ns)
+    else:
+        exec(pre, ns)
+        exec(setup, ns)
     names = [k for k in ns if not k.startswith("__") and k.isidentifier() and k not in ("_t", "_rq", "_f")]
     binds = "".join(f"    {k} = _g[{k!r}]\n" for k in names)
     ns["_g"] = ns

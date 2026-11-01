@@ -10,26 +10,33 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _callgrind import region  # noqa: E402
 
-RQ = "import rustique._takeover as rq"
+RQ = "from rustique._rustique import _accel"
 CELLS = [
     # enable() with every trigger module already imported (all 10 targets install now)
-    ("enable(only=datetime), modules imported", "rq.enable(only=['datetime'])",
+    ("enable(only=datetime), modules imported", "_accel.enable(['datetime'])",
      f"import datetime, _strptime, time, zoneinfo; {RQ}", None),
-    ("enable(only=datetime), nothing imported (pending)", "rq.enable(only=['datetime'])", f"{RQ}", None),
+    ("enable(only=datetime), nothing imported (pending)", "_accel.enable(['datetime'])", f"{RQ}", None),
     # lazy install when `_datetime` is imported after enable()
-    ("import datetime", "import datetime", f"{RQ}", f"{RQ}; rq.enable(only=['datetime'])"),
+    ("import datetime", "import datetime", f"{RQ}", f"{RQ}; _accel.enable(['datetime'])"),
     # first strptime call: imports _strptime (the kernel falls back; nothing captured yet)
     ("first datetime.strptime (imports _strptime)", "datetime.datetime.strptime('2024', '%Y')",
-     f"import datetime; {RQ}", f"import datetime; {RQ}; rq.enable(only=['datetime'])"),
+     f"import datetime; {RQ}", f"import datetime; {RQ}; _accel.enable(['datetime'])"),
     # second call: the kernel fingerprints and snapshots `_strptime` once (lazy capture)
     ("second datetime.strptime (captures _strptime)", "datetime.datetime.strptime('2024', '%Y')",
      f"import datetime; {RQ}; datetime.datetime.strptime('2024', '%Y')",
-     f"import datetime; {RQ}; rq.enable(only=['datetime']); datetime.datetime.strptime('2024', '%Y')"),
+     f"import datetime; {RQ}; _accel.enable(['datetime']); datetime.datetime.strptime('2024', '%Y')"),
+]
+
+
+BASE = [
+    ("registry baseline: enable(only=_selftest.meth), modules imported", "_accel.enable(['_selftest.meth'])",
+     f"import datetime, _strptime, time, zoneinfo; {RQ}", None),
+    ("registry baseline: enable(only=_selftest.meth)", "_accel.enable(['_selftest.meth'])", f"{RQ}", None),
 ]
 
 
 def main():
-    for name, stmt, plain_setup, enabled_setup in CELLS:
+    for name, stmt, plain_setup, enabled_setup in BASE + CELLS:
         plain = region(stmt, setup=plain_setup)
         if enabled_setup is None:
             print(f"{name:52s} {plain:>12,.0f} Ir", flush=True)
