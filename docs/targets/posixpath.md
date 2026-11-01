@@ -220,6 +220,20 @@ Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `py
 the four builds.
 
 
+## Workloads
+
+`python benches/workloads/run.py compare data/fs_inventory devtools/pip_resolve
+devtools/pytest_networkx --only posixpath,fnmatch,pathlib -n 5 -p 3` (3.15.1, shared dev box,
+wall time, median of steady-state runs; digests identical plain vs enabled):
+
+| workload | plain | enabled | ratio |
+|---|---:|---:|---:|
+| `data/fs_inventory` (os.walk + fnmatch, scandir, Path.rglob/relative_to/parts/stem, glob; 41% kernel time) | 312.2 ms | 231.7 ms | **0.742** |
+| `devtools/pip_resolve` | 565.1 ms | 536.3 ms | 0.949 |
+| `devtools/pytest_networkx` | 605.7 ms | 550.1 ms | 0.908 |
+
+The three groups together; ratios on a shared box are indicative (±~5%).
+
 ## Startup
 
 `benches/targets/paths_startup.py` (callgrind regions, fresh processes, 3.15.1):
