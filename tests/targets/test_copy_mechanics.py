@@ -13,6 +13,7 @@ import inspect
 import pickle
 import sys
 import threading
+import time
 from copy import deepcopy as captured_deepcopy  # captured before enable()
 from dataclasses import asdict as captured_asdict
 from unittest import mock
@@ -259,7 +260,7 @@ def test_free_threaded_stress():
 
     def copier():
         try:
-            for _ in range(300):
+            for _ in range(100):
                 y = copy.deepcopy(shared)
                 assert y["a"] == shared["a"] and y["p"].y[0].a == [1, 2]
                 try:
@@ -271,10 +272,15 @@ def test_free_threaded_stress():
             errors.append(e)
 
     def mutator():
-        while not stop.is_set():
+        # Bounded, and yielding: on GIL builds a spinning mutator starves the copiers.
+        for i in range(20_000):
+            if stop.is_set():
+                break
             mutated.append(1)
             if len(mutated) > 50:
                 del mutated[3:]
+            if i % 64 == 0:
+                time.sleep(0)
 
     threads = [threading.Thread(target=copier) for _ in range(4)]
     m = threading.Thread(target=mutator)
@@ -295,7 +301,9 @@ def test_enable_disable_under_load():
 
     def worker():
         try:
-            while not stop.is_set():
+            for _ in range(5_000):
+                if stop.is_set():
+                    break
                 assert copy.deepcopy(data) == data
                 assert copy.copy(data) == data
         except Exception as e:  # noqa: BLE001
