@@ -282,6 +282,11 @@ Ir per call, region-instrumented, each cell in its own process, Ir(2n) − Ir(n)
 | isoformat fallback: unknown timespec (error) | 2660 | 2772 | 1.042 | 1.018 |
 | fromisoformat full tz | 2172 | 2172 | 1.000 |  |
 
+Other builds (`matrix_final`, same cells): 3.15.1t strptime 0.067–0.085, strftime
+0.084–0.39, isoformat 0.11–0.28, fallback max 1.044; 3.14.9 strptime 0.066–0.082,
+strftime 0.089–0.37, isoformat 0.12–0.28, fallback max 1.044; 3.14.9t strptime 0.065–0.082, strftime
+0.087–0.39, isoformat 0.12–0.28, fallback max 1.045 (3.14 rows re-measured after the keyword fix, `matrix_final/rerun314.txt`).
+
 Fast paths: strptime 0.068–0.086 (the original runs `_strptime`'s Python code: 31k–67k Ir),
 strftime 0.086–0.20 (0.37 for `time.strftime`, whose original is already a thin C call
 into `wcsftime`), isoformat 0.12–0.29. ZoneInfo cells keep the cost of calling its C
@@ -303,15 +308,37 @@ wall time on the shared box, digests identical):
 | data/csv_etl (`strftime('%Y-%m')`, `isoformat`) | 390 ms | 321 ms | **0.823** |
 | geometric mean | | | 0.670 |
 
-PYPERF
+**Bulk wall time** (`benches/targets/datetime_pyperf.py --fast`, pyperf, 3.15.1, shared box:
+only ≥ 1.5× claims), 1,000 calls per loop:
+
+| benchmark | plain | Rustique | ratio |
+|---|---:|---:|---:|
+| `datetime.strptime` log format with `%b` and `%z` | 4.73 ms | 0.278 ms | 0.059 |
+| `datetime.strptime` `%Y-%m-%d %H:%M:%S` | 3.29 ms | 0.165 ms | 0.050 |
+| `strftime("%a %d %b %Y %H:%M:%S %z")`, fixed-offset tz | 1.73 ms | 0.188 ms | 0.109 |
+| `time.strftime("%Y-%m-%d %H:%M:%S", struct_time)` | 0.296 ms | 0.118 ms | 0.40 |
 
 ## 7. Conformance
 
 `tests/conformance/run_target_suites.py --targets datetime --modules
-test.test_strptime,test.test_datetime,test.test_time`: CONFORMANCE
+test.test_strptime,test.test_datetime,test.test_time` (per-test-id outcomes, plain vs
+enabled, fresh processes), every target installed:
+
+| build | test_strptime | test_datetime (C and `_Pure` variants) | test_time | differences | full `pytest -q` |
+|---|---|---|---|---:|---|
+| 3.15.1 | 49 pass, 94 skip | 3614 pass, 54 skip | 49 pass, 16 skip | 0 | 4133 passed, 10 skipped |
+| 3.15.1t | same | same | same | 0 | 4136 passed, 7 skipped |
+| 3.14.9 | 46 pass, 94 skip | 3560 pass, 54 skip | 48 pass, 16 skip | 0 | 4132 passed, 11 skipped |
+| 3.14.9t | 46 pass, 94 skip | 3560 pass, 54 skip | 48 pass, 16 skip | 0 | 4135 passed, 8 skipped |
+
+(Skips are the suites' own: `test_strptime` runs most cases under `run_with_locales`
+for locales the box does not have.)
 
 `tests/conformance/_datetime_hits.py` shows the kernels are exercised by those suites
-(3.15.1: HITS).
+(3.15.1 fast-path hits: `datetime.strptime` 66, `date.strptime` 6, `time.strptime` (class)
+14, `time.strptime` 32, `date.strftime` 217, `time.strftime` (method) 28, `time.strftime`
+3184, `datetime.isoformat` 513, `date.isoformat` 19, `time.isoformat` 329; most fallbacks
+are the suites' subclasses, custom tzinfo classes and first calls per format).
 
 ## 8. Version coverage and upstream
 
