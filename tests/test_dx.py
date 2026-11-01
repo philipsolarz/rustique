@@ -66,7 +66,7 @@ def groups(st=None) -> set[str]:
     return {t["group"] for t in st["targets"] if t["state"] == "installed"}
 
 
-@pytest.mark.parametrize("value", ["0", "false", "OFF", "no", " 0 "])
+@pytest.mark.parametrize("value", ["0", "false", "OFF", "no", " 0 ", ""])
 def test_kill_switch_makes_enable_a_noop(real, monkeypatch, value):
     rustique.disable()
     monkeypatch.setenv("RUSTIQUE", value)
