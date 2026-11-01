@@ -163,30 +163,35 @@ pub fn running() -> (u8, u8) {
 /// tells).
 pub const FREE_THREADED: bool = cfg!(Py_GIL_DISABLED);
 
-static PROCESS: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+use super::spec::{Category, Refusal};
+
+static PROCESS: std::sync::OnceLock<Result<(), Refusal>> = std::sync::OnceLock::new();
 
 /// Facts every target needs: a final release, not a debug build, the minor this extension
 /// was compiled for. Computed once, without importing anything.
-pub fn process_gate() -> Result<(), String> {
+pub fn process_gate() -> Result<(), Refusal> {
     PROCESS
         .get_or_init(|| {
             let v = runtime_version();
             let (major, minor, level) = ((v >> 24) & 0xff, (v >> 16) & 0xff, (v >> 4) & 0xf);
             if major != 3 || minor as u8 != compiled_minor() {
-                return Err(format!("CPython {major}.{minor}: extension compiled for 3.{}", compiled_minor()));
+                return Err(Refusal::with(
+                    Category::Version,
+                    format!("CPython {major}.{minor}: extension compiled for 3.{}", compiled_minor()),
+                ));
             }
             if level != 0xf {
-                return Err(format!("CPython {major}.{minor} pre-release ({v:#x})"));
+                return Err(Refusal::with(Category::Version, format!("CPython {major}.{minor} pre-release ({v:#x})")));
             }
             // SAFETY: attached thread (callers hold the registry lock); borrowed lookup in
             // the sys module dict, no import.
             if !unsafe { ffi::PySys_GetObject(c"gettotalrefcount".as_ptr()) }.is_null() {
-                return Err("debug build".into());
+                return Err(Refusal::with(Category::Build, "debug build"));
             }
             // SAFETY: static type object read.
             let vc_off = unsafe { ffi::PyFunction_Type.tp_vectorcall_offset } as usize;
             if vc_off != std::mem::offset_of!(ffi::PyFunctionObject, vectorcall) {
-                return Err("PyFunctionObject layout differs".into());
+                return Err(Refusal::with(Category::Layout, "PyFunctionObject layout differs"));
             }
             Ok(())
         })
@@ -194,14 +199,14 @@ pub fn process_gate() -> Result<(), String> {
 }
 
 /// Per-target part of the gate: validated minor and free-threading.
-pub fn target_gate(versions: &[(u8, u8)], free_threaded: bool) -> Result<(), String> {
+pub fn target_gate(versions: &[(u8, u8)], free_threaded: bool) -> Result<(), Refusal> {
     process_gate()?;
     let (major, minor) = running();
     if !versions.contains(&(major, minor)) {
-        return Err(format!("CPython {major}.{minor} not validated for this target"));
+        return Err(Refusal::with(Category::Version, format!("CPython {major}.{minor} not validated for this target")));
     }
     if FREE_THREADED && !free_threaded {
-        return Err("not validated on free-threaded builds".into());
+        return Err(Refusal::with(Category::Build, "not validated on free-threaded builds"));
     }
     Ok(())
 }

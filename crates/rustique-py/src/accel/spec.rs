@@ -54,6 +54,9 @@ pub struct TargetSpec {
     /// process (at `enable()`), targets with `jit_safe: false` refuse with reason `"jit"`
     /// (vectorcall fallbacks cost +250–350 Ir there). Default `true`.
     pub jit_safe: bool,
+    /// The exact subset runs no user code and has no side effects, so check mode may run
+    /// the original a second time and compare (`check::verify`). Default `false`.
+    pub checkable: bool,
 }
 
 static NO_COUNTERS: Counters = Counters::new();
@@ -73,6 +76,7 @@ impl TargetSpec {
         counters: &NO_COUNTERS,
         prepare: no_prepare,
         jit_safe: true,
+        checkable: false,
     };
 
     /// Hidden targets (group starting with `_`): only selected when named explicitly.
@@ -81,46 +85,110 @@ impl TargetSpec {
     }
 }
 
-/// Why a target did not install. Shown in `rustique.status()`.
+/// Machine-readable class of a refusal (`status()["targets"][i]["refusal"]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Category {
+    /// CPython version not validated (or pre-release).
+    Version,
+    /// Build not validated (debug, free-threaded without validation).
+    Build,
+    /// The JIT is on and the target is not `jit_safe`.
+    Jit,
+    /// An original's fingerprint differs from the recorded one.
+    Fingerprint,
+    /// An object layout the kernel reads differs.
+    Layout,
+    /// Someone else changed an entry point (CAS failure, wrapper mismatch).
+    Conflict,
+    /// A behavioural self-test failed.
+    Selftest,
+    /// A required exported symbol is missing.
+    Symbol,
+    /// A dependency is missing or not the validated object.
+    Deps,
+    /// Anything else (including errors raised while preparing).
+    Other,
+}
+
+impl Category {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Category::Version => "version",
+            Category::Build => "build",
+            Category::Jit => "jit",
+            Category::Fingerprint => "fingerprint",
+            Category::Layout => "layout",
+            Category::Conflict => "conflict",
+            Category::Selftest => "selftest",
+            Category::Symbol => "symbol",
+            Category::Deps => "deps",
+            Category::Other => "other",
+        }
+    }
+}
+
+/// Why a target did not install: a category and a human-readable reason, shown in
+/// `rustique.status()`. Build with [`Refusal::new`] (category `Other`), [`Refusal::with`],
+/// `refuse!(...)`, or `?` on a `PyResult`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Refusal(pub Cow<'static, str>);
+pub struct Refusal {
+    reason: Cow<'static, str>,
+    category: Category,
+}
 
 impl Refusal {
     pub fn new(reason: impl Into<Cow<'static, str>>) -> Self {
-        Refusal(reason.into())
+        Refusal { reason: reason.into(), category: Category::Other }
+    }
+    pub fn with(category: Category, reason: impl Into<Cow<'static, str>>) -> Self {
+        Refusal { reason: reason.into(), category }
+    }
+    /// The same refusal under another category (keeps an explicit one: only `Other` is
+    /// replaced).
+    pub fn or_category(mut self, category: Category) -> Self {
+        if self.category == Category::Other {
+            self.category = category;
+        }
+        self
     }
     pub fn reason(&self) -> &str {
-        &self.0
+        &self.reason
+    }
+    pub fn category(&self) -> Category {
+        self.category
     }
 }
 
 impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.reason)
     }
 }
 
 impl From<PyErr> for Refusal {
     fn from(e: PyErr) -> Self {
-        Python::attach(|py| Refusal(Cow::Owned(format!("error: {}", e.value(py)))))
+        Python::attach(|py| Refusal::new(format!("error: {}", e.value(py))))
     }
 }
 
 impl From<String> for Refusal {
     fn from(s: String) -> Self {
-        Refusal(Cow::Owned(s))
+        Refusal::new(s)
     }
 }
 
 impl From<&'static str> for Refusal {
     fn from(s: &'static str) -> Self {
-        Refusal(Cow::Borrowed(s))
+        Refusal::new(s)
     }
 }
 
 /// `return Err(refuse!("format", args))` shorthand.
 #[macro_export]
 macro_rules! refuse {
+    ($cat:ident: $($arg:tt)*) => {
+        $crate::accel::Refusal::with($crate::accel::spec::Category::$cat, format!($($arg)*))
+    };
     ($($arg:tt)*) => {
         $crate::accel::Refusal::from(format!($($arg)*))
     };
@@ -205,7 +273,8 @@ impl<F: FnPtr> Original<F> {
         match self.addr.compare_exchange(0, addr, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => Ok(()),
             Err(prev) if prev == addr => Ok(()),
-            Err(_) => Err(Refusal::new(
+            Err(_) => Err(Refusal::with(
+                Category::Conflict,
                 "entry point differs from the original captured at first install (patched by someone else?)",
             )),
         }

@@ -22,9 +22,14 @@ from rustique import _rustique
 
 _accel = _rustique._accel
 
-__all__ = ["disable", "enable", "native", "stats", "status"]
+__all__ = ["RustiqueCheckError", "check", "disable", "enable", "native", "stats", "status"]
 
-_state: dict[str, object] = {"native": (), "startup": None}
+#: Raised by a kernel's result check in ``check("raise")`` mode (an ``AssertionError``).
+RustiqueCheckError = _accel.RustiqueCheckError
+
+_state: dict[str, object] = {"native": ()}
+
+_UNSET = object()
 
 
 def _names(value: str | Iterable[str] | None) -> list[str] | None:
@@ -49,17 +54,13 @@ def enable(
     excludes the ``builtins`` group. ``native``: module-name patterns (``fnmatch`` style)
     rewritten to build Rustique containers when imported (opt-in native tier).
 
-    With the environment variable ``RUSTIQUE=0`` this is a no-op. ``RUSTIQUE_STATS=1``
-    switches the counters on. Unknown names raise ``ValueError`` before anything changes.
-    Returns :func:`status`.
+    Unknown names raise ``ValueError`` before anything changes. Reads no environment
+    variables (the switches of docs/ACCELERATION.md §8 are the DX layer's). Returns
+    :func:`status`.
     """
-    if _accel.env("RUSTIQUE") == "0":
-        return status()
     excl = _names(exclude) or []
     if not builtins:
         excl.append("builtins")
-    if _accel.env("RUSTIQUE_STATS") == "1":
-        _accel.stats(True)
     _accel.enable(_names(only), excl)
     if native:
         from rustique._takeover import _hook
@@ -85,9 +86,7 @@ def status() -> dict[str, object]:
     "process": {...}}``. ``state`` is ``"installed"``, ``"pending-import"`` (its module is
     not imported yet), ``"refused"`` (``reason`` says why) or ``"disabled"``."""
     st = _accel.status()
-    process = st["process"]
-    process["native"] = tuple(_state["native"])  # type: ignore[arg-type]
-    process["startup"] = _state["startup"]
+    st["process"]["native"] = tuple(_state["native"])  # type: ignore[arg-type,index]
     return st
 
 
@@ -99,9 +98,17 @@ def stats(enabled: bool | None = None, reset: bool = False) -> dict[str, dict[st
     return _accel.stats(enabled, reset)
 
 
-def _set_startup_source(source: str | None) -> None:
-    """For the startup hooks (DX layer): record what turned Rustique on (``status()``)."""
-    _state["startup"] = source
+def check(mode: object = _UNSET) -> str | None:
+    """Check mode: run the original again after every fast path of a *checkable* target
+    and compare. ``"warn"``: a mismatch counts as ``fallback["check"]`` and the original's
+    result is returned; ``"raise"``: a mismatch raises :class:`RustiqueCheckError`;
+    ``None``/``False``/``"off"``: off. Without an argument, return the current mode;
+    otherwise set it and return the previous one."""
+    if mode is _UNSET:
+        return _accel.check_mode()
+    if mode is None or mode is False:
+        mode = "off"
+    return _accel.check(mode)
 
 
 def native(obj=None, /):
