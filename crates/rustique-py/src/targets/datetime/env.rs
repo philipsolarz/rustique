@@ -119,6 +119,22 @@ pub fn thread_locale_is_global() -> bool {
 // Captured objects (main interpreter; strong references kept for the process lifetime)
 // ---------------------------------------------------------------------------------------
 
+/// What `time.strftime` needs: the `time` module (its function target installs at startup,
+/// before anything else is imported). Watches nothing.
+#[derive(Debug)]
+pub struct TimeEnv {
+    pub time_mod: usize,
+    pub time_dict: usize,
+    pub time_strftime: usize,
+    pub struct_time: usize,
+}
+
+static TIME_ENV: OnceLock<TimeEnv> = OnceLock::new();
+
+pub fn time_env() -> Option<&'static TimeEnv> {
+    TIME_ENV.get()
+}
+
 /// Objects every datetime target needs; `usize` addresses of objects we keep alive.
 #[derive(Debug)]
 pub struct Env {
@@ -143,21 +159,6 @@ pub fn env() -> Option<&'static Env> {
     ENV.get()
 }
 
-/// Builtins read by `_strptime._strptime`, its wrappers and `locale.getlocale` & co.
-const BUILTIN_DEPS: [&str; 11] = [
-    "__import__",
-    "isinstance",
-    "enumerate",
-    "str",
-    "len",
-    "int",
-    "tuple",
-    "ValueError",
-    "TypeError",
-    "KeyError",
-    "range",
-];
-
 fn keep(o: &Bound<'_, PyAny>) -> usize {
     o.clone().into_ptr() as usize
 }
@@ -176,6 +177,33 @@ fn is_builtin_fn(o: &Bound<'_, PyAny>, name: &str, owner: &Bound<'_, PyAny>) -> 
     }
 }
 
+/// Capture what `time.strftime` needs (idempotent): the C locale's name and the `time`
+/// module. Plain dict reads.
+pub fn capture_time(cx: &Prepare<'_>) -> Result<&'static TimeEnv, Refusal> {
+    if let Some(t) = TIME_ENV.get() {
+        return Ok(t);
+    }
+    let py = cx.py();
+    C_NAME.store(find_c_name().map_err(Refusal::from)?, Ordering::Relaxed);
+    let time = cx.loaded_module("time")?;
+    let tdict = time.dict();
+    let strftime =
+        cx.get_opt_s(&tdict, pyo3::intern!(py, "strftime"))?.ok_or_else(|| Refusal::new("time.strftime missing"))?;
+    if !is_builtin_fn(&strftime, "strftime", time.as_any()) {
+        return Err(Refusal::new("time.strftime is not CPython's"));
+    }
+    let struct_time = cx
+        .get_opt_s(&tdict, pyo3::intern!(py, "struct_time"))?
+        .ok_or_else(|| Refusal::new("time.struct_time missing"))?;
+    let t = TimeEnv {
+        time_mod: keep(time.as_any()),
+        time_dict: keep(tdict.as_any()),
+        time_strftime: keep(&strftime),
+        struct_time: keep(&struct_time),
+    };
+    Ok(TIME_ENV.get_or_init(|| t))
+}
+
 /// Capture the environment (idempotent). Fails if anything is not CPython's own. Runs in
 /// `prepare` (possibly inside the `sys.modules` watcher): plain dict reads only.
 pub fn capture(cx: &Prepare<'_>) -> Result<&'static Env, Refusal> {
@@ -183,59 +211,69 @@ pub fn capture(cx: &Prepare<'_>) -> Result<&'static Env, Refusal> {
         return Ok(e);
     }
     let py = cx.py();
-    C_NAME.store(find_c_name().map_err(Refusal::from)?, Ordering::Relaxed);
+    let t = capture_time(cx)?;
     let builtins = cx.loaded_module("builtins")?;
     let bdict = builtins.dict();
     let sys = cx.loaded_module("sys")?;
-    let modules = cx.get(&sys.dict(), "modules")?.cast_into::<PyDict>().map_err(PyErr::from)?;
-    let time = cx.loaded_module("time")?;
-    let tdict = time.dict();
-    let import_fn = cx.get(&bdict, "__import__")?;
-    if !is_builtin_fn(&import_fn, "__import__", builtins.as_any()) {
-        return Err(Refusal::new("builtins.__import__ is not CPython's"));
-    }
-    let strftime = cx.get(&tdict, "strftime")?;
-    if !is_builtin_fn(&strftime, "strftime", time.as_any()) {
-        return Err(Refusal::new("time.strftime is not CPython's"));
-    }
-    let struct_time = cx.get(&tdict, "struct_time")?;
-    let mut builtin_objs = Vec::new();
-    for name in BUILTIN_DEPS {
-        let o = cx.get(&bdict, name)?;
-        let canonical = match name {
-            "__import__" | "isinstance" | "len" => is_builtin_fn(&o, name, builtins.as_any()),
-            // SAFETY: static builtin type objects.
-            _ => unsafe {
-                let p = o.as_ptr();
-                ffi::PyType_Check(p) != 0
-                    && ffi::PyType_GetFlags(p.cast()) & ffi::Py_TPFLAGS_HEAPTYPE == 0
-                    && CStr::from_ptr((*p.cast::<ffi::PyTypeObject>()).tp_name).to_bytes() == name.as_bytes()
-            },
-        };
-        if !canonical {
+    let modules = cx
+        .get_opt_s(&sys.dict(), pyo3::intern!(py, "modules"))?
+        .ok_or_else(|| Refusal::new("sys.modules missing"))?
+        .cast_into::<PyDict>()
+        .map_err(PyErr::from)?;
+    let builtin = |name: &'static str, key: &Bound<'_, PyString>| -> Result<usize, Refusal> {
+        let o = cx.get_opt_s(&bdict, key)?.ok_or_else(|| Refusal::from(format!("builtins.{name} missing")))?;
+        if !is_builtin_fn(&o, name, builtins.as_any()) {
             return Err(Refusal::from(format!("builtins.{name} is not CPython's")));
         }
-        builtin_objs.push((name, keep(&o)));
-    }
+        Ok(keep(&o))
+    };
+    let import_fn = builtin("__import__", pyo3::intern!(py, "__import__"))?;
+    let isinstance = builtin("isinstance", pyo3::intern!(py, "isinstance"))?;
+    let len = builtin("len", pyo3::intern!(py, "len"))?;
+    // Builtins read by `_strptime._strptime`, its wrappers and `locale.getlocale` & co.
+    // The builtin types and exceptions are CPython's static objects (no lookups needed);
+    // the three builtin functions are read from the dict. Revalidation compares the dict's
+    // entries with these by identity.
+    // SAFETY: static type objects and exception pointers of the running interpreter.
+    let statics: [(&'static str, usize); 8] = unsafe {
+        [
+            ("enumerate", (&raw mut ffi::PyEnum_Type) as usize),
+            ("str", (&raw mut ffi::PyUnicode_Type) as usize),
+            ("int", (&raw mut ffi::PyLong_Type) as usize),
+            ("tuple", (&raw mut ffi::PyTuple_Type) as usize),
+            ("range", (&raw mut ffi::PyRange_Type) as usize),
+            ("ValueError", ffi::PyExc_ValueError as usize),
+            ("TypeError", ffi::PyExc_TypeError as usize),
+            ("KeyError", ffi::PyExc_KeyError as usize),
+        ]
+    };
+    let mut builtin_objs: Vec<(&'static str, usize)> = statics.to_vec();
+    builtin_objs.extend([("__import__", import_fn), ("isinstance", isinstance), ("len", len)]);
     let k = PyString::intern(py, "__builtins__");
     let e = Env {
         builtins_mod: keep(builtins.as_any()),
         builtins_dict: keep(bdict.as_any()),
-        import_fn: keep(&import_fn),
+        import_fn,
         sys_modules: keep(modules.as_any()),
-        time_mod: keep(time.as_any()),
-        time_dict: keep(tdict.as_any()),
-        time_strftime: keep(&strftime),
-        struct_time: keep(&struct_time),
+        time_mod: t.time_mod,
+        time_dict: t.time_dict,
+        time_strftime: t.time_strftime,
+        struct_time: t.struct_time,
         module_type: keep(builtins.get_type().as_any()),
         k_builtins: keep(k.as_any()),
         builtin_objs,
     };
-    // Watch what every target depends on.
+    // (Identity with the captured builtins is checked by `common_ok` before a kernel's
+    // first hit and whenever a watched dict changes; nothing to look up here.)
+    // Watch what the `_datetime` targets depend on (`time.strftime` needs none of it, so a
+    // process that never imports `datetime` registers no watch).
     // builtins and the time module as whole dicts (one watch each; they change rarely),
-    // `sys.modules` per key (it changes on every import).
+    // `sys.modules` per key (it changes on every import; `_strptime` reaches `locale`
+    // through its own global, never through `sys.modules`).
     crate::accel::guard::watch_dict_generation(&bdict, &super::watch::GEN)?;
-    super::watch::watch(&modules, &["time", "_strptime", "locale", "zoneinfo", "_zoneinfo"])?;
+    super::watch::watch(&modules, &["time", "_strptime", "zoneinfo", "_zoneinfo"])?;
+    // SAFETY: captured dict (kept alive).
+    let tdict = unsafe { obj(py, t.time_dict) }.cast_into::<PyDict>().map_err(PyErr::from)?;
     crate::accel::guard::watch_dict_generation(&tdict, &super::watch::GEN)?;
     Ok(ENV.get_or_init(|| e))
 }

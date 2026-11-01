@@ -297,7 +297,15 @@ fn validate(py: Python<'_>, e: &Env) -> Result<usize, String> {
     // The `_strptime` that `PyImport_Import` would return now.
     let m = item(&modules, "_strptime").ok_or("_strptime not imported")?;
     let m = m.cast_into::<pyo3::types::PyModule>().map_err(|_| "sys.modules['_strptime'] is not a module")?;
-    let (index, sp) = find_or_capture(py, &m)?;
+    let (index, sp) = find_or_capture(py, &m).inspect_err(|why| {
+        // A `_strptime` the kernels cannot stand in for (fingerprint mismatch, unexpected
+        // structure): visible in `status()` as "degraded" (once; the kernels fall back).
+        if !why.contains("still initializing") {
+            for kind in [Kind::DateTime, Kind::Date, Kind::Time, Kind::TimeFn] {
+                crate::accel::degrade(super::spec(&kind), &format!("_strptime: {why}"));
+            }
+        }
+    })?;
     // SAFETY: captured objects.
     let (d, ldict) = unsafe {
         (

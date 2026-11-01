@@ -550,7 +550,7 @@ unsafe fn small_int(o: O) -> Option<i32> {
 unsafe fn function(module: O, args: O) -> Option<O> {
     // SAFETY: attached thread; live objects.
     unsafe {
-        let e = env::env()?;
+        let e = env::time_env()?;
         if module as usize != e.time_mod || ffi::PyTuple_GET_SIZE(args) != 2 {
             return None;
         }

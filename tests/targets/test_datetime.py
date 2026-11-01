@@ -700,3 +700,26 @@ def test_subinterpreters(config):
     assert exc is None, f"{exc.type.__name__}: {exc.msg}"
     # the main interpreter is unaffected
     assert D.datetime.strptime("2024-03-15", "%Y-%m-%d") == D.datetime(2024, 3, 15)
+
+
+def test_unknown_strptime_module_degrades():
+    """A `_strptime` whose code is not the validated one: the kernels fall back and
+    `status()` shows the strptime targets as degraded (still installed)."""
+    import types
+
+    fake = types.ModuleType("_strptime")
+    fake.__dict__.update(_strptime.__dict__)
+    fake._parse_tz = lambda tzname, gmtoff, gmtoff_fraction: None  # different code
+    real = sys.modules["_strptime"]
+    sys.modules["_strptime"] = fake
+    try:
+        got = outcome(D.datetime.strptime, "2024-03-15", "%Y-%m-%d")
+        st = {t["name"]: t for t in rq.status()["targets"]}
+        for name in TARGETS[:4]:
+            assert st[name]["state"] == "installed"
+            assert "fingerprint" in (st[name].get("degraded") or ""), st[name]
+        assert hits("datetime.datetime.strptime") == 0
+        with original():  # (disable() clears the annotation)
+            assert outcome(D.datetime.strptime, "2024-03-15", "%Y-%m-%d") == got
+    finally:
+        sys.modules["_strptime"] = real

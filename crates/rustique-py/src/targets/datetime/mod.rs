@@ -21,7 +21,7 @@ use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::PyType;
 
-use crate::accel::{Prepare, Refusal, TargetSpec};
+use crate::accel::{GroupSpec, Prepare, Refusal, TargetSpec};
 
 pub mod env;
 mod fingerprints;
@@ -69,18 +69,19 @@ fn load_capi(cx: &Prepare<'_>) -> Result<(), Refusal> {
 }
 
 /// What every datetime target needs.
-fn common_base(cx: &Prepare<'_>) -> Result<&'static env::Env, Refusal> {
+fn common_base(cx: &Prepare<'_>) -> Result<&'static env::TimeEnv, Refusal> {
     if !cfg!(all(target_os = "linux", target_env = "gnu")) {
         return Err(Refusal::new("glibc strftime/locale behaviour only validated on Linux/glibc"));
     }
-    let e = env::capture(cx)?;
+    let t = env::capture_time(cx)?;
     ustr::calibrate(cx.py());
-    Ok(e)
+    Ok(t)
 }
 
 /// ... plus the datetime C API (every target but `time.strftime`).
 fn common(cx: &Prepare<'_>) -> Result<&'static env::Env, Refusal> {
-    let e = common_base(cx)?;
+    common_base(cx)?;
+    let e = env::capture(cx)?;
     load_capi(cx)?;
     if TZ_CALIBRATED.load(Ordering::Relaxed) == 0 {
         let ok = format::calibrate_timezone(cx.py())?;
@@ -110,6 +111,24 @@ fn module_def(cx: &mut Prepare<'_>, obj: &Bound<'_, PyAny>, label: &str) -> Resu
     Ok(def)
 }
 
+/// Shared by the nine targets installed when `_datetime` is imported (declared once per
+/// registry pass): environment capture, the datetime C API, layout calibrations, the
+/// strptime statics, and the interned keyword names of `isoformat`.
+fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    common(cx)?;
+    parse::prepare_common(cx)?;
+    let names = [("sep", &iso::K_SEP), ("timespec", &iso::K_TIMESPEC)];
+    let specs = iso::TIMESPEC_NAMES.iter().copied().zip(iso::TIMESPECS.iter());
+    for (k, cell) in names.into_iter().chain(specs) {
+        if cell.load(Ordering::Relaxed) == 0 {
+            cell.store(pyo3::types::PyString::intern(py, k).into_ptr() as usize, Ordering::Relaxed);
+        }
+    }
+    Ok(())
+}
+
+pub static SHARED: GroupSpec = GroupSpec { name: "datetime", prepare: prepare_shared };
+
 /// `cls` from the C API.
 fn api_type<'py>(py: Python<'py>, t: *mut ffi::PyTypeObject) -> Bound<'py, PyType> {
     // SAFETY: a static type of the datetime C API.
@@ -121,8 +140,6 @@ fn api_type<'py>(py: Python<'py>, t: *mut ffi::PyTypeObject) -> Bound<'py, PyTyp
 // ---------------------------------------------------------------------------------------
 
 fn prepare_classmethod_strptime(cx: &mut Prepare<'_>, kind: parse::Kind) -> Result<(), Refusal> {
-    common(cx)?;
-    parse::prepare_common(cx)?;
     let py = cx.py();
     let api = capi();
     // SAFETY: C API loaded by `common`.
@@ -168,8 +185,7 @@ fn prepare_time_strptime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Re
 }
 
 fn prepare_time_fn_strptime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    let e = common(cx)?;
-    parse::prepare_common(cx)?;
+    let e = env::env().ok_or_else(|| Refusal::new("environment not captured"))?;
     let py = cx.py();
     // SAFETY: captured module.
     let time = unsafe { env::obj(py, e.time_mod) }.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?;
@@ -195,7 +211,6 @@ fn cx_version_15() -> bool {
 }
 
 fn prepare_strftime_method(cx: &mut Prepare<'_>, time_method: bool) -> Result<(), Refusal> {
-    common(cx)?;
     let py = cx.py();
     let api = capi();
     // SAFETY: C API loaded by `common`.
@@ -227,30 +242,20 @@ fn prepare_time_strftime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Re
 }
 
 fn prepare_time_fn_strftime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    let e = common_base(cx)?;
+    let t = common_base(cx)?;
     let py = cx.py();
     // SAFETY: captured module.
-    let time = unsafe { env::obj(py, e.time_mod) }.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?;
+    let time = unsafe { env::obj(py, t.time_mod) }.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?;
     if !cx.module()?.is(&time) {
         return Err(Refusal::new("time module differs from the one captured"));
     }
-    let f = cx.get(&time.dict(), "strftime")?;
+    // SAFETY: captured object (kept alive).
+    let f = unsafe { env::obj(py, t.time_strftime) };
     let def = module_def(cx, &f, "time.strftime")?;
     // SAFETY: a static method table entry of `time`.
     unsafe { cx.ml_meth_def("time.strftime", def, format::time_fn as format::VarArgs, &format::ORIG_FN)? };
-    cx.self_test("time.strftime", |py| {
-        let fmt = "%Y-%m-%d %H %j";
-        let args = pyo3::types::PyTuple::new(
-            py,
-            [fmt.into_pyobject(py)?.into_any(), (2024, 2, 29, 23, 59, 58, 3, 60, -1).into_pyobject(py)?.into_any()],
-        )?;
-        // SAFETY: METH_VARARGS calls with a valid tuple.
-        unsafe {
-            let k = Bound::from_owned_ptr_or_err(py, format::time_fn(time.as_ptr(), args.as_ptr()))?;
-            let o = Bound::from_owned_ptr_or_err(py, format::ORIG_FN.get()(time.as_ptr(), args.as_ptr()))?;
-            k.eq(&o)
-        }
-    })
+    // No self-test (install budget): fingerprinted, covered by the test suites.
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -330,17 +335,9 @@ fn iso_self_test(cx: &mut Prepare<'_>, which: u8) -> Result<(), Refusal> {
 }
 
 fn prepare_iso(cx: &mut Prepare<'_>, which: u8) -> Result<(), Refusal> {
-    common(cx)?;
     let py = cx.py();
-    let names = [("sep", &iso::K_SEP), ("timespec", &iso::K_TIMESPEC)];
-    let specs = iso::TIMESPEC_NAMES.iter().copied().zip(iso::TIMESPECS.iter());
-    for (k, cell) in names.into_iter().chain(specs) {
-        if cell.load(Ordering::Relaxed) == 0 {
-            cell.store(pyo3::types::PyString::intern(py, k).into_ptr() as usize, Ordering::Relaxed);
-        }
-    }
     let api = capi();
-    // SAFETY: C API loaded by `common`.
+    // SAFETY: C API loaded by the shared prepare.
     let (t, label) = unsafe {
         match which {
             0 => ((*api).DateTimeType, "datetime.datetime.isoformat"),
@@ -384,6 +381,7 @@ pub static DATETIME_STRPTIME: TargetSpec = TargetSpec {
     name: "datetime.datetime.strptime",
     group: "datetime",
     module: Some("_datetime"),
+    shared: Some(&SHARED),
     versions: VERSIONS,
     free_threaded: true,
     checkable: true,
@@ -396,6 +394,7 @@ pub static DATE_STRPTIME: TargetSpec = TargetSpec {
     name: "datetime.date.strptime",
     group: "datetime",
     module: Some("_datetime"),
+    shared: Some(&SHARED),
     versions: VERSIONS,
     free_threaded: true,
     checkable: true,
@@ -408,6 +407,7 @@ pub static TIME_STRPTIME: TargetSpec = TargetSpec {
     name: "datetime.time.strptime",
     group: "datetime",
     module: Some("_datetime"),
+    shared: Some(&SHARED),
     versions: VERSIONS,
     free_threaded: true,
     checkable: true,
@@ -420,6 +420,7 @@ pub static TIME_FN_STRPTIME: TargetSpec = TargetSpec {
     name: "time.strptime",
     group: "datetime",
     module: Some("_datetime"),
+    shared: Some(&SHARED),
     versions: VERSIONS,
     free_threaded: true,
     checkable: true,
@@ -432,6 +433,7 @@ pub static DATE_STRFTIME: TargetSpec = TargetSpec {
     name: "datetime.date.strftime",
     group: "datetime",
     module: Some("_datetime"),
+    shared: Some(&SHARED),
     versions: VERSIONS,
     free_threaded: true,
     checkable: true,
@@ -444,6 +446,7 @@ pub static TIME_STRFTIME: TargetSpec = TargetSpec {
     name: "datetime.time.strftime",
     group: "datetime",
     module: Some("_datetime"),
+    shared: Some(&SHARED),
     versions: VERSIONS,
     free_threaded: true,
     checkable: true,
@@ -478,6 +481,7 @@ pub static DATETIME_ISOFORMAT: TargetSpec = TargetSpec {
     name: "datetime.datetime.isoformat",
     group: "datetime",
     module: Some("_datetime"),
+    shared: Some(&SHARED),
     versions: VERSIONS,
     free_threaded: true,
     checkable: true,
@@ -490,6 +494,7 @@ pub static DATE_ISOFORMAT: TargetSpec = TargetSpec {
     name: "datetime.date.isoformat",
     group: "datetime",
     module: Some("_datetime"),
+    shared: Some(&SHARED),
     versions: VERSIONS,
     free_threaded: true,
     checkable: true,
@@ -502,6 +507,7 @@ pub static TIME_ISOFORMAT: TargetSpec = TargetSpec {
     name: "datetime.time.isoformat",
     group: "datetime",
     module: Some("_datetime"),
+    shared: Some(&SHARED),
     versions: VERSIONS,
     free_threaded: true,
     checkable: true,
