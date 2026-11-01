@@ -17,6 +17,11 @@ rows = {
         "rustique.enable(only=['logging'])", "import rustique, logging"),
     "rustique.enable(only=['logging']) before import (pending)": region(
         "rustique.enable(only=['logging'])", "import rustique"),
+    "_accel.enable(['logging']) (quiet registry call) with logging imported": region(
+        "A.enable(['logging'])", "import rustique, logging; from rustique._rustique import _accel as A"),
+    "_accel.enable(['logging']) again after disable (warm: process-wide calibrations done)": region(
+        "A.enable(['logging'])",
+        "import rustique, logging; from rustique._rustique import _accel as A; A.enable(['logging']); A.disable(['logging'])"),
 }
 base = rows["import logging (plain)"]
 for k, v in rows.items():

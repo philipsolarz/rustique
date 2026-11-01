@@ -187,7 +187,7 @@ pub unsafe extern "C" fn vc_find_caller(func: O, args: *const O, nargsf: usize, 
             } else {
                 1
             };
-            if !DEPS.ok() {
+            if !DEPS.ok() || !SHARED_DEPS.ok() {
                 break 'fb Reason::Deps;
             }
             if !TOOLS.quiet() || !fns_ok(&CODES) {

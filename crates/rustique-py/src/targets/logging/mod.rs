@@ -19,10 +19,11 @@ pub mod format;
 pub mod level;
 pub mod record;
 
+use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyModule, PyType};
+use pyo3::types::{PyDict, PyModule, PyString, PyType};
 
-use crate::accel::{self, DepFlag, Prepare, Refusal, TargetSpec};
+use crate::accel::{self, GroupSpec, Prepare, Refusal, TargetSpec};
 use crate::refuse;
 use common::{FnGuard, init_names};
 
@@ -124,33 +125,114 @@ fn remember(addr: usize, expected: fp::F, keep: Bound<'_, PyAny>) {
     }
 }
 
+/// `dict[key]` with a pre-interned key, refusing when absent.
+fn get_s<'py>(
+    cx: &Prepare<'py>,
+    d: &Bound<'_, PyDict>,
+    key: &Bound<'_, PyString>,
+) -> Result<Bound<'py, PyAny>, Refusal> {
+    cx.get_opt_s(d, key)?.ok_or_else(|| refuse!("missing {key}"))
+}
+
+/// `module.name is expected`, refusing otherwise.
+fn same<'py>(
+    cx: &Prepare<'py>,
+    d: &Bound<'_, PyDict>,
+    key: &Bound<'_, PyString>,
+    expected: &Bound<'_, PyAny>,
+) -> Result<(), Refusal> {
+    if get_s(cx, d, key)?.is(expected) { Ok(()) } else { Err(refuse!("{key} is not the expected object")) }
+}
+
+// ---------------------------------------------------------------------------------------
+// Shared declarations of the group (GroupSpec): module identities and dependencies more
+// than one target reads, the time functions, the record classes, process-wide facts.
+// ---------------------------------------------------------------------------------------
+
+fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    init_names();
+    cx.symbol(c"_PyObject_GetMethod", &common::GET_METHOD)?;
+    calibrate(cx)?;
+    let deps = &common::SHARED_DEPS;
+    let g = cx.module()?.dict();
+    let time = cx.loaded_module("time")?;
+    let os_mod = cx.loaded_module("os")?;
+    let pp_mod = cx.loaded_module("posixpath")?;
+    let sys_mod = cx.loaded_module("sys")?;
+    same(cx, &g, intern!(py, "time"), time.as_any())?;
+    same(cx, &g, intern!(py, "os"), os_mod.as_any())?;
+    same(cx, &g, intern!(py, "sys"), sys_mod.as_any())?;
+    let (os, pp) = (os_mod.dict(), pp_mod.dict());
+    same(cx, &os, intern!(py, "path"), pp_mod.as_any())?;
+    same(cx, &pp, intern!(py, "os"), os_mod.as_any())?;
+    for k in [intern!(py, "time"), intern!(py, "os"), intern!(py, "sys")] {
+        cx.pin_s(&g, k, deps)?;
+    }
+    cx.pin_s(&os, intern!(py, "path"), deps)?;
+    cx.pin_s(&os, intern!(py, "fspath"), deps)?;
+    cx.pin_s(&pp, intern!(py, "os"), deps)?;
+    cx.pin_global_s(&g, intern!(py, "isinstance"), deps)?;
+    cx.pin_global_s(&g, intern!(py, "int"), deps)?;
+    // time.localtime / gmtime / strftime (formatTime and format)
+    let td = time.dict();
+    let lt = get_s(cx, &td, intern!(py, "localtime"))?;
+    let gt = get_s(cx, &td, intern!(py, "gmtime"))?;
+    let sf = get_s(cx, &td, intern!(py, "strftime"))?;
+    c_function(cx, &lt, fp::LOCALTIME)?;
+    c_function(cx, &gt, fp::GMTIME)?;
+    c_function(cx, &sf, fp::STRFTIME)?;
+    format::LOCALTIME.set_obj(&lt);
+    format::GMTIME.set_obj(&gt);
+    format::STRFTIME.set_obj(&sf);
+    cx.pin_s(&td, intern!(py, "strftime"), deps)?;
+    // record classes read by the formatting kernels
+    {
+        let n = common::names();
+        record::RECORDS.set_names([n.created, n.msecs]);
+        record::THREADS.set_names([n.t_initialized, n.t_name]);
+        record::MP_PROCS.set_names([n.t_name]);
+        level::LOGGERS.set_names([n.disabled, n.cache]);
+        format::TIME_FORMATTERS.set_names([n.converter, n.default_time_format, n.default_msec_format]);
+        format::FORMATTERS.set_names([n.converter, n.default_time_format, n.default_msec_format, n.style, n.datefmt]);
+        format::STYLES.set_names([n.fmt, n.asctime_search, n.defaults]);
+        format::FMT_RECORDS.set_names([n.msg, n.args]);
+    }
+    let lr = ty(cx.module_attr("LogRecord")?)?;
+    format::R_GET_MESSAGE.set_obj(&cx.type_attr(&lr, "getMessage")?);
+    format::R_DICT.set_obj(&cx.type_attr(&lr, "__dict__")?);
+    format::clear_type_caches();
+    format::clear_fmt_cache();
+    Ok(())
+}
+
+pub static SHARED: GroupSpec = GroupSpec { name: "logging", prepare: prepare_shared };
+
 // ---------------------------------------------------------------------------------------
 // logging.Logger.level
 // ---------------------------------------------------------------------------------------
 
-fn prepare_level(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    init_names();
-    cx.symbol(c"_PyObject_GetMethod", &common::GET_METHOD)?;
+fn prepare_level(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let g = cx.module()?.dict();
     let logger = ty(cx.module_attr("Logger")?)?;
     let ief = cx.type_attr(&logger, "isEnabledFor")?;
     function(cx, &ief, fp::IS_ENABLED_FOR, &level::CODES[0])?;
     level::IS_ENABLED_FOR.set_obj(&ief);
-    for (i, name) in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"].iter().enumerate() {
-        let v = cx.get(&g, name)?;
+    let consts = [
+        intern!(py, "DEBUG"),
+        intern!(py, "INFO"),
+        intern!(py, "WARNING"),
+        intern!(py, "ERROR"),
+        intern!(py, "CRITICAL"),
+    ];
+    for (i, k) in consts.into_iter().enumerate() {
+        let v = get_s(cx, &g, k)?;
         if !v.is_exact_instance_of::<pyo3::types::PyInt>() {
-            return Err(refuse!("logging.{name} is not an int"));
+            return Err(refuse!("logging.{k} is not an int"));
         }
-        cx.pin(&g, name, &level::DEPS)?;
+        cx.pin_s(&g, k, &level::DEPS)?;
         level::LEVELS[i].set_obj(&v);
     }
-    cx.pin_global(&g, "isinstance", &level::DEPS)?;
-    cx.pin_global(&g, "int", &level::DEPS)?;
-    {
-        let n = common::names();
-        level::LOGGERS.set_names([n.disabled, n.cache]);
-    }
-    calibrate(cx)?;
+    level::LOGGERS.clear();
     let methods: [(&str, fp::F, Vc); 6] = [
         ("debug", fp::DEBUG, level::vc_debug),
         ("info", fp::INFO, level::vc_info),
@@ -159,12 +241,9 @@ fn prepare_level(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         ("critical", fp::CRITICAL, level::vc_critical),
         ("log", fp::LOG, level::vc_log),
     ];
-    for (i, (name, f, _)) in methods.iter().enumerate() {
+    for (i, (name, f, k)) in methods.into_iter().enumerate() {
         let m = cx.type_attr(&logger, name)?;
         function(cx, &m, f, &level::CODES[i + 1])?;
-    }
-    for (name, _, k) in methods {
-        let m = cx.type_attr(&logger, name)?;
         cx.vectorcall(&m, k, &accel::FUNCTION_VECTORCALL)?;
     }
     Ok(())
@@ -177,37 +256,29 @@ type Vc = pyo3::ffi::vectorcallfunc;
 // ---------------------------------------------------------------------------------------
 
 fn prepare_caller(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    init_names();
     let g = cx.module()?.dict();
     let logger = ty(cx.module_attr("Logger")?)?;
     let fc = cx.type_attr(&logger, "findCaller")?;
     function(cx, &fc, fp::FIND_CALLER, &caller::CODES[0])?;
-    let iif = cx.get(&g, "_is_internal_frame")?;
+    let iif = get_s(cx, &g, intern!(py, "_is_internal_frame"))?;
     function(cx, &iif, fp::IS_INTERNAL_FRAME, &caller::CODES[1])?;
-    let cf = cx.get(&g, "currentframe")?;
+    let cf = get_s(cx, &g, intern!(py, "currentframe"))?;
     function(cx, &cf, fp::CURRENTFRAME, &caller::CODES[2])?;
-    let src = cx.get(&g, "_srcfile")?;
-    if !src.is_exact_instance_of::<pyo3::types::PyString>() {
+    let src = get_s(cx, &g, intern!(py, "_srcfile"))?;
+    if !src.is_exact_instance_of::<PyString>() {
         return Err(Refusal::new("logging._srcfile is not a str"));
     }
     caller::SRCFILE.set_obj(&src);
-    for name in ["_is_internal_frame", "currentframe", "_srcfile", "os", "sys"] {
-        cx.pin(&g, name, &caller::DEPS)?;
+    for k in [intern!(py, "_is_internal_frame"), intern!(py, "currentframe"), intern!(py, "_srcfile")] {
+        cx.pin_s(&g, k, &caller::DEPS)?;
     }
-    let sys = module_dict(cx, "sys")?;
-    if !cx.get(&g, "sys")?.is(cx.loaded_module("sys")?.as_any()) {
-        return Err(Refusal::new("logging.sys is not sys"));
-    }
-    cx.pin(&sys, "_getframe", &caller::DEPS)?;
-    let (os, pp) = os_path(cx, &g)?;
-    let normcase = cx.get(&pp, "normcase")?;
+    cx.pin_s(&module_dict(cx, "sys")?, intern!(py, "_getframe"), &caller::DEPS)?;
+    let pp = module_dict(cx, "posixpath")?;
+    let normcase = get_s(cx, &pp, intern!(py, "normcase"))?;
     function(cx, &normcase, fp::NORMCASE, &caller::CODES[3])?;
-    cx.pin(&os, "path", &caller::DEPS)?;
-    cx.pin(&os, "fspath", &caller::DEPS)?;
-    cx.pin(&pp, "normcase", &caller::DEPS)?;
-    cx.pin(&pp, "os", &caller::DEPS)?;
-    caller::IMPORTLIB.set_obj(pyo3::types::PyString::intern(py, "importlib").as_any());
-    caller::BOOTSTRAP.set_obj(pyo3::types::PyString::intern(py, "_bootstrap").as_any());
+    cx.pin_s(&pp, intern!(py, "normcase"), &caller::DEPS)?;
+    caller::IMPORTLIB.set_obj(intern!(py, "importlib").as_any());
+    caller::BOOTSTRAP.set_obj(intern!(py, "_bootstrap").as_any());
     cx.vectorcall(&fc, caller::vc_find_caller, &accel::FUNCTION_VECTORCALL)
 }
 
@@ -228,137 +299,106 @@ fn calibrate(cx: &Prepare<'_>) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// `logging.os` is `os`, `os.path` is `posixpath` (and `posixpath.os` is `os`): the dicts
-/// of `os` and `posixpath`.
-fn os_path<'py>(
-    cx: &Prepare<'py>,
-    g: &Bound<'py, PyDict>,
-) -> Result<(Bound<'py, PyDict>, Bound<'py, PyDict>), Refusal> {
-    let os_mod = cx.loaded_module("os")?;
-    if !cx.get(g, "os")?.is(os_mod.as_any()) {
-        return Err(Refusal::new("logging.os is not os"));
-    }
-    let pp_mod = cx.loaded_module("posixpath")?;
-    let os = os_mod.dict();
-    if !cx.get(&os, "path")?.is(pp_mod.as_any()) {
-        return Err(Refusal::new("os.path is not posixpath"));
-    }
-    let pp = pp_mod.dict();
-    if !cx.get(&pp, "os")?.is(os_mod.as_any()) {
-        return Err(Refusal::new("posixpath.os is not os"));
-    }
-    Ok((os, pp))
-}
-
 // ---------------------------------------------------------------------------------------
 // logging.LogRecord.__init__
 // ---------------------------------------------------------------------------------------
 
-fn prepare_record(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn prepare_record(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     use std::sync::atomic::Ordering::Relaxed;
-    init_names();
     let g = cx.module()?.dict();
     let lr = ty(cx.module_attr("LogRecord")?)?;
     let init = cx.type_attr(&lr, "__init__")?;
     function(cx, &init, fp::RECORD_INIT, &record::CODES[0])?;
-    let gln = cx.get(&g, "getLevelName")?;
+    let gln = get_s(cx, &g, intern!(py, "getLevelName"))?;
     function(cx, &gln, fp::GET_LEVEL_NAME, &record::CODES[1])?;
     let deps = &record::DEPS;
-    for name in [
-        "time",
-        "getLevelName",
-        "_levelToName",
-        "_nameToLevel",
-        "os",
-        "threading",
-        "sys",
-        "collections",
-        "logThreads",
-        "logMultiprocessing",
-        "logProcesses",
-        "logAsyncioTasks",
-        "_startTime",
-    ] {
-        cx.pin(&g, name, deps)?;
+    let switches = [
+        intern!(py, "logThreads"),
+        intern!(py, "logMultiprocessing"),
+        intern!(py, "logProcesses"),
+        intern!(py, "logAsyncioTasks"),
+    ];
+    for k in [
+        intern!(py, "getLevelName"),
+        intern!(py, "_levelToName"),
+        intern!(py, "_nameToLevel"),
+        intern!(py, "threading"),
+        intern!(py, "collections"),
+        intern!(py, "_startTime"),
+    ]
+    .into_iter()
+    .chain(switches)
+    {
+        cx.pin_s(&g, k, deps)?;
     }
-    for name in ["isinstance", "len", "hasattr", "int"] {
-        cx.pin_global(&g, name, deps)?;
+    for k in [intern!(py, "len"), intern!(py, "hasattr")] {
+        cx.pin_global_s(&g, k, deps)?;
     }
-    let l2n = cx.get(&g, "_levelToName")?;
-    let n2l = cx.get(&g, "_nameToLevel")?;
+    let l2n = get_s(cx, &g, intern!(py, "_levelToName"))?;
+    let n2l = get_s(cx, &g, intern!(py, "_nameToLevel"))?;
     if !l2n.is_exact_instance_of::<PyDict>() || !n2l.is_exact_instance_of::<PyDict>() {
         return Err(Refusal::new("level name tables are not dicts"));
     }
     record::LEVEL_TO_NAME.set_obj(&l2n);
     accel::guard::watch_dict_generation(l2n.cast::<PyDict>().map_err(PyErr::from)?, &record::L2N_GEN)?;
     record::NAME_TO_LEVEL.set_obj(&n2l);
-    let start: i64 = cx.get(&g, "_startTime")?.extract().map_err(|_| Refusal::new("_startTime"))?;
+    let start: i64 = get_s(cx, &g, intern!(py, "_startTime"))?.extract().map_err(|_| Refusal::new("_startTime"))?;
     record::START_TIME.store(start as u64, Relaxed);
     let mut sw = 0usize;
-    for (bit, name) in ["logThreads", "logMultiprocessing", "logProcesses", "logAsyncioTasks"].iter().enumerate() {
-        let v = cx.get(&g, name)?;
-        if v.is(pyo3::types::PyBool::new(cx.py(), true).as_any()) {
+    for (bit, k) in switches.into_iter().enumerate() {
+        let v = get_s(cx, &g, k)?;
+        if v.is(pyo3::types::PyBool::new(py, true).as_any()) {
             sw |= 1 << bit;
-        } else if !v.is(pyo3::types::PyBool::new(cx.py(), false).as_any()) {
-            return Err(refuse!("logging.{name} is not a bool"));
+        } else if !v.is(pyo3::types::PyBool::new(py, false).as_any()) {
+            return Err(refuse!("logging.{k} is not a bool"));
         }
     }
     record::SWITCHES.store(sw, Relaxed);
-    // time.time_ns
-    let time = cx.loaded_module("time")?;
-    if !cx.get(&g, "time")?.is(time.as_any()) {
-        return Err(Refusal::new("logging.time is not time"));
-    }
-    let td = time.dict();
-    c_function(cx, &cx.get(&td, "time_ns")?, fp::TIME_NS)?;
-    cx.pin(&td, "time_ns", deps)?;
-    // os.path.basename / splitext, os.getpid
-    let (os, pp) = os_path(cx, &g)?;
-    c_function(cx, &cx.get(&os, "getpid")?, fp::GETPID)?;
-    for name in ["path", "getpid", "fspath"] {
-        cx.pin(&os, name, deps)?;
-    }
-    let bn = cx.get(&pp, "basename")?;
+    // time.time_ns, os.getpid
+    let td = module_dict(cx, "time")?;
+    c_function(cx, &get_s(cx, &td, intern!(py, "time_ns"))?, fp::TIME_NS)?;
+    cx.pin_s(&td, intern!(py, "time_ns"), deps)?;
+    let os = module_dict(cx, "os")?;
+    c_function(cx, &get_s(cx, &os, intern!(py, "getpid"))?, fp::GETPID)?;
+    cx.pin_s(&os, intern!(py, "getpid"), deps)?;
+    // os.path.basename / splitext
+    let pp = module_dict(cx, "posixpath")?;
+    let bn = get_s(cx, &pp, intern!(py, "basename"))?;
     function(cx, &bn, fp::BASENAME, &record::CODES[2])?;
-    let se = cx.get(&pp, "splitext")?;
+    let se = get_s(cx, &pp, intern!(py, "splitext"))?;
     function(cx, &se, fp::SPLITEXT, &record::CODES[3])?;
-    let gs = cx.get(&pp, "_get_sep")?;
+    let gs = get_s(cx, &pp, intern!(py, "_get_sep"))?;
     function(cx, &gs, fp::GET_SEP, &record::CODES[7])?;
-    for name in ["basename", "splitext", "os", "_get_sep", "genericpath"] {
-        cx.pin(&pp, name, deps)?;
+    for k in [intern!(py, "basename"), intern!(py, "splitext"), intern!(py, "_get_sep"), intern!(py, "genericpath")] {
+        cx.pin_s(&pp, k, deps)?;
     }
-    cx.pin_global(&pp, "isinstance", deps)?;
+    cx.pin_global_s(&pp, intern!(py, "isinstance"), deps)?;
     let gp_mod = cx.loaded_module("genericpath")?;
-    if !cx.get(&pp, "genericpath")?.is(gp_mod.as_any()) {
-        return Err(Refusal::new("posixpath.genericpath is not genericpath"));
-    }
+    same(cx, &pp, intern!(py, "genericpath"), gp_mod.as_any())?;
     let gp = gp_mod.dict();
-    let sx = cx.get(&gp, "_splitext")?;
+    let sx = get_s(cx, &gp, intern!(py, "_splitext"))?;
     function(cx, &sx, fp::SPLITEXT_, &record::CODES[4])?;
-    cx.pin(&gp, "_splitext", deps)?;
+    cx.pin_s(&gp, intern!(py, "_splitext"), deps)?;
     // threading
     let th = cx.loaded_module("threading")?;
-    if !cx.get(&g, "threading")?.is(th.as_any()) {
-        return Err(Refusal::new("logging.threading is not threading"));
-    }
+    same(cx, &g, intern!(py, "threading"), th.as_any())?;
     let thd = th.dict();
-    let thread_mod = cx.loaded_module("_thread")?.dict();
-    let gi = cx.get(&thd, "get_ident")?;
-    if !gi.is(&cx.get(&thread_mod, "get_ident")?) {
+    let gi = get_s(cx, &thd, intern!(py, "get_ident"))?;
+    if !gi.is(&get_s(cx, &module_dict(cx, "_thread")?, intern!(py, "get_ident"))?) {
         return Err(Refusal::new("threading.get_ident is not _thread.get_ident"));
     }
     c_function(cx, &gi, fp::GET_IDENT)?;
-    let ct = cx.get(&thd, "current_thread")?;
+    let ct = get_s(cx, &thd, intern!(py, "current_thread"))?;
     function(cx, &ct, fp::CURRENT_THREAD, &record::CODES[5])?;
-    for name in ["get_ident", "current_thread", "_active"] {
-        cx.pin(&thd, name, deps)?;
+    for k in [intern!(py, "get_ident"), intern!(py, "current_thread"), intern!(py, "_active")] {
+        cx.pin_s(&thd, k, deps)?;
     }
-    let active = cx.get(&thd, "_active")?;
+    let active = get_s(cx, &thd, intern!(py, "_active"))?;
     if !active.is_exact_instance_of::<PyDict>() {
         return Err(Refusal::new("threading._active is not a dict"));
     }
     record::THREAD_ACTIVE.set_obj(&active);
-    let thread = ty(cx.get(&thd, "Thread")?)?;
+    let thread = ty(get_s(cx, &thd, intern!(py, "Thread"))?)?;
     let prop = cx.type_attr(&thread, "name")?;
     // SAFETY: type check of a live object.
     if unsafe { pyo3::ffi::Py_TYPE(prop.as_ptr()) } != &raw mut pyo3::ffi::PyProperty_Type {
@@ -379,30 +419,23 @@ fn prepare_record(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> 
     }
     record::THREAD_NAME_PROP.set_obj(&prop);
     // sys.modules, collections.abc.Mapping, _abc.get_cache_token
-    let sys_mod = cx.loaded_module("sys")?;
-    if !cx.get(&g, "sys")?.is(sys_mod.as_any()) {
-        return Err(Refusal::new("logging.sys is not sys"));
-    }
-    cx.pin(&sys_mod.dict(), "modules", deps)?;
-    record::SYS_MODULES.set_obj(&cx.get(&sys_mod.dict(), "modules")?);
+    let sysd = module_dict(cx, "sys")?;
+    cx.pin_s(&sysd, intern!(py, "modules"), deps)?;
+    record::SYS_MODULES.set_obj(&get_s(cx, &sysd, intern!(py, "modules"))?);
     let coll = cx.loaded_module("collections")?;
-    if !cx.get(&g, "collections")?.is(coll.as_any()) {
-        return Err(Refusal::new("logging.collections is not collections"));
-    }
-    cx.pin(&coll.dict(), "abc", deps)?;
-    let cabc = cx.get(&coll.dict(), "abc")?.cast_into::<PyModule>().map_err(|_| Refusal::new("collections.abc"))?;
-    cx.pin(&cabc.dict(), "Mapping", deps)?;
-    match cx.loaded_module("_abc").and_then(|m| cx.get(&m.dict(), "get_cache_token")) {
+    same(cx, &g, intern!(py, "collections"), coll.as_any())?;
+    cx.pin_s(&coll.dict(), intern!(py, "abc"), deps)?;
+    let cabc = get_s(cx, &coll.dict(), intern!(py, "abc"))?
+        .cast_into::<PyModule>()
+        .map_err(|_| Refusal::new("collections.abc"))?;
+    cx.pin_s(&cabc.dict(), intern!(py, "Mapping"), deps)?;
+    match cx.loaded_module("_abc").and_then(|m| get_s(cx, &m.dict(), intern!(py, "get_cache_token"))) {
         Ok(tok) => record::ABC_TOKEN.set_obj(&tok),
         Err(_) => record::ABC_TOKEN.clear_ptr(),
     }
-    {
-        let n = common::names();
-        record::RECORDS.set_names([n.created, n.msecs]);
-        record::THREADS.set_names([n.t_initialized, n.t_name]);
-        record::MP_PROCS.set_names([n.t_name]);
-    }
-    calibrate(cx)?;
+    record::RECORDS.clear();
+    record::THREADS.clear();
+    record::MP_PROCS.clear();
     record::reset_mapping_cache();
     cx.vectorcall(&init, record::vc_record_init, &accel::FUNCTION_VECTORCALL)
 }
@@ -411,65 +444,16 @@ fn prepare_record(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> 
 // logging.Formatter.formatTime / .format
 // ---------------------------------------------------------------------------------------
 
-/// `logging.time` is `time`; capture `time.localtime/gmtime/strftime`; pin
-/// `logging.time` and `time.strftime` on `deps`.
-fn time_functions(cx: &mut Prepare<'_>, deps: &'static DepFlag) -> Result<(), Refusal> {
-    let g = cx.module()?.dict();
-    let time = cx.loaded_module("time")?;
-    if !cx.get(&g, "time")?.is(time.as_any()) {
-        return Err(Refusal::new("logging.time is not time"));
-    }
-    let td = time.dict();
-    let lt = cx.get(&td, "localtime")?;
-    let gt = cx.get(&td, "gmtime")?;
-    let sf = cx.get(&td, "strftime")?;
-    c_function(cx, &lt, fp::LOCALTIME)?;
-    c_function(cx, &gt, fp::GMTIME)?;
-    c_function(cx, &sf, fp::STRFTIME)?;
-    format::LOCALTIME.set_obj(&lt);
-    format::GMTIME.set_obj(&gt);
-    format::STRFTIME.set_obj(&sf);
-    cx.pin(&g, "time", deps)?;
-    cx.pin(&td, "strftime", deps)?;
-    Ok(())
-}
-
 fn prepare_format_time(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    init_names();
-    time_functions(cx, &format::TIME_DEPS)?;
     let fmt = ty(cx.module_attr("Formatter")?)?;
     let ft = cx.type_attr(&fmt, "formatTime")?;
     function(cx, &ft, fp::FORMAT_TIME, &format::TIME_CODES[0])?;
-    prepare_record_types(cx)?;
-    format::clear_type_caches();
     cx.vectorcall(&ft, format::vc_format_time, &accel::FUNCTION_VECTORCALL)
 }
 
-/// The record classes the formatting kernels read (`RECORDS` validation needs the names).
-fn prepare_record_types(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    {
-        let n = common::names();
-        record::RECORDS.set_names([n.created, n.msecs]);
-        format::TIME_FORMATTERS.set_names([n.converter, n.default_time_format, n.default_msec_format]);
-        format::FORMATTERS.set_names([n.converter, n.default_time_format, n.default_msec_format, n.style, n.datefmt]);
-        format::STYLES.set_names([n.fmt, n.asctime_search, n.defaults]);
-        format::FMT_RECORDS.set_names([n.msg, n.args]);
-    }
-    calibrate(cx)?;
-    let lr = ty(cx.module_attr("LogRecord")?)?;
-    let gm = cx.type_attr(&lr, "getMessage")?;
-    format::R_GET_MESSAGE.set_obj(&gm);
-    format::R_DICT.set_obj(&cx.type_attr(&lr, "__dict__")?);
-    Ok(())
-}
-
-fn prepare_format(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    init_names();
-    cx.symbol(c"_PyObject_GetMethod", &common::GET_METHOD)?;
-    format::clear_fmt_cache();
-    time_functions(cx, &format::FORMAT_DEPS)?;
+fn prepare_format(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let g = cx.module()?.dict();
-    cx.pin_global(&g, "str", &format::FORMAT_DEPS)?;
+    cx.pin_global_s(&g, intern!(py, "str"), &format::FORMAT_DEPS)?;
     let fmt = ty(cx.module_attr("Formatter")?)?;
     let style = ty(cx.module_attr("PercentStyle")?)?;
     let lr = ty(cx.module_attr("LogRecord")?)?;
@@ -496,8 +480,6 @@ fn prepare_format(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> 
     format::S_USES_TIME.set_obj(&sut);
     format::S_FORMAT.set_obj(&sf);
     format::S_FORMAT_.set_obj(&sf_);
-    prepare_record_types(cx)?;
-    format::clear_type_caches();
     cx.vectorcall(&f, format::vc_format, &accel::FUNCTION_VECTORCALL)
 }
 
@@ -516,6 +498,7 @@ macro_rules! target {
             counters: $counters,
             prepare: $prepare,
             checkable: $checkable,
+            shared: Some(&SHARED),
             ..TargetSpec::DEFAULT
         };
     };

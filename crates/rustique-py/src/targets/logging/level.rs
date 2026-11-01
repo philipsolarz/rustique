@@ -119,7 +119,7 @@ unsafe fn level_call(func: O, args: *const O, nargsf: usize, kw: O, level: O, co
                 break 'fb Reason::Args;
             }
             let Some(e) = LOGGERS.entry(ffi::Py_TYPE(me)) else { break 'fb Reason::Args };
-            if !DEPS.ok() {
+            if !DEPS.ok() || !SHARED_DEPS.ok() {
                 break 'fb Reason::Deps;
             }
             if !TOOLS.quiet() || !CODES[0].ok() || !CODES[code].ok() {

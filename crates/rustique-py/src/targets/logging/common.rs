@@ -51,6 +51,10 @@ pub fn nargs(nargsf: usize) -> usize {
 
 pub static TOOLS: crate::accel::Tools = crate::accel::Tools::new();
 
+/// Pins of the group's shared declarations (`SHARED`: module identities, `time.strftime`,
+/// builtins); every kernel checks it next to its own.
+pub static SHARED_DEPS: crate::accel::DepFlag = crate::accel::DepFlag::new();
+
 /// A Python function a kernel stands in for (the patched one or a helper it inlines):
 /// its code and defaults are still the ones validated at install (`__code__`/`__defaults__`
 /// assignment changes behaviour), and no tool listens locally on the code. Holds strong

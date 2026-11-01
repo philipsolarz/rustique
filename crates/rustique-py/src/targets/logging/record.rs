@@ -752,7 +752,7 @@ pub unsafe extern "C" fn vc_record_init(func: O, args: *const O, nargsf: usize, 
             if !kw.is_null() || !(8..=10).contains(&n) {
                 break 'fb Reason::Args;
             }
-            if !DEPS.ok() {
+            if !DEPS.ok() || !SHARED_DEPS.ok() {
                 break 'fb Reason::Deps;
             }
             let me = *args;

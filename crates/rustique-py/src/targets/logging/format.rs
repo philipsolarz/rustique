@@ -26,7 +26,6 @@ use rustique_core::logging::{
     Buf, Dir, Piece, Tm, Val, dirs, msec_suffix, native_dir, parse_format, parse_format_into, render, strftime_numeric,
 };
 
-pub static TIME_DEPS: DepFlag = DepFlag::new();
 pub static TIME_STATS: Counters = Counters::new();
 pub static FORMAT_DEPS: DepFlag = DepFlag::new();
 pub static FORMAT_STATS: Counters = Counters::new();
@@ -361,7 +360,7 @@ pub unsafe extern "C" fn vc_format_time(func: O, args: *const O, nargsf: usize, 
             if !kw.is_null() || !(2..=3).contains(&nargs) {
                 break 'fb Reason::Args;
             }
-            if !TIME_DEPS.ok() {
+            if !SHARED_DEPS.ok() {
                 break 'fb Reason::Deps;
             }
             let (me, record) = (*args, *args.add(1));
@@ -894,7 +893,7 @@ pub unsafe extern "C" fn vc_format(func: O, args: *const O, nargsf: usize, kw: O
             if !kw.is_null() || nargs(nargsf) != 2 {
                 break 'fb Reason::Args;
             }
-            if !FORMAT_DEPS.ok() || !TIME_DEPS.ok() {
+            if !FORMAT_DEPS.ok() || !SHARED_DEPS.ok() {
                 break 'fb Reason::Deps;
             }
             let (me, record) = (*args, *args.add(1));
