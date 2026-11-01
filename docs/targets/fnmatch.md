@@ -128,6 +128,13 @@ Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `py
 the four builds.
 
 
+pyperf (wall time, `benches/targets/paths_pyperf.py`, 3.15.1, median of pyperf runs, plain vs enabled in separate processes):
+
+| cell | CPython | Rustique | ratio |
+|---|---:|---:|---:|
+| fnmatch.filter(10k names, '*.py') | 403.1 µs | 32.3 µs | 0.080 |
+| 12 ignore patterns x 1k names | 3719.6 µs | 809.9 µs | 0.218 |
+
 ## Workloads
 
 `python benches/workloads/run.py compare data/fs_inventory devtools/pip_resolve
@@ -144,10 +151,10 @@ The three groups together; ratios on a shared box are indicative (±~5%).
 
 ## Startup
 
-`rustique.enable(only=["fnmatch"])` with `fnmatch` imported: 1.9M Ir (≈ 0.5 ms; most of it
-the fingerprints of `fnmatch`, `re` and `re._parser` functions, each hashed once); when
-`fnmatch` is imported after `enable()`, the same work runs at its import
-(`benches/targets/paths_startup.py`).
+With `fnmatch` imported, the group adds **0.34M Ir** to `enable()` (3.15.1, cold, minus the
+0.64M Ir any first `enable()` costs); 0.22M of it is the fingerprints of the `fnmatch`, `re`
+and `re._parser` functions (validated once per pass through `Prepare::memo`; `re._parser._parse`
+dominates). When `fnmatch` is imported after `enable()` the same work runs at its import.
 
 ## Version coverage
 

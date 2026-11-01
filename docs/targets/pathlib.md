@@ -49,17 +49,23 @@ slot of every object involved, including which positions hold the same object.
 
 ## Guards and pins
 
-Both exact classes must have the default metaclass and `parser is posixpath`. Every
-attribute the originals reach through `self`/`cls` is pinned through the MRO of both
-classes (`pin_attr`: `__new__`, `__init__`, `with_segments`, `parser`, `_parse_path`,
-`_format_parsed_parts`, `_from_parsed_parts`, `_from_parsed_string`, `_raw_path`,
-`drive`, `root`, `_tail`, the targets themselves, `_str_normcase`, `parents`), so patching
-`PurePath.with_segments` (the public subclass hook) or any of these on a class suspends the
-targets. Also pinned: `posixpath.sep/altsep/join/splitroot/splitdrive/_get_sep`, the
-pathlib globals the code reads (`os`, `posixpath`, `PurePath`, `PurePosixPath`,
-`PosixPath`, `Path`, `PureWindowsPath`, `WindowsPath`, `chain`, `_PathParents`), its
-builtins, `os.fspath` (called by `__init__`) and `os.name` (read by `__new__`). Fingerprints: all 29 functions involved (per minor; checked once per set
-of function objects, since the thirteen targets share them).
+Both exact classes must have the default metaclass and `parser is posixpath`. The class
+attributes the originals reach through `self`/`cls` (`__new__`, `__init__`, `with_segments`,
+`parser`, `_parse_path`, `_format_parsed_parts`, `_from_parsed_parts`, `_from_parsed_string`,
+`_raw_path`, `drive`, `root`, `_tail`, `name`, `parents`, `__eq__`, `_str_normcase`,
+`__str__`, `__hash__`) are guarded per call by the class's **type version tag**: CPython
+gives a class a new tag whenever it or any base is modified (`__bases__` included). On a
+new tag the kernel looks the attributes up again (`_PyType_Lookup`, no Python code) and
+compares them with the validated (fingerprinted) objects: if a patch was undone they are the
+same and the new tag is accepted; otherwise the call falls back. So patching
+`PurePath.with_segments` (the public subclass hook) or any of these on a class sends calls
+to CPython's code; `_PathParents` (iterated by `relative_to`'s `path in self.parents`) is
+guarded the same way. Pinned (dict watcher): `posixpath.sep/altsep/join/splitroot/
+splitdrive/_get_sep/os`, the pathlib globals each original reads (`os`, `posixpath`,
+`PurePath`, `PurePosixPath`, `PosixPath`, `Path`, `PureWindowsPath`, `WindowsPath`, `chain`,
+`_PathParents`), their builtins, `os.fspath` (called by `__init__`, `posixpath.join`,
+`posixpath.splitdrive`) and `os.name` (read by `__new__`). Fingerprints: all 29 functions
+involved, validated once per enable pass.
 
 Subclasses (including any overriding `with_segments`, `__init__` or `parser`),
 `PureWindowsPath`, and all other inputs run CPython's code. Reached through slots
@@ -165,6 +171,14 @@ Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `py
 the four builds.
 
 
+pyperf (wall time, `benches/targets/paths_pyperf.py`, 3.15.1, median of pyperf runs, plain vs enabled in separate processes):
+
+| cell | CPython | Rustique | ratio |
+|---|---:|---:|---:|
+| str(base / n) over 1k | 2442.3 µs | 461.8 µs | 0.189 |
+| relative_to + parts + stem over 1k | 8345.2 µs | 296.0 µs | 0.035 |
+| Path(f).parent.name over 1k | 2228.0 µs | 562.7 µs | 0.253 |
+
 ## Workloads
 
 `python benches/workloads/run.py compare data/fs_inventory devtools/pip_resolve
@@ -181,19 +195,20 @@ The three groups together; ratios on a shared box are indicative (±~5%).
 
 ## Startup
 
-`pathlib` is not imported by `enable()`: its thirteen targets install when it is imported
-(lazy activation). `benches/targets/paths_startup.py` (callgrind regions, 3.15.1):
+`pathlib` is not imported by `enable()`: its thirteen targets install when it is imported.
+`benches/targets/paths_startup.py` (callgrind regions, 3.15.1, head d133234):
 
 | region | Ir |
 |---|---:|
 | `import pathlib`, plain | 7.57M |
-| `import pathlib` after `enable(only=["pathlib"])` | 11.80M (+4.24M, ≈ 1 ms) |
-| `enable(only=["pathlib"])` with pathlib imported | 5.74M |
+| `import pathlib` after `enable(only=["pathlib"])` | 8.60M (**+1.04M, +13.7%**) |
+| `enable(only=["pathlib"])` with pathlib imported (minus the 0.64M of any first enable) | 1.06M |
 
-The install work is the fingerprints (29 functions, hashed once), and per target the pins
-of the attributes, module globals and builtins its original reaches (`pin_attr` through
-`PosixPath`'s MRO). A group-level pin (one flag shared by the thirteen targets) would cut
-most of the rest; see the report.
+History: +24M at first (per-target MRO pins), +4.2M (fewer pins), +2.4M (accel-core's v2
+fingerprints and shared pins), +1.0M (class attributes guarded by type version tag, shared
+validation once per pass). What remains: 29 fingerprints (0.23M), about 130 module-global and
+builtin pins across the thirteen targets (≈ 0.4M with `get_opt`), thirteen vectorcall sites.
+Over the 5% budget; see the report.
 
 ## Version coverage
 

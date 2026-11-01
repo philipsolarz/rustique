@@ -220,6 +220,14 @@ Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `py
 the four builds.
 
 
+pyperf (wall time, `benches/targets/paths_pyperf.py`, 3.15.1, median of pyperf runs, plain vs enabled in separate processes):
+
+| cell | CPython | Rustique | ratio |
+|---|---:|---:|---:|
+| join + splitext over 1k files | 532.7 µs | 160.6 µs | 0.302 |
+| relpath over 1k files | 1459.6 µs | 413.4 µs | 0.283 |
+| split/dirname/basename over 1k | 644.5 µs | 166.8 µs | 0.259 |
+
 ## Workloads
 
 `python benches/workloads/run.py compare data/fs_inventory devtools/pip_resolve
@@ -236,10 +244,13 @@ The three groups together; ratios on a shared box are indicative (±~5%).
 
 ## Startup
 
-`benches/targets/paths_startup.py` (callgrind regions, fresh processes, 3.15.1):
-`rustique.enable(only=["posixpath"])` with `posixpath` imported (it always is) costs
-1.98M Ir (≈ 0.5 ms): fingerprints (each shared helper hashed once), pins, the str layout
-calibration and the normpath self-test. Nothing is imported.
+`benches/targets/paths_startup.py` (callgrind regions, fresh processes, 3.15.1, head d133234,
+after accel-core's install-cost fixes). Any first `rustique.enable(...)` costs 0.64M Ir
+(registry + public switch); the group adds **0.36M Ir** (≈ 0.09 ms) with `posixpath` imported
+(it always is): eight vectorcall sites, the fingerprints of the eight functions and the shared
+helpers (validated once per pass through `Prepare::memo`), and about 75 dependency pins
+(≈ 3k Ir each). Over the 0.1M budget: what remains scales with targets × pins; see the
+report. Nothing is imported.
 
 ## Version coverage
 
