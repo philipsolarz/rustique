@@ -15,6 +15,7 @@ use std::sync::{Mutex, OnceLock};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::ffi;
+use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule};
 
@@ -137,8 +138,9 @@ struct Rt {
     /// Flags of the pins, tracked for deopt-while-unpinned (targets with a vectorcall
     /// site); empty otherwise.
     tracked: Vec<&'static guard::DepFlag>,
-    /// Sites restored to the originals because a pinned dependency changed.
-    suspended: bool,
+    /// Sites restored to the originals: a pinned dependency changed, or the kernel fell
+    /// back persistently.
+    suspended: Option<Suspended>,
     /// Times suspended since install.
     suspensions: u32,
 }
@@ -153,8 +155,26 @@ impl Rt {
             site_names: Vec::new(),
             pin_owner: 0,
             tracked: Vec::new(),
-            suspended: false,
+            suspended: None,
             suspensions: 0,
+        }
+    }
+}
+
+/// Why a vectorcall target's sites are temporarily restored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Suspended {
+    /// A pinned dependency changed; resumed when every pin re-arms.
+    Deps,
+    /// [`stats::STREAK_LIMIT`] consecutive fallbacks; resumed by the next `enable()`.
+    Fallback,
+}
+
+impl Suspended {
+    fn as_str(self) -> &'static str {
+        match self {
+            Suspended::Deps => "deps",
+            Suspended::Fallback => "fallback",
         }
     }
 }
@@ -228,12 +248,16 @@ pub(crate) unsafe fn on_sys_modules_event(
         if ffi::PyUnicode_CheckExact(key) == 0 {
             return;
         }
+        // Module names of targets are ASCII: compare the key's PEP 393 data in place (no
+        // allocation, no UTF-8 cache attached to the caller's string).
+        if ffi::PyUnicode_KIND(key) != ffi::PyUnicode_1BYTE_KIND {
+            return;
+        }
+        let len = ffi::PyUnicode_GET_LENGTH(key) as usize;
+        let data = std::slice::from_raw_parts(ffi::PyUnicode_DATA(key).cast::<u8>(), len);
         let name = {
             let l = lazy();
-            l.pending.iter().copied().find(|n| {
-                let c = std::ffi::CString::new(*n).unwrap_or_default();
-                ffi::PyUnicode_CompareWithASCIIString(key, c.as_ptr()) == 0
-            })
+            l.pending.iter().copied().find(|n| n.as_bytes() == data)
         };
         let Some(name) = name else { return };
         let saved = ffi::PyErr_GetRaisedException();
@@ -382,22 +406,61 @@ extern "C" fn resync_pending(_arg: *mut std::ffi::c_void) -> c_int {
     0
 }
 
-/// Suspend or resume tracked targets according to their flags. Returns whether an
-/// `ml_meth` site changed.
+/// Restore a target's sites to the originals (kept installed: pins stay active).
+fn suspend(rt: &mut Rt, why: Suspended) -> bool {
+    for s in rt.sites.iter_mut().rev() {
+        s.uninstall(true);
+    }
+    rt.suspended = Some(why);
+    rt.sites.iter().any(|s| s.kind == Kind::MlMeth)
+}
+
+/// Reinstall a suspended target's sites. On failure (someone else changed an entry point
+/// meanwhile) the target is refused.
+fn resume(reg: &mut Registry, i: usize) -> bool {
+    let rt = &mut reg.rt[i];
+    let mut failed = None;
+    for s in rt.sites.iter_mut() {
+        if let Err(e) = s.install() {
+            failed = Some(e.to_string());
+            break;
+        }
+    }
+    let mut ml = rt.sites.iter().any(|s| s.kind == Kind::MlMeth);
+    rt.suspended = None;
+    all_specs()[i].counters.streak.store(0, Ordering::Relaxed);
+    if let Some(f) = failed {
+        ml |= deactivate(reg, i);
+        let rt = &mut reg.rt[i];
+        rt.state = State::Refused;
+        rt.reason = Some(format!("cannot resume: {f}"));
+        rt.refusal = Some(Category::Conflict);
+    }
+    ml
+}
+
+/// Suspend or resume vectorcall targets according to their pins and fallback streaks.
+/// Returns whether an `ml_meth` site changed.
 fn resync(_py: Python<'_>, reg: &mut Registry) -> bool {
     let mut ml = false;
     for i in 0..reg.rt.len() {
+        let spec = all_specs()[i];
         let rt = &mut reg.rt[i];
-        if rt.state != State::Installed || rt.tracked.is_empty() {
+        if rt.state != State::Installed || !rt.sites.iter().any(|s| s.kind == Kind::Vectorcall) {
+            continue;
+        }
+        let fallback = spec.counters.suspend_requested.swap(false, Ordering::AcqRel);
+        if fallback && rt.suspended.is_none() {
+            spec.counters.suspensions.fetch_add(1, Ordering::Relaxed);
+            ml |= suspend(rt, Suspended::Fallback);
+            continue;
+        }
+        if rt.tracked.is_empty() {
             continue;
         }
         let ok = rt.tracked.iter().all(|f| f.ok());
-        if !ok && !rt.suspended {
-            for s in rt.sites.iter_mut().rev() {
-                s.uninstall(true);
-            }
-            ml |= rt.sites.iter().any(|s| s.kind == Kind::MlMeth);
-            rt.suspended = true;
+        if !ok && rt.suspended.is_none() {
+            ml |= suspend(rt, Suspended::Deps);
             rt.suspensions += 1;
             if rt.suspensions > MAX_SUSPENSIONS {
                 let n = rt.suspensions;
@@ -407,23 +470,8 @@ fn resync(_py: Python<'_>, reg: &mut Registry) -> bool {
                 rt.reason = Some(format!("unstable dependencies (suspended {n} times)"));
                 rt.refusal = Some(Category::Deps);
             }
-        } else if ok && rt.suspended {
-            let mut failed = None;
-            for s in rt.sites.iter_mut() {
-                if let Err(e) = s.install() {
-                    failed = Some(e.to_string());
-                    break;
-                }
-            }
-            ml |= rt.sites.iter().any(|s| s.kind == Kind::MlMeth);
-            rt.suspended = false;
-            if let Some(f) = failed {
-                ml |= deactivate(reg, i);
-                let rt = &mut reg.rt[i];
-                rt.state = State::Refused;
-                rt.reason = Some(format!("cannot resume: {f}"));
-                rt.refusal = Some(Category::Conflict);
-            }
+        } else if ok && rt.suspended == Some(Suspended::Deps) {
+            ml |= resume(reg, i);
         }
     }
     ml
@@ -546,8 +594,10 @@ fn activate(
     rt.state = State::Installed;
     rt.reason = None;
     rt.refusal = None;
-    rt.suspended = false;
+    rt.suspended = None;
     rt.suspensions = 0;
+    all_specs()[i].counters.streak.store(0, Ordering::Relaxed);
+    all_specs()[i].counters.suspend_requested.store(false, Ordering::Relaxed);
     if has_vc {
         rt.tracked = guard::flags_of(owner);
         guard::track(&rt.tracked, true);
@@ -594,12 +644,18 @@ fn deactivate(reg: &mut Registry, i: usize) -> bool {
     rt.state = State::Disabled;
     rt.reason = None;
     rt.refusal = None;
-    rt.suspended = false;
+    rt.suspended = None;
     ml
 }
 
 /// `sys._clear_internal_caches()`: 3.15's tier 2 copies `ml_meth` into traces (M§4).
+/// Only when the JIT is enabled: without it no executor (trace) exists, and the call
+/// would also flush the type attribute cache for nothing. (The JIT cannot be switched on
+/// after startup.)
 fn clear_internal_caches() {
+    if !JIT.load(Ordering::Relaxed) {
+        return;
+    }
     // SAFETY: attached thread; a C function from the sys module dict (no Python code).
     unsafe {
         let f = ffi::PySys_GetObject(c"_clear_internal_caches".as_ptr());
@@ -669,6 +725,10 @@ pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -
         if !selected(spec, only.as_deref(), &exclude) {
             continue;
         }
+        if reg.rt[i].suspended == Some(Suspended::Fallback) {
+            ml |= resume(reg, i);
+            continue;
+        }
         if matches!(reg.rt[i].state, State::Installed | State::Pending) {
             continue;
         }
@@ -710,6 +770,7 @@ pub fn disable(py: Python<'_>, names: Option<Vec<String>>) -> PyResult<()> {
         check_names(n)?;
     }
     let mut g = REG.lock(py)?;
+    JIT.store(jit_enabled(py), Ordering::Relaxed);
     let reg = registry(&mut g);
     let mut ml = drain_deferred(py, reg);
     let mut any = false;
@@ -772,25 +833,34 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         }
         enabled |= matches!(rt.state, State::Installed | State::Pending);
         let d = PyDict::new(py);
-        d.set_item("name", spec.name)?;
-        d.set_item("group", spec.group)?;
-        d.set_item("state", rt.state.as_str())?;
-        d.set_item("reason", rt.reason.as_deref())?;
-        d.set_item("refusal", if rt.state == State::Refused { rt.refusal.map(Category::as_str) } else { None })?;
-        d.set_item("sites", PyList::new(py, &rt.site_names)?)?;
-        d.set_item("versions", PyList::new(py, versions_of(spec))?)?;
-        d.set_item("checkable", spec.checkable)?;
+        d.set_item(intern!(py, "name"), spec.name)?;
+        d.set_item(intern!(py, "group"), spec.group)?;
+        d.set_item(intern!(py, "state"), rt.state.as_str())?;
+        d.set_item(intern!(py, "reason"), rt.reason.as_deref())?;
+        d.set_item(
+            intern!(py, "refusal"),
+            if rt.state == State::Refused { rt.refusal.map(Category::as_str) } else { None },
+        )?;
+        d.set_item(intern!(py, "sites"), PyList::new(py, &rt.site_names)?)?;
+        d.set_item(intern!(py, "versions"), PyList::new(py, versions_of(spec))?)?;
+        d.set_item(intern!(py, "checkable"), spec.checkable)?;
         if let Some(m) = spec.module {
-            d.set_item("module", m)?;
+            d.set_item(intern!(py, "module"), m)?;
         }
         if rt.pin_owner != 0 {
             let pins = guard::describe(py, rt.pin_owner);
             let ok = pins.iter().all(|(_, _, intact, broken)| *intact && !*broken);
-            d.set_item("deps_intact", ok)?;
+            d.set_item(intern!(py, "deps_intact"), ok)?;
         }
-        if rt.suspended {
-            d.set_item("suspended", true)?;
-            d.set_item("reason", "a pinned dependency changed: original restored until it is back")?;
+        if let Some(why) = rt.suspended {
+            d.set_item(intern!(py, "suspended"), why.as_str())?;
+            d.set_item(
+                "reason",
+                match why {
+                    Suspended::Deps => "a pinned dependency changed: original restored until it is back",
+                    Suspended::Fallback => "persistent fallback: original restored until the next enable()",
+                },
+            )?;
         }
         targets.append(d)?;
     }
@@ -837,6 +907,7 @@ pub fn stats(py: Python<'_>, enabled: Option<bool>, reset: bool) -> PyResult<Bou
             f.set_item(k, v)?;
         }
         d.set_item("fallback", f)?;
+        d.set_item("suspensions", spec.counters.suspensions.load(Ordering::Relaxed))?;
         out.set_item(spec.name, d)?;
     }
     if reset {

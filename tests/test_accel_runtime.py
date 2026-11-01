@@ -50,20 +50,27 @@ def f(l, n):
         c += l.count(2) + l.index(3)
     return c
 
+def g(l, n):  # same body; warmed only while enabled
+    c = 0
+    for _ in range(n):
+        c += l.count(2) + l.index(3)
+    return c
+
+def hits():
+    s = A.stats(None, True)
+    return tuple(s.get(k, {"hits": 0})["hits"] for k in ("list.count", "list.index"))
+
 l = [1, 2, 3, 2]
 assert f(l, 50000) == 50000 * 4          # traces built with the originals
 A.stats(True, True)
 rt.enable(only=["containers"])
 assert f(l, 1000) == 4000
-s = A.stats(None, True)
-pre = (s["list.count"]["hits"], s["list.index"]["hits"])
-
-assert f(l, 50000) == 50000 * 4          # traces built with the kernels
+pre = hits()                             # stale: (1, 1) without clearing
+assert g(l, 50000) == 50000 * 4          # traces built with the kernels
 rt.disable()
-A.stats(True, True)
-assert f(l, 1000) == 4000
-s = A.stats()
-post = (s.get("list.count", {"hits": 0})["hits"], s.get("list.index", {"hits": 0})["hits"])
+hits()
+assert g(l, 1000) == 4000
+post = hits()                            # stale: (1000, 1000) without clearing
 print(pre, post)
 """
 
@@ -194,3 +201,49 @@ def test_concurrent_enable_status_stats_from_threads():
     for t in threads:
         t.join()
     assert not errors, errors
+
+
+def test_lazy_activation_with_concurrent_imports(tmp_path, monkeypatch):
+    """Threads import the target module (and other modules) while targets are pending:
+    the module is patched exactly once, calls are always correct."""
+    (tmp_path / "_rustique_selftest.py").write_text("SEP = '/'\n\ndef same(x):\n    return x\n")
+    for i in range(20):
+        (tmp_path / f"_rq_other_{i}.py").write_text(f"V = {i}\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sys.modules.pop("_rustique_selftest", None)
+    errors: list[str] = []
+    start = threading.Barrier(5)
+
+    def worker(k: int) -> None:
+        import importlib
+
+        start.wait()
+        try:
+            for i in range(k, 20, 4):
+                importlib.import_module(f"_rq_other_{i}")
+            m = importlib.import_module("_rustique_selftest")
+            for j in range(2000):
+                if m.same(j) != j:
+                    errors.append("wrong")
+        except Exception as e:  # noqa: BLE001
+            errors.append(repr(e))
+
+    rt.enable(only=["_selftest.same"])
+    try:
+        threads = [threading.Thread(target=worker, args=(k,)) for k in range(4)]
+        for t in threads:
+            t.start()
+        start.wait()
+        for t in threads:
+            t.join()
+        assert not errors, errors[:5]
+        st = {t["name"]: t["state"] for t in rt.status()["targets"]}
+        assert st["_selftest.same"] == "installed"
+        import _rustique_selftest as m
+
+        assert not A.vectorcall_is_original(m.same)
+    finally:
+        A.disable(["_selftest"])
+        sys.modules.pop("_rustique_selftest", None)
+        for i in range(20):
+            sys.modules.pop(f"_rq_other_{i}", None)

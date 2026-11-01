@@ -122,13 +122,13 @@ unsafe extern "C" fn k_ident(f: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments from CPython; attached thread.
     unsafe {
         if !(kw.is_null() && nargsf & !ffi::PY_VECTORCALL_ARGUMENTS_OFFSET == 1) {
-            C_VC.fallback(Reason::Args);
+            C_VC.fallback_streak(Reason::Args);
         } else if !DEPS.ok() {
-            C_VC.fallback(Reason::Deps);
+            C_VC.fallback_streak(Reason::Deps);
         } else if !accel::tools_quiet(&TOOLS, f) {
-            C_VC.fallback(Reason::Tools);
+            C_VC.fallback_streak(Reason::Tools);
         } else {
-            C_VC.hit();
+            C_VC.hit_streak();
             return tagged(&KERNEL_STR, *args);
         }
         accel::FUNCTION_VECTORCALL.get()(f, args, nargsf, kw)
@@ -253,8 +253,42 @@ target!(BADFP, "_selftest.badfp", Some(MODULE), C_NONE, prepare_badfp);
 target!(REFUSE, "_selftest.refuse", None, C_NONE, prepare_refuse);
 target!(CAS, "_selftest.cas", None, C_NONE, prepare_cas);
 target!(SNAPSHOT, "_selftest.snapshot", Some(MODULE), C_SNAP, prepare_snapshot);
+target!(SAME, "_selftest.same", Some(MODULE), C_SAME, prepare_same);
 
-pub static TARGETS: &[&TargetSpec] = &[&METH, &VECTORCALL, &SLOT, &BADFP, &REFUSE, &CAS, &SNAPSHOT];
+pub static TARGETS: &[&TargetSpec] = &[&METH, &VECTORCALL, &SLOT, &BADFP, &REFUSE, &CAS, &SNAPSHOT, &SAME];
+
+// ---------------------------------------------------------------------------------------
+// _selftest.same: an *exact* kernel (`def same(x): return x`) for the shared mechanics
+// helpers (tests/targets/_mechanics.py), with a pinned module global `SEP`.
+// ---------------------------------------------------------------------------------------
+
+static C_SAME: Counters = Counters::new();
+static SAME_DEPS: DepFlag = DepFlag::new();
+static SAME_TOOLS: Tools = Tools::new();
+
+unsafe extern "C" fn k_same(f: O, args: *const O, nargsf: usize, kw: O) -> O {
+    // SAFETY: vectorcall arguments from CPython; attached thread.
+    unsafe {
+        if !(kw.is_null() && nargsf & !ffi::PY_VECTORCALL_ARGUMENTS_OFFSET == 1) {
+            C_SAME.fallback_streak(Reason::Args);
+        } else if !SAME_DEPS.ok() {
+            C_SAME.fallback_streak(Reason::Deps);
+        } else if !accel::tools_quiet(&SAME_TOOLS, f) {
+            C_SAME.fallback_streak(Reason::Tools);
+        } else {
+            C_SAME.hit_streak();
+            return ffi::Py_NewRef(*args);
+        }
+        accel::FUNCTION_VECTORCALL.get()(f, args, nargsf, kw)
+    }
+}
+
+fn prepare_same(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let f = cx.module_attr("same")?;
+    let g = cx.module()?.dict();
+    cx.pin(&g, "SEP", &SAME_DEPS)?;
+    cx.vectorcall(&f, k_same, &accel::FUNCTION_VECTORCALL)
+}
 
 // ---------------------------------------------------------------------------------------
 // _selftest.snapshot: a snapshot pin (`pin_dict`) on an instance dict.
