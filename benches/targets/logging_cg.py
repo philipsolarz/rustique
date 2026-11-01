@@ -106,6 +106,17 @@ class Obj:
         return 'obj'
 class MyFormatter(logging.Formatter):
     pass
+class OwnTime(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        return "T"
+class OverrideLevel(logging.Logger):
+    def isEnabledFor(self, level):
+        return level >= 30
+F_OWNTIME = OwnTime('%(asctime)s %(levelname)-8s [%(name)s] %(message)s')
+F_CONV = logging.Formatter('%(asctime)s %(message)s')
+F_CONV.converter = lambda t: time.gmtime(t)
+L_OVR = OverrideLevel('b.ovr')
+L_OVR.setLevel(logging.WARNING)
 v = 12345
 s = 'hello'
 f = 3.25
@@ -147,8 +158,10 @@ CELLS = {
     "info JSON formatter (subclass)": "L_JSON.info('x=%s', v)",
     "info JSON __dict__ formatter": "L_JSOND.info('x=%s', v)",
     "info {-style": "L_BRACE.info('x=%s', v)",
+    "info, time.strftime replaced [deps]": "L_TIME.info('x=%s', v)",
     "info Formatter subclass [fallback]": "L_SUB.info('x=%s', v)",
     "info obj arg [fallback]": "L_TIME.info('x=%s', o)",
+    "info %(message)s, obj arg [fallback]": "L_MSG.info('x=%s', o)",
     "info stack_info=True [fallback]": "L_TIME.info('x=%s', v, stack_info=True)",
     "exception [fallback]": "L_TIME.error('x=%s', v, exc_info=EI)",
     "adapter info": "AD.info('x=%s', v)",
@@ -169,9 +182,19 @@ CELLS = {
     "format BASIC_FORMAT": "F_BASIC.format(rec)",
     "format asctime": "F_TIME.format(rec)",
     "format datefmt": "F_DATEFMT.format(rec)",
-    "format {-style": "F_BRACE.format(rec)",
+    "format {-style [fallback]": "F_BRACE.format(rec)",
+    "format formatTime overridden [fallback, steady]": "F_OWNTIME.format(rec)",
+    "format formatTime overridden + plain [fallback, alternating]": "F_OWNTIME.format(rec); F_TIME.format(rec)",
+    "formatTime custom converter [fallback, steady]": "F_CONV.formatTime(rec)",
+    "formatTime custom converter + plain [fallback, alternating]": "F_CONV.formatTime(rec); F_TIME.formatTime(rec)",
+    "debug disabled, isEnabledFor overridden [fallback]": "L_OVR.debug('x=%s', v)",
+    "LogRecord(keywords) [fallback]": "logging.LogRecord(name='a', level=20, pathname='/p.py', lineno=1, msg='m', args=(), exc_info=None)",
+    "LogRecord(keywords) + plain [fallback, alternating]": "logging.LogRecord(name='a', level=20, pathname='/p.py', lineno=1, msg='m', args=(), exc_info=None); logging.LogRecord('a', 20, '/p.py', 1, 'm', (), None)",
+    "findCaller(stack_info=True) [fallback]": "L_TIME.findCaller(True)",
     "format subclass [fallback]": "F_SUB.format(rec)",
     "format obj arg [fallback]": "F_TIME.format(rec_obj)",
+    "format %(message)s, obj arg [fallback, steady]": "F_MSG.format(rec_obj)",
+    "format %(message)s, obj arg + plain [fallback, alternating]": "F_MSG.format(rec_obj); F_MSG.format(rec)",
     "formatTime": "F_TIME.formatTime(rec)",
     "formatTime datefmt": "F_TIME.formatTime(rec, '%Y-%m-%dT%H:%M:%S')",
     "formatTime subclass": "F_SUB.formatTime(rec)",
@@ -182,11 +205,18 @@ def cells(only=None):
     return [c for c in CELLS if not only or any(o in c for o in only.split("|"))]
 
 
+CELL_SETUP = {
+    # a pinned dependency replaced (by an equivalent wrapper): the format targets suspend
+    "info, time.strftime replaced [deps]": "_sf = time.strftime\ntime.strftime = lambda *a: _sf(*a)",
+}
+
+
 def worker(cell, variant):
     h = helper()
     ns = {}
     exec(VARIANTS[variant], ns)
     exec(COMMON, ns)
+    exec(CELL_SETUP.get(cell, ""), ns)
     stmt = CELLS[cell]
     names = [k for k in ns if not k.startswith("__") and k.isidentifier()]
     binds = "".join(f"    {k} = _g[{k!r}]\n" for k in names)
@@ -195,7 +225,10 @@ def worker(cell, variant):
     exec(f"def fn(_n):\n{binds}    for _ in range(_n):\n{body}\n    _sio.seek(0); _sio.truncate()\n", ns)
     fn = ns["fn"]
     n = 100
-    fn(50)
+    jit = getattr(sys, "_jit", None)
+    fn(3000 if jit and jit.is_enabled() else 50)  # JIT: enough back edges to build traces
+    for _ in range(1000):  # pending calls (suspensions) run at eval-breaker checks
+        pass
     fn(n)
     h.start()
     fn(n)

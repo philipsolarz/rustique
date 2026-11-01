@@ -14,76 +14,82 @@ import sys
 import tempfile
 import unittest
 
-mode = sys.argv[1]
-if mode == "compare":
-    a, b = (json.load(open(p)) for p in sys.argv[2:4])
-    diff = {k: (a.get(k), b.get(k)) for k in set(a) | set(b) if a.get(k) != b.get(k)}
-    counts = {}
-    for v in b.values():
-        counts[v] = counts.get(v, 0) + 1
-    print("tests", len(b), counts, "differences", len(diff))
-    for k, v in sorted(diff.items()):
-        print("  ", k, v)
-    sys.exit(1 if diff else 0)
+def main():
+    global rt, _rustique
+    mode = sys.argv[1]
+    if mode == "compare":
+        a, b = (json.load(open(p)) for p in sys.argv[2:4])
+        diff = {k: (a.get(k), b.get(k)) for k in set(a) | set(b) if a.get(k) != b.get(k)}
+        counts = {}
+        for v in b.values():
+            counts[v] = counts.get(v, 0) + 1
+        print("tests", len(b), counts, "differences", len(diff))
+        for k, v in sorted(diff.items()):
+            print("  ", k, v)
+        sys.exit(1 if diff else 0)
 
-out = sys.argv[sys.argv.index("-o") + 1] if "-o" in sys.argv else None
-lib_test = os.path.join(os.environ["CPYTHON_SRC"], "Lib", "test")
-tmp = tempfile.mkdtemp()
-os.symlink(lib_test, os.path.join(tmp, "test"))
-sys.path.insert(0, tmp)
+    out = sys.argv[sys.argv.index("-o") + 1] if "-o" in sys.argv else None
+    lib_test = os.path.join(os.environ["CPYTHON_SRC"], "Lib", "test")
+    tmp = tempfile.mkdtemp()
+    os.symlink(lib_test, os.path.join(tmp, "test"))
+    sys.path.insert(0, tmp)
 
-if mode == "rearm":
-    from rustique import _rustique
-    import rustique as rt
+    if mode == "rearm":
+        from rustique import _rustique
+        import rustique as rt
 
-    rt.enable(only=["logging"])
-    _rustique._accel.stats(True, True)
+        rt.enable(only=["logging"])
+        _rustique._accel.stats(True, True)
 
 
-class Rec(unittest.TextTestResult):
-    def __init__(self, *a, **k):
-        super().__init__(*a, **k)
-        self.outcomes = {}
+    class Rec(unittest.TextTestResult):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.outcomes = {}
 
-    def startTest(self, test):
-        if mode == "rearm":
-            rt.enable(only=["logging"])
-        super().startTest(test)
+        def startTest(self, test):
+            if mode == "rearm":
+                rt.enable(only=["logging"])
+            super().startTest(test)
 
-    def addSuccess(self, t):
-        super().addSuccess(t)
-        self.outcomes.setdefault(t.id(), "pass")
+        def addSuccess(self, t):
+            super().addSuccess(t)
+            self.outcomes.setdefault(t.id(), "pass")
 
-    def addFailure(self, t, e):
-        super().addFailure(t, e)
-        self.outcomes[t.id()] = "fail"
-
-    def addError(self, t, e):
-        super().addError(t, e)
-        self.outcomes[t.id()] = "error"
-
-    def addSkip(self, t, r):
-        super().addSkip(t, r)
-        self.outcomes[t.id()] = "skip"
-
-    def addSubTest(self, t, st, e):
-        super().addSubTest(t, st, e)
-        if e is not None:
+        def addFailure(self, t, e):
+            super().addFailure(t, e)
             self.outcomes[t.id()] = "fail"
 
+        def addError(self, t, e):
+            super().addError(t, e)
+            self.outcomes[t.id()] = "error"
 
-mod = __import__("test.test_logging", fromlist=["*"])
-suite = unittest.defaultTestLoader.loadTestsFromModule(mod)
-runner = unittest.TextTestRunner(stream=open(os.devnull, "w"), verbosity=0, resultclass=Rec)
-res = runner.run(suite)
-if os.getpid() and out:
-    with open(out, "w") as f:
-        json.dump(res.outcomes, f, indent=0)
-print("tests", res.testsRun, "failures", len(res.failures), "errors", len(res.errors), "skipped", len(res.skipped))
-if mode == "rearm":
-    st = _rustique._accel.stats()
-    for t in rt.status()["targets"]:
-        if t["group"] == "logging":
-            s = st[t["name"]]
-            fb = {k: v for k, v in s["fallback"].items() if v}
-            print(f"{t['name']:32s} {t['state']:10s} hits={s['hits']} fallback={fb} suspensions={s.get('suspensions')}")
+        def addSkip(self, t, r):
+            super().addSkip(t, r)
+            self.outcomes[t.id()] = "skip"
+
+        def addSubTest(self, t, st, e):
+            super().addSubTest(t, st, e)
+            if e is not None:
+                self.outcomes[t.id()] = "fail"
+
+
+    mod = __import__("test.test_logging", fromlist=["*"])
+    suite = unittest.defaultTestLoader.loadTestsFromModule(mod)
+    runner = unittest.TextTestRunner(stream=open(os.devnull, "w"), verbosity=0, resultclass=Rec)
+    res = runner.run(suite)
+    if os.getpid() and out:
+        with open(out, "w") as f:
+            json.dump(res.outcomes, f, indent=0)
+    print("tests", res.testsRun, "failures", len(res.failures), "errors", len(res.errors), "skipped", len(res.skipped))
+    if mode == "rearm":
+        st = _rustique._accel.stats()
+        for t in rt.status()["targets"]:
+            if t["group"] == "logging":
+                s = st[t["name"]]
+                fb = {k: v for k, v in s["fallback"].items() if v}
+                print(f"{t['name']:32s} {t['state']:10s} hits={s['hits']} fallback={fb} suspensions={s.get('suspensions')}")
+
+
+if __name__ == "__main__":
+    main()

@@ -673,13 +673,6 @@ unsafe fn format(fe: usize, me: O, record: O) -> Fmt {
                 return Fmt::Fallback($r)
             };
         }
-        if !bound_to(me, o(n.uses_time), F_USES_TIME.get())
-            || !bound_to(me, o(n.format_time), F_FORMAT_TIME.get())
-            || !bound_to(me, o(n.format_message), F_FORMAT_MESSAGE.get())
-            || !bound_to(record, o(n.get_message), R_GET_MESSAGE.get())
-        {
-            fb!(Reason::Args);
-        }
         // `record.__dict__` (CPython materialises it in PercentStyle._format; doing it first
         // is unobservable). Record attributes are read from it: the record class has no
         // descriptor for them (validated), so the instance dict is what getattr reads.
@@ -692,6 +685,14 @@ unsafe fn format(fe: usize, me: O, record: O) -> Fmt {
         if !exact_dict(d.0) || !str_keyed(d.0, 256) {
             fb!(Reason::Args);
         }
+        // The message first: arguments that are not plain are the most common reason to
+        // fall back, and the check is cheap.
+        let Some(msg) = dget(d.0, o(n.msg)) else { fb!(Reason::Args) };
+        let msg_o = Owned1(msg);
+        let Some(args) = dget(d.0, o(n.args)) else { fb!(Reason::Args) };
+        let args_o = Owned1(args);
+        let Some(message) = message(msg_o.0, args_o.0) else { fb!(Reason::Args) };
+        let message = Owned1(message);
         // exc_info / exc_text / stack_info must all be false: formatException and
         // formatStack (traceback formatting) stay CPython's.
         for a in [n.exc_info, n.exc_text, n.stack_info] {
@@ -701,6 +702,13 @@ unsafe fn format(fe: usize, me: O, record: O) -> Fmt {
             if t != Some(false) {
                 fb!(Reason::Args);
             }
+        }
+        if !bound_to(me, o(n.uses_time), F_USES_TIME.get())
+            || !bound_to(me, o(n.format_time), F_FORMAT_TIME.get())
+            || !bound_to(me, o(n.format_message), F_FORMAT_MESSAGE.get())
+            || !bound_to(record, o(n.get_message), R_GET_MESSAGE.get())
+        {
+            fb!(Reason::Args);
         }
         let style = FORMATTERS.read(fe, me, 3);
         if style.is_null() {
@@ -714,12 +722,6 @@ unsafe fn format(fe: usize, me: O, record: O) -> Fmt {
         {
             fb!(Reason::Args);
         }
-        let Some(msg) = dget(d.0, o(n.msg)) else { fb!(Reason::Args) };
-        let msg_o = Owned1(msg);
-        let Some(args) = dget(d.0, o(n.args)) else { fb!(Reason::Args) };
-        let args_o = Owned1(args);
-        let Some(message) = message(msg_o.0, args_o.0) else { fb!(Reason::Args) };
-        let message = Owned1(message);
         // usesTime: self._style._fmt.find(self._style.asctime_search) >= 0
         let sfmt = STYLES.read(se, style.0, 0);
         if sfmt.is_null() {
