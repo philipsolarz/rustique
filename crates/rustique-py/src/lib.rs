@@ -25,6 +25,18 @@ pub mod targets;
 pub mod tuple;
 pub mod typing;
 
+static MODULE: pyo3::sync::PyOnceLock<Py<PyModule>> = pyo3::sync::PyOnceLock::new();
+
+/// `rustique._rustique` itself (set at module exec; main interpreter only). Never
+/// `py.import("rustique._rustique")`: `PyImport_Import` passes an empty fromlist, which
+/// imports the parent package `rustique` too (the startup path loads only the extension).
+pub fn module(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
+    MODULE
+        .get(py)
+        .map(|m| m.bind(py).clone())
+        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("rustique._rustique is not initialised"))
+}
+
 /// Scalar classes, each created on its first access.
 const SCALARS: &[&str] = &["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"];
 
@@ -85,7 +97,7 @@ fn ensure_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[pyfunction]
 #[pyo3(name = "__getattr__")]
 fn module_getattr(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
-    let m = py.import("rustique._rustique")?;
+    let m = module(py)?;
     if name.starts_with("__") && name.ends_with("__") {
         return Err(pyo3::exceptions::PyAttributeError::new_err(format!(
             "module 'rustique._rustique' has no attribute '{name}'"
@@ -112,7 +124,7 @@ fn module_getattr(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
 #[pyfunction]
 #[pyo3(name = "__dir__")]
 fn module_dir(py: Python<'_>) -> PyResult<Vec<String>> {
-    let m = py.import("rustique._rustique")?;
+    let m = module(py)?;
     ensure_core(&m)?;
     for sub in ["_builtins", "_takeover"] {
         if !m.dict().contains(sub)? {
@@ -141,6 +153,7 @@ fn _rustique(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ));
     }
     accel::guard::set_main_interpreter();
+    let _ = MODULE.set(m.py(), m.clone().unbind());
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     // Eager: the switch (`_accel`: registry and its primitives). Everything else (the
     // opt-in API, the test/benchmark submodules `_builtins` and `_takeover`) is created on
