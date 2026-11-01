@@ -303,6 +303,14 @@ def test_captured_references_are_accelerated():
     assert counters()["hits"] == 2
 
 
+def test_shared_mechanics():
+    from _mechanics import assert_introspection_unchanged, assert_tools_see_original
+
+    rustique.disable()
+    assert_introspection_unchanged(json.loads, "json.loads")
+    assert_tools_see_original("json.loads", json.loads, lambda: json.loads('{"a": [1, 2.5, "x"]}'))
+
+
 def test_introspection_unchanged():
     f = json.loads
     assert f.__name__ == "loads" and f.__module__ == "json"
