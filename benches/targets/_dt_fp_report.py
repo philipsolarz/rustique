@@ -1,4 +1,6 @@
+"""Dev helper: current fingerprints the datetime group checks (to maintain
+crates/rustique-py/src/targets/datetime/fingerprints.rs)."""
 import json, sys, datetime, _strptime, zoneinfo
 from rustique._rustique import _accel
-rows = _accel.fingerprint_report(only=["datetime"])
-print(json.dumps({"v": list(sys.version_info[:2]), "ft": not sys._is_gil_enabled() if hasattr(sys, "_is_gil_enabled") else False, "rows": rows}))
+print(json.dumps({"v": list(sys.version_info[:2]), "c": _accel._datetime_cfingerprints(),
+                  "fast": _accel._datetime_fingerprints(_strptime)}))

@@ -17,21 +17,20 @@ const CANDIDATE: u32 = (1 << 11) | (1 << 12);
 
 /// Check the candidate bits on sample strings (built at run time: compact, not static).
 pub fn calibrate(py: Python<'_>) -> bool {
-    let samples =
-        [("rustique-ascii", true), ("caf\u{e9}-latin", false), ("\u{3b1}\u{3b2}-wide", false), ("\u{1F600}", false)];
-    let ok = samples.iter().all(|&(text, ascii)| {
-        let s = pyo3::types::PyString::new(py, &format!("{text}{}", py.version_info().minor));
-        let p = s.as_ptr();
-        // SAFETY: a live str.
-        unsafe {
-            let st = (*p.cast::<ffi::PyASCIIObject>()).state;
-            let fast = st & CANDIDATE == CANDIDATE;
-            fast == ascii
-                && (!ascii
-                    || (ffi::PyUnicode_KIND(p) == 1
-                        && ffi::PyUnicode_DATA(p) == p.cast::<ffi::PyASCIIObject>().add(1).cast()))
-        }
-    });
+    if MASK.load(Ordering::Relaxed) != 0 {
+        return true;
+    }
+    // Fresh (compact, not interned) strings: one ASCII, one Latin-1.
+    let ascii = pyo3::types::PyString::new(py, "rustique ascii probe");
+    let latin = pyo3::types::PyString::new(py, "caf\u{e9} probe");
+    // SAFETY: live str objects.
+    let ok = unsafe {
+        let (a, l) = (ascii.as_ptr(), latin.as_ptr());
+        (*a.cast::<ffi::PyASCIIObject>()).state & CANDIDATE == CANDIDATE
+            && (*l.cast::<ffi::PyASCIIObject>()).state & CANDIDATE != CANDIDATE
+            && ffi::PyUnicode_KIND(a) == 1
+            && ffi::PyUnicode_DATA(a) == a.cast::<ffi::PyASCIIObject>().add(1).cast()
+    };
     if ok {
         MASK.store(CANDIDATE, Ordering::Relaxed);
     }

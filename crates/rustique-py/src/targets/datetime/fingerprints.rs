@@ -1,49 +1,45 @@
-//! Recorded fingerprints of the originals per CPython minor version (contract §3.2),
-//! produced with `rustique._rustique._accel.fingerprint_report(only=["datetime"])` on
-//! 3.14.9 / 3.14.9t and 3.15.1 / 3.15.1t (free-threaded builds give the same values).
+//! Recorded fingerprints of the originals per CPython minor version (contract §3.2), on
+//! 3.14.9 / 3.14.9t and 3.15.1 / 3.15.1t (free-threaded builds give the same values);
+//! regenerate with `benches/targets/_dt_fp_report.py`.
 
 use crate::accel::Fingerprints;
 
-/// Python code the strptime kernels reimplement (`_strptime`, `locale`).
+/// Python code the strptime kernels reimplement (`_strptime`, `locale`), with the group's
+/// cheap fingerprint (`fastfp`; `_accel._datetime_fingerprints(_strptime)`).
 pub fn code(name: &str) -> Fingerprints {
     match name {
-        "_strptime_datetime_datetime" => &[(3, 14, "d1a9bb6c6a3d83a0"), (3, 15, "1efd10fe7e679814")],
-        "_strptime_datetime_date" => &[(3, 14, "15c51a19cf06b4bf"), (3, 15, "7d381b7786b5cc37")],
-        "_strptime_datetime_time" => &[(3, 14, "ee12af58c61ba5dc"), (3, 15, "d55df6e1b0a8fb80")],
-        "_strptime_time" => &[(3, 14, "cc336f4a3bf509d9"), (3, 15, "3c8a3cc4e1dc6bdb")],
-        "_strptime" => &[(3, 14, "3e19cf9d0fa3ce0b"), (3, 15, "9d348ea5606ba0b2")],
-        "_getlang" => &[(3, 14, "75b82ba52e5929d7"), (3, 15, "a818a6da4c11582f")],
-        "_parse_tz" => &[(3, 14, "4b15ba68acd6f552"), (3, 15, "5ace6c3a2be1fbf2")],
-        "getlocale" => &[(3, 14, "cae838445304c68f"), (3, 15, "3bfb7bd64c23e9b5")],
-        "_parse_localename" => &[(3, 14, "4097c31dca4af639"), (3, 15, "76f5fe7ee3feeedc")],
-        "normalize" => &[(3, 14, "552acf26939fa21c"), (3, 15, "d39f26184c4c49a9")],
-        "_fixmonths" => &[(3, 14, "405eab31985a9453"), (3, 15, "cc75eed017ef957b")],
-        "TimeRE.__init__" => &[(3, 14, "4b3a13d6c066a9d6"), (3, 15, "30f3b36048aafc89")],
-        "TimeRE._TimeRE__seqToRE" => &[(3, 14, "5962bea718d6043a"), (3, 15, "63aa2f2efbae1eac")],
-        "TimeRE.pattern" => &[(3, 14, "83f00931f0a1af0e"), (3, 15, "7c42d1cda0ee3ac1")],
-        "TimeRE.compile" => &[(3, 14, "02be480b9d9f2449"), (3, 15, "020f976c4a1bc144")],
-        "LocaleTime.__init__" => &[(3, 14, "29077d825f581fb4"), (3, 15, "78664601ae5ac24a")],
-        "LocaleTime._LocaleTime__calc_weekday" => &[(3, 14, "52209fe12b22a0e4"), (3, 15, "672aae39b5225b6a")],
-        "LocaleTime._LocaleTime__calc_month" => &[(3, 14, "0dc3b68f3dcc149c"), (3, 15, "5dbf7b8b24a15b0c")],
-        "LocaleTime._LocaleTime__calc_am_pm" => &[(3, 14, "8c9f92d891717a85"), (3, 15, "e0509febad1595cf")],
-        "LocaleTime._LocaleTime__calc_alt_digits" => &[(3, 14, "4cc763c461ce3a1a"), (3, 15, "5b94b3a796ed3062")],
+        "_strptime_datetime_datetime" => &[(3, 14, "75758937167911c2"), (3, 15, "594f12d05a3b7eac")],
+        "_strptime_datetime_date" => &[(3, 14, "43e3ced6c7621672"), (3, 15, "005aa63778bff25e")],
+        "_strptime_datetime_time" => &[(3, 14, "e1a61f240af33779"), (3, 15, "ea3b0e5b7f1419f8")],
+        "_strptime_time" => &[(3, 14, "a07883562e4bd221"), (3, 15, "e0467dd7db84fb10")],
+        "_strptime" => &[(3, 14, "5f43d74e422c65ac"), (3, 15, "8c49f07e7219b400")],
+        "_getlang" => &[(3, 14, "8234af0123bf2302"), (3, 15, "d040dda165365f38")],
+        "_parse_tz" => &[(3, 14, "5e6b4a159588db5d"), (3, 15, "574da3f094e543ea")],
+        "_fixmonths" => &[(3, 14, "a754f0e332ffe2b8"), (3, 15, "6978de62c431c738")],
+        "getlocale" => &[(3, 14, "1ae23ba5ff95dfc2"), (3, 15, "b17640d2f4f6b6c2")],
+        "_parse_localename" => &[(3, 14, "40c27a311aaccd02"), (3, 15, "6a3e6a53e6e9c08f")],
+        "normalize" => &[(3, 14, "8f5395ecb624269f"), (3, 15, "b04d4ec2bd73f17c")],
+        "TimeRE.__init__" => &[(3, 14, "894e5840de882a68"), (3, 15, "5638d3e380d6e5e2")],
+        "TimeRE._TimeRE__seqToRE" => &[(3, 14, "8a980141b1c1dcd8"), (3, 15, "61ebda3e40f3db1d")],
+        "TimeRE.pattern" => &[(3, 14, "fbfe157c97a52afb"), (3, 15, "a1e5c8c16afc8efc")],
+        "TimeRE.compile" => &[(3, 14, "b341ef86c4daa78a"), (3, 15, "c29d22ef39fc6ca0")],
         _ => &[],
     }
 }
 
-/// C entry points (method definitions) the kernels replace.
+/// C entry points (method definitions) the kernels replace (`fastfp::method_def`).
 pub fn c(name: &str) -> Fingerprints {
     match name {
-        "datetime.datetime.strptime" => &[(3, 14, "50b5638df6967a40"), (3, 15, "634f087a6bd2ebf5")],
-        "datetime.date.strptime" => &[(3, 14, "e387084987a5b66f"), (3, 15, "9747b2f8ee6d59be")],
-        "datetime.time.strptime" => &[(3, 14, "fa30ac2d44ba8738"), (3, 15, "1fa71ebb530df15f")],
-        "time.strptime" => &[(3, 14, "c2b064f05dca09c8"), (3, 15, "c2b064f05dca09c8")],
-        "datetime.date.strftime" => &[(3, 14, "b6058113cdbbf30f"), (3, 15, "705b6fd647a2a764")],
-        "datetime.time.strftime" => &[(3, 14, "b6058113cdbbf30f"), (3, 15, "a51ebd6066934d99")],
-        "time.strftime" => &[(3, 14, "4aca0e0472e239e6"), (3, 15, "4aca0e0472e239e6")],
-        "datetime.datetime.isoformat" => &[(3, 14, "511c6d908f758edf"), (3, 15, "069a5dee65642efe")],
-        "datetime.date.isoformat" => &[(3, 14, "87ab1d9c116d8efc"), (3, 15, "87ab1d9c116d8efc")],
-        "datetime.time.isoformat" => &[(3, 14, "57b12d6ef247c404"), (3, 15, "5c4873762c2074ee")],
+        "datetime.datetime.strptime" => &[(3, 14, "aaa4a5d22304732c"), (3, 15, "5bad6d9c269a6d60")],
+        "datetime.date.strptime" => &[(3, 14, "7b5bd010217a0886"), (3, 15, "f581d6076ea90509")],
+        "datetime.time.strptime" => &[(3, 14, "10a289233e46a62e"), (3, 15, "e208f47e4665a8df")],
+        "datetime.date.strftime" => &[(3, 14, "b405caeeca036f24"), (3, 15, "072502a3d515ab0d")],
+        "datetime.time.strftime" => &[(3, 14, "b405caeeca036f24"), (3, 15, "145408c88b879769")],
+        "datetime.datetime.isoformat" => &[(3, 14, "c19c8cb4f7434c01"), (3, 15, "c92efb43bb948f42")],
+        "datetime.date.isoformat" => &[(3, 14, "258bb13574d1d304"), (3, 15, "258bb13574d1d304")],
+        "datetime.time.isoformat" => &[(3, 14, "7310902bdfa8f987"), (3, 15, "4384bd1ef4dfd1ff")],
+        "time.strptime" => &[(3, 14, "2a21679255e7dc75"), (3, 15, "2a21679255e7dc75")],
+        "time.strftime" => &[(3, 14, "712f5007a4c92f8f"), (3, 15, "712f5007a4c92f8f")],
         _ => &[],
     }
 }

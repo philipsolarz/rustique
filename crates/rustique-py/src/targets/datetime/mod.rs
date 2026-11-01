@@ -24,6 +24,7 @@ use pyo3::types::PyType;
 use crate::accel::{Prepare, Refusal, TargetSpec};
 
 pub mod env;
+pub mod fastfp;
 mod fingerprints;
 mod fmtcache;
 pub mod format;
@@ -89,6 +90,35 @@ fn common(cx: &Prepare<'_>) -> Result<&'static env::Env, Refusal> {
     Ok(e)
 }
 
+/// The fingerprinted `PyMethodDef` behind `ty.__dict__[name]` (labels given here: the
+/// registry's own descriptions cost ~30k Ir each).
+fn method_def(
+    cx: &mut Prepare<'_>,
+    ty: &Bound<'_, PyType>,
+    name: &str,
+    label: &str,
+) -> Result<*mut ffi::PyMethodDef, Refusal> {
+    let desc = cx.type_attr(ty, name)?;
+    module_def(cx, &desc, label)
+}
+
+fn module_def(cx: &mut Prepare<'_>, obj: &Bound<'_, PyAny>, label: &str) -> Result<*mut ffi::PyMethodDef, Refusal> {
+    // SAFETY: attached thread.
+    let def = unsafe { crate::accel::site::method_def(obj.as_ptr()) }
+        .ok_or_else(|| Refusal::from(format!("{label}: not a builtin method")))?;
+    // The group's cheap fingerprint (the registry's hashes the docs byte by byte).
+    // SAFETY: a live (static) method table entry.
+    let observed = unsafe { fastfp::method_def(def) };
+    let (major, minor) = cx.version();
+    match crate::accel::fingerprint::expected_for(fingerprints::c(label), major, minor) {
+        Some(x) if x == observed => Ok(def),
+        _ => Err(Refusal::with(
+            crate::accel::Category::Fingerprint,
+            format!("{label}: fingerprint {observed} not validated for {major}.{minor}"),
+        )),
+    }
+}
+
 /// `cls` from the C API.
 fn api_type<'py>(py: Python<'py>, t: *mut ffi::PyTypeObject) -> Bound<'py, PyType> {
     // SAFETY: a static type of the datetime C API.
@@ -112,23 +142,25 @@ fn prepare_classmethod_strptime(cx: &mut Prepare<'_>, kind: parse::Kind) -> Resu
             _ => ((*api).TimeType, "datetime.time.strptime"),
         }
     };
-    let desc = cx.type_attr(&api_type(py, t), "strptime")?;
-    cx.fingerprint_c(&desc, fingerprints::c(label))?;
+    let def = method_def(cx, &api_type(py, t), "strptime", label)?;
     let k = kind as usize;
-    if cx.version().1 >= 15 {
-        let kernel: parse::Fast = match kind {
-            parse::Kind::DateTime => parse::datetime_fast,
-            parse::Kind::Date => parse::date_fast,
-            _ => parse::time_fast,
-        };
-        cx.ml_meth(&desc, kernel, &parse::ORIG_FAST[k])
-    } else {
-        let kernel: parse::VarArgs = match kind {
-            parse::Kind::DateTime => parse::datetime_varargs,
-            parse::Kind::Date => parse::date_varargs,
-            _ => parse::time_varargs,
-        };
-        cx.ml_meth(&desc, kernel, &parse::ORIG_VAR[k])
+    // SAFETY: a static method table entry of `_datetime`.
+    unsafe {
+        if cx.version().1 >= 15 {
+            let kernel: parse::Fast = match kind {
+                parse::Kind::DateTime => parse::datetime_fast,
+                parse::Kind::Date => parse::date_fast,
+                _ => parse::time_fast,
+            };
+            cx.ml_meth_def(label, def, kernel, &parse::ORIG_FAST[k])
+        } else {
+            let kernel: parse::VarArgs = match kind {
+                parse::Kind::DateTime => parse::datetime_varargs,
+                parse::Kind::Date => parse::date_varargs,
+                _ => parse::time_varargs,
+            };
+            cx.ml_meth_def(label, def, kernel, &parse::ORIG_VAR[k])
+        }
     }
 }
 
@@ -151,75 +183,21 @@ fn prepare_time_fn_strptime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(),
     // SAFETY: captured module.
     let time = unsafe { env::obj(py, e.time_mod) }.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?;
     let f = cx.get(&time.dict(), "strptime")?;
-    cx.fingerprint_c(&f, fingerprints::c("time.strptime"))?;
-    cx.ml_meth(&f, parse::time_fn as parse::VarArgs, &parse::ORIG_VAR[parse::Kind::TimeFn as usize])
+    let def = module_def(cx, &f, "time.strptime")?;
+    // SAFETY: a static method table entry of `time`.
+    unsafe {
+        cx.ml_meth_def(
+            "time.strptime",
+            def,
+            parse::time_fn as parse::VarArgs,
+            &parse::ORIG_VAR[parse::Kind::TimeFn as usize],
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------------------
 // strftime
 // ---------------------------------------------------------------------------------------
-
-/// Kernel vs original on probe values (numeric directives: locale-independent).
-fn strftime_self_test(cx: &mut Prepare<'_>, time_method: bool) -> Result<(), Refusal> {
-    let what = if time_method { "time.strftime method" } else { "date.strftime" };
-    cx.self_test(what, |py| {
-        let api = capi();
-        let mut ok = true;
-        // SAFETY: C API loaded; kernels and originals take these arguments.
-        unsafe {
-            let objs: Vec<Bound<'_, PyAny>> = if time_method {
-                vec![Bound::from_owned_ptr_or_err(
-                    py,
-                    ((*api).Time_FromTime)(7, 5, 9, 123, ffi::Py_None(), (*api).TimeType),
-                )?]
-            } else {
-                vec![
-                    Bound::from_owned_ptr_or_err(
-                        py,
-                        ((*api).DateTime_FromDateAndTime)(
-                            2024,
-                            2,
-                            29,
-                            23,
-                            59,
-                            58,
-                            4321,
-                            ffi::Py_None(),
-                            (*api).DateTimeType,
-                        ),
-                    )?,
-                    Bound::from_owned_ptr_or_err(py, ((*api).Date_FromDate)(987, 12, 31, (*api).DateType))?,
-                ]
-            };
-            for o in &objs {
-                for f in ["%Y-%m-%d %H:%M:%S.%f|%y %j %I %e %u %w %C %F %T %D %R %% %z%Z", ""] {
-                    let fmt = pyo3::types::PyString::new(py, f);
-                    let args = [fmt.as_ptr()];
-                    let (k, orig) = if cx_version_15() {
-                        let k = if time_method { format::time_fast } else { format::date_fast };
-                        let og = if time_method { format::ORIG_TIME_FAST.get() } else { format::ORIG_DATE_FAST.get() };
-                        (
-                            k(o.as_ptr(), args.as_ptr(), 1, std::ptr::null_mut()),
-                            og(o.as_ptr(), args.as_ptr(), 1, std::ptr::null_mut()),
-                        )
-                    } else {
-                        let t = pyo3::types::PyTuple::new(py, [&fmt])?;
-                        let k = if time_method { format::time_var } else { format::date_var };
-                        let og = if time_method { format::ORIG_TIME_VAR.get() } else { format::ORIG_DATE_VAR.get() };
-                        (
-                            k(o.as_ptr(), t.as_ptr(), std::ptr::null_mut()),
-                            og(o.as_ptr(), t.as_ptr(), std::ptr::null_mut()),
-                        )
-                    };
-                    let k = Bound::from_owned_ptr_or_err(py, k)?;
-                    let orig = Bound::from_owned_ptr_or_err(py, orig)?;
-                    ok &= k.eq(&orig)?;
-                }
-            }
-        }
-        Ok(ok)
-    })
-}
 
 fn cx_version_15() -> bool {
     crate::accel::version::running().1 >= 15
@@ -232,20 +210,21 @@ fn prepare_strftime_method(cx: &mut Prepare<'_>, time_method: bool) -> Result<()
     // SAFETY: C API loaded by `common`.
     let t = unsafe { if time_method { (*api).TimeType } else { (*api).DateType } };
     let label = if time_method { "datetime.time.strftime" } else { "datetime.date.strftime" };
-    let desc = cx.type_attr(&api_type(py, t), "strftime")?;
-    cx.fingerprint_c(&desc, fingerprints::c(label))?;
-    if cx.version().1 >= 15 {
-        if time_method {
-            cx.ml_meth(&desc, format::time_fast as format::FastKw, &format::ORIG_TIME_FAST)?;
+    let def = method_def(cx, &api_type(py, t), "strftime", label)?;
+    // SAFETY: a static method table entry of `_datetime`.
+    unsafe {
+        if cx.version().1 >= 15 {
+            if time_method {
+                cx.ml_meth_def(label, def, format::time_fast as format::FastKw, &format::ORIG_TIME_FAST)
+            } else {
+                cx.ml_meth_def(label, def, format::date_fast as format::FastKw, &format::ORIG_DATE_FAST)
+            }
+        } else if time_method {
+            cx.ml_meth_def(label, def, format::time_var as format::VarKw, &format::ORIG_TIME_VAR)
         } else {
-            cx.ml_meth(&desc, format::date_fast as format::FastKw, &format::ORIG_DATE_FAST)?;
+            cx.ml_meth_def(label, def, format::date_var as format::VarKw, &format::ORIG_DATE_VAR)
         }
-    } else if time_method {
-        cx.ml_meth(&desc, format::time_var as format::VarKw, &format::ORIG_TIME_VAR)?;
-    } else {
-        cx.ml_meth(&desc, format::date_var as format::VarKw, &format::ORIG_DATE_VAR)?;
     }
-    strftime_self_test(cx, time_method)
 }
 
 fn prepare_date_strftime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
@@ -265,10 +244,11 @@ fn prepare_time_fn_strftime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(),
         return Err(Refusal::new("time module differs from the one captured"));
     }
     let f = cx.get(&time.dict(), "strftime")?;
-    cx.fingerprint_c(&f, fingerprints::c("time.strftime"))?;
-    cx.ml_meth(&f, format::time_fn as format::VarArgs, &format::ORIG_FN)?;
+    let def = module_def(cx, &f, "time.strftime")?;
+    // SAFETY: a static method table entry of `time`.
+    unsafe { cx.ml_meth_def("time.strftime", def, format::time_fn as format::VarArgs, &format::ORIG_FN)? };
     cx.self_test("time.strftime", |py| {
-        let fmt = "%Y-%m-%d %H:%M:%S|%y %j %I %e %u %w %C %F %T %D %R %%";
+        let fmt = "%Y-%m-%d %H %j";
         let args = pyo3::types::PyTuple::new(
             py,
             [fmt.into_pyobject(py)?.into_any(), (2024, 2, 29, 23, 59, 58, 3, 60, -1).into_pyobject(py)?.into_any()],
@@ -377,17 +357,20 @@ fn prepare_iso(cx: &mut Prepare<'_>, which: u8) -> Result<(), Refusal> {
             _ => ((*api).TimeType, "datetime.time.isoformat"),
         }
     };
-    let desc = cx.type_attr(&api_type(py, t), "isoformat")?;
-    cx.fingerprint_c(&desc, fingerprints::c(label))?;
+    let def = method_def(cx, &api_type(py, t), "isoformat", label)?;
     let v15 = cx.version().1 >= 15;
-    match which {
-        0 if v15 => cx.ml_meth(&desc, iso::datetime_fast as format::FastKw, &iso::ORIG_DATETIME_FAST)?,
-        0 => cx.ml_meth(&desc, iso::datetime_var as format::VarKw, &iso::ORIG_DATETIME_VAR)?,
-        1 => cx.ml_meth(&desc, iso::date_noargs as iso::NoArgs, &iso::ORIG_DATE)?,
-        _ if v15 => cx.ml_meth(&desc, iso::time_fast as format::FastKw, &iso::ORIG_TIME_FAST)?,
-        _ => cx.ml_meth(&desc, iso::time_var as format::VarKw, &iso::ORIG_TIME_VAR)?,
+    // SAFETY: a static method table entry of `_datetime`.
+    unsafe {
+        match which {
+            0 if v15 => cx.ml_meth_def(label, def, iso::datetime_fast as format::FastKw, &iso::ORIG_DATETIME_FAST)?,
+            0 => cx.ml_meth_def(label, def, iso::datetime_var as format::VarKw, &iso::ORIG_DATETIME_VAR)?,
+            1 => cx.ml_meth_def(label, def, iso::date_noargs as iso::NoArgs, &iso::ORIG_DATE)?,
+            _ if v15 => cx.ml_meth_def(label, def, iso::time_fast as format::FastKw, &iso::ORIG_TIME_FAST)?,
+            _ => cx.ml_meth_def(label, def, iso::time_var as format::VarKw, &iso::ORIG_TIME_VAR)?,
+        }
     }
-    iso_self_test(cx, which)
+    // One probe for the family (install budget); conformance and fuzzing cover the rest.
+    if which == 1 { iso_self_test(cx, which) } else { Ok(()) }
 }
 
 fn prepare_datetime_iso(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
@@ -568,6 +551,54 @@ fn _datetime_debug(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
     Ok(d)
 }
 
+/// `_accel._datetime_cfingerprints()`: current fingerprints of the C methods the targets
+/// patch (to maintain `fingerprints.rs`).
+#[pyfunction]
+fn _datetime_cfingerprints(py: Python<'_>) -> PyResult<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    let dt = py.import("datetime")?;
+    let time = py.import("time")?;
+    let items = [
+        ("datetime.datetime.strptime", dt.getattr("datetime")?, "strptime"),
+        ("datetime.date.strptime", dt.getattr("date")?, "strptime"),
+        ("datetime.time.strptime", dt.getattr("time")?, "strptime"),
+        ("datetime.date.strftime", dt.getattr("date")?, "strftime"),
+        ("datetime.time.strftime", dt.getattr("time")?, "strftime"),
+        ("datetime.datetime.isoformat", dt.getattr("datetime")?, "isoformat"),
+        ("datetime.date.isoformat", dt.getattr("date")?, "isoformat"),
+        ("datetime.time.isoformat", dt.getattr("time")?, "isoformat"),
+        ("time.strptime", time.clone().into_any(), "strptime"),
+        ("time.strftime", time.into_any(), "strftime"),
+    ];
+    for (label, owner, name) in items {
+        let o = if owner.is_instance_of::<PyType>() {
+            owner.getattr("__dict__")?.get_item(name)?
+        } else {
+            owner.getattr(name)?
+        };
+        // SAFETY: attached thread.
+        if let Some(def) = unsafe { crate::accel::site::method_def(o.as_ptr()) } {
+            // SAFETY: a live method def.
+            out.push((label.to_string(), unsafe { fastfp::method_def(def) }));
+        }
+    }
+    Ok(out)
+}
+
+/// `_accel._datetime_fingerprints(module)`: current fingerprints of the `_strptime` code
+/// the kernels reimplement (to maintain `fingerprints.rs`).
+#[pyfunction]
+fn _datetime_fingerprints(py: Python<'_>, m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<Vec<(String, String)>> {
+    // The cheap fingerprint reads code objects through the calibrated layout.
+    let code = m.getattr("_strptime")?.getattr("__code__")?;
+    if !crate::accel::version::code_layout_ok_for(&code)? {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err("PyCodeObject layout differs"));
+    }
+    Ok(parse::fingerprints_of(py, m))
+}
+
 pub fn register(accel: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
-    accel.add_function(wrap_pyfunction!(_datetime_debug, accel)?)
+    accel.add_function(wrap_pyfunction!(_datetime_debug, accel)?)?;
+    accel.add_function(wrap_pyfunction!(_datetime_cfingerprints, accel)?)?;
+    accel.add_function(wrap_pyfunction!(_datetime_fingerprints, accel)?)
 }

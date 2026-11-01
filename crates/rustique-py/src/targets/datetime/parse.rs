@@ -57,18 +57,10 @@ const FUNCS: [&str; 7] = [
     "_parse_tz",
 ];
 const LOCALE_FUNCS: [&str; 3] = ["getlocale", "_parse_localename", "normalize"];
-/// Also fingerprinted (they build `_TimeRE_cache`).
-const CLASS_METHODS: [(&str, &str); 9] = [
-    ("TimeRE", "__init__"),
-    ("TimeRE", "_TimeRE__seqToRE"),
-    ("TimeRE", "pattern"),
-    ("TimeRE", "compile"),
-    ("LocaleTime", "__init__"),
-    ("LocaleTime", "_LocaleTime__calc_weekday"),
-    ("LocaleTime", "_LocaleTime__calc_month"),
-    ("LocaleTime", "_LocaleTime__calc_am_pm"),
-    ("LocaleTime", "_LocaleTime__calc_alt_digits"),
-];
+/// Also fingerprinted: they translate formats into the regexes the kernel reimplements.
+/// (`LocaleTime`'s code is not: revalidation checks the content it produced.)
+const CLASS_METHODS: [(&str, &str); 4] =
+    [("TimeRE", "__init__"), ("TimeRE", "_TimeRE__seqToRE"), ("TimeRE", "pattern"), ("TimeRE", "compile")];
 
 #[derive(Debug)]
 pub struct SpDeps {
@@ -110,11 +102,50 @@ fn get<'py>(d: &Bound<'py, PyDict>, key: &str) -> Result<Bound<'py, PyAny>, Stri
 
 fn fp_ok(name: &str, f: &Bound<'_, PyAny>) -> Result<(), String> {
     let (major, minor) = crate::accel::version::running();
-    let observed = crate::accel::fingerprint::function(f).map_err(|e| e.to_string())?;
+    // SAFETY: an exact function (checked by the callers); code layout calibrated.
+    let observed = unsafe { super::fastfp::function(f.as_ptr()) }.ok_or_else(|| format!("{name}: no fingerprint"))?;
     match crate::accel::fingerprint::expected_for(fingerprints::code(name), major, minor) {
         Some(x) if x == observed => Ok(()),
-        _ => Err(format!("{name}: fingerprint {observed} not validated for {major}.{minor}")),
+        _ => Err(format!("fingerprint: {name}: {observed} not validated for {major}.{minor}")),
     }
+}
+
+/// Current fingerprints of the Python code the strptime kernels reimplement (to maintain
+/// `fingerprints.rs`): `[(name, fingerprint)]` for the given `_strptime` module.
+pub fn fingerprints_of(py: Python<'_>, m: &Bound<'_, pyo3::types::PyModule>) -> Vec<(String, String)> {
+    let _ = py;
+    let d = m.dict();
+    let mut out = Vec::new();
+    // SAFETY: attached thread; the caller checked the code layout; non-functions give "".
+    let fp = |f: &Bound<'_, PyAny>| {
+        if f.cast_exact::<pyo3::types::PyFunction>().is_err() {
+            return String::new();
+        }
+        // SAFETY: an exact function.
+        unsafe { super::fastfp::function(f.as_ptr()) }.unwrap_or_default()
+    };
+    let locale = item(&d, "locale").and_then(|l| l.cast_into::<pyo3::types::PyModule>().ok());
+    for name in FUNCS.iter().chain(["_fixmonths"].iter()) {
+        if let Some(f) = item(&d, name) {
+            out.push((name.to_string(), fp(&f)));
+        }
+    }
+    if let Some(l) = locale {
+        for name in LOCALE_FUNCS {
+            if let Some(f) = item(&l.dict(), name) {
+                out.push((name.to_string(), fp(&f)));
+            }
+        }
+    }
+    for (cls, meth) in CLASS_METHODS {
+        if let Some(ty) = item(&d, cls).and_then(|t| t.cast_into::<pyo3::types::PyType>().ok())
+            && let Ok(td) = crate::accel::prepare::type_dict(&ty)
+            && let Some(f) = item(&td, meth)
+        {
+            out.push((format!("{cls}.{meth}"), fp(&f)));
+        }
+    }
+    out
 }
 
 /// Capture one `_strptime` module object: fingerprints of the code the kernels
@@ -134,11 +165,11 @@ fn capture_module(py: Python<'_>, m: &Bound<'_, pyo3::types::PyModule>) -> Resul
         if f.cast_exact::<pyo3::types::PyFunction>().is_err() {
             return Err(format!("{name} is not a Python function"));
         }
-        fp_ok(name, &f)?;
         let code = f.getattr("__code__").map_err(pe)?;
-        if !crate::accel::version::code_layout_ok_for(&code).map_err(pe)? {
+        if i == 0 && !crate::accel::version::code_layout_ok_for(&code).map_err(pe)? {
             return Err("PyCodeObject layout differs".into());
         }
+        fp_ok(name, &f)?;
         codes[i] = (keep(&f), keep(&code));
     }
     fp_ok("_fixmonths", &get(&d, "_fixmonths")?)?;
@@ -201,37 +232,14 @@ fn capture_module(py: Python<'_>, m: &Bound<'_, pyo3::types::PyModule>) -> Resul
         pattern_type: keep(&get(&re.dict(), "Pattern")?),
         shadows,
     };
-    let keys_m: Vec<&str> = FUNCS
-        .iter()
-        .chain(SHADOWS.iter())
-        .chain(
-            [
-                "time",
-                "locale",
-                "re",
-                "datetime_date",
-                "datetime_timedelta",
-                "datetime_timezone",
-                "TimeRE",
-                "LocaleTime",
-                "_cache_lock",
-                "_TimeRE_cache",
-                "_regex_cache",
-                "_CACHE_MAX_SIZE",
-            ]
-            .iter(),
-        )
-        .copied()
-        .collect();
-    let keys_l: Vec<&str> = LOCALE_FUNCS
-        .iter()
-        .chain(SHADOWS.iter())
-        .chain(["_setlocale", "locale_alias", "LC_TIME", "LC_ALL"].iter())
-        .copied()
-        .collect();
-    watch::watch(&d, &keys_m).map_err(pe)?;
-    watch::watch(&ld, &keys_l).map_err(pe)?;
-    watch::watch(&alias.cast_into::<PyDict>().map_err(|e| pe(e.into()))?, &["c"]).map_err(pe)?;
+    // Any change of these dicts bumps the generation (they change only on a TimeRE
+    // rebuild, a monkeypatch or a locale table edit).
+    for dict in [&d, &ld] {
+        crate::accel::guard::watch_dict_generation(dict, &watch::GEN).map_err(pe)?;
+    }
+    crate::accel::guard::watch_dict_generation(&alias.cast_into::<PyDict>().map_err(|e| pe(e.into()))?, &watch::GEN)
+        .map_err(pe)?;
+    watch::GEN.fetch_add(1, Ordering::AcqRel);
     Ok(sp)
 }
 
@@ -795,38 +803,19 @@ pub unsafe extern "C" fn time_fn(module: *mut ffi::PyObject, args: *mut ffi::PyO
 }
 
 /// Setup shared by the strptime targets. `_strptime` itself is captured (fingerprinted,
-/// watched) when the kernels first see it in `sys.modules`; when it is already imported,
-/// its fingerprints are checked here too, so a mismatch shows as a refusal in `status()`.
+/// snapshotted, watched) when the kernels first see it in `sys.modules`, not here: that
+/// keeps `enable()` and the install on `import datetime` within the install budget. A
+/// fingerprint mismatch then makes the kernels fall back (reason in
+/// `_accel._datetime_debug()`).
 pub fn prepare_common(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let (_, minor) = cx.version();
     VERSION.store(usize::from(minor), Ordering::Relaxed);
     let api = super::capi();
     // SAFETY: datetime C API filled by the caller.
-    let date_t = unsafe {
+    unsafe {
         TYPES[0].store((*api).DateTimeType as usize, Ordering::Relaxed);
         TYPES[1].store((*api).DateType as usize, Ordering::Relaxed);
         TYPES[2].store((*api).TimeType as usize, Ordering::Relaxed);
-        (*api).DateType as usize
-    };
-    let Ok(m) = cx.loaded_module("_strptime") else { return Ok(()) };
-    let d = m.dict();
-    // Only the stdlib's C-datetime flavour (not one imported against `_pydatetime`).
-    if !cx.get_opt(&d, "datetime_date")?.is_some_and(|t| t.as_ptr() as usize == date_t) {
-        return Ok(());
-    }
-    // Snapshot its dependencies now (install time); a mismatch refuses below.
-    let _ = find_or_capture(cx.py(), &m);
-    let locale = cx.get(&d, "locale")?.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?;
-    for name in FUNCS {
-        cx.fingerprint_code(&cx.get(&d, name)?, fingerprints::code(name))?;
-    }
-    for name in LOCALE_FUNCS {
-        cx.fingerprint_code(&cx.get(&locale.dict(), name)?, fingerprints::code(name))?;
-    }
-    cx.fingerprint_code(&cx.get(&d, "_fixmonths")?, fingerprints::code("_fixmonths"))?;
-    for (cls, meth) in CLASS_METHODS {
-        let ty = cx.get(&d, cls)?.cast_into::<pyo3::types::PyType>().map_err(PyErr::from)?;
-        cx.fingerprint_code(&cx.type_attr(&ty, meth)?, fingerprints::code(&format!("{cls}.{meth}")))?;
     }
     Ok(())
 }

@@ -232,9 +232,11 @@ pub fn capture(cx: &Prepare<'_>) -> Result<&'static Env, Refusal> {
         builtin_objs,
     };
     // Watch what every target depends on.
-    super::watch::watch(&bdict, &BUILTIN_DEPS)?;
+    // builtins and the time module as whole dicts (one watch each; they change rarely),
+    // `sys.modules` per key (it changes on every import).
+    crate::accel::guard::watch_dict_generation(&bdict, &super::watch::GEN)?;
     super::watch::watch(&modules, &["time", "_strptime", "locale", "zoneinfo", "_zoneinfo"])?;
-    super::watch::watch(&tdict, &["tzname", "daylight", "struct_time", "strftime", "_STRUCT_TM_ITEMS"])?;
+    crate::accel::guard::watch_dict_generation(&tdict, &super::watch::GEN)?;
     Ok(ENV.get_or_init(|| e))
 }
 

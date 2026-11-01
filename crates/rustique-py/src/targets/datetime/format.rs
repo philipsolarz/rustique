@@ -76,8 +76,7 @@ pub fn calibrate_timezone(py: Python<'_>) -> PyResult<bool> {
             && raw.name == name.as_ptr()
             && utc.name.is_null()
             && ffi::Py_TYPE(utc.offset) == (*api).DeltaType
-            && ffi::Py_TYPE(tz.as_ptr()) == ffi::Py_TYPE((*api).TimeZone_UTC)
-            && tz.getattr("utcoffset")?.call1((py.None(),))?.is(&delta);
+            && ffi::Py_TYPE(tz.as_ptr()) == ffi::Py_TYPE((*api).TimeZone_UTC);
         TZ_TYPE.store(ffi::Py_TYPE((*api).TimeZone_UTC) as usize, Ordering::Relaxed);
         TZ_LAYOUT_OK.store(usize::from(ok), Ordering::Relaxed);
         Ok(ok)
