@@ -8,6 +8,10 @@ differ only in what sits in site-packages:
         .start entry point / .pth + .start (what the wheel ships)
     python benches/dx/startup.py venvs NAME=VENV [NAME=VENV ...] [--env K=V] [-r 300]
         existing venvs (e.g. a fresh venv vs the same with the wheel `pip install`ed)
+    python benches/dx/startup.py cells PLAIN_VENV RUSTIQUE_VENV [-r 300]
+        the startup cells of docs/targets/dx.md §1.4, all against `python -c pass` in the
+        plain venv: installed + unset, RUSTIQUE=1, `import rustique`,
+        `import rustique; rustique.enable()`
 
 Each variant gets: callgrind total Ir of the whole process (median of ``--ir-runs``,
 PYTHONHASHSEED=0), and wall time from ``-r`` interleaved rounds (each round runs every
@@ -24,7 +28,6 @@ import re
 import shutil
 import statistics
 import subprocess
-import sys
 import tempfile
 import time
 
@@ -32,7 +35,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 PYSRC = os.path.join(ROOT, "python")
 
-HOOK = open(os.path.join(PYSRC, "_rustique_startup.py")).read()
+# A stand-in module for the variants that import one (the shipped line imports `rustique`,
+# which is not installed in these venvs: with RUSTIQUE unset it is never imported).
+HOOK = "import os, sys\n\ndef start():\n    pass\n"
 PTH = open(os.path.join(PYSRC, "_rustique_startup.pth")).read()
 # Not shipped (docs/targets/dx.md §1): on 3.15.1 a .start file costs 1.7x `python -c pass`.
 START = "_rustique_startup:start\n"
@@ -52,6 +57,9 @@ SYNTHETIC = {
     "line-get": {"_rustique_startup.pth": "import os; os.environ.get('RUSTIQUE') and __import__('_rustique_startup')\n"},
     "line-posix": {"_rustique_startup.pth": "import posix; b'RUSTIQUE' in posix.environ and __import__('_rustique_startup')\n"},
     "line-short": {"_rustique_startup.pth": "import os;'RUSTIQUE'in os.environ and __import__('_rustique_startup')\n"},
+    # the extension-only startup line (accel-core 52d9b68): inline, and gated behind a short test
+    "line-ext-inline": {"_rustique_startup.pth": "import os, sys, _imp; os.environ.get('RUSTIQUE', '0').strip().lower() not in ('', '0', 'false', 'no', 'off') and not sys.flags.ignore_environment and 'rustique._rustique' not in sys.modules and (p := next(filter(os.path.isfile, map(os.path.join, [sitedir, *sys.path], [os.path.join('rustique', '_rustique' + _imp.extension_suffixes()[0])] * (len(sys.path) + 1))), None)) and (s := sys.modules['_frozen_importlib_external'].spec_from_file_location('rustique._rustique', p)) and (m := sys.modules['_frozen_importlib'].module_from_spec(s)) and not s.loader.exec_module(m) and not sys.modules.__setitem__('rustique._rustique', m) and m._accel.startup()\n"},
+    "line-ext-gated": {"_rustique_startup.pth": "import os; os.environ.get('RUSTIQUE', '0') != '0' and exec(\"import sys, _imp; os.environ.get('RUSTIQUE', '0').strip().lower() not in ('', '0', 'false', 'no', 'off') and not sys.flags.ignore_environment and 'rustique._rustique' not in sys.modules and (p := next(filter(os.path.isfile, map(os.path.join, [sitedir, *sys.path], [os.path.join('rustique', '_rustique' + _imp.extension_suffixes()[0])] * (len(sys.path) + 1))), None)) and (s := sys.modules['_frozen_importlib_external'].spec_from_file_location('rustique._rustique', p)) and (m := sys.modules['_frozen_importlib'].module_from_spec(s)) and not s.loader.exec_module(m) and not sys.modules.__setitem__('rustique._rustique', m) and m._accel.startup()\")\n"},
     # a venv that already has a .pth (setuptools, an editable install, virtualenv's _virtualenv.pth)
     "other": {"aaa_other.pth": "# stands for any other .pth\n"},
     "other+pth": {"aaa_other.pth": "# stands for any other .pth\n", "_rustique_startup.pth": PTH,
@@ -96,12 +104,14 @@ def callgrind_ir(py: str, code: str, env: dict[str, str]) -> int:
     return int(m.group(1))
 
 
-def wall(variants: list[tuple[str, str, dict[str, str]]], code: str, rounds: int) -> dict[str, list[float]]:
-    times: dict[str, list[float]] = {name: [] for name, _, _ in variants}
+def wall(variants: list[tuple], code: str, rounds: int) -> dict[str, list[float]]:
+    times: dict[str, list[float]] = {v[0]: [] for v in variants}
     for _ in range(rounds):
-        for name, py, env in variants:
+        for v in variants:
+            name, py, env = v[:3]
+            c = v[3] if len(v) > 3 else code
             t0 = time.perf_counter_ns()
-            pid = os.posix_spawn(py, [py, "-c", code], env)
+            pid = os.posix_spawn(py, [py, "-c", c], env)
             _, status = os.waitpid(pid, 0)
             t1 = time.perf_counter_ns()
             if status != 0:
@@ -115,11 +125,13 @@ def pct(xs: list[float], q: float) -> float:
     return s[min(len(s) - 1, int(q * len(s)))]
 
 
-def measure(variants: list[tuple[str, str, dict[str, str]]], code: str, rounds: int, ir_runs: int) -> list[dict]:
+def measure(variants: list[tuple], code: str, rounds: int, ir_runs: int) -> list[dict]:
     rows = []
-    for name, py, env in variants:
-        irs = [callgrind_ir(py, code, env) for _ in range(ir_runs)]
-        rows.append({"variant": name, "python": py, "ir": int(statistics.median(irs)), "ir_runs": irs})
+    for v in variants:
+        name, py, env = v[:3]
+        c = v[3] if len(v) > 3 else code
+        irs = [callgrind_ir(py, c, env) for _ in range(ir_runs)]
+        rows.append({"variant": name, "python": py, "code": c, "ir": int(statistics.median(irs)), "ir_runs": irs})
     times = wall(variants, code, rounds)
     for row in rows:
         t = times[row["variant"]]
@@ -133,9 +145,9 @@ def measure(variants: list[tuple[str, str, dict[str, str]]], code: str, rounds: 
 
 def show(title: str, rows: list[dict]) -> None:
     print(f"\n{title}")
-    print(f"{'variant':<22} {'Ir':>12} {'Ir ratio':>9} {'ms median (p10-p90)':>24} {'ms ratio':>9}")
+    print(f"{'variant':<26} {'Ir':>12} {'Ir ratio':>9} {'ms median (p10-p90)':>24} {'ms ratio':>9}")
     for r in rows:
-        print(f"{r['variant']:<22} {r['ir']:>12,} {r['ir_ratio']:>9.4f} "
+        print(f"{r['variant']:<26} {r['ir']:>12,} {r['ir_ratio']:>9.4f} "
               f"{r['ms_median']:>9.2f} ({r['ms_p10']:.2f}-{r['ms_p90']:.2f}) {r['ms_ratio']:>9.4f}")
 
 
@@ -147,7 +159,10 @@ def main() -> None:
     s.add_argument("--variants", default=",".join(SYNTHETIC))
     v = sub.add_parser("venvs")
     v.add_argument("pairs", nargs="+", metavar="NAME=VENV")
-    for p in (s, v):
+    c = sub.add_parser("cells")
+    c.add_argument("plain")
+    c.add_argument("rustique")
+    for p in (s, v, c):
         p.add_argument("--env", action="append", default=[], metavar="K=V", help="extra env for every variant")
         p.add_argument("-c", dest="code", default="pass")
         p.add_argument("-r", "--rounds", type=int, default=300)
@@ -171,6 +186,24 @@ def main() -> None:
                 results[f"{base} {ver}"] = rows
         finally:
             shutil.rmtree(tmp)
+    elif args.cmd == "cells":
+        plain, rq = (os.path.join(v, "bin", "python") for v in (args.plain, args.rustique))
+        env = env_for(extra)
+        variants = [
+            ("plain: pass", plain, env, "pass"),
+            ("installed, unset: pass", rq, env, "pass"),
+            ("RUSTIQUE=1: pass", rq, {**env, "RUSTIQUE": "1"}, "pass"),
+            ("import rustique", rq, env, "import rustique"),
+            ("import + enable()", rq, env, "import rustique; rustique.enable()"),
+        ]
+        rows = measure(variants, "pass", args.rounds, args.ir_runs)
+        show("startup cells (ratios vs plain `python -c pass`)", rows)
+        unset, on = rows[1], rows[2]
+        marginal = {"ir": on["ir"] / unset["ir"], "ms": on["ms_median"] / unset["ms_median"]}
+        print(f"marginal cost of RUSTIQUE=1 in the same venv (vs unset): Ir {marginal['ir']:.4f}, "
+              f"wall {marginal['ms']:.4f} (+{on['ms_median'] - unset['ms_median']:.2f} ms)")
+        results["cells"] = rows
+        results["marginal"] = marginal
     else:
         variants = []
         for pair in args.pairs:
