@@ -115,11 +115,12 @@ stack of container pointers), the scanner's per-call `memo` dict (replaced by a 
 with the same result), `JSONEncoder.iterencode`'s closure. None is reachable through a
 public API.
 
-Known differences (none in results): a `RecursionError` raised at the C stack limit by the
-original after a fallback happens a few levels earlier or later than without Rustique
-(the fallback runs one C frame deeper; CPython's own depth varies with the caller's C
-stack the same way), so the number of `when serializing ... item` notes can differ.
-Allocation counts (`gc.get_count()`) differ, as for every kernel.
+Outside the contract (lead's ruling, 2026-11-01): where a `RecursionError` is raised at
+the C stack limit. Since 3.14 the limit is C-stack based and depends on the native call
+path even in plain CPython; after a fallback the original runs one C frame deeper, so the
+error comes a few levels earlier or later and the number of `when serializing ... item`
+notes can differ. Exception type and message are identical. Allocation counts
+(`gc.get_count()`) differ, as for every kernel.
 
 ## Conformance (measured, `tests/targets/conformance.py --groups float,json`)
 
@@ -216,9 +217,19 @@ i.e. before suspension; the cost a program pays when fallbacks are interleaved w
 
 The one cell above 1.05 is an invalid document during the first 64 consecutive invalid
 documents: the kernel parses up to the error (building and discarding objects), then the
-original re-parses and raises. Steady state (the site suspended) is 1.004; a program that
-mixes valid and invalid documents pays ~2.4k Ir per invalid one and saves ~15k per valid
-one. Float cells: see `float.md`.
+original re-parses and raises. Steady state (the site suspended) is 1.004. Accepted by the
+lead as a documented first-64 cost (2026-11-01).
+
+Alternating valid and failing calls (hits reset the streak, so the site never suspends;
+one statement = one valid call + one failing call, measured per statement):
+
+| cell | plain | enabled | ratio |
+|---|---:|---:|---:|
+| `loads(rec_text); loads('{"id": 1, "name": "x",}')` | 54,154 | 41,886 | 0.773 |
+| `dumps(record); dumps(with_decimal)` (TypeError) | 71,526 | 47,934 | 0.670 |
+
+The failing call alone costs ~28.8k Ir instead of 26.3k (`loads`, ×1.096, the same as the
+first-64 cell); the valid call next to it saves ~14.8k. Float cells: see `float.md`.
 
 ### Large inputs: pyperf wall time (`benches/targets/json_pyperf.py`, 3.15.1, shared box)
 
@@ -279,6 +290,28 @@ default encoder's attributes and of `dumps`/`loads` keyword defaults, no
 run in `test_selftest_texts`). What remains is the dependency surface the contract asks to
 pin (two classes, two instances, two modules, two keyword-default dicts, builtins, codecs
 BOMs) and 10 fingerprints; see the final report for options.
+
+## Open issues
+
+- **Install cost of `json`** above the 5% budget (see above): waiting for accel-core's
+  second pass (group-level pin/fingerprint declarations, cheaper pin registration); pins
+  and fingerprints stay (lead's ruling). Re-measure `import json` when it lands.
+- **Unreproduced crash, 3.15.1 (GIL build).** In the first 4-build matrix run
+  (`~/rustique-research/p2-json/matrix.sh`, log `~/rustique-research/p2-json/matrix.log`,
+  section `=== 3.15.1 tests`, 2026-11-01 around 12:50 UTC on the dev box, commit 44cbe9c),
+  the step `python -m pytest -q tests -p no:cacheprovider -x | tail -2` (whole suite, after
+  `tests/targets` passed with 954 tests and the conformance runs were identical) printed
+  only a blank line and `Current thread's C stack trace (most recent call first):`, i.e. a
+  faulthandler dump with no pytest summary: the process died. Only the last two lines were
+  kept, so the failing test is unknown (the suite runs `tests/targets` and the
+  thread-stress tests last). Not reproduced since: the immediate rerun (4861 passed), a
+  4-run loop with `-X faulthandler` (logs `/work/json/out/full_loop_{1..4}.log` on the box,
+  all exit 0) and the full suites of three later matrix runs on all four builds passed.
+- **`default=` / `cls=` callers** (json_api, logging, Flask/FastAPI providers): a kernel
+  behind `_json.make_encoder.tp_call` that calls `default` exactly where the C encoder does
+  (allowed by the clarified ruling 15) is ranked first for wave 2.
+- Wave 2 cleanups: `pyfmt` on the `float_repr` core; the str-layout calibration of
+  `targets/json/pystr.rs` (a copy of takeover's) moved into `accel`.
 
 ## Versions
 

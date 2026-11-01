@@ -159,6 +159,10 @@ ERROR_CELLS: dict[str, tuple[str, str]] = {
     "dumps circular, kernel declines at once [floor]": ("dumps(circular, skipkeys=[])", "float,json"),
     "dumps Decimal, kernel declines at once [floor]": ("dumps(with_decimal, skipkeys=[])", "float,json"),
     "loads invalid [error fallback]": ("loads(bad_json)", "float,json"),
+    # Alternating valid/invalid calls: hits reset the fallback streak, so the site never
+    # suspends; one statement = one valid + one invalid call (the invalid one raises).
+    "loads valid+invalid alternating [error fallback]": ("loads(rec_text); loads(bad_json)", "float,json"),
+    "dumps valid+error alternating [error fallback]": ("dumps(record); dumps(with_decimal)", "float,json"),
 }
 
 
