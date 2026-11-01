@@ -741,3 +741,123 @@ pub fn pin(dict: &Bound<'_, PyDict>, key: &str, flag: &'static DepFlag) -> PyRes
     )?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------------------
+// Per-type verdicts ("does this subclass override any of these names?")
+// ---------------------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn PyUnstable_Type_AssignVersionTag(ty: *mut ffi::PyTypeObject) -> c_int;
+}
+
+const VERDICT_SLOTS: usize = 16;
+
+/// Cache of "does class `C` (a subclass of `base`) define any of `names` before `base` in
+/// its MRO?", keyed by the class's `tp_version_tag`. CPython gives every class version a
+/// unique tag and resets it on any modification of the class or a base (`PyType_Modified`),
+/// so a cached verdict can never outlive what it was computed from: no watcher needed.
+/// Direct-mapped, 16 entries; a hit costs a few loads and compares.
+///
+/// ```ignore
+/// static OVERRIDES: OverrideCache = OverrideCache::new(&["__fspath__", "__str__"]);
+/// // prepare: OVERRIDES.set_base(&pure_path_type);
+/// // kernel:  if Py_TYPE(p) != PURE_PATH && OVERRIDES.overrides(Py_TYPE(p)) != Some(false) { fallback }
+/// ```
+pub struct OverrideCache {
+    names: &'static [&'static str],
+    base: AtomicUsize,
+    /// `(tag << 1) | verdict` per slot; tag 0 = empty. Tags are globally unique per class
+    /// version, so a slot written concurrently for another class simply misses.
+    slots: [AtomicU64; VERDICT_SLOTS],
+}
+
+impl OverrideCache {
+    pub const fn new(names: &'static [&'static str]) -> Self {
+        OverrideCache { names, base: AtomicUsize::new(0), slots: [const { AtomicU64::new(0) }; VERDICT_SLOTS] }
+    }
+
+    /// The class whose own definitions are the reference (kept alive by the caller, e.g.
+    /// pinned or held by a static reference).
+    pub fn set_base(&self, base: &Bound<'_, PyType>) {
+        self.base.store(base.as_type_ptr() as usize, Ordering::Release);
+        for s in &self.slots {
+            s.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// `Some(true)` if `ty` (or a class between it and the base in its MRO) defines one of
+    /// the names, `Some(false)` if none does, `None` if `ty` is not a subclass of the base
+    /// (or no base was set).
+    ///
+    /// # Safety
+    /// Attached thread; `ty` a live type. Runs no Python code.
+    #[inline]
+    pub unsafe fn overrides(&self, ty: *mut ffi::PyTypeObject) -> Option<bool> {
+        // SAFETY: per the caller.
+        unsafe {
+            let tag = std::ptr::read_volatile(&raw const (*ty).tp_version_tag);
+            if tag != 0 {
+                let v = self.slots[(ty as usize >> 4) % VERDICT_SLOTS].load(Ordering::Relaxed);
+                if v >> 1 == u64::from(tag) {
+                    return Some(v & 1 != 0);
+                }
+            }
+            self.compute(ty)
+        }
+    }
+
+    #[cold]
+    unsafe fn compute(&self, ty: *mut ffi::PyTypeObject) -> Option<bool> {
+        let base = self.base.load(Ordering::Acquire) as *mut ffi::PyTypeObject;
+        if base.is_null() {
+            return None;
+        }
+        // SAFETY: attached thread; live type objects; dict lookups with str keys run no
+        // Python code.
+        unsafe {
+            if PyUnstable_Type_AssignVersionTag(ty) == 0 {
+                ffi::PyErr_Clear();
+            }
+            let tag = std::ptr::read_volatile(&raw const (*ty).tp_version_tag);
+            let py = Python::assume_attached();
+            let mro = (*ty).tp_mro;
+            if mro.is_null() {
+                return None;
+            }
+            let mro = Bound::from_borrowed_ptr(py, mro);
+            let Ok(mro) = mro.cast::<pyo3::types::PyTuple>() else { return None };
+            let mut found = false;
+            let mut reached = false;
+            for cls in mro.iter() {
+                if cls.as_ptr() == base.cast() {
+                    reached = true;
+                    break;
+                }
+                let Ok(cls) = cls.cast::<PyType>() else { return None };
+                let d = ffi::PyType_GetDict(cls.as_type_ptr());
+                if d.is_null() {
+                    ffi::PyErr_Clear();
+                    return None;
+                }
+                let d = Bound::from_owned_ptr(py, d);
+                let Ok(d) = d.cast::<PyDict>() else { return None };
+                found |= self.names.iter().any(|n| d.contains(*n).unwrap_or(true));
+            }
+            if !reached {
+                return None;
+            }
+            let verdict = found;
+            if tag != 0 {
+                self.slots[(ty as usize >> 4) % VERDICT_SLOTS]
+                    .store(u64::from(tag) << 1 | u64::from(verdict), Ordering::Relaxed);
+            }
+            Some(verdict)
+        }
+    }
+}
+
+impl std::fmt::Debug for OverrideCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OverrideCache({:?})", self.names)
+    }
+}

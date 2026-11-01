@@ -346,6 +346,19 @@ fn _selftest_watch(dict: &Bound<'_, pyo3::types::PyDict>, key: &str) -> PyResult
     accel::guard::watch(dict, key, &GEN)
 }
 
+static OVERRIDES: accel::guard::OverrideCache = accel::guard::OverrideCache::new(&["__fspath__", "join"]);
+
+/// Override verdict of `cls` against `base` (sets the base when given).
+#[pyfunction]
+#[pyo3(signature = (cls, base=None))]
+fn _selftest_overrides(cls: &Bound<'_, PyType>, base: Option<&Bound<'_, PyType>>) -> Option<bool> {
+    if let Some(b) = base {
+        OVERRIDES.set_base(b);
+    }
+    // SAFETY: attached thread; live type.
+    unsafe { OVERRIDES.overrides(cls.as_type_ptr()) }
+}
+
 /// The self-test generation counter.
 #[pyfunction]
 fn _selftest_gen() -> u64 {
@@ -404,5 +417,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_selftest_vectorcall, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_watch, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_gen, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_overrides, m)?)?;
     Ok(())
 }
