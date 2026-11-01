@@ -54,10 +54,7 @@ fn fingerprint(obj: &Bound<'_, PyAny>) -> PyResult<String> {
 /// Dev tool: fingerprints every selected target checks, observed vs recorded.
 #[pyfunction]
 #[pyo3(signature = (only=None))]
-fn fingerprint_report(
-    py: Python<'_>,
-    only: Option<Vec<String>>,
-) -> PyResult<Vec<(String, String, String, Option<String>)>> {
+fn fingerprint_report(py: Python<'_>, only: Option<Vec<String>>) -> PyResult<Vec<registry::FingerprintRow>> {
     registry::fingerprint_report(py, only)
 }
 
@@ -67,11 +64,33 @@ fn pins(py: Python<'_>, name: &str) -> PyResult<Vec<(String, bool, bool, bool)>>
     registry::pins(py, name)
 }
 
-/// The process environment variable `name` (C `environ`, which `os.environ` writes
-/// through), without importing `os`.
+/// Check mode: `None`/`"off"` off, `"warn"` (count mismatches, return the original's
+/// result), `"raise"` (raise `RustiqueCheckError`). Returns the previous mode.
 #[pyfunction]
-fn env(name: &str) -> Option<String> {
-    std::env::var(name).ok()
+#[pyo3(signature = (mode=None))]
+fn check(mode: Option<&str>) -> PyResult<Option<&'static str>> {
+    let prev = mode_name(super::stats::check_mode());
+    super::stats::set_check(match mode {
+        None | Some("off") => None,
+        Some("warn") => Some(false),
+        Some("raise") => Some(true),
+        Some(m) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "check mode must be None, 'off', 'warn' or 'raise', not {m:?}"
+            )));
+        }
+    });
+    Ok(prev)
+}
+
+/// The current check mode (`None`, `"warn"`, `"raise"`).
+#[pyfunction]
+fn check_mode() -> Option<&'static str> {
+    mode_name(super::stats::check_mode())
+}
+
+fn mode_name(m: Option<bool>) -> Option<&'static str> {
+    m.map(|raise| if raise { "raise" } else { "warn" })
 }
 
 /// `func_version` of a function (0 unset, 1 cleared, >= 2 valid): tests of uninstall.
@@ -93,7 +112,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(fingerprint_report, &sub)?)?;
     sub.add_function(wrap_pyfunction!(pins, &sub)?)?;
     sub.add_function(wrap_pyfunction!(func_version, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(env, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(check, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(check_mode, &sub)?)?;
+    sub.add("RustiqueCheckError", m.py().get_type::<super::check::RustiqueCheckError>())?;
     sub.add("FREE_THREADED", super::version::FREE_THREADED)?;
     crate::targets::register(&sub)?;
     m.add("_accel", sub)
