@@ -460,22 +460,6 @@ pub unsafe fn get(obj: O, name: O) -> O {
     }
 }
 
-/// `obj.name` for any object (modules), or NULL with no error set.
-///
-/// # Safety
-/// Attached thread; the lookup must not run Python code (callers check the type).
-#[inline(always)]
-pub unsafe fn get_any(obj: O, name: O) -> O {
-    // SAFETY: per the caller.
-    unsafe {
-        let r = ffi::PyObject_GetAttr(obj, name);
-        if r.is_null() {
-            ffi::PyErr_Clear();
-        }
-        r
-    }
-}
-
 /// `_PyObject_GetMethod` (exported by 3.14 and 3.15): the method lookup `obj.name(...)`
 /// call sites use, without creating a bound method.
 pub static GET_METHOD: crate::accel::Original<unsafe extern "C" fn(O, O, *mut O) -> c_int> =

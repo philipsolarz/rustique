@@ -66,6 +66,9 @@ mod fp {
     pub const GETPID: F = &[(3, 14, "2cd2b8d54a017870"), (3, 15, "2cd2b8d54a017870")];
 }
 
+/// `Thread.name`'s getter compiled with `-O` (no `assert`), per minor version.
+const THREAD_NAME_O: &[(u8, &str)] = &[(14, "3eea852412c3b4a0"), (15, "8b92be079aad8b80")];
+
 fn ty<'py>(obj: Bound<'py, PyAny>) -> Result<Bound<'py, PyType>, Refusal> {
     obj.cast_into::<PyType>().map_err(|_| Refusal::new("not a class"))
 }
@@ -84,14 +87,39 @@ fn function<'py>(
     if f.cast_exact::<pyo3::types::PyFunction>().is_err() {
         return Err(refuse!("{f}: not a pure-Python function"));
     }
-    cx.fingerprint_code(f, expected)?;
+    // SAFETY: an exact function object.
+    let code = unsafe { (*f.as_ptr().cast::<pyo3::ffi::PyFunctionObject>()).func_code } as usize;
+    if !verified(code, expected) {
+        cx.fingerprint_code(f, expected)?;
+        remember(code, expected, f.getattr("__code__")?);
+    }
     guard.set(f);
     Ok(())
 }
 
 /// A C function (builtin), fingerprinted.
 fn c_function<'py>(cx: &mut Prepare<'py>, f: &Bound<'py, PyAny>, expected: fp::F) -> Result<(), Refusal> {
-    cx.fingerprint_c(f, expected)
+    if !verified(f.as_ptr() as usize, expected) {
+        cx.fingerprint_c(f, expected)?;
+        remember(f.as_ptr() as usize, expected, f.clone());
+    }
+    Ok(())
+}
+
+/// Objects (code objects, C functions) whose fingerprint this process already checked, so
+/// targets of the group sharing a helper check it once (install cost). Each entry keeps its
+/// object alive: the address cannot be reused by another object.
+static VERIFIED: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
+
+fn verified(addr: usize, expected: fp::F) -> bool {
+    VERIFIED.lock().is_ok_and(|v| v.iter().any(|&(a, e)| a == addr && e == expected.as_ptr() as usize))
+}
+
+fn remember(addr: usize, expected: fp::F, keep: Bound<'_, PyAny>) {
+    if let Ok(mut v) = VERIFIED.lock() {
+        v.push((addr, expected.as_ptr() as usize));
+        std::mem::forget(keep.unbind());
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -185,6 +213,11 @@ fn prepare_caller(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 /// Calibrate the inline-values reads on `logging.root` (a RootLogger: generic attributes,
 /// no descriptors for these names). A failed calibration only disables the fast reads.
 fn calibrate(cx: &Prepare<'_>) -> Result<(), Refusal> {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return Ok(()); // layout facts: once per process
+    }
+    common::calibrate_dict_kind(cx.py());
     let root = cx.module_attr("root")?;
     common::calibrate_inline(
         cx.py(),
@@ -220,10 +253,9 @@ fn os_path<'py>(
 // logging.LogRecord.__init__
 // ---------------------------------------------------------------------------------------
 
-fn prepare_record(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn prepare_record(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     use std::sync::atomic::Ordering::Relaxed;
     init_names();
-    common::calibrate_dict_kind(py);
     let g = cx.module()?.dict();
     let lr = ty(cx.module_attr("LogRecord")?)?;
     let init = cx.type_attr(&lr, "__init__")?;
@@ -332,7 +364,18 @@ fn prepare_record(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         return Err(Refusal::new("Thread.name is not a property"));
     }
     let fget = prop.getattr("fget")?;
-    function(cx, &fget, fp::THREAD_NAME, &record::CODES[6])?;
+    // `assert self._initialized` is stripped under `python -O`: accept either bytecode
+    // (the kernel reads `_initialized` either way and falls back unless it is True).
+    let fget_fp = cx.fingerprint_of(&fget)?;
+    let (_, minor) = cx.version();
+    if THREAD_NAME_O.iter().any(|&(m, f)| m == minor && f == fget_fp) {
+        if fget.cast_exact::<pyo3::types::PyFunction>().is_err() {
+            return Err(Refusal::new("Thread.name getter is not a function"));
+        }
+        record::CODES[6].set(&fget);
+    } else {
+        function(cx, &fget, fp::THREAD_NAME, &record::CODES[6])?;
+    }
     record::THREAD_NAME_PROP.set_obj(&prop);
     // sys.modules, collections.abc.Mapping, _abc.get_cache_token
     let sys_mod = cx.loaded_module("sys")?;
@@ -419,10 +462,9 @@ fn prepare_record_types(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     Ok(())
 }
 
-fn prepare_format(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn prepare_format(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     init_names();
     cx.symbol(c"_PyObject_GetMethod", &common::GET_METHOD)?;
-    common::calibrate_dict_kind(py);
     format::clear_fmt_cache();
     time_functions(cx, &format::FORMAT_DEPS)?;
     let g = cx.module()?.dict();

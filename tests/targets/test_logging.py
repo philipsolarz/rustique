@@ -128,6 +128,21 @@ def test_captured_references_are_accelerated():
     assert hits("logging.LogRecord.__init__") >= 1
 
 
+def test_optimized_mode_installs():
+    import subprocess
+
+    code = (
+        "import rustique, logging\n"
+        "rustique.enable(only=['logging'])\n"
+        "st = [t for t in rustique.status()['targets'] if t['group'] == 'logging']\n"
+        "assert all(t['state'] == 'installed' for t in st), st\n"
+        "print(logging.LogRecord('n', 20, '/p.py', 1, 'm', (), None).threadName)\n"
+    )
+    out = subprocess.run([sys.executable, "-O", "-c", code], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "MainThread"
+
+
 def test_disable_restores_and_reenable():
     rec = logging.LogRecord("n", 20, "/x/y.py", 1, "m", (), None)
     A.disable(["logging"])
