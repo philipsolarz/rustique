@@ -795,7 +795,10 @@ pub(crate) fn tstate_offset(cx: &Prepare<'_>, minor: u8) -> Result<usize, Refusa
         (*ts.add(off).cast::<c_int>(), *ts.add(off + 4).cast::<c_int>())
     };
     if lim != limit || rem <= 0 || rem > limit {
-        return Err(crate::refuse!("PyThreadState layout differs (limit {lim} vs {limit}, remaining {rem})"));
+        return Err(Refusal::with(
+            accel::Category::Layout,
+            format!("PyThreadState layout differs (limit {lim} vs {limit}, remaining {rem})"),
+        ));
     }
     REM_OFF.store(off, Relaxed);
     Ok(off)

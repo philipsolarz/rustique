@@ -34,7 +34,11 @@ written on success. So every hook runs under CPython's own frames (tracebacks,
 temporaries are freed by CPython in its order.
 
 Restarts and suspension (net-benefit policy, contract §5.3: hits credit the score,
-fallbacks debit it). A restart that abandoned copies always debits. Every other fallback
+fallbacks debit it; per target from the measured savings and penalties of §5: a fallback
+costs ~420 Ir over CPython — the C call the interpreter cannot inline — while a hit saves
+400 Ir to 20k+ in `deepcopy` (credit 2, debit 1: installed while a third of the calls
+hit) and 250–420 Ir for the common `copy.copy` hits (credit 1, debit 1: half);
+`asdict`/`astuple` keep 4/1). A restart that abandoned copies always debits. Every other fallback
 debits when it is a direct call, and is only counted when it is a call the original's
 helpers (or hooks) make inside a fallback of the same target: those repeat the outer
 fallback level by level (a list of 100 objects with their own `__deepcopy__`, a profiler
@@ -118,8 +122,19 @@ whose copy restarts, more than 200 levels: restart.
 
 ## 2. Whole-call fallbacks before any work (`stats()` reasons)
 
-- `args`: a memo that is not `None` or an exact `dict`; a keyword other than `memo`; 3.14's
-  `_nil` argument; `copy.copy` with keywords; non-default factories.
+- `args`: a memo that is not `None` or an exact `dict` (after the atomic check, which
+  CPython makes before touching the memo: atomic roots are native with any memo); a
+  keyword other than `memo`; 3.14's `_nil` argument; `copy.copy` with keywords;
+  non-default factories.
+- `deopt` without any work (root pre-check): a root whose class itself needs user code —
+  a `__deepcopy__`/`__copy__` hook of the class, a registered copier (not one of
+  `copy.py`'s helpers) or a `copyreg` reductor — is remembered by `(type,
+  tp_version_tag)` and the generation of `copy._deepcopy_dispatch`/`copyreg.dispatch_table`
+  (dict watchers); later roots of that class go straight to the original. Any change to the
+  class or to a registration re-decides; conditions that are not the class's (local
+  monitoring events on a hook or helper, a modified helper, the recursion limit, an
+  error) are never remembered. An entry can only send a call to the original, which is
+  always correct.
 - `deps`: a pinned dependency replaced (deopt-while-unpinned then restores the original
   vectorcall until it is put back): copy's globals (one `pin_dict` snapshot: every binding
   the kernels use and the absence of any global shadowing a builtin), the builtins
@@ -141,8 +156,20 @@ they restart exactly the calls that reach a registered type.
   native (timing-dependent in CPython too). A tool attached by user code *inside* the call
   is not an issue: no user code runs inside a kernel.
 
-Private state not reproduced: none (`copy.py` has none; the kernels add no caches besides
-the code objects recognised as `return self`).
+Private state not reproduced: none (`copy.py` has none). The kernels' own caches: the code
+objects recognised as `return self`, the recognised `_datetime`/`_decimal` types, the
+root pre-check entries above, and per-thread fallback nesting / restart paths.
+
+### Internal layouts relied upon (validated at install or by construction)
+
+| what | used for | validation |
+|---|---|---|
+| `PyThreadState.py_recursion_remaining` / `py_recursion_limit` offsets (48/52 on 3.14, 52/56 on 3.15) | recursion budget of the emulated frames | install: the pair read there must equal `sys.getrecursionlimit()` and a sane remaining count, else refused ("layout") |
+| `PySetObject` header (`fill`, `used`, `mask`, `table`), `setentry {key, hash}`, `set_do_lookup` linear probing over `LINEAR_PROBES` = 9 slots (3.14 only: copy's type sets are mutable sets) | membership of the hot types decided from the slots CPython's lookup inspects; snapshot compare otherwise | install self-test (`calibrate_set_probing`): a crafted set's table must show the header, the entry order, a colliding key placed in the next slot, and the mirrored lookup must answer as `PySet_Contains` for present, colliding and absent keys, else refused ("layout") |
+| `PyFunctionObject` (`func_code`, `func_defaults`, `vectorcall`), `PyCodeObject` (`co_flags`, `co_argcount`, `co_kwonlyargcount`, `co_nlocalsplus`, `Py_SIZE`) | helper identity checks, `return self` recognition | public `cpython/` headers; the reference `return self` code is compiled by the running interpreter |
+| `tp_version_tag` | root pre-check entries | public field; 0 (unassigned) never cached |
+| `_PyObject_GetMethod` (exported) | `__reduce_ex__`/`__getstate__` not shadowed by the instance | resolved by symbol at install, else refused ("symbol") |
+| `PyObject_VisitManagedDict`, `PyObject_GenericGetDict`, `PyType_GetDict`, `PyFunction_SetVectorcall` (public C API) | instance state as `object_getstate_default` reads it; deep fallback bound | public API |
 
 ## 4. Conformance (`tests/conformance/run_target_suites.py`)
 
