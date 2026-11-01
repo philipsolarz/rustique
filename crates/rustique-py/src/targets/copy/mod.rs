@@ -168,6 +168,18 @@ thread_local! {
 /// (bounded C stack: a few hundred kB at most).
 const DEEP_FALLBACK: u32 = 128;
 
+/// Count a fallback; outside a fallback of the same target it also debits the net-benefit
+/// score. The original's helpers (and hooks) call the function again for every level: those
+/// nested fallbacks repeat the one already debited and are only counted.
+#[inline(always)]
+fn debit(c: &'static accel::Counters, nest: &'static std::thread::LocalKey<std::cell::Cell<u32>>, why: Reason) {
+    if nest.with(|n| n.get()) > 0 {
+        c.fallback(why);
+    } else {
+        c.fallback_streak(why);
+    }
+}
+
 /// `original(...)`, counting the nesting of fallbacks on this thread.
 #[inline(always)]
 unsafe fn fallback_call(
@@ -295,29 +307,29 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
                 1 => std::ptr::null_mut(),
                 2 => *args.add(1),
                 _ => {
-                    C_DEEPCOPY.fallback_streak(Reason::Args);
+                    debit(&C_DEEPCOPY, &NEST_DEEPCOPY, Reason::Args);
                     return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
                 }
             }
         } else if n == 1 && ffi::PyTuple_GET_SIZE(kw) == 1 && ffi::PyTuple_GET_ITEM(kw, 0) == st.s_memo {
             *args.add(1)
         } else {
-            C_DEEPCOPY.fallback_streak(Reason::Args);
+            debit(&C_DEEPCOPY, &NEST_DEEPCOPY, Reason::Args);
             return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
         };
         let memo = if memo == ffi::Py_None() { std::ptr::null_mut() } else { memo };
         // Any other memo's `__contains__`/`__getitem__` could be user code.
         if !memo.is_null() && ty(memo) != &raw mut ffi::PyDict_Type {
-            C_DEEPCOPY.fallback_streak(Reason::Args);
+            debit(&C_DEEPCOPY, &NEST_DEEPCOPY, Reason::Args);
             return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
         }
         let fo = func.cast::<ffi::PyFunctionObject>();
         if !DEPS_COPY.ok() || (*fo).func_code != st.deepcopy_code || (*fo).func_defaults != st.deepcopy_defaults {
-            C_DEEPCOPY.fallback_streak(Reason::Deps);
+            debit(&C_DEEPCOPY, &NEST_DEEPCOPY, Reason::Deps);
             return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
         }
         if !accel::tools_quiet(&TOOLS_DEEPCOPY, func) {
-            C_DEEPCOPY.fallback_streak(Reason::Tools);
+            debit(&C_DEEPCOPY, &NEST_DEEPCOPY, Reason::Tools);
             return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
         }
         let x = *args;
@@ -343,20 +355,16 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
             }
             Err(false) => {
                 // User code at the root itself: nothing was wasted. Reached again through a
-                // fallback's helpers (a list of hook objects), it is counted without
-                // extending the streak; called directly, it is a persistent fallback like
-                // any other (the streak suspends a caller that only copies hook objects).
-                if NEST_DEEPCOPY.with(|n| n.get()) > 0 {
-                    C_DEEPCOPY.fallback(Reason::Deopt);
-                } else {
-                    C_DEEPCOPY.fallback_streak(Reason::Deopt);
-                }
+                // fallback's helpers (a list of hook objects), it is only counted; called
+                // directly, it debits the net-benefit score like any fallback (a caller
+                // that only copies hook objects gets the target suspended).
+                debit(&C_DEEPCOPY, &NEST_DEEPCOPY, Reason::Deopt);
                 fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw)
             }
             Err(true) => {
                 // User code (or an error, or the recursion limit) below: CPython's own call,
-                // from scratch, with the unchanged arguments; the abandoned work extends the
-                // suspension streak. While it runs, the containers on the path to the node
+                // from scratch, with the unchanged arguments; the abandoned work always
+                // debits the net-benefit score. While it runs, the containers on the path to the node
                 // that needs user code go straight to the original when the helpers reach
                 // them again (each would restart at the same node: no user code ran before
                 // it), so a deep restart does not re-traverse its prefix once per level.
@@ -376,16 +384,16 @@ unsafe extern "C" fn vc_copy(func: O, args: *const O, nargsf: usize, kw: O) -> O
     unsafe {
         let st = st();
         if !kw.is_null() || nargs(nargsf) != 1 {
-            C_COPY.fallback_streak(Reason::Args);
+            debit(&C_COPY, &NEST_COPY, Reason::Args);
             return fallback_call(&C_COPY, &NEST_COPY, func, args, nargsf, kw);
         }
         let fo = func.cast::<ffi::PyFunctionObject>();
         if !DEPS_COPY.ok() || (*fo).func_code != st.copy_code || !(*fo).func_defaults.is_null() {
-            C_COPY.fallback_streak(Reason::Deps);
+            debit(&C_COPY, &NEST_COPY, Reason::Deps);
             return fallback_call(&C_COPY, &NEST_COPY, func, args, nargsf, kw);
         }
         if !accel::tools_quiet(&TOOLS_COPY, func) {
-            C_COPY.fallback_streak(Reason::Tools);
+            debit(&C_COPY, &NEST_COPY, Reason::Tools);
             return fallback_call(&C_COPY, &NEST_COPY, func, args, nargsf, kw);
         }
         match shallow::copy(st, *args, recursion_remaining()) {
@@ -396,11 +404,7 @@ unsafe extern "C" fn vc_copy(func: O, args: *const O, nargsf: usize, kw: O) -> O
             None => {
                 // Decided before anything was built: inside a fallback of `copy` (hooks
                 // calling `copy.copy` recursively) counted only; otherwise a streak step.
-                if NEST_COPY.with(|n| n.get()) > 0 {
-                    C_COPY.fallback(Reason::Deopt);
-                } else {
-                    C_COPY.fallback_streak(Reason::Deopt);
-                }
+                debit(&C_COPY, &NEST_COPY, Reason::Deopt);
                 fallback_call(&C_COPY, &NEST_COPY, func, args, nargsf, kw)
             }
         }
