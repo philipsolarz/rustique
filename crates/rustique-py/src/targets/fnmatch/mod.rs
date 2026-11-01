@@ -87,6 +87,11 @@ pub static TARGETS: &[&TargetSpec] = &[&FNMATCH, &FNMATCHCASE, &FILTER];
 /// reproduces) and `os.path.normcase` as `fnmatch`/`filter` reach it (`fnmatch.os` →
 /// `os.path` → `posixpath.normcase` → `os.fspath`): validated and pinned once.
 fn shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    if !cfg!(unix) {
+        // POSIX path semantics only: on Windows `os.path` is `ntpath`, `fnmatch` normalises
+        // with `ntpath.normcase` and `pathlib.Path` is `WindowsPath`.
+        return Err(Refusal::with(crate::accel::spec::Category::Platform, "validated on POSIX systems only"));
+    }
     if !rt::init_str_layout(py) {
         return Err(refuse!("str layout not calibrated"));
     }

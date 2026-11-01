@@ -82,6 +82,19 @@ def main() -> int:
                 RUSTIQUE="0")
     check("RUSTIQUE=0 turns enable() into a no-op", killed.stdout.split() == ["True", "0"], killed.stdout + killed.stderr)
 
+    # Every refusal on this platform, with its category (informational: the plugin check below
+    # fails on categories other than version/build/jit/platform).
+    refusals = py("-c", "import json, sys, importlib, rustique\n"
+                        "rustique.enable()\n"
+                        "for m in ('json', 'copy', 'dataclasses', 'datetime', '_strptime', 'posixpath', 'fnmatch',\n"
+                        "          'pathlib', 'logging', 'random', 'textwrap', 'urllib.parse', 'statistics'):\n"
+                        "    importlib.import_module(m)\n"
+                        "for t in rustique.status()['targets']:\n"
+                        "    if t['state'] == 'refused':\n"
+                        "        print(f\"{t['name']:32} [{t.get('refusal')}] {t.get('reason')}\")\n")
+    print("     refused here:" + ("" if refusals.stdout.strip() else " none"))
+    print("\n".join("       " + ln for ln in refusals.stdout.splitlines()))
+
     status = py("-m", "rustique", "status")
     check("python -m rustique status", status.returncode == 0 and "targets in" in status.stdout, status.stderr)
     print("\n".join("     " + ln for ln in status.stdout.splitlines()[:6]))

@@ -99,12 +99,24 @@ fn instance_dict<'py>(obj: &Bound<'py, PyAny>) -> Result<Bound<'py, PyDict>, Ref
 /// Flag of the group-shared dependencies (checked by both kernels).
 pub(crate) static SHARED_DEPS: accel::DepFlag = accel::DepFlag::new();
 
+/// The str-layout calibration failed. On Windows that is a platform difference, not a
+/// surprise: MSVC starts a new bitfield unit where `PyASCIIObject.state` switches from the
+/// free-threaded build's `unsigned char interned` to `unsigned int` bitfields, so the kind
+/// bits lie outside the word `pystr` reads (wave 2: read the state layout-independently).
+fn str_layout_refusal() -> Refusal {
+    if cfg!(windows) {
+        refuse!(Platform: "str layout of this platform's build not supported")
+    } else {
+        refuse!(Layout: "str layout not calibrated")
+    }
+}
+
 /// What `json.dumps` and `json.loads` both rely on, declared once: the str layouts the
 /// kernels read and write, the C accelerator module, and the builtins their Python code
 /// reads (`isinstance`, `str`, `list`, `tuple`, `float`, `bytes`, `bytearray`, `len`).
 fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if !crate::targets::float::calibrate_ascii(py) || !pystr::calibrate(py) {
-        return Err(refuse!(Layout: "str layout not calibrated"));
+        return Err(str_layout_refusal());
     }
     cx.loaded_module("_json")?;
     let builtins = cx.builtins_of(&cx.module()?.dict())?;
@@ -229,7 +241,7 @@ fn prepare_dumps(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 fn prepare_loads(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     use loads::{CODE, DECODER_TYPE, DEFAULT_DECODER, DEPS, FUNC, KW, KW_COUNT, KW_NAMES, KWDEFAULTS};
     if !crate::targets::float::calibrate_ascii(py) || !pystr::calibrate(py) {
-        return Err(refuse!(Layout: "str layout not calibrated"));
+        return Err(str_layout_refusal());
     }
     let g = cx.module()?.dict();
     let func = cx.module_attr("loads")?;
