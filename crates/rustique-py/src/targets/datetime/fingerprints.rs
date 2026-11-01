@@ -1,45 +1,47 @@
-//! Recorded fingerprints of the originals per CPython minor version (contract §3.2), on
-//! 3.14.9 / 3.14.9t and 3.15.1 / 3.15.1t (free-threaded builds give the same values);
-//! regenerate with `benches/targets/_dt_fp_report.py`.
+//! Recorded fingerprints of the originals per CPython minor version (contract §3.2), in the
+//! registry's canonical format (v2), on 3.14.9 / 3.14.9t and 3.15.1 / 3.15.1t (free-threaded
+//! builds give the same values); regenerate with
+//! `python -m rustique._takeover._dev report --only datetime --import datetime,_strptime,time`
+//! (or `benches/targets/_dt_fp_report.py`).
 
 use crate::accel::Fingerprints;
 
-/// Python code the strptime kernels reimplement (`_strptime`, `locale`), with the group's
-/// cheap fingerprint (`fastfp`; `_accel._datetime_fingerprints(_strptime)`).
+/// Python code the strptime kernels reimplement (`_strptime`, `locale`), checked when the
+/// kernels first see a `_strptime` module object.
 pub fn code(name: &str) -> Fingerprints {
     match name {
-        "_strptime_datetime_datetime" => &[(3, 14, "75758937167911c2"), (3, 15, "594f12d05a3b7eac")],
-        "_strptime_datetime_date" => &[(3, 14, "43e3ced6c7621672"), (3, 15, "005aa63778bff25e")],
-        "_strptime_datetime_time" => &[(3, 14, "e1a61f240af33779"), (3, 15, "ea3b0e5b7f1419f8")],
-        "_strptime_time" => &[(3, 14, "a07883562e4bd221"), (3, 15, "e0467dd7db84fb10")],
-        "_strptime" => &[(3, 14, "5f43d74e422c65ac"), (3, 15, "8c49f07e7219b400")],
-        "_getlang" => &[(3, 14, "8234af0123bf2302"), (3, 15, "d040dda165365f38")],
-        "_parse_tz" => &[(3, 14, "5e6b4a159588db5d"), (3, 15, "574da3f094e543ea")],
-        "_fixmonths" => &[(3, 14, "a754f0e332ffe2b8"), (3, 15, "6978de62c431c738")],
-        "getlocale" => &[(3, 14, "1ae23ba5ff95dfc2"), (3, 15, "b17640d2f4f6b6c2")],
-        "_parse_localename" => &[(3, 14, "40c27a311aaccd02"), (3, 15, "6a3e6a53e6e9c08f")],
-        "normalize" => &[(3, 14, "8f5395ecb624269f"), (3, 15, "b04d4ec2bd73f17c")],
-        "TimeRE.__init__" => &[(3, 14, "894e5840de882a68"), (3, 15, "5638d3e380d6e5e2")],
-        "TimeRE._TimeRE__seqToRE" => &[(3, 14, "8a980141b1c1dcd8"), (3, 15, "61ebda3e40f3db1d")],
-        "TimeRE.pattern" => &[(3, 14, "fbfe157c97a52afb"), (3, 15, "a1e5c8c16afc8efc")],
-        "TimeRE.compile" => &[(3, 14, "b341ef86c4daa78a"), (3, 15, "c29d22ef39fc6ca0")],
+        "_strptime_datetime_datetime" => &[(3, 14, "4beb911d71dd87bc"), (3, 15, "78d16a7ed4ddeba0")],
+        "_strptime_datetime_date" => &[(3, 14, "51c5573cad121d01"), (3, 15, "d9a664d66476b7bb")],
+        "_strptime_datetime_time" => &[(3, 14, "8069b45f5bcf7dec"), (3, 15, "f8ff45c4dd63b26a")],
+        "_strptime_time" => &[(3, 14, "93e790072c913105"), (3, 15, "50b125778a5dca4d")],
+        "_strptime" => &[(3, 14, "89fd394e42461045"), (3, 15, "c143f8352a0b01b5")],
+        "_getlang" => &[(3, 14, "27e4adb5de175de2"), (3, 15, "30c4390b610fd90d")],
+        "_parse_tz" => &[(3, 14, "ecf697b9df34cb2d"), (3, 15, "a2e51f6d6174666e")],
+        "_fixmonths" => &[(3, 14, "3d54d2a033bfdcf1"), (3, 15, "9b4da6485ec893b9")],
+        "getlocale" => &[(3, 14, "f968b3c9457f6c43"), (3, 15, "17624659bd5e6d41")],
+        "_parse_localename" => &[(3, 14, "d09bd0daee17ff36"), (3, 15, "b34fc7cbc4c26c6a")],
+        "normalize" => &[(3, 14, "933dce848be24a0e"), (3, 15, "d77ca0412769d24a")],
+        "TimeRE.__init__" => &[(3, 14, "06c46c3dd5a832d4"), (3, 15, "e6a6564b3c80a3c1")],
+        "TimeRE._TimeRE__seqToRE" => &[(3, 14, "608b2c8cae55772e"), (3, 15, "934dc4130b2bb350")],
+        "TimeRE.pattern" => &[(3, 14, "782023e9caec96e2"), (3, 15, "c03e9460964c2c13")],
+        "TimeRE.compile" => &[(3, 14, "7b6c294c6ffc3dd7"), (3, 15, "82cdef59d33c7e10")],
         _ => &[],
     }
 }
 
-/// C entry points (method definitions) the kernels replace (`fastfp::method_def`).
+/// C entry points (method definitions) the kernels replace.
 pub fn c(name: &str) -> Fingerprints {
     match name {
-        "datetime.datetime.strptime" => &[(3, 14, "aaa4a5d22304732c"), (3, 15, "5bad6d9c269a6d60")],
-        "datetime.date.strptime" => &[(3, 14, "7b5bd010217a0886"), (3, 15, "f581d6076ea90509")],
-        "datetime.time.strptime" => &[(3, 14, "10a289233e46a62e"), (3, 15, "e208f47e4665a8df")],
-        "datetime.date.strftime" => &[(3, 14, "b405caeeca036f24"), (3, 15, "072502a3d515ab0d")],
-        "datetime.time.strftime" => &[(3, 14, "b405caeeca036f24"), (3, 15, "145408c88b879769")],
-        "datetime.datetime.isoformat" => &[(3, 14, "c19c8cb4f7434c01"), (3, 15, "c92efb43bb948f42")],
-        "datetime.date.isoformat" => &[(3, 14, "258bb13574d1d304"), (3, 15, "258bb13574d1d304")],
-        "datetime.time.isoformat" => &[(3, 14, "7310902bdfa8f987"), (3, 15, "4384bd1ef4dfd1ff")],
-        "time.strptime" => &[(3, 14, "2a21679255e7dc75"), (3, 15, "2a21679255e7dc75")],
-        "time.strftime" => &[(3, 14, "712f5007a4c92f8f"), (3, 15, "712f5007a4c92f8f")],
+        "datetime.datetime.strptime" => &[(3, 14, "e584c3169ffc40f2"), (3, 15, "b93548f6d74165af")],
+        "datetime.date.strptime" => &[(3, 14, "429050ff630d11fd"), (3, 15, "c85c2f84d89df72a")],
+        "datetime.time.strptime" => &[(3, 14, "e91e35d557e75aa2"), (3, 15, "0572e013a22aa9e2")],
+        "time.strptime" => &[(3, 14, "633878062ff6886c"), (3, 15, "633878062ff6886c")],
+        "datetime.date.strftime" => &[(3, 14, "1daa815724b5b913"), (3, 15, "1e7c65fada5a5ba5")],
+        "datetime.time.strftime" => &[(3, 14, "1daa815724b5b913"), (3, 15, "0996633a011a5569")],
+        "time.strftime" => &[(3, 14, "d7799c4aa3b998d3"), (3, 15, "d7799c4aa3b998d3")],
+        "datetime.datetime.isoformat" => &[(3, 14, "9ef6efc1cf6a87b2"), (3, 15, "c0779ff2e71ee16f")],
+        "datetime.date.isoformat" => &[(3, 14, "69c033b648a84eda"), (3, 15, "69c033b648a84eda")],
+        "datetime.time.isoformat" => &[(3, 14, "a4cd19d89666c202"), (3, 15, "6ad063497f363aec")],
         _ => &[],
     }
 }

@@ -102,8 +102,8 @@ fn get<'py>(d: &Bound<'py, PyDict>, key: &str) -> Result<Bound<'py, PyAny>, Stri
 
 fn fp_ok(name: &str, f: &Bound<'_, PyAny>) -> Result<(), String> {
     let (major, minor) = crate::accel::version::running();
-    // SAFETY: an exact function (checked by the callers); code layout calibrated.
-    let observed = unsafe { super::fastfp::function(f.as_ptr()) }.ok_or_else(|| format!("{name}: no fingerprint"))?;
+    // The registry's canonical fingerprint (format v2, cached per code object).
+    let observed = crate::accel::fingerprint::function(f).map_err(|e| format!("{name}: {e}"))?;
     match crate::accel::fingerprint::expected_for(fingerprints::code(name), major, minor) {
         Some(x) if x == observed => Ok(()),
         _ => Err(format!("fingerprint: {name}: {observed} not validated for {major}.{minor}")),
@@ -116,14 +116,7 @@ pub fn fingerprints_of(py: Python<'_>, m: &Bound<'_, pyo3::types::PyModule>) -> 
     let _ = py;
     let d = m.dict();
     let mut out = Vec::new();
-    // SAFETY: attached thread; the caller checked the code layout; non-functions give "".
-    let fp = |f: &Bound<'_, PyAny>| {
-        if f.cast_exact::<pyo3::types::PyFunction>().is_err() {
-            return String::new();
-        }
-        // SAFETY: an exact function.
-        unsafe { super::fastfp::function(f.as_ptr()) }.unwrap_or_default()
-    };
+    let fp = |f: &Bound<'_, PyAny>| crate::accel::fingerprint::function(f).unwrap_or_default();
     let locale = item(&d, "locale").and_then(|l| l.cast_into::<pyo3::types::PyModule>().ok());
     for name in FUNCS.iter().chain(["_fixmonths"].iter()) {
         if let Some(f) = item(&d, name) {
@@ -816,6 +809,23 @@ pub fn prepare_common(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         TYPES[0].store((*api).DateTimeType as usize, Ordering::Relaxed);
         TYPES[1].store((*api).DateType as usize, Ordering::Relaxed);
         TYPES[2].store((*api).TimeType as usize, Ordering::Relaxed);
+    }
+    // The dev tool (record mode) lists the Python code the kernels check lazily.
+    if cx.record
+        && let Ok(m) = cx.loaded_module("_strptime")
+    {
+        let d = m.dict();
+        let locale = cx.get(&d, "locale")?.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?;
+        for name in FUNCS.iter().chain(["_fixmonths"].iter()) {
+            cx.fingerprint_code(&cx.get(&d, name)?, fingerprints::code(name))?;
+        }
+        for name in LOCALE_FUNCS {
+            cx.fingerprint_code(&cx.get(&locale.dict(), name)?, fingerprints::code(name))?;
+        }
+        for (cls, meth) in CLASS_METHODS {
+            let ty = cx.get(&d, cls)?.cast_into::<pyo3::types::PyType>().map_err(PyErr::from)?;
+            cx.fingerprint_code(&cx.type_attr(&ty, meth)?, fingerprints::code(&format!("{cls}.{meth}")))?;
+        }
     }
     Ok(())
 }

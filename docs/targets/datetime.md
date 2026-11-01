@@ -181,11 +181,7 @@ every other locale fall back.
 ## 4. Fingerprints, self-tests, install cost
 
 Fingerprints (`fingerprints.rs`, values for 3.14 and 3.15, identical on free-threaded
-builds) use the group's cheap canonical hash (`fastfp.rs`: the fields of the contract's
-canonical code fingerprint — bytecode, names, local names and kinds, flags, argument counts,
-exception table, constants recursively, defaults — read from the code object and hashed
-8 bytes at a time; ~10k Ir per function instead of ~250k through the generic
-`fingerprint_code`):
+builds) are the registry's canonical format v2 (cached per code object):
 
 - the 10 C methods (`ml_name`, `ml_flags`, `ml_doc`): checked in `prepare`; a mismatch
   refuses that target (category `fingerprint`);
@@ -196,9 +192,10 @@ exception table, constants recursively, defaults — read from the code object a
   output is checked by value). Checked when the kernels first see a `_strptime` module
   object (the call after the one that imported it), together with the dependency
   snapshot; a mismatch makes the strptime kernels fall back (reason in
-  `_accel._datetime_debug()["strptime_last_failure"]`), it does not show as a refusal in
-  `status()` (open point for the registry: a "degraded" state).
-- `benches/targets/_dt_fp_report.py` prints the current values.
+  `_accel._datetime_debug()["strptime_last_failure"]`; the registry's planned "degraded"
+  status annotation will show it in `status()`). The registry's dev tool lists them
+  (record mode checks them in `prepare` when `_strptime` is imported):
+  `python -m rustique._takeover._dev report --only datetime --import datetime,_strptime,time`.
 
 Self-tests (kernel vs original on a probe) only for `time.strftime` and
 `date.isoformat` (one call each); the strptime originals run Python code, which `prepare`
@@ -212,20 +209,21 @@ quiet `_accel.enable`; the registry's own baseline, `enable(only=["_selftest.met
 
 | region | Ir | group's share |
 |---|---:|---:|
-| `enable(only=["datetime"])`, `datetime`/`_strptime`/`zoneinfo` imported (10 targets install) | 169,400 | ~145,000 |
-| `enable(only=["datetime"])`, nothing imported (`time.strftime` installs, 9 pending) | 109,700 | ~85,000 |
-| `import datetime` after `enable()` (9 targets install lazily) | 433,700 → 539,600 | +105,900 (+24.4%) |
-| the strptime call after `_strptime` was imported (captures it once) | 41,900 → 287,100 | +245,200, once (2.9% of `import _strptime`, 8.6M Ir) |
+| `enable(only=["datetime"])`, `datetime`/`_strptime`/`zoneinfo` imported (10 targets install) | 171,200 | ~147,000 |
+| `enable(only=["datetime"])`, nothing imported (`time.strftime` installs, 9 pending) | 109,200 | ~85,000 |
+| `import datetime` after `enable()` (9 targets install lazily) | 433,300 → 542,200 | +108,900 (+25.1%) |
+| the strptime call after `_strptime` was imported (captures it once) | 41,600 → 380,600 | +339,000, once (3.6% of `import _strptime`, 9.4M Ir; 245k with the group's earlier cheap fingerprint) |
 
-Before trimming the first row was 6.35M Ir (the generic fingerprints of `_strptime`, four
-times, plus a self-test per target). The budget (≤ 0.1M Ir per group at `enable()`, ≤ 5% of
-the triggering import) is still exceeded by the first and third rows. Of the 145k: the
+Before trimming the first row was 6.35M Ir (the v1 fingerprints of `_strptime`, four
+times, at install, plus a self-test per target). The budget (≤ 0.1M Ir per group at `enable()`, ≤ 5% of
+the triggering import) is still exceeded by the first and third rows. Of the ~147k: the
 registry's local-monitoring calibration for module targets (~26k plus a probe compile),
 `phdr` writability checks of 10 sites (~14k), the group's environment capture (builtins,
-`time`, glibc locale, layout calibrations: ~40k), 10 cheap C fingerprints (~11k), two
+`time`, glibc locale, layout calibrations: ~40k), 10 C fingerprints, two
 probes, and ~2–3k of registry work per target. `import datetime` pays the same per-target
-work against a cheap import (434k Ir); folding the 10 targets into fewer (one per entry
-family) or sharing the registry's per-target overhead would be the next steps.
+work against a cheap import (433k Ir). Next step (ruling): adopt accel-core's second pass
+(GroupSpec, pre-interned keys, cheaper activation) when it lands and re-measure, including
+the whole-process cells (`python -c pass` with `RUSTIQUE=1`, `devtools/import_startup`).
 
 ## 5. Private state
 

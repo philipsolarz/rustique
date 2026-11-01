@@ -24,7 +24,6 @@ use pyo3::types::PyType;
 use crate::accel::{Prepare, Refusal, TargetSpec};
 
 pub mod env;
-pub mod fastfp;
 mod fingerprints;
 mod fmtcache;
 pub mod format;
@@ -106,17 +105,9 @@ fn module_def(cx: &mut Prepare<'_>, obj: &Bound<'_, PyAny>, label: &str) -> Resu
     // SAFETY: attached thread.
     let def = unsafe { crate::accel::site::method_def(obj.as_ptr()) }
         .ok_or_else(|| Refusal::from(format!("{label}: not a builtin method")))?;
-    // The group's cheap fingerprint (the registry's hashes the docs byte by byte).
     // SAFETY: a live (static) method table entry.
-    let observed = unsafe { fastfp::method_def(def) };
-    let (major, minor) = cx.version();
-    match crate::accel::fingerprint::expected_for(fingerprints::c(label), major, minor) {
-        Some(x) if x == observed => Ok(def),
-        _ => Err(Refusal::with(
-            crate::accel::Category::Fingerprint,
-            format!("{label}: fingerprint {observed} not validated for {major}.{minor}"),
-        )),
-    }
+    unsafe { cx.fingerprint_def(label, def, fingerprints::c(label))? };
+    Ok(def)
 }
 
 /// `cls` from the C API.
@@ -551,40 +542,6 @@ fn _datetime_debug(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
     Ok(d)
 }
 
-/// `_accel._datetime_cfingerprints()`: current fingerprints of the C methods the targets
-/// patch (to maintain `fingerprints.rs`).
-#[pyfunction]
-fn _datetime_cfingerprints(py: Python<'_>) -> PyResult<Vec<(String, String)>> {
-    let mut out = Vec::new();
-    let dt = py.import("datetime")?;
-    let time = py.import("time")?;
-    let items = [
-        ("datetime.datetime.strptime", dt.getattr("datetime")?, "strptime"),
-        ("datetime.date.strptime", dt.getattr("date")?, "strptime"),
-        ("datetime.time.strptime", dt.getattr("time")?, "strptime"),
-        ("datetime.date.strftime", dt.getattr("date")?, "strftime"),
-        ("datetime.time.strftime", dt.getattr("time")?, "strftime"),
-        ("datetime.datetime.isoformat", dt.getattr("datetime")?, "isoformat"),
-        ("datetime.date.isoformat", dt.getattr("date")?, "isoformat"),
-        ("datetime.time.isoformat", dt.getattr("time")?, "isoformat"),
-        ("time.strptime", time.clone().into_any(), "strptime"),
-        ("time.strftime", time.into_any(), "strftime"),
-    ];
-    for (label, owner, name) in items {
-        let o = if owner.is_instance_of::<PyType>() {
-            owner.getattr("__dict__")?.get_item(name)?
-        } else {
-            owner.getattr(name)?
-        };
-        // SAFETY: attached thread.
-        if let Some(def) = unsafe { crate::accel::site::method_def(o.as_ptr()) } {
-            // SAFETY: a live method def.
-            out.push((label.to_string(), unsafe { fastfp::method_def(def) }));
-        }
-    }
-    Ok(out)
-}
-
 /// `_accel._datetime_fingerprints(module)`: current fingerprints of the `_strptime` code
 /// the kernels reimplement (to maintain `fingerprints.rs`).
 #[pyfunction]
@@ -599,6 +556,5 @@ fn _datetime_fingerprints(py: Python<'_>, m: &Bound<'_, pyo3::types::PyModule>) 
 
 pub fn register(accel: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
     accel.add_function(wrap_pyfunction!(_datetime_debug, accel)?)?;
-    accel.add_function(wrap_pyfunction!(_datetime_cfingerprints, accel)?)?;
     accel.add_function(wrap_pyfunction!(_datetime_fingerprints, accel)?)
 }
