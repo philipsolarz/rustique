@@ -58,29 +58,53 @@ unsafe extern "C" {
 
 pub const PY_MONITORING_EVENT_PY_START: u8 = 0;
 
+/// `_PY_MONITORING_UNGROUPED_EVENTS` (3.14 and 3.15): PY_START … STOP_ITERATION, RAISE,
+/// EXCEPTION_HANDLED, PY_UNWIND, PY_THROW, RERAISE. The grouped events (C_RETURN, C_RAISE,
+/// BRANCH) are set through CALL / BRANCH_LEFT+RIGHT, which are in this range.
+pub const UNGROUPED_EVENTS: usize = 16;
+const ALL_EVENTS: [u8; UNGROUPED_EVENTS] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+/// Number of local events in `_Py_LocalMonitors.tools` (`_co_monitoring`'s first member):
+/// `_PY_MONITORING_LOCAL_EVENTS` = 11 on 3.14, `_PY_MONITORING_UNGROUPED_EVENTS` = 16 on
+/// 3.15 (RAISE, EXCEPTION_HANDLED, PY_UNWIND, PY_THROW, RERAISE became local events).
+/// Calibrated at `enable()` (`version::monitoring_layout_ok`).
+pub const LOCAL_EVENTS: usize = if cfg!(Py_3_15) { 16 } else { 11 };
+
 // ---------------------------------------------------------------------------------------
 // Tools
 // ---------------------------------------------------------------------------------------
 
-/// Monitoring scope of one target: `PyMonitoring_EnterScope` returns after one compare when
-/// the interpreter's global monitoring version has not changed since the last call.
+/// Monitoring scope of one target: is any `sys.monitoring` tool listening, globally, to any
+/// event a Python function's execution can produce (all ungrouped events: PY_START, LINE,
+/// CALL, RAISE, ...; `sys.settrace`/`setprofile`, cProfile and coverage are tools too)?
+/// `PyMonitoring_EnterScope` returns after one compare when the interpreter's monitoring
+/// version has not changed; the any-active verdict is recomputed only when it has.
 ///
-/// Shared by all threads: the API writes `version`/`state` non-atomically; concurrent
+/// Shared by all threads: the API writes `version`/`states` non-atomically; concurrent
 /// writers store the same values (a benign race, as in Cython's use of the same API).
 pub struct Tools {
     version: UnsafeCell<u64>,
-    state: UnsafeCell<PyMonitoringState>,
+    states: UnsafeCell<[PyMonitoringState; UNGROUPED_EVENTS]>,
+    /// Version for which `busy` was computed.
+    seen: UnsafeCell<u64>,
+    busy: UnsafeCell<bool>,
 }
 
-// SAFETY: see the type docs (benign same-value races, written only by CPython's API).
+// SAFETY: see the type docs (benign same-value races, written only by CPython's API and by
+// `quiet`, which derives `busy` from them).
 unsafe impl Sync for Tools {}
 
 impl Tools {
     pub const fn new() -> Self {
-        Tools { version: UnsafeCell::new(0), state: UnsafeCell::new(PyMonitoringState { active: 0, opaque: 0 }) }
+        Tools {
+            version: UnsafeCell::new(0),
+            states: UnsafeCell::new([PyMonitoringState { active: 0, opaque: 0 }; UNGROUPED_EVENTS]),
+            seen: UnsafeCell::new(0),
+            busy: UnsafeCell::new(false),
+        }
     }
 
-    /// True when no tool listens to `PY_START` in this interpreter (global events).
+    /// True when no tool listens globally to any ungrouped event in this interpreter.
     ///
     /// # Safety
     /// Attached thread.
@@ -88,9 +112,26 @@ impl Tools {
     pub unsafe fn quiet(&self) -> bool {
         // SAFETY: valid pointers to this scope's storage.
         unsafe {
-            let ev = PY_MONITORING_EVENT_PY_START;
-            PyMonitoring_EnterScope(self.state.get(), self.version.get(), &ev, 1);
-            (*self.state.get()).active == 0
+            PyMonitoring_EnterScope(
+                self.states.get().cast(),
+                self.version.get(),
+                ALL_EVENTS.as_ptr(),
+                UNGROUPED_EVENTS as ffi::Py_ssize_t,
+            );
+            let v = *self.version.get();
+            if v != *self.seen.get() {
+                self.recompute(v);
+            }
+            !*self.busy.get()
+        }
+    }
+
+    #[cold]
+    unsafe fn recompute(&self, v: u64) {
+        // SAFETY: per `quiet`.
+        unsafe {
+            *self.busy.get() = (*self.states.get()).iter().any(|s| s.active != 0);
+            *self.seen.get() = v;
         }
     }
 }
@@ -109,12 +150,12 @@ impl std::fmt::Debug for Tools {
 
 /// No tool listens *locally* on this code object (`sys.monitoring.set_local_events`, what a
 /// debugger breakpoint or a per-function profiler does). Reads `_co_monitoring` (NULL until a
-/// tool ever instrumented the code) and its first member `local_monitors.tools[0..11]`
-/// (internal layout, identical for the 11 local events in 3.14 and 3.15; calibrated by the
-/// registry for every target with a vectorcall site).
+/// tool ever instrumented the code) and its first member `local_monitors.tools[LOCAL_EVENTS]`
+/// (internal layout: 11 events on 3.14, 16 on 3.15; calibrated at `enable()`).
 ///
 /// # Safety
-/// `code` is a live code object; layout calibrated (`version::code_layout_ok`).
+/// `code` is a live code object; layout calibrated (`version::code_layout_ok_for`,
+/// `version::monitoring_layout_ok`).
 #[inline(always)]
 pub unsafe fn code_locally_quiet(code: *mut ffi::PyObject) -> bool {
     // SAFETY: per the caller.
@@ -124,7 +165,11 @@ pub unsafe fn code_locally_quiet(code: *mut ffi::PyObject) -> bool {
             return true;
         }
         let lo = std::ptr::read_unaligned(mon.cast::<u64>());
-        let hi = std::ptr::read_unaligned(mon.add(8).cast::<u16>()) as u64 | (*mon.add(10) as u64) << 16;
+        let hi = if LOCAL_EVENTS == 16 {
+            std::ptr::read_unaligned(mon.add(8).cast::<u64>())
+        } else {
+            std::ptr::read_unaligned(mon.add(8).cast::<u16>()) as u64 | (*mon.add(10) as u64) << 16
+        };
         lo == 0 && hi == 0
     }
 }
@@ -227,8 +272,8 @@ struct Snapshot {
     broken: bool,
 }
 
-/// A generation watch: `gen` is bumped on every change of `dict[key]` (and on wholesale
-/// changes of the dict). Process lifetime; deduplicated.
+/// A generation watch: `gen` is bumped on every change of `dict[key]` (`key` 0: of any key)
+/// and on wholesale changes of the dict. Process lifetime; deduplicated.
 struct GenWatch {
     dict: usize,
     key: usize,
@@ -343,7 +388,7 @@ unsafe extern "C" fn on_dict_event(
     let mut touched: Vec<&'static DepFlag> = Vec::new();
     for g in t.gens.iter().filter(|g| g.dict == dict as usize) {
         // SAFETY: attached thread; live objects.
-        if wholesale || unsafe { same_key(key, g.key) } {
+        if wholesale || g.key == 0 || unsafe { same_key(key, g.key) } {
             g.counter.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -477,6 +522,22 @@ pub fn watch(dict: &Bound<'_, PyDict>, key: &str, gen_: &'static AtomicU64) -> P
     }
     watch_dict(py, dict.as_ptr())?;
     tables().gens.push(GenWatch { dict: dict.clone().into_ptr() as usize, key: k.into_ptr() as usize, counter: gen_ });
+    Ok(())
+}
+
+/// Whole-dict generation watch: bump `gen` on every added, replaced or deleted key of
+/// `dict` and on wholesale changes, so a kernel can cache a fact derived from a small dict
+/// (a mapping it scans) between mutations. Idempotent per `(dict, gen)`; process lifetime.
+pub fn watch_dict_generation(dict: &Bound<'_, PyDict>, gen_: &'static AtomicU64) -> PyResult<()> {
+    let py = dict.py();
+    {
+        let t = tables();
+        if t.gens.iter().any(|g| g.dict == dict.as_ptr() as usize && g.key == 0 && std::ptr::eq(g.counter, gen_)) {
+            return Ok(());
+        }
+    }
+    watch_dict(py, dict.as_ptr())?;
+    tables().gens.push(GenWatch { dict: dict.clone().into_ptr() as usize, key: 0, counter: gen_ });
     Ok(())
 }
 

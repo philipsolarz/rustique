@@ -392,3 +392,17 @@ def test_override_verdict_cache():
     assert A._selftest_overrides(Plain) is False
     Base.__fspath__ = lambda self: ""  # defined on the base itself: not an override
     assert A._selftest_overrides(Plain) is False
+
+
+def test_whole_dict_generation_watch():
+    d = {"a": 1}
+    g = A._selftest_watch_dict(d)
+    assert A._selftest_watch_dict(d) == g  # idempotent, no event
+    d["b"] = 2
+    d["a"] = 3
+    del d["b"]
+    assert A._selftest_watch_dict(d) == g + 3
+    d["a"] = 3  # same object: CPython sends no event
+    assert A._selftest_watch_dict(d) == g + 3
+    d.clear()
+    assert A._selftest_watch_dict(d) == g + 4

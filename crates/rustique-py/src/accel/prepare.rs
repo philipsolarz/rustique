@@ -373,6 +373,9 @@ impl<'py> Prepare<'py> {
             return Err(Refusal::with(Category::Conflict, format!("{what}: not a pure-Python function")));
         }
         let code = func.getattr("__code__")?;
+        if version::monitoring_layout_ok() != Some(true) {
+            return Err(Refusal::with(Category::Layout, format!("{what}: local monitoring layout not calibrated")));
+        }
         if !version::code_layout_ok_for(&code)? {
             return Err(Refusal::with(Category::Layout, format!("{what}: PyCodeObject layout differs")));
         }

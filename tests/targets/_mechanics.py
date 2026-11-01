@@ -253,7 +253,7 @@ def assert_disable_restores(name: str, obj: Any, call: Callable[[], Any]) -> Non
 # --------------------------------------------------------------------------------------
 
 
-def _tool_contexts(code: Any) -> dict[str, Callable[[list[Any]], contextlib.AbstractContextManager[Any]]]:
+def _tool_contexts(code: Any) -> dict[str, tuple[Callable[[list[Any]], contextlib.AbstractContextManager[Any]], bool]]:
     @contextlib.contextmanager
     def settrace(seen: list[Any]) -> Iterator[None]:
         def tracer(frame: Any, event: str, arg: Any) -> Any:
@@ -296,52 +296,59 @@ def _tool_contexts(code: Any) -> dict[str, Callable[[list[Any]], contextlib.Abst
                 if fname == code.co_name and line == code.co_firstlineno:
                     seen.extend(["call"] * row[1])
 
-    @contextlib.contextmanager
-    def monitoring_global(seen: list[Any]) -> Iterator[None]:
-        mon = sys.monitoring
-        tool = 5
-        mon.use_tool_id(tool, "rustique-mechanics")
-        try:
-            mon.register_callback(tool, mon.events.PY_START, lambda c, off: seen.append("start") if c is code else None)
-            mon.set_events(tool, mon.events.PY_START)
-            yield
-        finally:
-            mon.set_events(tool, 0)
-            mon.register_callback(tool, mon.events.PY_START, None)
-            mon.free_tool_id(tool)
+    def monitoring(events: int, local: bool) -> Callable[[list[Any]], contextlib.AbstractContextManager[None]]:
+        @contextlib.contextmanager
+        def ctx(seen: list[Any]) -> Iterator[None]:
+            mon = sys.monitoring
+            tool = 5
+            mon.use_tool_id(tool, "rustique-mechanics")
+            try:
+                for ev in range(16):
+                    if events & (1 << ev):
+                        mon.register_callback(tool, 1 << ev, lambda c, *a: seen.append(ev) if c is code else None)
+                if local:
+                    mon.set_local_events(tool, code, events)
+                else:
+                    mon.set_events(tool, events)
+                yield
+            finally:
+                if local:
+                    mon.set_local_events(tool, code, 0)
+                else:
+                    mon.set_events(tool, 0)
+                for ev in range(16):
+                    if events & (1 << ev):
+                        mon.register_callback(tool, 1 << ev, None)
+                mon.free_tool_id(tool)
 
-    @contextlib.contextmanager
-    def monitoring_local(seen: list[Any]) -> Iterator[None]:
-        mon = sys.monitoring
-        tool = 5
-        mon.use_tool_id(tool, "rustique-mechanics")
-        try:
-            mon.register_callback(tool, mon.events.LINE, lambda c, line: seen.append("line"))
-            mon.set_local_events(tool, code, mon.events.LINE)
-            yield
-        finally:
-            mon.set_local_events(tool, code, 0)
-            mon.register_callback(tool, mon.events.LINE, None)
-            mon.free_tool_id(tool)
+        return ctx
 
-    return {
-        "settrace": settrace,
-        "setprofile": setprofile,
-        "cProfile": cprofile,
-        "sys.monitoring PY_START": monitoring_global,
-        "sys.monitoring local LINE": monitoring_local,
+    ev = sys.monitoring.events
+    tools = {
+        "settrace": (settrace, True),
+        "setprofile": (setprofile, True),
+        "cProfile": (cprofile, True),
+        "sys.monitoring PY_START": (monitoring(ev.PY_START, False), True),
+        # Tools listening to other events only must see the original's frames too.
+        "sys.monitoring LINE only": (monitoring(ev.LINE, False), True),
+        "sys.monitoring RAISE only": (monitoring(ev.RAISE, False), False),
+        "sys.monitoring local LINE": (monitoring(ev.LINE, True), True),
     }
+    if sys.version_info >= (3, 15):  # RAISE & co. became local events in 3.15
+        tools["sys.monitoring local RAISE"] = (monitoring(ev.RAISE, True), False)
+    return tools
 
 
 def assert_tools_see_original(name: str, func: Any, call: Callable[[], Any], *, calls: int = 3) -> None:
     """Python-function targets: under each tool (settrace, setprofile, cProfile,
-    sys.monitoring global PY_START and local LINE events on the original's code) the call
-    runs the original (the tool sees its frame; the kernel counts a `tools` fallback), and
-    the kernel is reached again once the tool stops."""
+    sys.monitoring global PY_START / LINE-only / RAISE-only, local LINE and, on 3.15, local
+    RAISE events on the original's code) the call runs the original (the tool sees its
+    frame; the kernel counts a `tools` fallback), and the kernel is reached again once the
+    tool stops."""
     code = func.__code__
     expected = call()
     with enabled(name):
-        for label, ctx in _tool_contexts(code).items():
+        for label, (ctx, emits) in _tool_contexts(code).items():
             seen: list[Any] = []
             with counting(name) as c:
                 with ctx(seen):
@@ -349,7 +356,8 @@ def assert_tools_see_original(name: str, func: Any, call: Callable[[], Any], *, 
                         assert call() == expected, label
                 assert c.hits == 0, (label, c)
                 assert c.fallback("tools") >= calls, (label, c)
-            assert seen, f"{label}: the tool saw no frame of the original"
+            if emits:
+                assert seen, f"{label}: the tool saw no frame of the original"
             with counting(name) as c:
                 assert call() == expected
                 assert c.hits == 1, (label, "kernel not reached after the tool stopped", c)
