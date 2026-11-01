@@ -57,6 +57,9 @@ fn disable<'py>(
 ) -> PyResult<Option<Bound<'py, PyDict>>> {
     let all = names.is_none_or(|n| n.is_none());
     registry::disable(py, self::names(names)?)?;
+    if all {
+        super::switch::reset_source();
+    }
     if all && !NATIVE.lock().unwrap_or_else(|p| p.into_inner()).is_empty() {
         let modules = py.import("sys")?.getattr("modules")?;
         if let Ok(hook) = modules.get_item("rustique._takeover._hook") {
@@ -75,14 +78,23 @@ fn _set_native(patterns: Vec<String>) {
     *NATIVE.lock().unwrap_or_else(|p| p.into_inner()) = patterns;
 }
 
-/// `{"targets": [...], "process": {...}}` (docs/ACCELERATION.md §6.2).
+/// `{"targets": [...], "process": {...}}` (docs/ACCELERATION.md §6.2), including the
+/// switch state (`process["switch"]`), `process["free_threaded"]` and the native tier's
+/// patterns.
 #[pyfunction]
-fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
+pub(crate) fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     let st = registry::status(py)?;
-    let native = NATIVE.lock().unwrap_or_else(|p| p.into_inner()).clone();
-    st.get_item("process")?
+    let process = st
+        .get_item("process")?
         .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("status without process"))?
-        .set_item("native", PyTuple::new(py, native)?)?;
+        .cast_into::<PyDict>()?;
+    let hook = py.import("sys")?.getattr("modules")?.get_item("rustique._takeover._hook").ok();
+    let native: Vec<String> = match hook {
+        Some(h) => h.call_method0("patterns")?.extract()?,
+        None => NATIVE.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+    };
+    process.set_item("native", PyTuple::new(py, native)?)?;
+    super::switch::describe(py, &process)?;
     Ok(st)
 }
 
@@ -195,7 +207,7 @@ fn add_extras(sub: &Bound<'_, PyModule>) -> PyResult<()> {
 #[pyfunction]
 #[pyo3(name = "__getattr__")]
 fn accel_getattr(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
-    let sub = py.import("rustique._rustique")?.getattr("_accel")?.cast_into::<PyModule>()?;
+    let sub = crate::module(py)?.getattr("_accel")?.cast_into::<PyModule>()?;
     if !(name.starts_with("__") && name.ends_with("__")) {
         add_extras(&sub)?;
         if let Some(v) = sub.dict().get_item(name)? {
@@ -218,6 +230,12 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(check, &sub)?)?;
     sub.add_function(wrap_pyfunction!(check_mode, &sub)?)?;
     sub.add_function(wrap_pyfunction!(accel_getattr, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(super::switch::startup, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(super::switch::py_switch_enable, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(super::switch::killed, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(super::switch::report_to, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(super::switch::record, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(super::switch::report_at_exit, &sub)?)?;
     sub.add("FREE_THREADED", super::version::FREE_THREADED)?;
     m.add("_accel", sub)
 }

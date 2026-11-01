@@ -635,7 +635,7 @@ fn canonical<'py>(py: Python<'py>, schema: &Arc<Schema>) -> PyResult<Bound<'py, 
         Schema::Float => py.get_type::<PyFloat>().into_any(),
         Schema::Bool | Schema::Fixed(DType::Bool) => py.get_type::<PyBool>().into_any(),
         Schema::Str | Schema::Fixed(DType::Str) => py.get_type::<PyString>().into_any(),
-        Schema::Fixed(dtype) => py.import("rustique._rustique")?.getattr(dtype.name())?,
+        Schema::Fixed(dtype) => crate::module(py)?.getattr(dtype.name())?,
         Schema::Optional(inner) => {
             let mut members = match &**inner {
                 Schema::Union(members) => canonical_all(py, members)?,
