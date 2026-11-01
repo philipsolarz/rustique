@@ -2,7 +2,7 @@
 environment variables, the kill switch, selection, the report at exit.
 
 Selection and kill-switch logic is tested against a fake framework (what reaches
-`rustique._framework`), so these tests hold whatever targets are registered; a few tests
+`rustique._switch._fw`), so these tests hold whatever targets are registered; a few tests
 run the real framework end to end in subprocesses.
 """
 

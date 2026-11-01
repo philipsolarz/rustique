@@ -66,11 +66,11 @@ class _Session:
 def pytest_configure(config: pytest.Config) -> None:
     if not config.getoption("rustique"):
         return
-    from rustique import _framework, _switch
+    from rustique import _switch
 
     _switch.stats(enabled=True)
     if (config.getoption("rustique_check") or config.getoption("rustique_check_raise")) and not _switch.killed():
-        _framework.check("raise" if config.getoption("rustique_check_raise") else "warn")
+        _switch._fw.check("raise" if config.getoption("rustique_check_raise") else "warn")
     _switch.enable(only=config.getoption("rustique_only"), exclude=config.getoption("rustique_exclude"),
                    _source="pytest --rustique")
     config.stash[_KEY] = _Session(config)

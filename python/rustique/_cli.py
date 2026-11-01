@@ -107,9 +107,7 @@ def run(argv: list[str]) -> None:
     if opts.report and _switch.report_target() is None:
         _switch.report_to("stderr")
     if (opts.check or opts.check_raise) and not _switch.killed():
-        from rustique import _framework
-
-        _framework.check("raise" if opts.check_raise else "warn")
+        _switch._fw.check("raise" if opts.check_raise else "warn")
     _switch.enable(only=opts.only, exclude=opts.exclude, native=opts.native or None,
                    builtins=not opts.no_builtins, _source="python -m rustique")
     native_main = (bool(opts.native) or opts.native_main) and not _switch.killed()

@@ -274,7 +274,7 @@ def test_plugin_kill_switch(plain_suite):
 
 
 REFUSE = """
-import rustique._framework as fw
+import rustique._takeover as fw
 _status = fw.status
 def status():
     st = _status()
@@ -310,7 +310,7 @@ def test_plugin_check_mode(plain_suite):
 
 
 MISMATCH = """
-import rustique._framework as fw
+import rustique._takeover as fw
 _stats = fw.stats
 def stats(enabled=None, reset=False):
     out = _stats(enabled=enabled, reset=reset)

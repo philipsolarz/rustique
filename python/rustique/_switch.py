@@ -1,7 +1,7 @@
 """The user-facing switches (docs/ACCELERATION.md §8, docs/USAGE.md).
 
 ``rustique.enable``/``disable``/``status``/``stats``/``native`` are defined here, on top of the
-acceleration framework (``rustique._framework``). This layer adds what the environment
+acceleration framework (``rustique._takeover``, accel-core). This layer adds what the environment
 controls:
 
 ``RUSTIQUE``
@@ -32,7 +32,8 @@ Like ``PYTHON*`` variables, all of them are ignored under ``-E`` and ``-I``.
 import os
 import sys
 
-from rustique import _framework as _fw
+# The framework, by module attribute so that tests can substitute a fake.
+from rustique import _takeover as _fw
 
 ON = ("1", "true", "yes", "on")
 OFF = ("0", "false", "no", "off")
@@ -241,7 +242,7 @@ def _register_report(target: str) -> None:
 def record() -> dict:
     """This process's status and counters, as one JSON-able record (``RUSTIQUE_REPORT=x.json``)."""
     return {"pid": os.getpid(), "argv": list(sys.argv), "status": status(),
-            "stats": stats(), "counters": _fw.counters_available()}
+            "stats": stats(), "counters": True}
 
 
 def _report_at_exit() -> None:
