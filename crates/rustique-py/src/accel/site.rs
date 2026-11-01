@@ -51,7 +51,7 @@ pub struct Site {
 // SAFETY: plain addresses; the referenced memory is process-global or kept alive.
 unsafe impl Send for Site {}
 
-/// Which type slot.
+/// Which type slot. (Additive: new slots may be appended.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SlotName {
     TpRepr,
@@ -66,25 +66,107 @@ pub enum SlotName {
     SqConcat,
     SqContains,
     MpSubscript,
+    TpGetattro,
+    TpSetattro,
+    TpDescrGet,
+    TpInit,
+    TpNew,
+    NbSubtract,
+    NbMultiply,
+    NbPower,
+    NbNegative,
+    NbAbsolute,
+    NbBool,
+    NbInvert,
+    NbLshift,
+    NbRshift,
+    NbAnd,
+    NbXor,
+    NbOr,
+    NbInt,
+    NbFloat,
+    NbFloorDivide,
+    NbTrueDivide,
+    NbIndex,
+    SqLength,
+    SqRepeat,
+    SqItem,
+    MpLength,
+    MpAssSubscript,
 }
 
 impl SlotName {
+    /// Every slot, with its C name, C arity and the dunder whose wrapper
+    /// descriptor reports the slot's function (`d_wrapped`), if any.
+    const INFO: &'static [(SlotName, &'static str, usize, Option<&'static str>)] = &[
+        (SlotName::TpRepr, "tp_repr", 1, Some("__repr__")),
+        (SlotName::TpStr, "tp_str", 1, Some("__str__")),
+        (SlotName::TpHash, "tp_hash", 1, Some("__hash__")),
+        (SlotName::TpCall, "tp_call", 3, Some("__call__")),
+        (SlotName::TpRichcompare, "tp_richcompare", 3, None),
+        (SlotName::TpIter, "tp_iter", 1, Some("__iter__")),
+        (SlotName::TpIternext, "tp_iternext", 1, Some("__next__")),
+        (SlotName::NbAdd, "nb_add", 2, None),
+        (SlotName::NbRemainder, "nb_remainder", 2, None),
+        (SlotName::SqConcat, "sq_concat", 2, None),
+        (SlotName::SqContains, "sq_contains", 2, Some("__contains__")),
+        (SlotName::MpSubscript, "mp_subscript", 2, Some("__getitem__")),
+        (SlotName::TpGetattro, "tp_getattro", 2, Some("__getattribute__")),
+        (SlotName::TpSetattro, "tp_setattro", 3, None),
+        (SlotName::TpDescrGet, "tp_descr_get", 3, Some("__get__")),
+        (SlotName::TpInit, "tp_init", 3, Some("__init__")),
+        (SlotName::TpNew, "tp_new", 3, None),
+        (SlotName::NbSubtract, "nb_subtract", 2, None),
+        (SlotName::NbMultiply, "nb_multiply", 2, None),
+        (SlotName::NbPower, "nb_power", 3, None),
+        (SlotName::NbNegative, "nb_negative", 1, Some("__neg__")),
+        (SlotName::NbAbsolute, "nb_absolute", 1, Some("__abs__")),
+        (SlotName::NbBool, "nb_bool", 1, Some("__bool__")),
+        (SlotName::NbInvert, "nb_invert", 1, Some("__invert__")),
+        (SlotName::NbLshift, "nb_lshift", 2, None),
+        (SlotName::NbRshift, "nb_rshift", 2, None),
+        (SlotName::NbAnd, "nb_and", 2, None),
+        (SlotName::NbXor, "nb_xor", 2, None),
+        (SlotName::NbOr, "nb_or", 2, None),
+        (SlotName::NbInt, "nb_int", 1, Some("__int__")),
+        (SlotName::NbFloat, "nb_float", 1, Some("__float__")),
+        (SlotName::NbFloorDivide, "nb_floor_divide", 2, None),
+        (SlotName::NbTrueDivide, "nb_true_divide", 2, None),
+        (SlotName::NbIndex, "nb_index", 1, Some("__index__")),
+        (SlotName::SqLength, "sq_length", 1, None),
+        (SlotName::SqRepeat, "sq_repeat", 2, None),
+        (SlotName::SqItem, "sq_item", 2, None),
+        (SlotName::MpLength, "mp_length", 1, None),
+        (SlotName::MpAssSubscript, "mp_ass_subscript", 3, None),
+    ];
+
+    fn info(self) -> (&'static str, usize, Option<&'static str>) {
+        let (_, n, a, d) = Self::INFO.iter().find(|i| i.0 == self).copied().expect("every slot has info");
+        (n, a, d)
+    }
+
+    /// The C field name (`"tp_repr"`).
+    pub fn c_name(self) -> &'static str {
+        self.info().0
+    }
+
+    /// Number of C arguments of the slot function.
+    pub fn arity(self) -> usize {
+        self.info().1
+    }
+
+    /// The dunder whose wrapper descriptor wraps this slot alone (`None` when several
+    /// slots share dunders or the wrapper does not record the slot function).
+    pub fn dunder(self) -> Option<&'static str> {
+        self.info().2
+    }
+
     pub fn parse(s: &str) -> PyResult<Self> {
-        Ok(match s {
-            "tp_repr" => Self::TpRepr,
-            "tp_str" => Self::TpStr,
-            "tp_hash" => Self::TpHash,
-            "tp_call" => Self::TpCall,
-            "tp_richcompare" => Self::TpRichcompare,
-            "tp_iter" => Self::TpIter,
-            "tp_iternext" => Self::TpIternext,
-            "nb_add" => Self::NbAdd,
-            "nb_remainder" => Self::NbRemainder,
-            "sq_concat" => Self::SqConcat,
-            "sq_contains" => Self::SqContains,
-            "mp_subscript" => Self::MpSubscript,
-            _ => return Err(PyValueError::new_err(format!("unknown slot {s:?}"))),
-        })
+        Self::INFO
+            .iter()
+            .find(|i| i.1 == s)
+            .map(|i| i.0)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown slot {s:?}")))
     }
 }
 
@@ -95,6 +177,15 @@ impl SlotName {
 pub unsafe fn slot_addr(t: *mut ffi::PyTypeObject, slot: SlotName) -> Option<usize> {
     // SAFETY: field address computations on a ready type; sub-tables checked for NULL.
     unsafe {
+        macro_rules! field {
+            ($table:expr, $f:ident) => {{
+                let tab = $table;
+                if tab.is_null() {
+                    return None;
+                }
+                (&raw mut (*tab).$f) as usize
+            }};
+        }
         let addr = match slot {
             SlotName::TpRepr => (&raw mut (*t).tp_repr) as usize,
             SlotName::TpStr => (&raw mut (*t).tp_str) as usize,
@@ -103,35 +194,38 @@ pub unsafe fn slot_addr(t: *mut ffi::PyTypeObject, slot: SlotName) -> Option<usi
             SlotName::TpRichcompare => (&raw mut (*t).tp_richcompare) as usize,
             SlotName::TpIter => (&raw mut (*t).tp_iter) as usize,
             SlotName::TpIternext => (&raw mut (*t).tp_iternext) as usize,
-            SlotName::NbAdd | SlotName::NbRemainder => {
-                let nb = (*t).tp_as_number;
-                if nb.is_null() {
-                    return None;
-                }
-                if slot == SlotName::NbAdd {
-                    (&raw mut (*nb).nb_add) as usize
-                } else {
-                    (&raw mut (*nb).nb_remainder) as usize
-                }
-            }
-            SlotName::SqConcat | SlotName::SqContains => {
-                let sq = (*t).tp_as_sequence;
-                if sq.is_null() {
-                    return None;
-                }
-                if slot == SlotName::SqConcat {
-                    (&raw mut (*sq).sq_concat) as usize
-                } else {
-                    (&raw mut (*sq).sq_contains) as usize
-                }
-            }
-            SlotName::MpSubscript => {
-                let mp = (*t).tp_as_mapping;
-                if mp.is_null() {
-                    return None;
-                }
-                (&raw mut (*mp).mp_subscript) as usize
-            }
+            SlotName::TpGetattro => (&raw mut (*t).tp_getattro) as usize,
+            SlotName::TpSetattro => (&raw mut (*t).tp_setattro) as usize,
+            SlotName::TpDescrGet => (&raw mut (*t).tp_descr_get) as usize,
+            SlotName::TpInit => (&raw mut (*t).tp_init) as usize,
+            SlotName::TpNew => (&raw mut (*t).tp_new) as usize,
+            SlotName::NbAdd => field!((*t).tp_as_number, nb_add),
+            SlotName::NbRemainder => field!((*t).tp_as_number, nb_remainder),
+            SlotName::NbSubtract => field!((*t).tp_as_number, nb_subtract),
+            SlotName::NbMultiply => field!((*t).tp_as_number, nb_multiply),
+            SlotName::NbPower => field!((*t).tp_as_number, nb_power),
+            SlotName::NbNegative => field!((*t).tp_as_number, nb_negative),
+            SlotName::NbAbsolute => field!((*t).tp_as_number, nb_absolute),
+            SlotName::NbBool => field!((*t).tp_as_number, nb_bool),
+            SlotName::NbInvert => field!((*t).tp_as_number, nb_invert),
+            SlotName::NbLshift => field!((*t).tp_as_number, nb_lshift),
+            SlotName::NbRshift => field!((*t).tp_as_number, nb_rshift),
+            SlotName::NbAnd => field!((*t).tp_as_number, nb_and),
+            SlotName::NbXor => field!((*t).tp_as_number, nb_xor),
+            SlotName::NbOr => field!((*t).tp_as_number, nb_or),
+            SlotName::NbInt => field!((*t).tp_as_number, nb_int),
+            SlotName::NbFloat => field!((*t).tp_as_number, nb_float),
+            SlotName::NbFloorDivide => field!((*t).tp_as_number, nb_floor_divide),
+            SlotName::NbTrueDivide => field!((*t).tp_as_number, nb_true_divide),
+            SlotName::NbIndex => field!((*t).tp_as_number, nb_index),
+            SlotName::SqConcat => field!((*t).tp_as_sequence, sq_concat),
+            SlotName::SqContains => field!((*t).tp_as_sequence, sq_contains),
+            SlotName::SqLength => field!((*t).tp_as_sequence, sq_length),
+            SlotName::SqRepeat => field!((*t).tp_as_sequence, sq_repeat),
+            SlotName::SqItem => field!((*t).tp_as_sequence, sq_item),
+            SlotName::MpSubscript => field!((*t).tp_as_mapping, mp_subscript),
+            SlotName::MpLength => field!((*t).tp_as_mapping, mp_length),
+            SlotName::MpAssSubscript => field!((*t).tp_as_mapping, mp_ass_subscript),
         };
         (*(addr as *const usize) != 0).then_some(addr)
     }
@@ -195,7 +289,7 @@ impl Site {
         // SAFETY: aligned pointer-sized field.
         let original = unsafe { (*(addr as *const AtomicUsize)).load(Ordering::Acquire) };
         Ok(Site {
-            name: format!("{}.{slot:?}", t.qualname()?),
+            name: format!("{}.{}", t.qualname()?, slot.c_name()),
             kind: Kind::Slot,
             addr,
             original,

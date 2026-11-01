@@ -1,0 +1,293 @@
+//! Hidden group `_selftest`: targets that exercise every mechanism of the framework for the
+//! test-suite (`tests/test_accel_*.py`). Never enabled unless named explicitly
+//! (`rustique.enable(only=["_selftest"])`). Their kernels are deliberately *visible*
+//! (return `("kernel", x)` where the original returns `("orig", x)`) so tests can tell
+//! which one ran; real targets are indistinguishable from their originals.
+//!
+//! - `_selftest.meth`: `ml_meth` site on `_accel._probe` (a C function of ours).
+//! - `_selftest.vectorcall`: vectorcall site on `_rustique_selftest.ident` (module target:
+//!   lazy activation), with pins on a module global, an absent global, a builtin through
+//!   `pin_global`, and a class attribute through `pin_attr`; tools guard.
+//! - `_selftest.slot`: `tp_repr` of the heap type `_rustique_selftest.K`.
+//! - `_selftest.badfp`: refused: fingerprint mismatch.
+//! - `_selftest.refuse`: refused by its prepare.
+//! - `_selftest.cas`: two `ml_meth` sites; the second is changed by "someone else" after
+//!   validation, so install fails and the first must be rolled back.
+
+use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicPtr, Ordering};
+
+use pyo3::ffi;
+use pyo3::prelude::*;
+use pyo3::types::{PyString, PyType};
+
+use crate::accel::{self, Counters, DepFlag, Original, Prepare, Reason, Refusal, SlotName, TargetSpec, Tools};
+
+type O = *mut ffi::PyObject;
+
+const VERSIONS: &[(u8, u8)] = &[(3, 14), (3, 15)];
+const MODULE: &str = "_rustique_selftest";
+
+// ---------------------------------------------------------------------------------------
+// Probe C functions with writable, static method tables.
+// ---------------------------------------------------------------------------------------
+
+struct Defs(UnsafeCell<[ffi::PyMethodDef; 4]>);
+// SAFETY: written only through atomic pointer stores of `ml_meth` (sites) at install.
+unsafe impl Sync for Defs {}
+
+static KERNEL_STR: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
+static ORIG_STR: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
+
+/// `("orig"|"kernel", x)`.
+unsafe fn tagged(tag: &AtomicPtr<ffi::PyObject>, x: O) -> O {
+    // SAFETY: attached thread; the tag is a live interned str kept forever.
+    unsafe { ffi::PyTuple_Pack(2, tag.load(Ordering::Relaxed), x) }
+}
+
+unsafe extern "C" fn probe_orig(_m: O, x: O) -> O {
+    // SAFETY: METH_O call.
+    unsafe { tagged(&ORIG_STR, x) }
+}
+
+unsafe extern "C" fn probe_other(_m: O, _x: O) -> O {
+    // SAFETY: attached thread.
+    unsafe { ffi::Py_NewRef(ffi::Py_None()) }
+}
+
+static DEFS: Defs = Defs(UnsafeCell::new([
+    ffi::PyMethodDef {
+        ml_name: c"_probe".as_ptr(),
+        ml_meth: ffi::PyMethodDefPointer { PyCFunction: probe_orig },
+        ml_flags: ffi::METH_O,
+        ml_doc: c"Self-test probe.".as_ptr(),
+    },
+    ffi::PyMethodDef {
+        ml_name: c"_probe_a".as_ptr(),
+        ml_meth: ffi::PyMethodDefPointer { PyCFunction: probe_orig },
+        ml_flags: ffi::METH_O,
+        ml_doc: std::ptr::null(),
+    },
+    ffi::PyMethodDef {
+        ml_name: c"_probe_b".as_ptr(),
+        ml_meth: ffi::PyMethodDefPointer { PyCFunction: probe_orig },
+        ml_flags: ffi::METH_O,
+        ml_doc: std::ptr::null(),
+    },
+    ffi::PyMethodDef::zeroed(),
+]));
+
+fn def(i: usize) -> *mut ffi::PyMethodDef {
+    // SAFETY: in-bounds element of the static table.
+    unsafe { (*DEFS.0.get()).as_mut_ptr().add(i) }
+}
+
+// ---------------------------------------------------------------------------------------
+// _selftest.meth
+// ---------------------------------------------------------------------------------------
+
+static C_METH: Counters = Counters::new();
+static ORIG_METH: Original<ffi::PyCFunction> = Original::new();
+
+unsafe extern "C" fn k_meth(m: O, x: O) -> O {
+    // SAFETY: METH_O call.
+    unsafe {
+        if ffi::PyLong_CheckExact(x) != 0 {
+            C_METH.hit();
+            return tagged(&KERNEL_STR, x);
+        }
+        C_METH.fallback(Reason::Args);
+        ORIG_METH.get()(m, x)
+    }
+}
+
+fn prepare_meth(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    // SAFETY: a static, writable method table entry.
+    unsafe { cx.ml_meth_def("_accel._probe", def(0), k_meth as ffi::PyCFunction, &ORIG_METH) }
+}
+
+// ---------------------------------------------------------------------------------------
+// _selftest.vectorcall
+// ---------------------------------------------------------------------------------------
+
+static C_VC: Counters = Counters::new();
+static DEPS: DepFlag = DepFlag::new();
+static TOOLS: Tools = Tools::new();
+
+unsafe extern "C" fn k_ident(f: O, args: *const O, nargsf: usize, kw: O) -> O {
+    // SAFETY: vectorcall arguments from CPython; attached thread.
+    unsafe {
+        if !(kw.is_null() && nargsf & !ffi::PY_VECTORCALL_ARGUMENTS_OFFSET == 1) {
+            C_VC.fallback(Reason::Args);
+        } else if !DEPS.ok() {
+            C_VC.fallback(Reason::Deps);
+        } else if !accel::tools_quiet(&TOOLS, f) {
+            C_VC.fallback(Reason::Tools);
+        } else {
+            C_VC.hit();
+            return tagged(&KERNEL_STR, *args);
+        }
+        accel::FUNCTION_VECTORCALL.get()(f, args, nargsf, kw)
+    }
+}
+
+fn prepare_vectorcall(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let ident = cx.module_attr("ident")?;
+    let g = cx.module()?.dict();
+    cx.pin(&g, "DEP", &DEPS)?;
+    cx.pin_absent(&g, "SHADOW", &DEPS)?;
+    cx.pin_global(&g, "len", &DEPS)?;
+    let k = cx.module_attr("K")?.cast_into::<PyType>().map_err(PyErr::from)?;
+    cx.pin_attr(&k, "attr", &DEPS)?;
+    cx.vectorcall(&ident, k_ident, &accel::FUNCTION_VECTORCALL)
+}
+
+// ---------------------------------------------------------------------------------------
+// _selftest.slot
+// ---------------------------------------------------------------------------------------
+
+static C_SLOT: Counters = Counters::new();
+static ORIG_REPR: Original<ffi::reprfunc> = Original::new();
+static K_TYPE: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(std::ptr::null_mut());
+
+unsafe extern "C" fn k_repr(o: O) -> O {
+    // SAFETY: tp_repr call.
+    unsafe {
+        if ffi::Py_TYPE(o) == K_TYPE.load(Ordering::Relaxed) {
+            C_SLOT.hit();
+            return ffi::Py_NewRef(KERNEL_STR.load(Ordering::Relaxed));
+        }
+        C_SLOT.fallback(Reason::Args);
+        ORIG_REPR.get()(o)
+    }
+}
+
+fn prepare_slot(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let k = cx.module_attr("K")?.cast_into::<PyType>().map_err(PyErr::from)?;
+    // Keep the type alive for the process (the kernel compares its address).
+    K_TYPE.store(k.clone().into_ptr().cast(), Ordering::Relaxed);
+    cx.slot(&k, SlotName::TpRepr, k_repr as ffi::reprfunc, &ORIG_REPR)
+}
+
+// ---------------------------------------------------------------------------------------
+// _selftest.badfp, _selftest.refuse, _selftest.cas
+// ---------------------------------------------------------------------------------------
+
+static C_NONE: Counters = Counters::new();
+
+fn prepare_badfp(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let ident = cx.module_attr("ident")?;
+    cx.fingerprint_code(&ident, &[(3, 14, "0000000000000000"), (3, 15, "0000000000000000")])?;
+    cx.vectorcall(&ident, k_ident, &accel::FUNCTION_VECTORCALL)
+}
+
+fn prepare_refuse(_py: Python<'_>, _cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    Err(Refusal::new("selftest refusal"))
+}
+
+static ORIG_A: Original<ffi::PyCFunction> = Original::new();
+static ORIG_B: Original<ffi::PyCFunction> = Original::new();
+
+unsafe extern "C" fn k_a(m: O, x: O) -> O {
+    // SAFETY: forwarded.
+    unsafe { ORIG_A.get()(m, x) }
+}
+
+unsafe extern "C" fn k_b(m: O, x: O) -> O {
+    // SAFETY: forwarded.
+    unsafe { ORIG_B.get()(m, x) }
+}
+
+fn prepare_cas(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    // SAFETY: static, writable method table entries.
+    unsafe {
+        cx.ml_meth_def("_accel._probe_a", def(1), k_a as ffi::PyCFunction, &ORIG_A)?;
+        cx.ml_meth_def("_accel._probe_b", def(2), k_b as ffi::PyCFunction, &ORIG_B)?;
+        // "Someone else" patches `_probe_b` after validation: install must fail and roll
+        // `_probe_a` back. (`_accel._selftest_untamper()` restores it.)
+        set_meth(2, probe_other as ffi::PyCFunction as usize);
+    }
+    Ok(())
+}
+
+/// # Safety
+/// Index of a static probe entry; `f` a METH_O function.
+unsafe fn set_meth(i: usize, f: usize) {
+    // SAFETY: aligned pointer-sized field of a static entry.
+    unsafe { (*(&raw mut (*def(i)).ml_meth).cast::<std::sync::atomic::AtomicUsize>()).store(f, Ordering::Release) };
+}
+
+macro_rules! target {
+    ($id:ident, $name:literal, $module:expr, $counters:ident, $prepare:ident) => {
+        pub static $id: TargetSpec = TargetSpec {
+            name: $name,
+            group: "_selftest",
+            module: $module,
+            versions: VERSIONS,
+            free_threaded: true,
+            counters: &$counters,
+            prepare: $prepare,
+            ..TargetSpec::DEFAULT
+        };
+    };
+}
+
+target!(METH, "_selftest.meth", None, C_METH, prepare_meth);
+target!(VECTORCALL, "_selftest.vectorcall", Some(MODULE), C_VC, prepare_vectorcall);
+target!(SLOT, "_selftest.slot", Some(MODULE), C_SLOT, prepare_slot);
+target!(BADFP, "_selftest.badfp", Some(MODULE), C_NONE, prepare_badfp);
+target!(REFUSE, "_selftest.refuse", None, C_NONE, prepare_refuse);
+target!(CAS, "_selftest.cas", None, C_NONE, prepare_cas);
+
+pub static TARGETS: &[&TargetSpec] = &[&METH, &VECTORCALL, &SLOT, &BADFP, &REFUSE, &CAS];
+
+// ---------------------------------------------------------------------------------------
+// Python helpers
+// ---------------------------------------------------------------------------------------
+
+/// Undo `_selftest.cas`'s simulated foreign patch.
+#[pyfunction]
+fn _selftest_untamper() {
+    // SAFETY: static probe entry, METH_O function.
+    unsafe { set_meth(2, probe_orig as ffi::PyCFunction as usize) };
+}
+
+/// Whether the probe entries hold their original functions: `[_probe, _probe_a, _probe_b]`.
+#[pyfunction]
+fn _selftest_probe_state() -> Vec<bool> {
+    (0..3)
+        .map(|i| {
+            // SAFETY: static probe entry.
+            let cur = unsafe {
+                (*(&raw const (*def(i)).ml_meth).cast::<std::sync::atomic::AtomicUsize>()).load(Ordering::Acquire)
+            };
+            cur == probe_orig as ffi::PyCFunction as usize
+        })
+        .collect()
+}
+
+/// The vectorcall self-test's dependency flag.
+#[pyfunction]
+fn _selftest_deps_ok() -> bool {
+    DEPS.ok()
+}
+
+pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    let py = m.py();
+    KERNEL_STR.store(PyString::intern(py, "kernel").into_ptr(), Ordering::Relaxed);
+    ORIG_STR.store(PyString::intern(py, "orig").into_ptr(), Ordering::Relaxed);
+    for (i, name) in [(0, "_probe"), (1, "_probe_a"), (2, "_probe_b")] {
+        // SAFETY: a static method def; module name string.
+        let f = unsafe {
+            Bound::from_owned_ptr_or_err(
+                py,
+                ffi::PyCFunction_NewEx(def(i), std::ptr::null_mut(), std::ptr::null_mut()),
+            )?
+        };
+        m.add(name, f)?;
+    }
+    m.add_function(wrap_pyfunction!(_selftest_untamper, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_probe_state, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_deps_ok, m)?)?;
+    Ok(())
+}
