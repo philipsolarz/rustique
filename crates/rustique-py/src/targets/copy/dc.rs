@@ -19,7 +19,7 @@ use pyo3::types::{PyDict, PyString};
 
 use super::rt::*;
 use super::{deep, original};
-use crate::accel::{self, Counters, DepFlag, Prepare, Reason, Refusal, TargetSpec, Tools};
+use crate::accel::{self, Counters, DepFlag, GroupSpec, Prepare, Reason, Refusal, TargetSpec, Tools};
 
 const VERSIONS: &[(u8, u8)] = &[(3, 14), (3, 15)];
 
@@ -36,6 +36,7 @@ static ASDICT: TargetSpec = TargetSpec {
     free_threaded: true,
     counters: &C_ASDICT,
     prepare: prepare_asdict,
+    shared: Some(&SHARED),
     ..TargetSpec::DEFAULT
 };
 
@@ -47,10 +48,15 @@ static ASTUPLE: TargetSpec = TargetSpec {
     free_threaded: true,
     counters: &C_ASTUPLE,
     prepare: prepare_astuple,
+    shared: Some(&SHARED),
     ..TargetSpec::DEFAULT
 };
 
 pub static TARGETS: &[&TargetSpec] = &[&ASDICT, &ASTUPLE];
+
+/// The group's shared declarations: fingerprints, [`DcSt`] and the pins of [`DEPS_DC`]
+/// (what either kernel reads), made once for both targets.
+static SHARED: GroupSpec = GroupSpec { name: "dataclasses", prepare: prepare_shared };
 
 /// Native levels of `_asdict_inner` before the rest of the subtree is left to CPython.
 const MAX_NATIVE_DEPTH: u32 = 200;
@@ -155,19 +161,11 @@ fn dc_atomic_types() -> [*mut ffi::PyTypeObject; 15] {
 }
 
 /// Validate the dataclasses module and build [`DcSt`]; pin what the helpers read.
-fn ensure_dc(py: Python<'_>, cx: &mut Prepare<'_>, which: Which) -> Result<(), Refusal> {
+fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let m = cx.module()?.clone();
     let (_, minor) = cx.version();
     super::tstate_offset(cx, minor)?;
     let g = m.dict();
-    // Built by another target of the group from this very module, with the same (already
-    // fingerprinted) functions: share it, its pins are declared below anyway.
-    let shared = !cx.record && {
-        let p = DST.load(Relaxed);
-        // SAFETY: never freed.
-        !p.is_null() && unsafe { (*p).globals } == g.as_ptr() && unsafe { same_functions(&*p, &g) }?
-    };
-
     let checks: [(&str, crate::accel::Fingerprints); 6] = [
         ("asdict", fp::ASDICT),
         ("_asdict_inner", fp::ASDICT_INNER),
@@ -176,16 +174,22 @@ fn ensure_dc(py: Python<'_>, cx: &mut Prepare<'_>, which: Which) -> Result<(), R
         ("fields", fp::FIELDS),
         ("_is_dataclass_instance", fp::IS_DC),
     ];
-    if !shared {
-        for (k, f) in checks {
-            let o = super::dget(&g, k)?;
-            super::check_fp(cx, &o, f)?;
-        }
+    for (k, f) in checks {
+        let o = super::dget(&g, k)?;
+        super::check_fp(cx, &o, f)?;
     }
-    if !shared {
-        build_dc(py, &g)?;
+    build_dc(py, &g)?;
+    pin_dc(cx, &g, minor)
+}
+
+/// [`DcSt`], as the group's shared prepare built it from this very module.
+fn group_state(cx: &Prepare<'_>) -> Result<(), Refusal> {
+    let p = DST.load(Relaxed);
+    // SAFETY: never freed.
+    if p.is_null() || unsafe { (*p).globals } != cx.module()?.dict().as_ptr() {
+        return Err("dataclasses group state missing".into());
     }
-    pin_dc(cx, &g, minor, which)
+    Ok(())
 }
 
 /// Validate `dataclasses`' globals and store [`DcSt`].
@@ -251,33 +255,36 @@ fn build_dc(py: Python<'_>, g: &Bound<'_, PyDict>) -> Result<(), Refusal> {
 }
 
 /// Pin what the emulated helpers of `which` read at call time.
-fn pin_dc(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, minor: u8, which: Which) -> Result<(), Refusal> {
-    let (globals, builtins): (&[&str], &[&str]) = match which {
-        Which::Asdict => (
-            &["_asdict_inner", "fields", "_FIELDS", "_FIELD", "_ATOMIC_TYPES", "_is_dataclass_instance", "Field"],
-            &["type", "hasattr", "getattr", "issubclass", "list", "dict", "tuple", "TypeError", "AttributeError"],
-        ),
-        Which::Astuple => (
-            &["_astuple_inner", "fields", "_FIELDS", "_FIELD", "_ATOMIC_TYPES", "_is_dataclass_instance", "Field"],
-            &["type", "hasattr", "getattr", "isinstance", "list", "dict", "tuple", "TypeError", "AttributeError"],
-        ),
-    };
-    for k in globals {
+fn pin_dc(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, minor: u8) -> Result<(), Refusal> {
+    for k in [
+        "_asdict_inner",
+        "_astuple_inner",
+        "fields",
+        "_FIELDS",
+        "_FIELD",
+        "_ATOMIC_TYPES",
+        "_is_dataclass_instance",
+        "Field",
+    ] {
         cx.pin(g, k, &DEPS_DC)?;
     }
-    match which {
-        Which::Asdict => {
-            let f = super::dget(g, "asdict")?;
-            let kw = f.getattr("__kwdefaults__")?.cast_into::<PyDict>().map_err(PyErr::from)?;
-            cx.pin(&kw, "dict_factory", &DEPS_DC)?;
-        }
-        Which::Astuple => {
-            let f = super::dget(g, "astuple")?;
-            let kw = f.getattr("__kwdefaults__")?.cast_into::<PyDict>().map_err(PyErr::from)?;
-            cx.pin(&kw, "tuple_factory", &DEPS_DC)?;
-        }
+    for (f, k) in [("asdict", "dict_factory"), ("astuple", "tuple_factory")] {
+        let f = super::dget(g, f)?;
+        let kw = f.getattr("__kwdefaults__")?.cast_into::<PyDict>().map_err(PyErr::from)?;
+        cx.pin(&kw, k, &DEPS_DC)?;
     }
-    for k in builtins {
+    for k in [
+        "type",
+        "hasattr",
+        "getattr",
+        "issubclass",
+        "isinstance",
+        "list",
+        "dict",
+        "tuple",
+        "TypeError",
+        "AttributeError",
+    ] {
         cx.pin_global(g, k, &DEPS_DC)?;
     }
     if minor >= 15 {
@@ -286,40 +293,14 @@ fn pin_dc(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, minor: u8, which: Which) 
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum Which {
-    Asdict,
-    Astuple,
-}
-
-/// The module still holds the function objects (and code objects) `d` was validated with.
-unsafe fn same_functions(d: &DcSt, g: &Bound<'_, PyDict>) -> Result<bool, Refusal> {
-    let pairs = [
-        ("asdict", d.asdict),
-        ("_asdict_inner", d.asdict_inner),
-        ("astuple", d.astuple),
-        ("_astuple_inner", d.astuple_inner),
-        ("fields", d.fields),
-        ("_is_dataclass_instance", d.is_dc),
-    ];
-    for (k, f) in pairs {
-        let cur = super::dget(g, k)?;
-        // SAFETY: a function object (identity-checked).
-        if cur.as_ptr() != f.0 || unsafe { (*f.0.cast::<ffi::PyFunctionObject>()).func_code } != f.1 {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn prepare_asdict(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    ensure_dc(py, cx, Which::Asdict)?;
+fn prepare_asdict(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    group_state(cx)?;
     let f = cx.module_attr("asdict")?;
     cx.vectorcall(&f, vc_asdict, &accel::FUNCTION_VECTORCALL)
 }
 
-fn prepare_astuple(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    ensure_dc(py, cx, Which::Astuple)?;
+fn prepare_astuple(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    group_state(cx)?;
     let f = cx.module_attr("astuple")?;
     cx.vectorcall(&f, vc_astuple, &accel::FUNCTION_VECTORCALL)
 }
@@ -728,7 +709,8 @@ unsafe fn kernel(
             c.fallback_streak(Reason::Args);
             return original(func, args, nargsf, kw);
         }
-        if !DEPS_DC.ok() || !same_code(f, true) || !same_code(inner, false) {
+        let d = dst();
+        if !DEPS_DC.ok() || !same_code(f, true) || !same_code(inner, false) || !same_code(d.is_dc, false) {
             c.fallback_streak(Reason::Deps);
             return original(func, args, nargsf, kw);
         }
@@ -736,7 +718,7 @@ unsafe fn kernel(
             c.fallback_streak(Reason::Tools);
             return original(func, args, nargsf, kw);
         }
-        let mut cx = Cx { d: dst(), budget: recursion_remaining(), used: 0 };
+        let mut cx = Cx { d, budget: recursion_remaining(), used: 0 };
         let obj = *args;
         let r = (|| {
             cx.push()?; // asdict's / astuple's frame

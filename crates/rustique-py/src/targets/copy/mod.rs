@@ -17,7 +17,7 @@ use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
 
-use crate::accel::{self, Counters, DepFlag, Prepare, Reason, Refusal, TargetSpec, Tools};
+use crate::accel::{self, Counters, DepFlag, GroupSpec, Prepare, Reason, Refusal, TargetSpec, Tools};
 use rt::*;
 
 const VERSIONS: &[(u8, u8)] = &[(3, 14), (3, 15)];
@@ -37,6 +37,7 @@ pub static DEEPCOPY: TargetSpec = TargetSpec {
     free_threaded: true,
     counters: &C_DEEPCOPY,
     prepare: prepare_deepcopy,
+    shared: Some(&SHARED),
     ..TargetSpec::DEFAULT
 };
 
@@ -48,10 +49,15 @@ pub static COPY: TargetSpec = TargetSpec {
     free_threaded: true,
     counters: &C_COPY,
     prepare: prepare_copy,
+    shared: Some(&SHARED),
     ..TargetSpec::DEFAULT
 };
 
 pub static TARGETS: &[&TargetSpec] = &[&DEEPCOPY, &COPY];
+
+/// The group's shared declarations: validation of `copy`/`copyreg` (fingerprints, type
+/// sets, layouts: [`St`]) and the pins of [`DEPS_COPY`], made once for both targets.
+static SHARED: GroupSpec = GroupSpec { name: "copy", prepare: prepare_shared };
 
 /// `_PyObject_GetMethod` of the running interpreter.
 static GET_METHOD: accel::Original<reduce::GetMethodFn> = accel::Original::new();
@@ -909,18 +915,31 @@ fn pin_deps(cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>) -> Result<(), Refu
     Ok(())
 }
 
-fn prepare_deepcopy(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let copy = cx.module()?.clone();
     ensure_state(py, cx, &copy)?;
-    pin_deps(cx, &copy)?;
+    pin_deps(cx, &copy)
+}
+
+/// [`St`], as the group's shared prepare built it from this very module.
+fn group_state(cx: &Prepare<'_>) -> Result<&'static St, Refusal> {
+    let p = ST.load(Relaxed);
+    // SAFETY: never freed.
+    if p.is_null() || unsafe { (*p).copy_dict } != cx.module()?.dict().as_ptr() {
+        return Err("copy group state missing".into());
+    }
+    // SAFETY: as above.
+    Ok(unsafe { &*p })
+}
+
+fn prepare_deepcopy(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    group_state(cx)?;
     let f = cx.module_attr("deepcopy")?;
     cx.vectorcall(&f, vc_deepcopy, &accel::FUNCTION_VECTORCALL)
 }
 
-fn prepare_copy(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    let copy = cx.module()?.clone();
-    ensure_state(py, cx, &copy)?;
-    pin_deps(cx, &copy)?;
+fn prepare_copy(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    group_state(cx)?;
     let f = cx.module_attr("copy")?;
     cx.vectorcall(&f, vc_copy, &accel::FUNCTION_VECTORCALL)
 }

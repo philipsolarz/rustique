@@ -398,7 +398,7 @@ def test_restart_counts_deopt_and_leaves_no_trace():
     assert hits("copy.deepcopy") == 3
 
 
-def test_restart_streak_suspends_and_hit_resets():
+def test_restart_suspension_policy():
     h = _Hook()
     for _ in range(40):
         copy.deepcopy([h])  # abandons the list: a streak step; the nested root hook: none
@@ -409,8 +409,9 @@ def test_restart_streak_suspends_and_hit_resets():
     copy.deepcopy([h] * 100)
     copy.deepcopy(7)
     assert S.A.stats()["copy.deepcopy"]["suspensions"] == 0
-    # Abandoned work, repeatedly (no nested hit in between): suspended at the streak limit.
-    for _ in range(70):
+    # Abandoned work, repeatedly (no hit in between): the net-benefit score earned by the
+    # hits above runs out, then the target is suspended.
+    for _ in range(400):
         copy.deepcopy([h])
     assert S.A.stats()["copy.deepcopy"]["suspensions"] == 1
 
