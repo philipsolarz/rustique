@@ -80,8 +80,6 @@ _KEY = pytest.StashKey[_Session]()
 
 
 def _record() -> dict:
-    import rustique
-
     import os
     import sys
 

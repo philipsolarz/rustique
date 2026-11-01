@@ -33,9 +33,6 @@ PYTEST_DONT_REWRITE (pytest would warn that this package, imported at startup un
 ``RUSTIQUE=1``, cannot be rewritten: it ships the ``rustique.pytest_plugin`` entry point).
 """
 
-import os
-import sys
-
 from rustique import _rustique
 from rustique._rustique import __version__
 
