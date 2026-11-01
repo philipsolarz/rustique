@@ -257,6 +257,14 @@ def test_instance_attribute_shadowing_falls_back():
     check("basename", s)
 
 
+def test_materialized_dict_falls_back_correctly():
+    s = S("/a/b")
+    vars(s)  # materializes an (empty) instance dict
+    check("split", s)
+    s.x = 1
+    check("split", s)
+
+
 def test_class_attribute_falls_back():
     class C(str):
         __class__ = bytes  # isinstance(x, bytes) consults __class__

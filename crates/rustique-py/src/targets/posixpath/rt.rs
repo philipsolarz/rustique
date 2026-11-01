@@ -447,8 +447,8 @@ unsafe extern "C" fn count_visit(_o: *mut ffi::PyObject, arg: *mut std::ffi::c_v
     0
 }
 
-/// Whether a managed-dict instance without a dict object has attributes in its inline
-/// values.
+/// Whether a managed-dict instance has a dict object or attributes in its inline values
+/// (`PyObject_VisitManagedDict` visits the dict if there is one, else the inline values).
 ///
 /// # Safety
 /// Attached thread; live instance of a managed-dict type.
@@ -465,58 +465,28 @@ const PLAIN_NAMES: [&str; 4] = ["startswith", "endswith", "rfind", "__class__"];
 
 struct PlainInfo {
     names: [(usize, usize); PLAIN_NAMES.len()],
-    /// Where a managed `__dict__` pointer lives relative to the object.
-    managed_dict_offset: isize,
 }
 
 static PLAIN: OnceLock<Option<PlainInfo>> = OnceLock::new();
 
 const MANAGED_DICT: std::ffi::c_ulong = 1 << 4;
 
+/// The descriptors `str` (and `object`) resolve the looked-up names to. Creates no
+/// objects visible to Python (no probe class: it would show in `str.__subclasses__()`).
 fn calibrate_plain(py: Python<'_>) -> PyResult<Option<PlainInfo>> {
     let mut names = [(0usize, 0usize); PLAIN_NAMES.len()];
     for (k, n) in PLAIN_NAMES.iter().enumerate() {
         let name = PyString::intern(py, n);
         // SAFETY: static type; interned name; borrowed result kept alive by the type.
         let d = unsafe { _PyType_Lookup(&raw mut ffi::PyUnicode_Type, name.as_ptr()) };
-        if !d.is_null() {
-            // SAFETY: live descriptor: keep a reference for the process lifetime.
-            unsafe { ffi::Py_IncRef(d) };
+        if d.is_null() {
+            return Ok(None);
         }
+        // SAFETY: live descriptor: keep a reference for the process lifetime.
+        unsafe { ffi::Py_IncRef(d) };
         names[k] = (name.clone().into_ptr() as usize, d as usize);
     }
-    // Probe: a str subclass instance with one attribute; its managed dict must be found at
-    // MANAGED_DICT_OFFSET (pycore_object.h: -3 words on GIL builds, -1 free-threaded).
-    let off: isize =
-        if cfg!(Py_GIL_DISABLED) { -(size_of::<usize>() as isize) } else { -3 * size_of::<usize>() as isize };
-    let ty = py.get_type::<pyo3::types::PyType>().call1((
-        "_RustiquePlainProbe",
-        (py.get_type::<PyString>(),),
-        PyDict::new(py),
-    ))?;
-    // SAFETY: a heap type object.
-    let flags = unsafe { ffi::PyType_GetFlags(ty.as_ptr().cast::<ffi::PyTypeObject>()) };
-    if flags & MANAGED_DICT == 0 {
-        return Ok(None);
-    }
-    let inst = ty.call1(("x",))?;
-    // SAFETY: a live instance of a managed-dict type.
-    let read = |o: &Bound<'_, PyAny>| unsafe { *(o.as_ptr().cast::<u8>().offset(off) as *const usize) };
-    // SAFETY: live instances of a managed-dict type.
-    let (empty_inline, set_inline) = unsafe {
-        let e = has_inline_attrs(inst.as_ptr());
-        inst.setattr("a", 1)?;
-        (e, has_inline_attrs(inst.as_ptr()))
-    };
-    let before = read(&inst);
-    let d = inst.getattr("__dict__")?;
-    let after = read(&inst);
-    // No attribute → nothing visited; an attribute is seen either in the inline values
-    // (no dict object yet) or in the dict; touching `__dict__` materializes it at `off`.
-    if empty_inline || !(set_inline || before != 0) || after != d.as_ptr() as usize {
-        return Ok(None);
-    }
-    Ok(Some(PlainInfo { names, managed_dict_offset: off }))
+    Ok(Some(PlainInfo { names }))
 }
 
 /// Calibrate once; false if plain-subclass support is unavailable (subclasses fall back).
@@ -565,26 +535,21 @@ pub unsafe fn plain_str_subclass(op: O) -> bool {
                 return false;
             }
         }
-        // No instance attribute may shadow a method: the instance dict is absent or empty.
+        // No instance attribute may shadow a method. Managed dicts: nothing to visit (no
+        // dict object and no inline values; an instance whose `__dict__` was materialized
+        // falls back even when empty). Classic dicts: absent or empty.
         let flags = ffi::PyType_GetFlags(tp);
-        let dict = if flags & MANAGED_DICT != 0 {
-            let cell =
-                op.cast::<u8>().offset(info.managed_dict_offset) as *const std::sync::atomic::AtomicPtr<ffi::PyObject>;
-            (*cell).load(std::sync::atomic::Ordering::Acquire)
-        } else if (*tp).tp_dictoffset == 0 {
-            std::ptr::null_mut()
-        } else if (*tp).tp_dictoffset > 0 {
-            let cell =
-                op.cast::<u8>().offset((*tp).tp_dictoffset) as *const std::sync::atomic::AtomicPtr<ffi::PyObject>;
-            (*cell).load(std::sync::atomic::Ordering::Acquire)
-        } else {
-            return false;
-        };
-        if dict.is_null() {
-            // Attributes may live in the inline values without a dict object.
-            flags & MANAGED_DICT == 0 || !has_inline_attrs(op)
-        } else {
-            ffi::PyDict_Size(dict) == 0
+        if flags & MANAGED_DICT != 0 {
+            return !has_inline_attrs(op);
+        }
+        match (*tp).tp_dictoffset {
+            0 => true,
+            off if off > 0 => {
+                let cell = op.cast::<u8>().offset(off) as *const std::sync::atomic::AtomicPtr<ffi::PyObject>;
+                let dict = (*cell).load(std::sync::atomic::Ordering::Acquire);
+                dict.is_null() || ffi::PyDict_Size(dict) == 0
+            }
+            _ => false,
         }
     }
 }
