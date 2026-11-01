@@ -1,0 +1,10 @@
+🍹 Building a mixed python/rust project
+🐍 Found CPython 3.16 at /home/ubuntu/phase0/venv/3.16.0a1/bin/python
+🔗 Found pyo3 bindings
+Using Python 3.16.0a1 environment at: /home/ubuntu/phase0/venv/3.16.0a1
+Resolved 16 packages in 4ms
+Checked 16 packages in 0.17ms
+    Finished `release` profile [optimized] target(s) in 0.02s
+📦 Built wheel for CPython 3.16 to /tmp/.tmpDh3S4s/rustique-0.2.0-cp316-cp316-linux_x86_64.whl
+✏️ Setting installed package as editable
+🛠 Installed rustique-0.2.0

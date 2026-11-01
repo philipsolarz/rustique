@@ -1,0 +1,4 @@
+3.16.0a1 /home/ubuntu/phase0/venv/3.16.0a1-pip/lib/python3.16/site-packages/rustique/__init__.py
+[1, 2, 3] 6 2.5 <class 'rustique.List'>
+3.16.0a1 /home/ubuntu/phase0/venv/3.16.0a1t-pip/lib/python3.16t/site-packages/rustique/__init__.py
+[1, 2, 3] 6 2.5 <class 'rustique.List'>

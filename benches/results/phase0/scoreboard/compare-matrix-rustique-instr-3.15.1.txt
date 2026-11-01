@@ -1,0 +1,36 @@
+old builds ['3.15.1'] (5660 cells), new builds ['3.15.1'] (3814 cells)
+status changes: 0
+-- 0-100 elements (instruction-count ratios): 3762 cells
+   new-old: identical (2 dp) 2747, |d|<=0.01 3146, |d|<=0.02 3359, |d|>0.05 154
+   new/old: geomean 1.0006, median 1.0000, p05 0.983, p95 1.018
+   crossed the 1.05 bar: up 12, down 6
+       1.06 -> 0.89  list/insert(0, v)/object/100
+       0.94 -> 1.08  frozenset/hash(x)/float/100
+       0.94 -> 1.07  frozenset/hash(x)/float/8
+       1.02 -> 1.13  frozenset/hash(x)/mixed/1
+       0.98 -> 1.06  tuple/hash(x)/object/0
+       1.01 -> 1.08  frozenset/hash(x)/float/1
+       1.01 -> 1.08  tuple/reversed/str/0
+       1.04 -> 1.08  list/reversed/float/1
+       1.04 -> 1.08  list/reversed/int/1
+     K 1.02 -> 1.06  set/sum(x)/int/0
+       1.03 -> 1.07  tuple/repr(x)/object/100
+       1.06 -> 1.02  frozenset/hash(x)/str/8
+       1.04 -> 1.07  list/reversed/mixed/1
+       1.08 -> 1.05  list/copy C(x)/int/8
+       1.07 -> 1.04  tuple/reversed/float/1
+     K 1.07 -> 1.05  dict/sorted(x)/str/8
+       1.05 -> 1.06  frozenset/enumerate/mixed/8
+       1.06 -> 1.05  frozenset/x & t/str/100
+   kernel-path cells: 586, geomean old 0.8838, new 0.8834
+   largest relative changes (top 10):
+       0.24 -> 0.31 (1.292x)  tuple/x * 2/float/100
+       2.32 -> 2.89 (1.246x)  dict/x == t/str/100
+       1.64 -> 1.35 (0.823x)  list/insert(0, v)/int/0
+       1.62 -> 1.35 (0.833x)  list/insert(0, v)/float/0
+       1.06 -> 0.89 (0.840x)  list/insert(0, v)/object/100
+       1.51 -> 1.79 (1.185x)  list/insert(0, v)/str/0
+       2.67 -> 3.11 (1.165x)  tuple/(*x, *y)/mixed/8
+       0.94 -> 1.08 (1.149x)  frozenset/hash(x)/float/100
+       0.94 -> 1.07 (1.138x)  frozenset/hash(x)/float/8
+       1.02 -> 1.13 (1.108x)  frozenset/hash(x)/mixed/1

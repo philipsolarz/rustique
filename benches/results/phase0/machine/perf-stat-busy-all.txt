@@ -1,0 +1,8 @@
+
+ Performance counter stats for 'system wide':
+
+      585234907573      cycles                                                                
+         160303.58 msec task-clock                                                            
+
+       5.009552921 seconds time elapsed
+

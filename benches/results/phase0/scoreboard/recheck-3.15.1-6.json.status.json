@@ -1,0 +1,1 @@
+{"frozenset/all(x)/float/10000": ["ok", ""], "frozenset/all(x)/float/1000000": ["ok", ""], "frozenset/all(x)/object/10000": ["ok", ""], "frozenset/all(x)/object/1000000": ["ok", ""]}

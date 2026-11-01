@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="0" skipped="1" tests="2" time="1.780" timestamp="2026-11-01T10:50:40.160030+00:00" hostname="ip-10-42-1-35"><testcase classname="" name="tests.test_buffer" time="0.000"><skipped message="collection skipped">('/home/ubuntu/phase0/w/3.16.0a1t/tests/test_buffer.py', 17, "Skipped: could not import 'numpy': No module named 'numpy'")</skipped></testcase><testcase classname="" name="tests.test_takeover_compat" time="0.000"><error message="collection failure">ImportError while importing test module '/home/ubuntu/phase0/w/3.16.0a1t/tests/test_takeover_compat.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+../../../.local/share/uv/python/cpython-3.16.0a1+freethreaded-linux-x86_64-gnu/lib/python3.16t/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_takeover_compat.py:27: in &lt;module&gt;
+    _spec.loader.exec_module(tc)
+benches/takeover_compat.py:39: in &lt;module&gt;
+    import numpy as np
+E   ModuleNotFoundError: No module named 'numpy'. Did you mean: 'runpy'?</error></testcase></testsuite></testsuites>

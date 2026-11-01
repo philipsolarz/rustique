@@ -1,0 +1,87 @@
+Note: switching to '5abd54cc261a1ecdcabb12f60815f886bf3ccfe3'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+Python 3.16.0a1 (main, Oct 21 2026, 17:49:48) [Clang 23.1.3 ]
+🍹 Building a mixed python/rust project
+🐍 Found CPython 3.16 at /home/ubuntu/phase0/venv/3.16.0a1/bin/python
+🔗 Found pyo3 bindings
+Using Python 3.16.0a1 environment at: /home/ubuntu/phase0/venv/3.16.0a1
+Resolved 16 packages in 57ms
+Downloading hypothesis (1.1MiB)
+Downloading mypy (2.7MiB)
+   Building librt==0.16.0
+ Downloaded hypothesis
+ Downloaded mypy
+      Built librt==0.16.0
+Prepared 4 packages in 9.64s
+Installed 15 packages in 84ms
+ + ast-serialize==0.13.1
+ + hypothesis==6.170.14
+ + iniconfig==2.3.1
+ + librt==0.16.0
+ + mypy==2.4.1
+ + mypy-extensions==1.1.0
+ + nodeenv==1.12.0
+ + packaging==26.3
+ + pathspec==1.1.1
+ + pluggy==1.7.0
+ + pygments==2.21.0
+ + pyright==1.1.414
+ + pytest==9.2.0
+ + sortedcontainers==2.4.0
+ + typing-extensions==4.16.0
+   Compiling target-lexicon v0.13.5
+   Compiling crossbeam-utils v0.8.23
+   Compiling proc-macro2 v1.0.107
+   Compiling libc v0.2.191
+   Compiling unicode-ident v1.0.27
+   Compiling quote v1.0.47
+   Compiling crossbeam-epoch v0.9.21
+   Compiling rustversion v1.0.23
+   Compiling crossbeam-deque v0.8.8
+   Compiling zmij v1.0.23
+   Compiling pyo3-macros-backend v0.30.1
+   Compiling rayon-core v1.13.0
+   Compiling heck v0.5.0
+   Compiling static_assertions v1.1.0
+   Compiling itoa v1.0.18
+   Compiling equivalent v1.0.3
+   Compiling cfg-if v1.0.5
+   Compiling allocator-api2 v0.2.21
+   Compiling either v1.19.0
+   Compiling pyo3-build-config v0.30.1
+   Compiling castaway v0.2.4
+   Compiling scopeguard v1.2.0
+   Compiling smallvec v1.16.4
+   Compiling foldhash v0.2.0
+   Compiling syn v3.0.9
+   Compiling hashbrown v0.17.1
+   Compiling lock_api v0.5.0
+   Compiling compact_str v0.10.0
+   Compiling once_cell v1.21.4
+   Compiling pyo3-ffi v0.30.1
+   Compiling pyo3 v0.30.1
+   Compiling rustique-py v0.2.0 (/home/ubuntu/phase0/w/3.16.0a1/crates/rustique-py)
+   Compiling parking_lot_core v0.10.0
+   Compiling rayon v1.12.0
+   Compiling parking_lot v0.13.0
+   Compiling rustique-core v0.2.0 (/home/ubuntu/phase0/w/3.16.0a1/crates/rustique-core)
+   Compiling pyo3-macros v0.30.1
+    Finished `release` profile [optimized] target(s) in 54.37s
+📦 Built wheel for CPython 3.16 to /tmp/.tmpPkKaTs/rustique-0.2.0-cp316-cp316-linux_x86_64.whl
+✏️ Setting installed package as editable
+🛠 Installed rustique-0.2.0

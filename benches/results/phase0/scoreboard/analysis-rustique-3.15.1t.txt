@@ -1,0 +1,824 @@
+=== 3.15.1t impl=rustique
+-- 0-100 elements (instructions): cells 3814, with ratio 3662 (metrics {'instr': 3662}), <= 1.05: 665/3814, geomean 1.5089, mismatch 100, error 52
+     mismatch: list/repr(x)/int/0
+     mismatch: list/repr(x)/int/1
+     mismatch: list/repr(x)/int/8
+     mismatch: list/repr(x)/int/100
+     mismatch: list/repr(x)/float/0
+     mismatch: list/repr(x)/float/1
+     mismatch: list/repr(x)/float/8
+     mismatch: list/repr(x)/float/100
+     mismatch: list/repr(x)/str/0
+     mismatch: list/repr(x)/str/1
+     mismatch: list/repr(x)/str/8
+     mismatch: list/repr(x)/str/100
+     mismatch: list/repr(x)/mixed/0
+     mismatch: list/repr(x)/mixed/1
+     mismatch: list/repr(x)/mixed/8
+     mismatch: list/repr(x)/mixed/100
+     mismatch: list/repr(x)/object/0
+     mismatch: list/repr(x)/object/1
+     mismatch: list/repr(x)/object/8
+     mismatch: list/repr(x)/object/100
+     mismatch: tuple/repr(x)/int/0
+     mismatch: tuple/repr(x)/int/1
+     mismatch: tuple/repr(x)/int/8
+     mismatch: tuple/repr(x)/int/100
+     mismatch: tuple/repr(x)/float/0
+     mismatch: tuple/repr(x)/float/1
+     mismatch: tuple/repr(x)/float/8
+     mismatch: tuple/repr(x)/float/100
+     mismatch: tuple/repr(x)/str/0
+     mismatch: tuple/repr(x)/str/1
+     mismatch: tuple/repr(x)/str/8
+     mismatch: tuple/repr(x)/str/100
+     mismatch: tuple/repr(x)/mixed/0
+     mismatch: tuple/repr(x)/mixed/1
+     mismatch: tuple/repr(x)/mixed/8
+     mismatch: tuple/repr(x)/mixed/100
+     mismatch: tuple/repr(x)/object/0
+     mismatch: tuple/repr(x)/object/1
+     mismatch: tuple/repr(x)/object/8
+     mismatch: tuple/repr(x)/object/100
+     mismatch: dict/repr(x)/int/0
+     mismatch: dict/repr(x)/int/1
+     mismatch: dict/repr(x)/int/8
+     mismatch: dict/repr(x)/int/100
+     mismatch: dict/repr(x)/float/0
+     mismatch: dict/repr(x)/float/1
+     mismatch: dict/repr(x)/float/8
+     mismatch: dict/repr(x)/float/100
+     mismatch: dict/repr(x)/str/0
+     mismatch: dict/repr(x)/str/1
+     mismatch: dict/repr(x)/str/8
+     mismatch: dict/repr(x)/str/100
+     mismatch: dict/repr(x)/mixed/0
+     mismatch: dict/repr(x)/mixed/1
+     mismatch: dict/repr(x)/mixed/8
+     mismatch: dict/repr(x)/mixed/100
+     mismatch: dict/repr(x)/object/0
+     mismatch: dict/repr(x)/object/1
+     mismatch: dict/repr(x)/object/8
+     mismatch: dict/repr(x)/object/100
+     mismatch: set/repr(x)/int/0
+     mismatch: set/repr(x)/int/1
+     mismatch: set/repr(x)/int/8
+     mismatch: set/repr(x)/int/100
+     mismatch: set/repr(x)/float/0
+     mismatch: set/repr(x)/float/1
+     mismatch: set/repr(x)/float/8
+     mismatch: set/repr(x)/float/100
+     mismatch: set/repr(x)/str/0
+     mismatch: set/repr(x)/str/1
+     mismatch: set/repr(x)/str/8
+     mismatch: set/repr(x)/str/100
+     mismatch: set/repr(x)/mixed/0
+     mismatch: set/repr(x)/mixed/1
+     mismatch: set/repr(x)/mixed/8
+     mismatch: set/repr(x)/mixed/100
+     mismatch: set/repr(x)/object/0
+     mismatch: set/repr(x)/object/1
+     mismatch: set/repr(x)/object/8
+     mismatch: set/repr(x)/object/100
+     mismatch: frozenset/repr(x)/int/0
+     mismatch: frozenset/repr(x)/int/1
+     mismatch: frozenset/repr(x)/int/8
+     mismatch: frozenset/repr(x)/int/100
+     mismatch: frozenset/repr(x)/float/0
+     mismatch: frozenset/repr(x)/float/1
+     mismatch: frozenset/repr(x)/float/8
+     mismatch: frozenset/repr(x)/float/100
+     mismatch: frozenset/repr(x)/str/0
+     mismatch: frozenset/repr(x)/str/1
+     mismatch: frozenset/repr(x)/str/8
+     mismatch: frozenset/repr(x)/str/100
+     mismatch: frozenset/repr(x)/mixed/0
+     mismatch: frozenset/repr(x)/mixed/1
+     mismatch: frozenset/repr(x)/mixed/8
+     mismatch: frozenset/repr(x)/mixed/100
+     mismatch: frozenset/repr(x)/object/0
+     mismatch: frozenset/repr(x)/object/1
+     mismatch: frozenset/repr(x)/object/8
+     mismatch: frozenset/repr(x)/object/100
+     error: list/json.dumps/int/0
+     error: list/json.dumps/int/1
+     error: list/json.dumps/int/8
+     error: list/json.dumps/int/100
+     error: list/json.dumps/float/0
+     error: list/json.dumps/float/1
+     error: list/json.dumps/float/8
+     error: list/json.dumps/float/100
+     error: list/json.dumps/str/0
+     error: list/json.dumps/str/1
+     error: list/json.dumps/str/8
+     error: list/json.dumps/str/100
+     error: list/json.dumps/mixed/0
+     error: list/json.dumps/mixed/1
+     error: list/json.dumps/mixed/8
+     error: list/json.dumps/mixed/100
+     error: list/json.dumps/object/0
+     error: list/json.dumps/object/1
+     error: list/json.dumps/object/8
+     error: list/json.dumps/object/100
+     error: tuple/json.dumps/int/0
+     error: tuple/json.dumps/int/1
+     error: tuple/json.dumps/int/8
+     error: tuple/json.dumps/int/100
+     error: tuple/json.dumps/float/0
+     error: tuple/json.dumps/float/1
+     error: tuple/json.dumps/float/8
+     error: tuple/json.dumps/float/100
+     error: tuple/json.dumps/str/0
+     error: tuple/json.dumps/str/1
+     error: tuple/json.dumps/str/8
+     error: tuple/json.dumps/str/100
+     error: tuple/json.dumps/mixed/0
+     error: tuple/json.dumps/mixed/1
+     error: tuple/json.dumps/mixed/8
+     error: tuple/json.dumps/mixed/100
+     error: tuple/json.dumps/object/0
+     error: tuple/json.dumps/object/1
+     error: tuple/json.dumps/object/8
+     error: tuple/json.dumps/object/100
+     error: dict/json.dumps/int/0
+     error: dict/json.dumps/int/1
+     error: dict/json.dumps/int/8
+     error: dict/json.dumps/int/100
+     error: dict/json.dumps/float/0
+     error: dict/json.dumps/float/1
+     error: dict/json.dumps/float/8
+     error: dict/json.dumps/float/100
+     error: dict/json.dumps/str/0
+     error: dict/json.dumps/str/1
+     error: dict/json.dumps/str/8
+     error: dict/json.dumps/str/100
+   kernel path: 586 cells, geomean 0.9143, median 1.1997, > 1.05: 339, < 0.95: 222, min 0.042, max 3.293
+   unchanged code: 3076 cells, geomean 1.6600, median 1.5893, > 1.05: 2658, < 0.95: 150, min 0.027, max 48.768
+   cells > 1.05 (2997): (top 60)
+       48.768  tuple/tuple(x)/str/100
+       48.712  tuple/tuple(x)/float/100
+       48.685  tuple/tuple(x)/int/100
+       47.246  tuple/tuple(x)/object/100
+       46.131  tuple/tuple(x)/mixed/100
+       12.067  dict/{**x, **t}/int/0
+       12.067  dict/{**x, **t}/float/0
+       12.067  dict/{**x, **t}/str/0
+       12.067  dict/{**x, **t}/mixed/0
+       12.067  dict/{**x, **t}/object/0
+       9.924  dict/{**x, **t}/float/1
+       9.784  dict/{**x, **t}/object/1
+       9.500  dict/{**x, **t}/mixed/1
+       9.495  dict/{**x, **t}/int/1
+       9.358  dict/{**x, **t}/float/100
+       8.984  dict/{**x, **t}/str/1
+       8.746  dict/{**x, **t}/object/100
+       8.137  dict/{**x, **t}/float/8
+       7.503  dict/{**x, **t}/int/100
+       7.478  dict/{**x, **t}/object/8
+       7.298  dict/{**x, **t}/mixed/100
+       7.166  list/[*x, *y]/str/100
+       7.117  tuple/literal/display/float/0
+       7.117  tuple/literal/display/str/0
+       7.117  tuple/literal/display/mixed/0
+       7.117  tuple/literal/display/object/0
+       7.090  tuple/literal/display/int/0
+       7.055  dict/{**x, **t}/mixed/8
+       6.893  dict/from dict/object/100
+       6.755  list/[*x, *y]/mixed/100
+       6.730  dict/{**x, **t}/int/8
+       6.682  dict/from dict/float/100
+       6.614  tuple/tuple(x)/float/8
+       6.613  tuple/tuple(x)/str/8
+       6.610  tuple/tuple(x)/int/8
+       6.492  tuple/tuple(x)/object/8
+       6.413  tuple/tuple(x)/mixed/8
+       6.366  list/[*x, *y]/object/100
+       6.176  frozenset/x.isdisjoint(t)/mixed/100
+       6.076  set/x.isdisjoint(t)/mixed/100
+       5.979  tuple/unpack exact/int/1
+       5.970  tuple/unpack exact/str/1
+       5.970  tuple/unpack exact/mixed/1
+       5.969  tuple/unpack exact/float/1
+       5.932  tuple/unpack exact/object/1
+       5.900  list/[*x, *y]/int/100
+       5.898  dict/{**x, **t}/str/8
+       5.807  set/literal/display/object/1
+       5.768  tuple/x == y/str/100
+       5.765  tuple/x < y/str/100
+       5.709  list/unpack exact/mixed/1
+       5.706  dict/{**x, **t}/str/100
+       5.704  list/unpack exact/str/1
+       5.704  list/unpack exact/int/1
+       5.704  list/unpack exact/float/1
+       5.685  list/unpack exact/object/1
+       5.612  list/[*x, *y]/float/100
+       5.602  frozenset/x.isdisjoint(t)/object/100
+       5.513  set/x.isdisjoint(t)/object/100
+       5.393  set/hit in x/mixed/100
+   kernel-path cells > 1.05 (339):
+     K 3.293  tuple/any(x)/object/8
+     K 3.230  tuple/any(x)/mixed/8
+     K 2.918  tuple/hit in x/str/1
+     K 2.695  tuple/any(x)/object/1
+     K 2.588  tuple/all(x)/object/1
+     K 2.573  tuple/hit in x/mixed/1
+     K 2.572  tuple/hit in x/int/1
+     K 2.503  tuple/max(x)/object/1
+     K 2.498  tuple/any(x)/int/0
+     K 2.498  tuple/any(x)/float/0
+     K 2.498  tuple/any(x)/str/0
+     K 2.498  tuple/any(x)/mixed/0
+     K 2.498  tuple/any(x)/object/0
+     K 2.497  tuple/all(x)/int/0
+     K 2.497  tuple/all(x)/float/0
+     K 2.497  tuple/all(x)/str/0
+     K 2.497  tuple/all(x)/mixed/0
+     K 2.497  tuple/all(x)/object/0
+     K 2.493  tuple/min(x)/object/1
+     K 2.492  tuple/hit in x/float/1
+     K 2.456  tuple/all(x)/mixed/8
+     K 2.305  list/hit in x/str/1
+     K 2.271  tuple/hit in x/object/1
+     K 2.252  list/any(x)/object/8
+     K 2.242  list/x.index(hit)/object/1
+     K 2.195  list/any(x)/mixed/8
+     K 2.185  tuple/x.index(hit)/str/1
+     K 2.171  tuple/sum(x)/int/0
+     K 2.171  tuple/sum(x)/float/0
+     K 2.166  dict/all(x)/object/1
+     K 2.164  list/x.index(hit)/str/1
+     K 2.159  dict/all(x)/float/1
+     K 2.152  dict/all(x)/str/1
+     K 2.095  tuple/x.count(hit)/str/1
+     K 2.088  dict/max(x)/object/1
+     K 2.081  dict/min(x)/object/1
+     K 2.078  dict/min(x)/float/1
+     K 2.076  dict/all(x)/int/0
+     K 2.076  dict/all(x)/str/0
+     K 2.076  dict/all(x)/mixed/0
+     K 2.076  dict/all(x)/object/0
+     K 2.076  dict/min(x)/str/1
+     K 2.071  dict/all(x)/float/0
+     K 2.070  dict/max(x)/float/1
+     K 2.066  dict/max(x)/str/1
+     K 2.050  tuple/x.index(hit)/mixed/1
+     K 2.048  tuple/x.index(hit)/int/1
+     K 2.041  list/hit in x/int/1
+     K 2.041  list/hit in x/mixed/1
+     K 2.038  list/x.index(hit)/int/1
+     K 2.038  list/x.index(hit)/mixed/1
+     K 2.018  tuple/x.index(hit)/float/1
+     K 2.009  list/x.index(hit)/float/1
+     K 1.976  list/hit in x/float/1
+     K 1.958  set/any(x)/str/1
+     K 1.955  set/any(x)/str/8
+     K 1.932  tuple/x.index(hit)/object/1
+     K 1.885  tuple/x.count(hit)/object/1
+     K 1.873  tuple/x.count(hit)/int/1
+     K 1.873  tuple/x.count(hit)/mixed/1
+     K 1.845  frozenset/any(x)/str/1
+     K 1.839  frozenset/any(x)/str/8
+     K 1.828  tuple/x.count(hit)/float/1
+     K 1.827  dict/sum(x)/int/0
+     K 1.827  dict/sum(x)/float/0
+     K 1.822  tuple/all(x)/object/8
+     K 1.780  dict/any(x)/int/1
+     K 1.780  dict/any(x)/int/8
+     K 1.780  dict/any(x)/int/100
+     K 1.780  dict/any(x)/mixed/1
+     K 1.770  dict/sum(x)/float/1
+     K 1.766  set/any(x)/str/100
+     K 1.761  set/any(x)/int/1
+     K 1.752  dict/max(x)/int/1
+     K 1.747  dict/min(x)/int/1
+     K 1.747  list/hit in x/object/1
+     K 1.727  set/any(x)/int/8
+     K 1.710  tuple/all(x)/object/100
+     K 1.710  set/any(x)/int/100
+     K 1.688  frozenset/max(x)/str/1
+     K 1.683  frozenset/min(x)/str/1
+     K 1.676  set/any(x)/mixed/1
+     K 1.673  list/any(x)/object/1
+     K 1.672  list/x.count(hit)/str/1
+     K 1.672  list/all(x)/object/100
+     K 1.672  set/any(x)/mixed/100
+     K 1.670  tuple/max(x)/str/1
+     K 1.668  dict/any(x)/int/0
+     K 1.668  dict/any(x)/str/0
+     K 1.668  dict/any(x)/mixed/0
+     K 1.668  dict/any(x)/object/0
+     K 1.665  tuple/all(x)/mixed/100
+     K 1.665  tuple/min(x)/str/1
+     K 1.664  dict/any(x)/float/0
+     K 1.662  frozenset/any(x)/str/100
+     K 1.660  dict/any(x)/object/1
+     K 1.660  dict/any(x)/object/8
+     K 1.660  dict/any(x)/object/100
+     K 1.659  dict/any(x)/float/8
+     K 1.659  dict/any(x)/float/100
+     K 1.659  dict/any(x)/float/1
+     K 1.658  dict/any(x)/mixed/100
+     K 1.655  dict/any(x)/str/1
+     K 1.655  dict/any(x)/str/8
+     K 1.655  dict/any(x)/str/100
+     K 1.654  dict/any(x)/mixed/8
+     K 1.644  frozenset/any(x)/int/1
+     K 1.644  set/any(x)/float/1
+     K 1.641  set/any(x)/object/8
+     K 1.638  tuple/any(x)/object/100
+     K 1.636  tuple/any(x)/mixed/100
+     K 1.628  frozenset/all(x)/object/1
+     K 1.626  list/all(x)/mixed/100
+     K 1.624  frozenset/all(x)/float/1
+     K 1.621  list/max(x)/object/1
+     K 1.615  list/min(x)/object/1
+     K 1.612  frozenset/any(x)/int/8
+     K 1.612  set/any(x)/float/8
+     K 1.610  set/any(x)/object/100
+     K 1.599  list/x.count(hit)/object/1
+     K 1.598  list/any(x)/object/100
+     K 1.597  list/any(x)/mixed/100
+     K 1.596  frozenset/any(x)/int/100
+     K 1.595  set/any(x)/object/1
+     K 1.587  frozenset/max(x)/object/1
+     K 1.586  set/max(x)/str/1
+     K 1.582  set/min(x)/str/1
+     K 1.582  frozenset/min(x)/object/1
+     K 1.581  set/any(x)/float/100
+     K 1.579  frozenset/min(x)/float/1
+     K 1.573  tuple/x.index(hit)/mixed/8
+     K 1.572  frozenset/max(x)/float/1
+     K 1.565  set/any(x)/mixed/8
+     K 1.565  frozenset/any(x)/mixed/1
+     K 1.557  list/all(x)/mixed/8
+     K 1.556  list/all(x)/object/1
+     K 1.554  frozenset/any(x)/mixed/100
+     K 1.548  dict/all(x)/object/100
+     K 1.547  dict/sorted(x)/int/0
+     K 1.547  dict/sorted(x)/float/0
+     K 1.547  dict/sorted(x)/str/0
+     K 1.547  tuple/sorted(x)/object/1
+     K 1.547  dict/sorted(x)/float/1
+     K 1.547  dict/sorted(x)/object/1
+     K 1.546  dict/sorted(x)/object/0
+     K 1.544  dict/all(x)/float/100
+     K 1.543  dict/sorted(x)/str/1
+     K 1.539  dict/all(x)/mixed/100
+     K 1.535  tuple/hit in x/mixed/8
+     K 1.527  frozenset/any(x)/float/1
+     K 1.525  frozenset/any(x)/object/8
+     K 1.522  dict/all(x)/str/100
+     K 1.522  set/all(x)/object/1
+     K 1.520  list/x.index(hit)/object/8
+     K 1.519  dict/all(x)/int/1
+     K 1.519  dict/all(x)/mixed/1
+     K 1.518  set/all(x)/float/1
+     K 1.514  set/any(x)/int/0
+     K 1.514  set/any(x)/float/0
+     K 1.514  set/any(x)/str/0
+     K 1.512  set/any(x)/mixed/0
+     K 1.512  set/any(x)/object/0
+     K 1.498  frozenset/any(x)/object/100
+     K 1.497  tuple/sorted(x)/int/0
+     K 1.497  tuple/sorted(x)/float/0
+     K 1.497  tuple/sorted(x)/str/0
+     K 1.497  tuple/sorted(x)/object/0
+     K 1.496  frozenset/any(x)/float/8
+     K 1.488  dict/sum(x)/int/1
+     K 1.483  frozenset/any(x)/object/1
+     K 1.477  list/x.count(hit)/mixed/1
+     K 1.477  list/x.count(hit)/int/1
+     K 1.468  frozenset/any(x)/float/100
+     K 1.465  frozenset/all(x)/int/0
+     K 1.465  frozenset/all(x)/float/0
+     K 1.463  frozenset/all(x)/str/0
+     K 1.463  frozenset/all(x)/mixed/0
+     K 1.462  frozenset/all(x)/object/0
+     K 1.460  tuple/max(x)/float/1
+     K 1.457  frozenset/max(x)/int/1
+     K 1.456  tuple/min(x)/float/1
+     K 1.455  frozenset/any(x)/mixed/8
+     K 1.451  frozenset/min(x)/int/1
+     K 1.445  tuple/max(x)/int/1
+     K 1.441  tuple/min(x)/int/1
+     K 1.437  tuple/x.index(hit)/object/8
+     K 1.435  list/x.index(hit)/mixed/8
+     K 1.434  dict/all(x)/object/8
+     K 1.434  list/x.count(hit)/float/1
+     K 1.433  frozenset/sum(x)/float/1
+     K 1.430  set/max(x)/object/1
+     K 1.429  tuple/miss in x/mixed/8
+     K 1.425  set/min(x)/object/1
+     K 1.422  list/miss in x/object/1
+     K 1.421  set/min(x)/float/1
+     K 1.418  frozenset/any(x)/int/0
+     K 1.417  frozenset/any(x)/float/0
+     K 1.417  frozenset/any(x)/mixed/0
+     K 1.417  frozenset/any(x)/object/0
+     K 1.417  frozenset/any(x)/str/0
+     K 1.413  set/max(x)/float/1
+     K 1.410  dict/all(x)/float/8
+     K 1.405  tuple/miss in x/object/1
+     K 1.402  dict/all(x)/mixed/8
+     K 1.396  tuple/x.count(hit)/mixed/8
+     K 1.394  dict/all(x)/str/8
+     K 1.394  tuple/miss in x/str/1
+     K 1.383  tuple/hit in x/object/8
+     K 1.368  tuple/x.index(hit)/mixed/100
+     K 1.366  tuple/miss in x/mixed/100
+     K 1.361  dict/sum(x)/float/8
+     K 1.360  tuple/hit in x/mixed/100
+     K 1.357  set/max(x)/int/1
+     K 1.352  set/min(x)/int/1
+     K 1.345  list/hit in x/object/8
+     K 1.340  list/any(x)/int/0
+     K 1.340  list/any(x)/float/0
+     K 1.340  list/any(x)/str/0
+     K 1.340  list/any(x)/mixed/0
+     K 1.339  list/any(x)/object/0
+     K 1.338  set/all(x)/int/0
+     K 1.337  set/all(x)/float/0
+     K 1.337  set/all(x)/str/0
+     K 1.336  set/all(x)/mixed/0
+     K 1.336  set/all(x)/object/0
+     K 1.333  tuple/miss in x/int/0
+     K 1.333  tuple/miss in x/float/0
+     K 1.333  tuple/miss in x/str/0
+     K 1.333  tuple/miss in x/mixed/0
+     K 1.333  tuple/miss in x/object/0
+     K 1.327  list/all(x)/int/0
+     K 1.327  list/all(x)/float/0
+     K 1.327  list/all(x)/str/0
+     K 1.327  list/all(x)/mixed/0
+     K 1.326  list/all(x)/object/0
+     K 1.319  set/sum(x)/float/1
+     K 1.319  tuple/sorted(x)/str/8
+     K 1.318  list/x.count(hit)/object/8
+     K 1.316  list/miss in x/float/0
+     K 1.316  list/miss in x/str/0
+     K 1.316  list/miss in x/mixed/0
+     K 1.316  list/miss in x/object/0
+     K 1.316  list/miss in x/int/0
+     K 1.313  frozenset/all(x)/str/1
+     K 1.309  frozenset/sorted(x)/str/8
+     K 1.308  tuple/x.count(hit)/object/8
+     K 1.308  frozenset/sum(x)/int/0
+     K 1.307  frozenset/sum(x)/float/0
+     K 1.305  list/miss in x/object/8
+     K 1.303  frozenset/sorted(x)/object/8
+     K 1.302  frozenset/sorted(x)/int/0
+     K 1.302  frozenset/sorted(x)/str/0
+     K 1.302  frozenset/sorted(x)/object/0
+     K 1.302  frozenset/sorted(x)/float/0
+     K 1.301  frozenset/sorted(x)/float/1
+     K 1.300  frozenset/sorted(x)/object/1
+     K 1.298  list/sorted(x)/str/100
+     K 1.296  list/x.sort()/object/1
+     K 1.295  list/sorted(x)/str/8
+     K 1.294  list/x.index(hit)/object/100
+     K 1.290  set/sorted(x)/str/8
+     K 1.286  list/hit in x/object/100
+     K 1.284  tuple/miss in x/object/8
+     K 1.283  set/sorted(x)/object/8
+     K 1.282  list/miss in x/object/100
+     K 1.276  tuple/x.index(hit)/object/100
+     K 1.276  tuple/miss in x/int/1
+     K 1.274  list/sum(x)/int/0
+     K 1.274  list/sum(x)/float/0
+     K 1.270  tuple/x.count(hit)/mixed/100
+     K 1.269  list/x.count(hit)/object/100
+     K 1.269  tuple/hit in x/object/100
+     K 1.265  tuple/miss in x/float/1
+     K 1.260  tuple/miss in x/object/100
+     K 1.251  frozenset/sum(x)/int/1
+     K 1.242  list/miss in x/str/1
+     K 1.236  frozenset/all(x)/mixed/1
+     K 1.236  set/all(x)/str/1
+     K 1.232  frozenset/all(x)/int/1
+     K 1.227  list/x.sort()/object/8
+     K 1.222  set/all(x)/object/100
+     K 1.220  set/all(x)/float/100
+     K 1.219  set/all(x)/mixed/100
+     K 1.212  set/sorted(x)/object/1
+     K 1.212  set/sorted(x)/float/1
+     K 1.211  list/x.sort()/int/1
+     K 1.211  list/x.sort()/float/1
+     K 1.211  list/x.sort()/str/1
+     K 1.210  tuple/x.count(hit)/object/100
+     K 1.202  list/x.sort()/int/0
+     K 1.202  list/x.sort()/float/0
+     K 1.202  list/x.sort()/str/0
+     K 1.202  list/x.sort()/object/0
+     K 1.197  list/max(x)/str/1
+     K 1.196  list/min(x)/str/1
+     K 1.188  set/sorted(x)/int/0
+     K 1.188  set/sorted(x)/float/0
+     K 1.188  set/sorted(x)/str/0
+     K 1.188  set/sorted(x)/object/0
+     K 1.177  frozenset/sorted(x)/str/100
+     K 1.177  list/hit in x/mixed/8
+     K 1.174  set/sorted(x)/str/100
+     K 1.173  tuple/sorted(x)/str/100
+     K 1.170  tuple/sum(x)/int/1
+     K 1.163  tuple/sorted(x)/object/8
+     K 1.162  set/sum(x)/int/1
+     K 1.161  set/all(x)/mixed/1
+     K 1.157  dict/sorted(x)/float/8
+     K 1.157  set/all(x)/int/1
+     K 1.153  dict/sorted(x)/object/8
+     K 1.144  frozenset/sorted(x)/str/1
+     K 1.143  list/x.count(hit)/mixed/8
+     K 1.142  list/miss in x/int/1
+     K 1.135  list/miss in x/mixed/8
+     K 1.133  set/sum(x)/int/0
+     K 1.132  set/sum(x)/float/0
+     K 1.130  list/miss in x/float/1
+     K 1.125  list/all(x)/object/8
+     K 1.121  frozenset/all(x)/object/8
+     K 1.118  list/sorted(x)/object/1
+     K 1.116  frozenset/sum(x)/float/8
+     K 1.114  tuple/sorted(x)/str/1
+     K 1.108  tuple/miss in x/mixed/1
+     K 1.108  dict/sorted(x)/int/1
+     K 1.108  tuple/min(x)/object/8
+     K 1.107  tuple/max(x)/object/8
+     K 1.103  dict/sorted(x)/str/8
+     K 1.102  frozenset/all(x)/float/8
+     K 1.098  frozenset/all(x)/mixed/8
+     K 1.093  list/x.index(hit)/mixed/100
+     K 1.091  set/sorted(x)/str/1
+     K 1.083  list/hit in x/mixed/100
+     K 1.083  list/miss in x/mixed/100
+     K 1.073  set/all(x)/object/8
+     K 1.068  list/sorted(x)/object/8
+     K 1.058  list/x.count(hit)/mixed/100
+     K 1.056  set/all(x)/float/8
+     K 1.054  set/sum(x)/float/8
+     K 1.051  set/all(x)/mixed/8
+   worst kernel-path cells: tuple/any(x)/object/8 3.293, tuple/any(x)/mixed/8 3.230, tuple/hit in x/str/1 2.918, tuple/any(x)/object/1 2.695, tuple/all(x)/object/1 2.588
+-- 10k/1M elements (wall time): cells 1846, with ratio 1770 (metrics {'time': 1770}), <= 1.05: 682/1846, geomean 1.0160, mismatch 50, error 26
+     mismatch: list/repr(x)/int/10000
+     mismatch: list/repr(x)/float/10000
+     mismatch: list/repr(x)/str/10000
+     mismatch: list/repr(x)/mixed/10000
+     mismatch: list/repr(x)/object/10000
+     mismatch: tuple/repr(x)/int/10000
+     mismatch: tuple/repr(x)/float/10000
+     mismatch: tuple/repr(x)/str/10000
+     mismatch: tuple/repr(x)/mixed/10000
+     mismatch: tuple/repr(x)/object/10000
+     mismatch: dict/repr(x)/int/1000000
+     mismatch: dict/repr(x)/float/1000000
+     mismatch: dict/repr(x)/str/1000000
+     mismatch: dict/repr(x)/mixed/1000000
+     mismatch: dict/repr(x)/object/1000000
+     mismatch: set/repr(x)/int/1000000
+     mismatch: set/repr(x)/float/1000000
+     mismatch: set/repr(x)/str/1000000
+     mismatch: set/repr(x)/mixed/1000000
+     mismatch: set/repr(x)/object/1000000
+     mismatch: frozenset/repr(x)/int/1000000
+     mismatch: frozenset/repr(x)/float/1000000
+     mismatch: frozenset/repr(x)/str/1000000
+     mismatch: frozenset/repr(x)/mixed/1000000
+     mismatch: frozenset/repr(x)/object/1000000
+     mismatch: list/repr(x)/int/1000000
+     mismatch: list/repr(x)/float/1000000
+     mismatch: list/repr(x)/str/1000000
+     mismatch: list/repr(x)/mixed/1000000
+     mismatch: list/repr(x)/object/1000000
+     mismatch: tuple/repr(x)/int/1000000
+     mismatch: tuple/repr(x)/float/1000000
+     mismatch: tuple/repr(x)/str/1000000
+     mismatch: tuple/repr(x)/mixed/1000000
+     mismatch: tuple/repr(x)/object/1000000
+     mismatch: dict/repr(x)/int/10000
+     mismatch: dict/repr(x)/float/10000
+     mismatch: dict/repr(x)/str/10000
+     mismatch: dict/repr(x)/mixed/10000
+     mismatch: dict/repr(x)/object/10000
+     mismatch: set/repr(x)/int/10000
+     mismatch: set/repr(x)/float/10000
+     mismatch: set/repr(x)/str/10000
+     mismatch: set/repr(x)/mixed/10000
+     mismatch: set/repr(x)/object/10000
+     mismatch: frozenset/repr(x)/int/10000
+     mismatch: frozenset/repr(x)/float/10000
+     mismatch: frozenset/repr(x)/str/10000
+     mismatch: frozenset/repr(x)/mixed/10000
+     mismatch: frozenset/repr(x)/object/10000
+     error: list/json.dumps/int/10000
+     error: list/json.dumps/float/10000
+     error: list/json.dumps/str/10000
+     error: list/json.dumps/mixed/10000
+     error: list/json.dumps/object/10000
+     error: tuple/json.dumps/int/10000
+     error: tuple/json.dumps/float/10000
+     error: tuple/json.dumps/str/10000
+     error: tuple/json.dumps/mixed/10000
+     error: tuple/json.dumps/object/10000
+     error: dict/json.dumps/int/1000000
+     error: dict/json.dumps/float/1000000
+     error: dict/json.dumps/str/1000000
+     error: list/json.dumps/int/1000000
+     error: list/json.dumps/float/1000000
+     error: list/json.dumps/str/1000000
+     error: list/json.dumps/mixed/1000000
+     error: list/json.dumps/object/1000000
+     error: tuple/json.dumps/int/1000000
+     error: tuple/json.dumps/float/1000000
+     error: tuple/json.dumps/str/1000000
+     error: tuple/json.dumps/mixed/1000000
+     error: tuple/json.dumps/object/1000000
+     error: dict/json.dumps/int/10000
+     error: dict/json.dumps/float/10000
+     error: dict/json.dumps/str/10000
+   kernel path: 328 cells, geomean 0.3092, median 0.4271, > 1.05: 98, < 0.95: 214, min 0.011, max 2.139
+   unchanged code: 1442 cells, geomean 1.3318, median 1.3309, > 1.05: 990, < 0.95: 310, min 0.000, max 960630.727
+   cells > 1.05 (1088): (top 60)
+       960630.727  tuple/tuple(x)/str/1000000  noise builtin 0.006 rustique 0.009
+       922763.232  tuple/tuple(x)/object/1000000  noise builtin 0.024 rustique 0.016
+       770312.901  tuple/tuple(x)/int/1000000  noise builtin 0.001 rustique 0.055
+       762893.466  tuple/tuple(x)/float/1000000  noise builtin 0.004 rustique 0.052
+       726209.051  tuple/tuple(x)/mixed/1000000  noise builtin 0.001 rustique 0.009
+       5344.010  tuple/tuple(x)/str/10000  noise builtin 0.011 rustique 0.001
+       5302.909  tuple/tuple(x)/int/10000  noise builtin 0.001 rustique 0.015
+       5250.820  tuple/tuple(x)/float/10000  noise builtin 0.003 rustique 0.005
+       5186.272  tuple/tuple(x)/object/10000  noise builtin 0.013 rustique 0.012
+       5008.381  tuple/tuple(x)/mixed/10000  noise builtin 0.012 rustique 0.002
+       10.949  list/[*x, *y]/str/10000  noise builtin 0.005 rustique 0.001
+       10.566  list/[*x, *y]/mixed/10000  noise builtin 0.002 rustique 0.002
+       9.998  set/x.isdisjoint(t)/float/10000  noise builtin 0.043 rustique 0.008
+       9.799  frozenset/x.isdisjoint(t)/float/10000  noise builtin 0.053 rustique 0.011
+       9.125  list/[*x, *y]/object/10000  noise builtin 0.003 rustique 0.005
+       8.501  set/x.isdisjoint(t)/object/10000  noise builtin 0.091 rustique 0.002
+       8.209  list/insert(0, v)/str/10000  noise builtin 0.014 rustique 0.033
+       8.123  dict/from dict/object/10000  noise builtin 0.001 rustique 0.003
+       8.098  frozenset/x.isdisjoint(t)/mixed/10000  noise builtin 0.071 rustique 0.040
+       7.662  dict/from dict/float/10000  noise builtin 0.002 rustique 0.006
+       7.591  list/[*x, *y]/float/10000  noise builtin 0.004 rustique 0.000
+       7.477  list/[*x, *y]/int/10000  noise builtin 0.040 rustique 0.001
+       7.311  set/x.isdisjoint(t)/mixed/10000  noise builtin 0.051 rustique 0.002
+       7.083  dict/{**x, **t}/float/10000  noise builtin 0.011 rustique 0.003
+       7.021  list/tuple(x)/mixed/10000  noise builtin 0.002 rustique 0.004
+       6.903  dict/{**x, **t}/object/10000  noise builtin 0.005 rustique 0.005
+       6.849  set/list(x)/str/10000  noise builtin 0.006 rustique 0.005
+       6.828  frozenset/x.isdisjoint(t)/float/1000000  noise builtin 0.001 rustique 0.134
+       6.675  list/list(x)/mixed/10000  noise builtin 0.004 rustique 0.004
+       6.567  frozenset/x.isdisjoint(t)/object/10000  noise builtin 0.375 rustique 0.016
+       6.477  list/tuple(x)/float/10000  noise builtin 0.003 rustique 0.003
+       6.444  list/tuple(x)/object/10000  noise builtin 0.006 rustique 0.002
+       6.403  list/tuple(x)/int/10000  noise builtin 0.001 rustique 0.001
+       6.280  list/list(x)/float/10000  noise builtin 0.002 rustique 0.004
+       6.139  list/tuple(x)/str/10000  noise builtin 0.002 rustique 0.001
+       6.091  set/x.isdisjoint(t)/float/1000000  noise builtin 0.002 rustique 0.004
+       6.088  dict/from dict/mixed/10000  noise builtin 0.016 rustique 0.007
+       6.072  dict/{**x, **t}/mixed/10000  noise builtin 0.003 rustique 0.005
+       5.999  list/list(x)/object/10000  noise builtin 0.014 rustique 0.001
+       5.897  frozenset/x.isdisjoint(t)/str/10000  noise builtin 0.090 rustique 0.062
+       5.867  dict/{**x, **t}/int/10000  noise builtin 0.007 rustique 0.004
+       5.852  dict/list(x)/int/10000  noise builtin 0.003 rustique 0.013
+       5.803  frozenset/x.isdisjoint(t)/mixed/1000000  noise builtin 0.055 rustique 0.003
+       5.797  set/x.isdisjoint(t)/mixed/1000000  noise builtin 0.031 rustique 0.006
+       5.795  list/list(x)/str/10000  noise builtin 0.009 rustique 0.001
+       5.769  list/list(x)/int/10000  noise builtin 0.009 rustique 0.011
+       5.659  set/x.isdisjoint(t)/str/10000  noise builtin 0.106 rustique 0.022
+       5.605  set/x.isdisjoint(t)/object/1000000  noise builtin 0.097 rustique 0.015
+       5.499  set/hit in x/mixed/10000  noise builtin 0.015 rustique 0.037
+       5.477  dict/from dict/str/10000  noise builtin 0.010 rustique 0.006
+       5.474  dict/pickle.dumps/int/1000000  noise builtin 0.046 rustique 0.075
+       5.417  set/comprehension/object/1000000  noise builtin 0.057 rustique 0.013
+       5.250  set/hit in x/mixed/1000000  noise builtin 0.032 rustique 0.003
+       5.217  frozenset/list(x)/str/10000  noise builtin 0.014 rustique 0.003
+       5.124  dict/{**x, **t}/str/10000  noise builtin 0.003 rustique 0.007
+       5.037  frozenset/x == y/mixed/1000000  noise builtin 0.008 rustique 0.008
+       4.942  dict/pickle.dumps/float/1000000  noise builtin 0.052 rustique 0.121
+       4.921  set/comprehension/mixed/10000  noise builtin 0.024 rustique 0.001
+       4.897  frozenset/hit in x/mixed/10000  noise builtin 0.007 rustique 0.006
+       4.887  set/x == y/mixed/1000000  noise builtin 0.006 rustique 0.009
+   kernel-path cells > 1.05 (98):
+     K 2.139  tuple/all(x)/mixed/10000  noise builtin 0.005 rustique 0.023
+     K 2.129  set/any(x)/str/1000000  noise builtin 0.001 rustique 0.015
+     K 2.126  set/any(x)/str/10000  noise builtin 0.003 rustique 0.005
+     K 2.111  list/all(x)/mixed/10000  noise builtin 0.001 rustique 0.006
+     K 2.099  list/all(x)/mixed/1000000  noise builtin 0.003 rustique 0.005
+     K 2.072  list/all(x)/object/1000000  noise builtin 0.002 rustique 0.025
+     K 2.058  tuple/all(x)/mixed/1000000  noise builtin 0.015 rustique 0.011
+     K 2.056  list/all(x)/object/10000  noise builtin 0.029 rustique 0.026
+     K 2.036  frozenset/any(x)/str/10000  noise builtin 0.003 rustique 0.013
+     K 2.003  frozenset/any(x)/str/1000000  noise builtin 0.012 rustique 0.008
+     K 1.998  dict/all(x)/object/10000  noise builtin 0.002 rustique 0.010
+     K 1.993  set/any(x)/int/1000000  noise builtin 0.001 rustique 0.005
+     K 1.928  dict/all(x)/str/10000  noise builtin 0.002 rustique 0.002
+     K 1.925  dict/all(x)/mixed/10000  noise builtin 0.020 rustique 0.001
+     K 1.914  set/any(x)/int/10000  noise builtin 0.008 rustique 0.005
+     K 1.914  tuple/x.index(hit)/mixed/10000  noise builtin 0.001 rustique 0.017
+     K 1.914  dict/all(x)/float/10000  noise builtin 0.024 rustique 0.000
+     K 1.913  tuple/x.index(hit)/mixed/1000000  noise builtin 0.010 rustique 0.007
+     K 1.910  tuple/hit in x/mixed/1000000  noise builtin 0.001 rustique 0.019
+     K 1.899  dict/all(x)/str/1000000  noise builtin 0.014 rustique 0.017
+     K 1.898  frozenset/any(x)/int/1000000  noise builtin 0.003 rustique 0.008
+     K 1.882  set/any(x)/object/10000  noise builtin 0.028 rustique 0.013
+     K 1.877  dict/all(x)/float/1000000  noise builtin 0.022 rustique 0.015
+     K 1.875  set/any(x)/float/10000  noise builtin 0.002 rustique 0.018
+     K 1.864  frozenset/any(x)/int/10000  noise builtin 0.001 rustique 0.004
+     K 1.852  tuple/miss in x/mixed/1000000  noise builtin 0.001 rustique 0.012
+     K 1.844  dict/any(x)/int/10000  noise builtin 0.002 rustique 0.003
+     K 1.840  set/any(x)/object/1000000  noise builtin 0.009 rustique 0.007
+     K 1.839  set/any(x)/float/1000000  noise builtin 0.002 rustique 0.005
+     K 1.837  dict/any(x)/object/10000  noise builtin 0.010 rustique 0.012
+     K 1.833  dict/any(x)/mixed/10000  noise builtin 0.012 rustique 0.039
+     K 1.828  dict/any(x)/int/1000000  noise builtin 0.019 rustique 0.002
+     K 1.826  tuple/hit in x/mixed/10000  noise builtin 0.001 rustique 0.011
+     K 1.819  set/any(x)/mixed/1000000  noise builtin 0.006 rustique 0.008
+     K 1.811  list/any(x)/object/1000000  noise builtin 0.009 rustique 0.026
+     K 1.809  list/max(x)/object/10000  noise builtin 0.000 rustique 0.490
+     K 1.806  frozenset/any(x)/object/10000  noise builtin 0.002 rustique 0.003
+     K 1.804  dict/all(x)/mixed/1000000  noise builtin 0.005 rustique 0.010
+     K 1.803  set/any(x)/mixed/10000  noise builtin 0.022 rustique 0.006
+     K 1.801  tuple/all(x)/object/10000  noise builtin 0.001 rustique 0.001
+     K 1.800  dict/any(x)/float/10000  noise builtin 0.001 rustique 0.015
+     K 1.793  dict/any(x)/mixed/1000000  noise builtin 0.009 rustique 0.003
+     K 1.788  frozenset/any(x)/object/1000000  noise builtin 0.010 rustique 0.011
+     K 1.786  frozenset/any(x)/mixed/10000  noise builtin 0.015 rustique 0.005
+     K 1.776  frozenset/any(x)/float/10000  noise builtin 0.019 rustique 0.008
+     K 1.773  dict/any(x)/str/1000000  noise builtin 0.016 rustique 0.011
+     K 1.772  dict/any(x)/str/10000  noise builtin 0.005 rustique 0.009
+     K 1.768  tuple/miss in x/mixed/10000  noise builtin 0.001 rustique 0.010
+     K 1.765  dict/any(x)/float/1000000  noise builtin 0.002 rustique 0.017
+     K 1.763  list/any(x)/mixed/1000000  noise builtin 0.003 rustique 0.002
+     K 1.763  list/any(x)/mixed/10000  noise builtin 0.003 rustique 0.002
+     K 1.760  list/any(x)/object/10000  noise builtin 0.003 rustique 0.003
+     K 1.754  dict/any(x)/object/1000000  noise builtin 0.021 rustique 0.009
+     K 1.752  frozenset/any(x)/mixed/1000000  noise builtin 0.018 rustique 0.003
+     K 1.746  dict/all(x)/object/1000000  noise builtin 0.026 rustique 0.026
+     K 1.741  tuple/any(x)/object/10000  noise builtin 0.007 rustique 0.018
+     K 1.735  frozenset/any(x)/float/1000000  noise builtin 0.025 rustique 0.003
+     K 1.730  tuple/any(x)/mixed/10000  noise builtin 0.004 rustique 0.006
+     K 1.705  tuple/all(x)/object/1000000  noise builtin 0.001 rustique 0.013
+     K 1.705  tuple/any(x)/mixed/1000000  noise builtin 0.006 rustique 0.004
+     K 1.663  tuple/x.index(hit)/object/10000  noise builtin 0.001 rustique 0.009
+     K 1.658  tuple/any(x)/object/1000000  noise builtin 0.032 rustique 0.003
+     K 1.604  list/miss in x/object/10000  noise builtin 0.004 rustique 0.015
+     K 1.592  tuple/x.index(hit)/object/1000000  noise builtin 0.010 rustique 0.007
+     K 1.587  tuple/x.count(hit)/mixed/1000000  noise builtin 0.023 rustique 0.017
+     K 1.581  tuple/x.count(hit)/mixed/10000  noise builtin 0.045 rustique 0.022
+     K 1.578  tuple/miss in x/object/10000  noise builtin 0.002 rustique 0.024
+     K 1.577  tuple/hit in x/object/1000000  noise builtin 0.001 rustique 0.013
+     K 1.568  tuple/hit in x/object/10000  noise builtin 0.001 rustique 0.013
+     K 1.564  list/x.index(hit)/object/10000  noise builtin 0.005 rustique 0.006
+     K 1.563  tuple/miss in x/object/1000000  noise builtin 0.002 rustique 0.023
+     K 1.553  list/x.count(hit)/object/10000  noise builtin 0.002 rustique 0.034
+     K 1.538  list/x.count(hit)/object/1000000  noise builtin 0.004 rustique 0.009
+     K 1.534  list/hit in x/object/1000000  noise builtin 0.006 rustique 0.010
+     K 1.533  list/hit in x/object/10000  noise builtin 0.001 rustique 0.006
+     K 1.525  list/miss in x/object/1000000  noise builtin 0.008 rustique 0.028
+     K 1.489  list/x.index(hit)/object/1000000  noise builtin 0.005 rustique 0.029
+     K 1.470  tuple/x.count(hit)/object/1000000  noise builtin 0.001 rustique 0.015
+     K 1.455  tuple/x.count(hit)/object/10000  noise builtin 0.042 rustique 0.008
+     K 1.420  dict/sum(x)/float/1000000  noise builtin 0.007 rustique 0.005
+     K 1.220  list/hit in x/mixed/1000000  noise builtin 0.025 rustique 0.009
+     K 1.198  set/sorted(x)/float/1000000  noise builtin 0.007 rustique 0.055
+     K 1.191  dict/sum(x)/float/10000  noise builtin 0.008 rustique 0.002
+     K 1.189  list/hit in x/mixed/10000  noise builtin 0.001 rustique 0.034
+     K 1.185  list/x.index(hit)/mixed/10000  noise builtin 0.001 rustique 0.037
+     K 1.182  list/miss in x/mixed/1000000  noise builtin 0.007 rustique 0.018
+     K 1.172  tuple/max(x)/object/1000000  noise builtin 0.007 rustique 0.004
+     K 1.171  list/miss in x/mixed/10000  noise builtin 0.023 rustique 0.012
+     K 1.167  list/x.index(hit)/mixed/1000000  noise builtin 0.001 rustique 0.033
+     K 1.165  tuple/min(x)/object/1000000  noise builtin 0.006 rustique 0.006
+     K 1.162  list/x.count(hit)/mixed/10000  noise builtin 0.002 rustique 0.029
+     K 1.159  frozenset/sorted(x)/float/1000000  noise builtin 0.007 rustique 0.055
+     K 1.155  list/x.count(hit)/mixed/1000000  noise builtin 0.010 rustique 0.005
+     K 1.133  list/min(x)/object/1000000  noise builtin 0.007 rustique 0.023
+     K 1.116  list/max(x)/object/1000000  noise builtin 0.004 rustique 0.128
+     K 1.085  dict/min(x)/object/1000000  noise builtin 0.011 rustique 0.017
+     K 1.068  dict/max(x)/object/1000000  noise builtin 0.014 rustique 0.008
+     K 1.067  tuple/max(x)/object/10000  noise builtin 0.001 rustique 0.005
+-- headline cells (1M, wall-time ratio, rel. std builtin/enabled)
+     list  max(x)         float  10k: 0.019  (0.001/0.000)
+     list  max(x)         float   1M: 0.020  (0.004/0.001)
+     list  min(x)         int    10k: 0.020  (0.027/0.002)
+     list  min(x)         int     1M: 0.022  (0.010/0.002)
+     list  x.sort()       int    10k: 0.091  (0.001/0.003)
+     list  x.sort()       int     1M: 0.123  (0.011/0.001)
+     list  sorted(x)      int    10k: 0.205  (0.000/0.003)
+     list  sorted(x)      int     1M: 0.179  (0.014/0.008)
+     list  hit in x       int    10k: 0.025  (0.003/0.002)
+     list  hit in x       int     1M: 0.022  (0.003/0.005)
+     list  miss in x      int    10k: 0.024  (0.000/0.001)
+     list  miss in x      int     1M: 0.022  (0.056/0.002)
+     list  x.count(hit)   int    10k: 0.021  (0.001/0.001)
+     list  x.count(hit)   int     1M: 0.022  (0.002/0.001)
+     list  x.index(hit)   int    10k: 0.026  (0.001/0.005)
+     list  x.index(hit)   int     1M: 0.023  (0.003/0.002)
+     list  sum(x)         int    10k: 0.044  (0.002/0.000)
+     list  sum(x)         int     1M: 0.045  (0.001/0.000)
+     list  sum(x)         float  10k: 0.276  (0.271/0.003)
+     list  sum(x)         float   1M: 0.264  (0.007/0.000)
+     dict  min(x)         int    10k: 0.077  (0.008/0.000)
+     dict  min(x)         int     1M: 0.078  (0.005/0.002)
+     set   max(x)         int    10k: 0.041  (0.003/0.000)
+     set   max(x)         int     1M: 0.012  (0.007/0.002)
+     tuple max(x)         float  10k: 0.022  (0.001/0.005)
+     tuple max(x)         float   1M: 0.022  (0.007/0.001)

@@ -1,0 +1,19 @@
+ast-serialize==0.13.1
+hypothesis==6.170.9
+iniconfig==2.3.1
+librt==0.16.0
+maturin==1.15.0
+mypy==2.4.1
+mypy-extensions==1.1.0
+nodeenv==1.12.0
+packaging==26.3
+pathspec==1.1.1
+pluggy==1.7.0
+psutil==7.2.2
+pygments==2.21.0
+pyperf==2.10.0
+pyright==1.1.414
+pytest==9.1.1
+-e file:///home/ubuntu/phase0/w/3.16.0a1
+sortedcontainers==2.4.0
+typing-extensions==4.16.0

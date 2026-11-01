@@ -1,0 +1,5 @@
+cpu0 L3 shared: 0-7
+cpu1 L3 shared: 0-7
+cpu9 L3 shared: 8-15
+cpu17 L3 shared: 16-23
+cpu25 L3 shared: 24-31

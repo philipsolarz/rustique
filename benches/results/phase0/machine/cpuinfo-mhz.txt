@@ -1,0 +1,10 @@
+     23 cpu MHz		: 2599.998
+      1 cpu MHz		: 3583.081
+      1 cpu MHz		: 3620.007
+      1 cpu MHz		: 3676.000
+      1 cpu MHz		: 3692.266
+      1 cpu MHz		: 3692.821
+      1 cpu MHz		: 3695.834
+      1 cpu MHz		: 3698.974
+      1 cpu MHz		: 3699.468
+      1 cpu MHz		: 3699.928

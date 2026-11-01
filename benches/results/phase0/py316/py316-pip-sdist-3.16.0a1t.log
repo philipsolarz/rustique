@@ -1,0 +1,101 @@
+sdist: /home/ubuntu/phase0/dist/rustique-0.2.0.tar.gz
+rustique-0.2.0/PKG-INFO
+rustique-0.2.0/Cargo.lock
+rustique-0.2.0/Cargo.toml
+rustique-0.2.0/README.md
+rustique-0.2.0/crates/rustique-core/Cargo.toml
+rustique-0.2.0/crates/rustique-core/examples/kernels_bench.rs
+rustique-0.2.0/crates/rustique-core/proptest-regressions/expr/tests.txt
+rustique-0.2.0/crates/rustique-core/proptest-regressions/kernels/tests.txt
+rustique-0.2.0/crates/rustique-core/src/column.rs
+rustique-0.2.0/crates/rustique-core/src/dtype.rs
+rustique-0.2.0/crates/rustique-core/src/expr/exec.rs
+rustique-0.2.0/crates/rustique-core/src/expr/kernels.rs
+rustique-0.2.0/crates/rustique-core/src/expr/plan.rs
+rustique-0.2.0/crates/rustique-core/src/expr/tests.rs
+rustique-0.2.0/crates/rustique-core/src/expr/text.rs
+rustique-0.2.0/crates/rustique-core/src/expr.rs
+rustique-0.2.0/crates/rustique-core/src/index.rs
+rustique-0.2.0/crates/rustique-core/src/kernels/tests.rs
+rustique-0.2.0/crates/rustique-core/src/kernels.rs
+rustique-0.2.0/crates/rustique-core/src/lib.rs
+pip 26.2.2 from /home/ubuntu/phase0/venv/3.16.0a1t-pip/lib/python3.16t/site-packages/pip (python 3.16)
+Using pip 26.2.2 from /home/ubuntu/phase0/venv/3.16.0a1t-pip/lib/python3.16t/site-packages/pip (python 3.16)
+Processing ./dist/rustique-0.2.0.tar.gz
+  Installing build dependencies: started
+  Running command installing build dependencies
+  Using pip 26.2.2 from /home/ubuntu/phase0/venv/3.16.0a1t-pip/lib/python3.16t/site-packages/pip (python 3.16)
+  Collecting maturin<2.0,>=1.15
+    Obtaining dependency information for maturin<2.0,>=1.15 from https://files.pythonhosted.org/packages/0a/dc/e77f490557cb5e045a75c3d18a7965425ac576235c970dfff4d903eb2c74/maturin-1.16.0-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.musllinux_1_1_x86_64.whl.metadata
+    Using cached maturin-1.16.0-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.musllinux_1_1_x86_64.whl.metadata (17 kB)
+  Using cached maturin-1.16.0-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.musllinux_1_1_x86_64.whl (10.8 MB)
+  Installing collected packages: maturin
+  Successfully installed maturin-1.16.0
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Running command Getting requirements to build wheel
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Running command Preparing metadata (pyproject.toml)
+  🍹 Building a mixed python/rust project
+  🐍 Found CPython 3.16t at /home/ubuntu/phase0/venv/3.16.0a1t-pip/bin/python
+  🔗 Found pyo3 bindings
+  📡 Using build options profile from pyproject.toml
+  rustique-0.2.0.dist-info
+  Checking for Rust toolchain....
+  Running `maturin pep517 write-dist-info --metadata-directory /tmp/pip-modern-metadata-16wctthq --interpreter /home/ubuntu/phase0/venv/3.16.0a1t-pip/bin/python`
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: rustique
+  Building wheel for rustique (pyproject.toml): started
+  Running command Building wheel for rustique (pyproject.toml)
+  Running `maturin pep517 build-wheel -i /home/ubuntu/phase0/venv/3.16.0a1t-pip/bin/python --compatibility off`
+  🍹 Building a mixed python/rust project
+  🐍 Found CPython 3.16t at /home/ubuntu/phase0/venv/3.16.0a1t-pip/bin/python
+  🔗 Found pyo3 bindings
+  📡 Using build options profile from pyproject.toml
+     Compiling target-lexicon v0.13.5
+     Compiling crossbeam-utils v0.8.23
+     Compiling proc-macro2 v1.0.107
+     Compiling libc v0.2.191
+     Compiling quote v1.0.47
+     Compiling unicode-ident v1.0.27
+     Compiling crossbeam-epoch v0.9.21
+     Compiling crossbeam-deque v0.8.8
+     Compiling rustversion v1.0.23
+     Compiling zmij v1.0.23
+     Compiling rayon-core v1.13.0
+     Compiling pyo3-macros-backend v0.30.1
+     Compiling heck v0.5.0
+     Compiling static_assertions v1.1.0
+     Compiling itoa v1.0.18
+     Compiling equivalent v1.0.3
+     Compiling cfg-if v1.0.5
+     Compiling allocator-api2 v0.2.21
+     Compiling either v1.19.0
+     Compiling pyo3-build-config v0.30.1
+     Compiling scopeguard v1.2.0
+     Compiling castaway v0.2.4
+     Compiling smallvec v1.16.4
+     Compiling foldhash v0.2.0
+     Compiling syn v3.0.9
+     Compiling hashbrown v0.17.1
+     Compiling compact_str v0.10.0
+     Compiling lock_api v0.5.0
+     Compiling once_cell v1.21.4
+     Compiling pyo3-ffi v0.30.1
+     Compiling pyo3 v0.30.1
+     Compiling rustique-py v0.2.0 (/tmp/pip-req-build-fcn9lj5p/crates/rustique-py)
+     Compiling parking_lot_core v0.10.0
+     Compiling rayon v1.12.0
+     Compiling parking_lot v0.13.0
+     Compiling rustique-core v0.2.0 (/tmp/pip-req-build-fcn9lj5p/crates/rustique-core)
+     Compiling pyo3-macros v0.30.1
+      Finished `release` profile [optimized] target(s) in 53.31s
+  📦 Built wheel for CPython 3.16t to /home/ubuntu/phase0/target/3.16.0a1t-pip/wheels/rustique-0.2.0-cp316-cp316t-linux_x86_64.whl
+  /home/ubuntu/phase0/target/3.16.0a1t-pip/wheels/rustique-0.2.0-cp316-cp316t-linux_x86_64.whl
+  Building wheel for rustique (pyproject.toml): finished with status 'done'
+  Created wheel for rustique: filename=rustique-0.2.0-cp316-cp316t-linux_x86_64.whl size=1717162 sha256=47ae8276d6dc84b44660789ae412b14c20dcc0f9e6910d04ea935ebcb54ad305
+  Stored in directory: /tmp/pip-ephem-wheel-cache-f0tqwuqb/wheels/38/10/7c/8653da7837c7dc2aae55744330cce9284f213acc83197dc79b
+Successfully built rustique
+Installing collected packages: rustique
+Successfully installed rustique-0.2.0

@@ -1,0 +1,115 @@
+old builds ['3.15.1t'] (5660 cells), new builds ['3.15.1t'] (5660 cells)
+common cells 5660, only old 0, only new 0
+status changes: 0
+-- 0-100 elements (instruction-count ratios): 3762 cells
+   new-old: identical (2 dp) 3442, |d|<=0.01 3622, |d|<=0.02 3684, |d|>0.05 30
+   new/old: geomean 1.0000, median 1.0000, p05 1.000, p95 1.000
+   crossed the 1.05 bar: up 0, down 0
+   kernel-path cells: 586, geomean old 0.9142, new 0.9142
+   largest relative changes (top 30):
+       1.32 -> 1.16 (0.879x)  set/x.clear()/str/8
+       2.23 -> 2.50 (1.121x)  set/miss in x/str/100
+       2.18 -> 1.99 (0.913x)  frozenset/miss in x/str/1
+       2.77 -> 2.53 (0.913x)  set/hit in x/str/8
+       2.82 -> 3.04 (1.078x)  dict/x == t/float/100
+       0.32 -> 0.34 (1.062x)  set/x.copy()/str/100
+       2.35 -> 2.49 (1.060x)  frozenset/x.isdisjoint(t)/str/8
+       2.44 -> 2.31 (0.947x)  set/x.isdisjoint(t)/str/8
+       2.07 -> 2.18 (1.053x)  tuple/pickle.dumps/object/8
+       1.51 -> 1.58 (1.046x)  tuple/repr(x)/str/8
+       1.66 -> 1.73 (1.042x)  set/miss in x/str/8
+       1.45 -> 1.51 (1.041x)  frozenset/miss in x/str/8
+       1.75 -> 1.82 (1.040x)  frozenset/pickle.dumps/object/8
+       0.51 -> 0.53 (1.039x)  set/x.clear()/str/100
+       2.24 -> 2.16 (0.964x)  set/x - t/object/100
+       2.28 -> 2.20 (0.965x)  set/x & t/object/100
+       3.47 -> 3.35 (0.965x)  dict/x | t/float/8
+       2.60 -> 2.69 (1.035x)  set/x | t/float/8
+       2.75 -> 2.84 (1.033x)  dict/x | t/str/8
+       0.32 -> 0.33 (1.031x)  list/x.clear()/float/100
+       2.59 -> 2.67 (1.031x)  set/x | t/object/8
+       1.62 -> 1.67 (1.031x)  frozenset/zip/str/8
+       2.71 -> 2.63 (0.970x)  set/x.update(t)/int/8
+       1.01 -> 1.04 (1.030x)  frozenset/x & t/str/100
+       2.82 -> 2.74 (0.972x)  list/pickle.dumps/float/1
+       2.13 -> 2.19 (1.028x)  frozenset/x.isdisjoint(t)/str/100
+       0.36 -> 0.37 (1.028x)  set/copy C(x)/str/100
+       2.18 -> 2.24 (1.028x)  frozenset/pickle.dumps/float/8
+       1.92 -> 1.87 (0.974x)  set/pickle.dumps/object/8
+     K 0.40 -> 0.41 (1.025x)  set/min(x)/str/100
+-- 10k/1M (wall-time ratios): 1820 cells
+   new-old: identical (2 dp) 395, |d|<=0.01 761, |d|<=0.02 985, |d|>0.05 491
+   new/old: geomean 1.0056, median 1.0000, p05 0.912, p95 1.128
+   crossed the 1.05 bar: up 27, down 19
+     K 1.01 -> 1.81  list/max(x)/object/10k
+       0.88 -> 1.40  list/genexpr ingest/mixed/1M
+       1.00 -> 1.48  list/from list/str/1M
+       0.92 -> 1.34  set/zip/float/10k
+       1.24 -> 0.86  dict/miss in x/str/10k
+       1.07 -> 0.78  set/x & t/float/1M
+       0.86 -> 1.13  dict/x.get(miss)/mixed/10k
+       1.08 -> 0.84  set/x | t/float/1M
+       0.96 -> 1.20  tuple/x + y/object/1M
+       1.26 -> 1.04  dict/x.get(miss)/str/1M
+       0.97 -> 1.17  tuple/hash(x)/object/1M
+       1.18 -> 1.00  dict/x.get(k)/str/10k
+       1.21 -> 1.04  dict/x.get(k)/int/1M
+       1.02 -> 1.17  set/tuple(x)/mixed/10k
+       1.02 -> 1.16  dict/del x[k] loop/mixed/1M
+       1.06 -> 0.93  set/from list/str/1M
+       1.07 -> 0.95  set/g(*x)/object/10k
+       1.09 -> 0.98  set/x ^ t/str/1M
+       0.98 -> 1.08  tuple/hash(x)/str/10k
+       1.13 -> 1.03  dict/x == y/float/1M
+       0.99 -> 1.08  frozenset/genexpr ingest/str/1M
+       1.02 -> 1.11  set/tuple(x)/object/10k
+       1.09 -> 1.00  set/x | t/str/1M
+       1.01 -> 1.09  dict/setitem loop/int/1M
+       1.03 -> 1.11  frozenset/copy C(x)/int/10k
+       1.06 -> 0.98  dict/hit in x/str/1M
+       1.05 -> 1.12  dict/from pairs/int/1M
+       1.05 -> 1.12  set/genexpr ingest/str/1M
+       1.07 -> 1.00  frozenset/hash(x)/int/1M
+       1.00 -> 1.06  tuple/hash(x)/float/10k
+       1.02 -> 1.07  dict/del x[k] loop/float/1M
+       1.08 -> 1.03  tuple/repr(x)/mixed/10k
+       1.02 -> 1.06  dict/reversed/str/1M
+       1.07 -> 1.03  tuple/pickle round trip/mixed/1M
+       1.05 -> 1.08  list/pickle.dumps/object/10k
+       1.07 -> 1.04  list/pickle round trip/object/10k
+       1.06 -> 1.03  list/repr(x)/object/10k
+       1.04 -> 1.06  dict/x[k] = v/int/10k
+       1.04 -> 1.06  tuple/pickle round trip/object/1M
+       1.07 -> 1.05  tuple/bool(x)/mixed/1M
+   kernel-path cells: 328, geomean old 0.3057, new 0.3089
+   largest relative changes (top 30):
+     K 0.01 -> 0.02 (2.000x)  list/x.index(hit)/float/1M
+     K 0.01 -> 0.02 (2.000x)  tuple/x.count(hit)/float/10k
+     K 1.01 -> 1.81 (1.792x)  list/max(x)/object/10k
+       1.66 -> 2.70 (1.627x)  frozenset/x <= t/mixed/10k
+       0.88 -> 1.40 (1.591x)  list/genexpr ingest/mixed/1M
+       1.27 -> 1.90 (1.496x)  list/enumerate/object/10k
+       1.00 -> 1.48 (1.480x)  list/from list/str/1M
+       0.92 -> 1.34 (1.457x)  set/zip/float/10k
+       1.24 -> 0.86 (0.694x)  dict/miss in x/str/10k
+       1.72 -> 2.44 (1.419x)  frozenset/x == t/mixed/10k
+       9.28 -> 6.57 (0.708x)  frozenset/x.isdisjoint(t)/object/10k
+       0.05 -> 0.07 (1.400x)  list/x + y/float/1M
+       0.05 -> 0.07 (1.400x)  list/x + y/int/1M
+       1.21 -> 1.68 (1.388x)  list/x.copy()/mixed/1M
+       1.76 -> 1.27 (0.722x)  set/x <= t/str/1M
+       2.05 -> 1.48 (0.722x)  set/x <= t/object/10k
+       1.20 -> 1.66 (1.383x)  dict/x.copy()/int/1M
+       1.07 -> 0.78 (0.729x)  set/x & t/float/1M
+       0.41 -> 0.30 (0.732x)  set/x.clear()/int/10k
+       9.95 -> 7.31 (0.735x)  set/x.isdisjoint(t)/mixed/10k
+       2.13 -> 1.60 (0.751x)  set/x <= t/mixed/10k
+       0.41 -> 0.31 (0.756x)  set/x & t/int/1M
+       2.03 -> 2.68 (1.320x)  dict/from dict/int/1M
+       0.86 -> 1.13 (1.314x)  dict/x.get(miss)/mixed/10k
+       2.45 -> 3.20 (1.306x)  dict/from dict/object/1M
+       0.20 -> 0.26 (1.300x)  set/enumerate/int/1M
+       1.41 -> 1.83 (1.298x)  dict/x.copy()/object/1M
+       0.22 -> 0.17 (0.773x)  set/x.copy()/str/10k
+       1.92 -> 2.48 (1.292x)  tuple/x[a:b]/mixed/1M
+       0.40 -> 0.31 (0.775x)  set/x - t/int/1M
