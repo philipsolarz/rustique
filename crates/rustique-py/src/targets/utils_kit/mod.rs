@@ -29,7 +29,7 @@ pub type O = *mut ffi::PyObject;
 pub type GetMethodFn = unsafe extern "C" fn(O, O, *mut O) -> c_int;
 pub static GET_METHOD: Original<GetMethodFn> = Original::new();
 
-unsafe extern "C" {
+python_extern! {
     /// `PyAPI_FUNC` in `Include/cpython/object.h`: MRO lookup, borrowed (compare only).
     pub fn _PyType_Lookup(tp: *mut ffi::PyTypeObject, name: O) -> O;
 }

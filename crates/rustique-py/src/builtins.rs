@@ -340,7 +340,7 @@ impl Seq {
     }
 }
 
-unsafe extern "C" {
+python_extern! {
     /// The marker of deleted set-table entries (exported by CPython).
     static _PySet_Dummy: *mut ffi::PyObject;
 }

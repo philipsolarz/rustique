@@ -21,7 +21,7 @@ use pyo3::prelude::*;
 
 use crate::patch::writable;
 
-unsafe extern "C" {
+python_extern! {
     fn PyFunction_SetVectorcall(func: *mut ffi::PyFunctionObject, vectorcall: ffi::vectorcallfunc);
     /// Exported "for external JIT support" (pycore_function.h); used only to give a function
     /// its specializer version back on uninstall.

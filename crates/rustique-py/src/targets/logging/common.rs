@@ -19,7 +19,7 @@ pub type Tp = *mut ffi::PyTypeObject;
 // CPython symbols pyo3-ffi does not bind
 // ---------------------------------------------------------------------------------------
 
-unsafe extern "C" {
+python_extern! {
     /// Exported (cpython/object.h, 3.14 and 3.15): MRO lookup through the type cache.
     pub fn _PyType_LookupRef(t: Tp, name: O) -> O;
     pub fn PyUnstable_Type_AssignVersionTag(t: Tp) -> c_int;

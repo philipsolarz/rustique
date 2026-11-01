@@ -272,7 +272,7 @@ impl RootCache {
 static ROOTS_DEEPCOPY: RootCache = RootCache::new();
 static ROOTS_COPY: RootCache = RootCache::new();
 
-unsafe extern "C" {
+python_extern! {
     /// Public C API (funcobject.h), not in pyo3's bindings.
     fn PyFunction_SetVectorcall(func: *mut ffi::PyFunctionObject, vectorcall: ffi::vectorcallfunc);
 }

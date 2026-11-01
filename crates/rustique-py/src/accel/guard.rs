@@ -42,7 +42,7 @@ type DictWatchCallback =
     unsafe extern "C" fn(c_int, *mut ffi::PyObject, *mut ffi::PyObject, *mut ffi::PyObject) -> c_int;
 type TypeWatchCallback = unsafe extern "C" fn(*mut ffi::PyTypeObject) -> c_int;
 
-unsafe extern "C" {
+python_extern! {
     fn PyMonitoring_EnterScope(
         state_array: *mut PyMonitoringState,
         version: *mut u64,
@@ -50,7 +50,6 @@ unsafe extern "C" {
         length: ffi::Py_ssize_t,
     ) -> c_int;
     fn PyDict_AddWatcher(cb: DictWatchCallback) -> c_int;
-    fn PyDict_Unwatch(watcher_id: c_int, dict: *mut ffi::PyObject) -> c_int;
     fn PyType_AddWatcher(cb: TypeWatchCallback) -> c_int;
     fn PyType_Watch(watcher_id: c_int, ty: *mut ffi::PyObject) -> c_int;
     fn PyType_Unwatch(watcher_id: c_int, ty: *mut ffi::PyObject) -> c_int;
@@ -911,7 +910,7 @@ pub(crate) fn deactivate(owner: u64) {
     unsafe {
         let did = DICT_WATCHER.load(Ordering::Acquire);
         for d in unwatch_dicts {
-            if did >= 0 && PyDict_Unwatch(did, d as *mut _) < 0 {
+            if did >= 0 && ffi::PyDict_Unwatch(did, d as *mut _) < 0 {
                 ffi::PyErr_Clear();
             }
         }
@@ -979,7 +978,7 @@ pub(crate) fn teardown() {
     unsafe {
         let did = DICT_WATCHER.load(Ordering::Acquire);
         for &d in &dicts {
-            if did >= 0 && PyDict_Unwatch(did, d as *mut _) < 0 {
+            if did >= 0 && ffi::PyDict_Unwatch(did, d as *mut _) < 0 {
                 ffi::PyErr_Clear();
             }
         }
@@ -1040,7 +1039,7 @@ pub(crate) fn unwatch_sys_modules() {
         // SAFETY: attached thread (callers hold the registry lock); `sys.modules` lives as
         // long as the interpreter.
         unsafe {
-            if PyDict_Unwatch(id, d as *mut _) < 0 {
+            if ffi::PyDict_Unwatch(id, d as *mut _) < 0 {
                 ffi::PyErr_Clear();
             }
         }
@@ -1069,7 +1068,7 @@ pub fn pin(dict: &Bound<'_, PyDict>, key: &str, flag: &'static DepFlag) -> PyRes
 // Per-type verdicts ("does this subclass override any of these names?")
 // ---------------------------------------------------------------------------------------
 
-unsafe extern "C" {
+python_extern! {
     fn PyUnstable_Type_AssignVersionTag(ty: *mut ffi::PyTypeObject) -> c_int;
 }
 

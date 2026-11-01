@@ -38,7 +38,7 @@ use crate::convert::{self, Probe};
 
 type Obj = *mut ffi::PyObject;
 
-unsafe extern "C" {
+python_extern! {
     /// `PyDescr_NewWrapper` (not in pyo3-ffi): a slot wrapper descriptor (`__getitem__`
     /// etc.) of `wrapped` with the slot definition `base`.
     fn PyDescr_NewWrapper(ty: *mut ffi::PyTypeObject, base: *mut ffi::wrapperbase, wrapped: *mut c_void) -> Obj;

@@ -15,7 +15,7 @@ pub type O = *mut ffi::PyObject;
 /// `Err(())`: a Python exception is set.
 pub type R<T> = Result<T, ()>;
 
-unsafe extern "C" {
+python_extern! {
     /// Borrowed MRO lookup through the type cache (cpython/object.h, exported).
     pub fn _PyType_Lookup(t: *mut ffi::PyTypeObject, name: O) -> O;
     /// Strong-reference variant (safe on free-threaded builds).

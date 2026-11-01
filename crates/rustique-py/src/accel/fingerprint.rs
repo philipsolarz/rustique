@@ -25,7 +25,7 @@ use pyo3::types::{PyCode, PyFunction};
 /// Expected fingerprints of one original: `(major, minor, hex)` per validated version.
 pub type Fingerprints = &'static [(u8, u8, &'static str)];
 
-unsafe extern "C" {
+python_extern! {
     fn PyCode_GetCode(co: *mut ffi::PyObject) -> *mut ffi::PyObject;
 }
 

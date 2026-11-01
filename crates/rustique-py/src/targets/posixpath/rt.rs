@@ -475,7 +475,7 @@ pub fn check_c(
 // instance attribute would shadow a method).
 // ---------------------------------------------------------------------------------------
 
-unsafe extern "C" {
+python_extern! {
     fn _PyType_Lookup(ty: *mut ffi::PyTypeObject, name: *mut ffi::PyObject) -> *mut ffi::PyObject;
     /// Public since 3.13: visits a managed `__dict__`, or the inline values (attributes
     /// stored without a dict object) when there is none.

@@ -658,7 +658,7 @@ unsafe fn init(me: O, a: *const O, n_args: usize) -> Outcome {
         };
         // process
         let process = if sw & 4 != 0 {
-            let p = ffi::PyLong_FromLong(getpid() as _);
+            let p = ffi::PyLong_FromLong(std::process::id() as _);
             own.0[8] = p;
             if p.is_null() {
                 ffi::PyErr_Clear();
@@ -719,10 +719,6 @@ unsafe fn init(me: O, a: *const O, n_args: usize) -> Outcome {
         }
         Outcome::Done
     }
-}
-
-unsafe extern "C" {
-    fn getpid() -> i32;
 }
 
 /// `created`, `msecs`, `relativeCreated` from `ct = time.time_ns()` as `__init__` computes

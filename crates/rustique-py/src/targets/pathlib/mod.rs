@@ -107,7 +107,7 @@ unsafe fn exact_path(o: O) -> bool {
 // undone), the new tag is accepted, otherwise the call falls back.
 // ---------------------------------------------------------------------------------------
 
-unsafe extern "C" {
+python_extern! {
     fn _PyType_Lookup(ty: *mut ffi::PyTypeObject, name: *mut ffi::PyObject) -> *mut ffi::PyObject;
     fn PyUnstable_Type_AssignVersionTag(ty: *mut ffi::PyTypeObject) -> std::ffi::c_int;
 }

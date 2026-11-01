@@ -5,6 +5,26 @@
 use pyo3::ffi;
 use pyo3::prelude::*;
 
+/// An `extern "C"` block of CPython symbols that pyo3-ffi does not declare. On Windows they
+/// are imported from the Python DLL with `raw-dylib`, as PyO3 imports its own (the DLL name
+/// comes from `build.rs`); elsewhere the interpreter provides them at load time. Every
+/// symbol must be exported by the DLL (`PyAPI_FUNC`/`PyAPI_DATA`) on every supported
+/// version, or the extension does not load on Windows. Symbols pyo3-ffi already declares
+/// are used through `pyo3::ffi`, not redeclared here.
+macro_rules! python_extern {
+    ($($body:tt)*) => {
+        #[cfg_attr(all(windows, rq_pydll = "python314"), link(name = "python314", kind = "raw-dylib"))]
+        #[cfg_attr(all(windows, rq_pydll = "python314t"), link(name = "python314t", kind = "raw-dylib"))]
+        #[cfg_attr(all(windows, rq_pydll = "python315"), link(name = "python315", kind = "raw-dylib"))]
+        #[cfg_attr(all(windows, rq_pydll = "python315t"), link(name = "python315t", kind = "raw-dylib"))]
+        #[cfg_attr(all(windows, rq_pydll = "python316"), link(name = "python316", kind = "raw-dylib"))]
+        #[cfg_attr(all(windows, rq_pydll = "python316t"), link(name = "python316t", kind = "raw-dylib"))]
+        unsafe extern "C" {
+            $($body)*
+        }
+    };
+}
+
 pub mod accel;
 pub mod builtins;
 pub mod capi;

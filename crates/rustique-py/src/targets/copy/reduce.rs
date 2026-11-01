@@ -19,7 +19,7 @@ use pyo3::ffi;
 
 use super::rt::*;
 
-unsafe extern "C" {
+python_extern! {
     /// Public since 3.13 (cpython/object.h).
     fn PyObject_VisitManagedDict(obj: O, visit: ffi::visitproc, arg: *mut std::ffi::c_void) -> c_int;
 }
