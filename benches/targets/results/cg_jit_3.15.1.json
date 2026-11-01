@@ -1,0 +1,207 @@
+{
+ "build": "3.15.1",
+ "jit": true,
+ "first64": false,
+ "rows": {
+  "float repr(1.23)": {
+   "plain": 1981.8,
+   "on": 694.7,
+   "ratio": 0.351
+  },
+  "float repr(123.456789)": {
+   "plain": 3184.8,
+   "on": 732.7,
+   "ratio": 0.23
+  },
+  "float repr(1.2345678901234567e300)": {
+   "plain": 20486.8,
+   "on": 660.7,
+   "ratio": 0.032
+  },
+  "float str(2.5e-07)": {
+   "plain": 2752.0,
+   "on": 619.9,
+   "ratio": 0.225
+  },
+  "float f'{x}'": {
+   "plain": 2439.5,
+   "on": 930.4,
+   "ratio": 0.381
+  },
+  "float f'{x:.2f}' [not reached]": {
+   "plain": 1784.5,
+   "on": 1812.4,
+   "ratio": 1.016
+  },
+  "float f'v={x} t={xs}ms'": {
+   "plain": 6774.7,
+   "on": 2591.6,
+   "ratio": 0.383
+  },
+  "float repr(inf) [fallback]": {
+   "plain": 711.8,
+   "on": 737.7,
+   "ratio": 1.036
+  },
+  "float repr(F(1.5)) [subclass]": {
+   "plain": 1831.8,
+   "on": 1836.7,
+   "ratio": 1.003
+  },
+  "float '%s' % x": {
+   "plain": 1955.5,
+   "on": 668.4,
+   "ratio": 0.342
+  },
+  "dumps record": {
+   "plain": 29485.7,
+   "on": 6550.4,
+   "ratio": 0.222
+  },
+  "dumps small list": {
+   "plain": 16561.7,
+   "on": 2377.4,
+   "ratio": 0.144
+  },
+  "dumps floats": {
+   "plain": 36200.7,
+   "on": 6231.4,
+   "ratio": 0.172
+  },
+  "dumps nested": {
+   "plain": 56921.7,
+   "on": 17029.4,
+   "ratio": 0.299
+  },
+  "dumps unicode": {
+   "plain": 16950.7,
+   "on": 3259.4,
+   "ratio": 0.192
+  },
+  "dumps unicode ensure_ascii=False": {
+   "plain": 22352.9,
+   "on": 4661.8,
+   "ratio": 0.209
+  },
+  "dumps str": {
+   "plain": 2669.0,
+   "on": 867.9,
+   "ratio": 0.325
+  },
+  "dumps int": {
+   "plain": 9749.4,
+   "on": 622.1,
+   "ratio": 0.064
+  },
+  "dumps record indent=2": {
+   "plain": 38344.5,
+   "on": 7879.4,
+   "ratio": 0.205
+  },
+  "dumps record sort_keys": {
+   "plain": 44031.9,
+   "on": 12395.8,
+   "ratio": 0.282
+  },
+  "dumps record separators": {
+   "plain": 35125.3,
+   "on": 6697.2,
+   "ratio": 0.191
+  },
+  "dumps record [json only]": {
+   "plain": 29485.7,
+   "on": 6550.5,
+   "ratio": 0.222
+  },
+  "dumps record default= [fallback]": {
+   "plain": 34886.7,
+   "on": 29434.9,
+   "ratio": 0.844
+  },
+  "dumps with Decimal default= [fallback]": {
+   "plain": 37986.8,
+   "on": 32471.6,
+   "ratio": 0.855
+  },
+  "dumps OrderedDict [fallback]": {
+   "plain": 35070.7,
+   "on": 29578.4,
+   "ratio": 0.843
+  },
+  "dumps IntEnum": {
+   "plain": 11580.2,
+   "on": 1332.5,
+   "ratio": 0.115
+  },
+  "dumps cls=JSONEncoder [fallback]": {
+   "plain": 34918.8,
+   "on": 29477.8,
+   "ratio": 0.844
+  },
+  "JSONEncoder().encode(record)": {
+   "plain": 27785.1,
+   "on": 22318.0,
+   "ratio": 0.803
+  },
+  "loads record": {
+   "plain": 27280.6,
+   "on": 13015.4,
+   "ratio": 0.477
+  },
+  "loads record bytes": {
+   "plain": 31201.5,
+   "on": 13095.4,
+   "ratio": 0.42
+  },
+  "loads small list": {
+   "plain": 12553.6,
+   "on": 2879.4,
+   "ratio": 0.229
+  },
+  "loads floats": {
+   "plain": 23879.6,
+   "on": 10631.4,
+   "ratio": 0.445
+  },
+  "loads nested": {
+   "plain": 56681.1,
+   "on": 32382.4,
+   "ratio": 0.571
+  },
+  "loads unicode": {
+   "plain": 15765.6,
+   "on": 6371.4,
+   "ratio": 0.404
+  },
+  "loads object_hook [fallback]": {
+   "plain": 39890.0,
+   "on": 40001.6,
+   "ratio": 1.003
+  },
+  "dumps Decimal no default [error fallback]": {
+   "plain": 40437.1,
+   "on": 34894.3,
+   "ratio": 0.863
+  },
+  "dumps circular [error fallback]": {
+   "plain": 19981.8,
+   "on": 19883.0,
+   "ratio": 0.995
+  },
+  "dumps circular, kernel declines at once [floor]": {
+   "plain": 20147.8,
+   "on": 20049.0,
+   "ratio": 0.995
+  },
+  "dumps Decimal, kernel declines at once [floor]": {
+   "plain": 40603.2,
+   "on": 35060.4,
+   "ratio": 0.863
+  },
+  "loads invalid [error fallback]": {
+   "plain": 26206.9,
+   "on": 26326.7,
+   "ratio": 1.005
+  }
+ }
+}

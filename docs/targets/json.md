@@ -219,6 +219,43 @@ original re-parses and raises. Steady state (the site suspended) is 1.004; a pro
 mixes valid and invalid documents pays ~2.4k Ir per invalid one and saves ~15k per valid
 one. Float cells: see `float.md`.
 
+### Large inputs: pyperf wall time (`benches/targets/json_pyperf.py`, 3.15.1, shared box)
+
+Median of 4 processes × 5 values each, plain → enabled (`json`, `float`):
+
+| case | plain | enabled | ratio |
+|---|---:|---:|---:|
+| `dumps` 1000 records (190 KB) | 1.204 ms | 0.400 ms | 0.33 (3.0×) |
+| `dumps` 1000 records, `indent=2` | 1.224 ms | 0.491 ms | 0.40 |
+| `dumps` 1000 records, `sort_keys=True` | 1.708 ms | 0.708 ms | 0.41 |
+| `dumps` 10k floats | 3.772 ms | 0.475 ms | 0.13 (7.9×) |
+| `dumps` 10k ints | 0.400 ms | 0.202 ms | 0.51 |
+| `dumps` 2000 non-ASCII strings | 1.036 ms | 0.651 ms | 0.63 |
+| `dumps` 2000 non-ASCII strings, `ensure_ascii=False` | 0.957 ms | 0.583 ms | 0.61 |
+| `loads` 1000 records | 1.299 ms | 0.541 ms | 0.42 (2.4×) |
+| `loads` 1000 records (bytes) | 1.316 ms | 0.558 ms | 0.42 |
+| `loads` 10k floats | 2.024 ms | 0.568 ms | 0.28 (3.6×) |
+| `loads` 2000 non-ASCII strings | 1.246 ms | 0.527 ms | 0.42 |
+| `list(map(repr, floats))`, 10k (group `float`) | 3.783 ms | 0.686 ms | 0.18 (5.5×) |
+
+### Workloads (`benches/workloads/run.py compare ... -n 5 -p 3 --only json,float`, 3.15.1)
+
+Median steady-state `run()` time, 3 interleaved process pairs; digests identical in every
+pair (the programs' outputs are byte-for-byte CPython's):
+
+| workload | plain | enabled | ratio | what hits |
+|---|---:|---:|---:|---|
+| `web/asyncio_http` | 231.0 ms | 182.2 ms | **0.789** | `dumps(separators=)`, `loads` of request/response bodies |
+| `data/csv_etl` | 397.0 ms | 317.4 ms | **0.799** | `dumps(ensure_ascii=False, sort_keys=True)` of float-heavy records |
+| `web/aiohttp_app` | 274.2 ms | 248.5 ms | 0.906 | aiohttp's `json.dumps`/`loads` |
+| `web/json_api` | 405.1 ms | 371.0 ms | 0.916 | `loads` of every body; `dumps(default=...)` falls back (suspended), the float kernel speeds the C encoder |
+| `web/logging_service` | 283.7 ms | 282.2 ms | 0.995 | `dumps(default=str)`: falls back (suspended) |
+| geometric mean | | | 0.878 | |
+
+Measured on the shared box (wall time; pairs interleaved). `default=` callers (json_api,
+logging, Flask/FastAPI-style providers) need a kernel behind `_json.make_encoder.tp_call`
+that calls `default` at the C encoder's points: the next step for this group.
+
 ## Versions
 
 Validated: 3.14 and 3.15, GIL and free-threaded. Fingerprints differ between the two
