@@ -27,7 +27,7 @@ use rustique_core::urlparse as up;
 
 use crate::accel::{self, Prepare, Reason, Refusal, TargetSpec};
 use crate::targets::utils_kit::{
-    Guard, O, bind, call_original, int_value, interned, is_type, keep, nargs, pin_globals,
+    Guard, O, bind, call_original, int_value, interned, is_type, keep, key, nargs, pin_global_keys, pin_keys,
 };
 
 const R: Ordering = Ordering::Relaxed;
@@ -130,13 +130,13 @@ static S_SCHEME: AtomicPtr<ffi::PyObject> = null!();
 static S_ALLOW: AtomicPtr<ffi::PyObject> = null!();
 static S_LOWER: AtomicPtr<ffi::PyObject> = null!();
 
-static G_QUOTE: Guard = Guard::new();
-static G_QUOTE_PLUS: Guard = Guard::new();
-static G_UNQUOTE: Guard = Guard::new();
-static G_UNQUOTE_PLUS: Guard = Guard::new();
-static G_PARSE_QSL: Guard = Guard::new();
-static G_PARSE_QS: Guard = Guard::new();
-static G_URLSPLIT: Guard = Guard::new();
+static G_QUOTE: Guard = Guard::new(&URLLIB_DEPS);
+static G_QUOTE_PLUS: Guard = Guard::new(&URLLIB_DEPS);
+static G_UNQUOTE: Guard = Guard::new(&URLLIB_DEPS);
+static G_UNQUOTE_PLUS: Guard = Guard::new(&URLLIB_DEPS);
+static G_PARSE_QSL: Guard = Guard::new(&URLLIB_DEPS);
+static G_PARSE_QS: Guard = Guard::new(&URLLIB_DEPS);
+static G_URLSPLIT: Guard = Guard::new(&URLLIB_DEPS);
 
 /// Count the hit and, in check mode, compare with the original.
 unsafe fn checked(g: &Guard, spec: &'static TargetSpec, r: O, func: O, args: *const O, nargsf: usize, kw: O) -> O {
@@ -782,34 +782,69 @@ fn prepare_common(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Pins of the group (`SHARED`): the module globals and builtins the seven originals read
+/// on the accelerated paths.
+static URLLIB_DEPS: accel::DepFlag = accel::DepFlag::new();
+
+/// The group's shared declarations (prepared once before the first target).
+fn prepare_group<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
+    prepare_common(py, cx)?;
+    let globals = cx.module()?.dict();
+    pin_keys!(
+        cx,
+        &globals,
+        &URLLIB_DEPS,
+        [
+            "quote",
+            "quote_from_bytes",
+            "_ALWAYS_SAFE_BYTES",
+            "_byte_quoter_factory",
+            "unquote",
+            "unquote_plus",
+            "_unquote_impl",
+            "_generate_unquoted_parts",
+            "_asciire",
+            "parse_qsl",
+            "_WHATWG_C0_CONTROL_OR_SPACE",
+            "_UNSAFE_URL_BYTES_TO_REMOVE",
+            "scheme_chars",
+            "_splitnetloc",
+            "_check_bracketed_netloc",
+            "_checknetloc",
+        ]
+    );
+    pin_global_keys!(
+        cx,
+        &globals,
+        &URLLIB_DEPS,
+        ["isinstance", "str", "bytes", "bytearray", "len", "map", "bool", "min"]
+    );
+    Ok(())
+}
+
+/// Shared declarations of the seven targets.
+pub static SHARED: accel::GroupSpec = accel::GroupSpec { name: "urllib", prepare: prepare_group };
+
+/// A target's own declarations: fingerprint, guard identity, site.
 fn prepare_fn<'py>(
-    py: Python<'py>,
     cx: &mut Prepare<'py>,
-    attr: &str,
+    attr: &Bound<'py, PyString>,
     fp: accel::Fingerprints,
-    globals_pinned: &[&str],
-    builtins: &[&str],
     g: &'static Guard,
     kernel: ffi::vectorcallfunc,
 ) -> Result<(), Refusal> {
-    prepare_common(py, cx)?;
-    let func = cx.module_attr(attr)?;
+    let func = cx
+        .get_opt_s(&cx.module()?.dict(), attr)?
+        .ok_or_else(|| Refusal::new(format!("urllib.parse.{attr} missing")))?;
     cx.fingerprint_code(&func, fp)?;
-    let globals = cx.module()?.dict();
-    for n in globals_pinned {
-        cx.pin(&globals, n, &g.deps)?;
-    }
-    pin_globals(cx, &globals, builtins, &g.deps)?;
     g.capture(&func);
     cx.vectorcall(&func, kernel, &accel::FUNCTION_VECTORCALL)
 }
 
 macro_rules! target {
-    ($spec:ident, $prep:ident, $name:literal, $attr:literal, $kernel:ident, $guard:ident, $fp:expr,
-     globals: [$($gl:literal),*], builtins: [$($bl:literal),*]) => {
+    ($spec:ident, $prep:ident, $name:literal, $attr:literal, $kernel:ident, $guard:ident, $fp:expr) => {
         fn $prep<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
-            prepare_fn(py, cx, $attr, $fp, &[$($gl),*], &[$($bl),*], &$guard, $kernel)
+            prepare_fn(cx, &key(py, $attr), $fp, &$guard, $kernel)
         }
         pub static $spec: TargetSpec = TargetSpec {
             name: $name,
@@ -820,39 +855,74 @@ macro_rules! target {
             counters: &$guard.counters,
             prepare: $prep,
             checkable: true,
+            shared: Some(&SHARED),
             ..TargetSpec::DEFAULT
         };
     };
 }
 
-target!(QUOTE, prep_quote, "urllib.parse.quote", "quote", vc_quote, G_QUOTE,
-    &[(3, 14, "63e2a4049e9eaf92"), (3, 15, "94de6386774e0075")],
-    globals: ["quote_from_bytes", "_ALWAYS_SAFE_BYTES", "_byte_quoter_factory"],
-    builtins: ["isinstance", "str", "bytes", "bytearray", "len", "map"]);
-target!(QUOTE_PLUS, prep_quote_plus, "urllib.parse.quote_plus", "quote_plus", vc_quote_plus, G_QUOTE_PLUS,
-    &[(3, 14, "a94b1533a164b8f0"), (3, 15, "a048317d78bf0841")],
-    globals: ["quote", "quote_from_bytes", "_ALWAYS_SAFE_BYTES", "_byte_quoter_factory"],
-    builtins: ["isinstance", "str", "bytes", "bytearray", "len", "map"]);
-target!(UNQUOTE, prep_unquote, "urllib.parse.unquote", "unquote", vc_unquote, G_UNQUOTE,
-    &[(3, 14, "aa04e1662d0123ca"), (3, 15, "1e55635c96370788")],
-    globals: ["_unquote_impl", "_generate_unquoted_parts", "_asciire"],
-    builtins: ["isinstance", "bytes", "bytearray"]);
-target!(UNQUOTE_PLUS, prep_unquote_plus, "urllib.parse.unquote_plus", "unquote_plus", vc_unquote_plus, G_UNQUOTE_PLUS,
-    &[(3, 14, "acbbc4556e4ffe7a"), (3, 15, "66c61fa58bfdacc7")],
-    globals: ["unquote", "_unquote_impl", "_generate_unquoted_parts", "_asciire"],
-    builtins: ["isinstance", "bytes", "bytearray"]);
-target!(PARSE_QSL, prep_parse_qsl, "urllib.parse.parse_qsl", "parse_qsl", vc_parse_qsl, G_PARSE_QSL,
-    &[(3, 14, "c4385431f4670861"), (3, 15, "6cf72a7ada63572a")],
-    globals: ["unquote_plus", "unquote", "_unquote_impl", "_generate_unquoted_parts", "_asciire"],
-    builtins: ["isinstance", "str"]);
-target!(PARSE_QS, prep_parse_qs, "urllib.parse.parse_qs", "parse_qs", vc_parse_qs, G_PARSE_QS,
-    &[(3, 14, "d9510d05a0e09245"), (3, 15, "4228046b5716b612")],
-    globals: ["parse_qsl", "unquote_plus", "unquote", "_unquote_impl", "_generate_unquoted_parts", "_asciire"],
-    builtins: ["isinstance", "str"]);
-target!(URLSPLIT, prep_urlsplit, "urllib.parse._urlsplit", "_urlsplit", vc_urlsplit, G_URLSPLIT,
-    &[(3, 14, "8d4cdc781ae3dbf2"), (3, 15, "d7c3aef3e7e67e8d")],
-    globals: ["_WHATWG_C0_CONTROL_OR_SPACE", "_UNSAFE_URL_BYTES_TO_REMOVE", "scheme_chars", "_splitnetloc",
-              "_check_bracketed_netloc", "_checknetloc"],
-    builtins: ["bool", "len", "min"]);
+target!(
+    QUOTE,
+    prep_quote,
+    "urllib.parse.quote",
+    "quote",
+    vc_quote,
+    G_QUOTE,
+    &[(3, 14, "63e2a4049e9eaf92"), (3, 15, "94de6386774e0075")]
+);
+target!(
+    QUOTE_PLUS,
+    prep_quote_plus,
+    "urllib.parse.quote_plus",
+    "quote_plus",
+    vc_quote_plus,
+    G_QUOTE_PLUS,
+    &[(3, 14, "a94b1533a164b8f0"), (3, 15, "a048317d78bf0841")]
+);
+target!(
+    UNQUOTE,
+    prep_unquote,
+    "urllib.parse.unquote",
+    "unquote",
+    vc_unquote,
+    G_UNQUOTE,
+    &[(3, 14, "aa04e1662d0123ca"), (3, 15, "1e55635c96370788")]
+);
+target!(
+    UNQUOTE_PLUS,
+    prep_unquote_plus,
+    "urllib.parse.unquote_plus",
+    "unquote_plus",
+    vc_unquote_plus,
+    G_UNQUOTE_PLUS,
+    &[(3, 14, "acbbc4556e4ffe7a"), (3, 15, "66c61fa58bfdacc7")]
+);
+target!(
+    PARSE_QSL,
+    prep_parse_qsl,
+    "urllib.parse.parse_qsl",
+    "parse_qsl",
+    vc_parse_qsl,
+    G_PARSE_QSL,
+    &[(3, 14, "c4385431f4670861"), (3, 15, "6cf72a7ada63572a")]
+);
+target!(
+    PARSE_QS,
+    prep_parse_qs,
+    "urllib.parse.parse_qs",
+    "parse_qs",
+    vc_parse_qs,
+    G_PARSE_QS,
+    &[(3, 14, "d9510d05a0e09245"), (3, 15, "4228046b5716b612")]
+);
+target!(
+    URLSPLIT,
+    prep_urlsplit,
+    "urllib.parse._urlsplit",
+    "_urlsplit",
+    vc_urlsplit,
+    G_URLSPLIT,
+    &[(3, 14, "8d4cdc781ae3dbf2"), (3, 15, "d7c3aef3e7e67e8d")]
+);
 
 pub static TARGETS: &[&TargetSpec] = &[&QUOTE, &QUOTE_PLUS, &UNQUOTE, &UNQUOTE_PLUS, &PARSE_QSL, &PARSE_QS, &URLSPLIT];

@@ -22,7 +22,7 @@ use pyo3::prelude::*;
 use rustique_core::stats::{FixedAcc, SCALE_X, SCALE_XX, float_terms};
 
 use crate::accel::{self, Prepare, Reason, Refusal, TargetSpec};
-use crate::targets::utils_kit::{Guard, O, call_original, is_type, keep, nargs, pin_globals};
+use crate::targets::utils_kit::{Guard, O, call_original, is_type, keep, key, nargs, pin_global_keys, pin_keys};
 
 const R: Ordering = Ordering::Relaxed;
 
@@ -275,11 +275,11 @@ unsafe fn compute(data: O, kind: Kind) -> Option<O> {
     }
 }
 
-static G_MEAN: Guard = Guard::new();
-static G_VARIANCE: Guard = Guard::new();
-static G_PVARIANCE: Guard = Guard::new();
-static G_STDEV: Guard = Guard::new();
-static G_PSTDEV: Guard = Guard::new();
+static G_MEAN: Guard = Guard::new(&STATS_DEPS);
+static G_VARIANCE: Guard = Guard::new(&STATS_DEPS);
+static G_PVARIANCE: Guard = Guard::new(&STATS_DEPS);
+static G_STDEV: Guard = Guard::new(&STATS_DEPS);
+static G_PSTDEV: Guard = Guard::new(&STATS_DEPS);
 
 unsafe fn kernel(g: &Guard, spec: &'static TargetSpec, kind: Kind, func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments.
@@ -339,47 +339,63 @@ fn prepare_common(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Pins of the group (`SHARED`): the module globals, `math.gcd`/`math.isqrt` and the
+/// builtins the five originals read on the accelerated paths (error-only names are not
+/// pinned: on the inputs the kernels accept, CPython never reads them).
+static STATS_DEPS: accel::DepFlag = accel::DepFlag::new();
+
+/// The group's shared declarations (prepared once before the first target).
+fn prepare_group<'py>(_py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
+    prepare_common(cx)?;
+    let globals = cx.module()?.dict();
+    pin_keys!(
+        cx,
+        &globals,
+        &STATS_DEPS,
+        [
+            "_sum",
+            "_ss",
+            "_convert",
+            "_exact_ratio",
+            "_coerce",
+            "Fraction",
+            "Decimal",
+            "groupby",
+            "reduce",
+            "math",
+            "_float_sqrt_of_frac",
+            "_integer_sqrt_of_frac_rto",
+            "_sqrt_bit_width",
+        ]
+    );
+    let math = cx.module_attr("math")?.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?;
+    pin_keys!(cx, &math.dict(), &STATS_DEPS, ["gcd", "isqrt"]);
+    pin_global_keys!(cx, &globals, &STATS_DEPS, ["map", "sum", "set", "type", "issubclass"]);
+    Ok(())
+}
+
+/// Shared declarations of the five targets.
+pub static SHARED: accel::GroupSpec = accel::GroupSpec { name: "statistics", prepare: prepare_group };
+
+/// A target's own declarations: fingerprint, guard identity, site.
 fn prepare_fn<'py>(
-    _py: Python<'py>,
     cx: &mut Prepare<'py>,
-    attr: &str,
+    attr: &Bound<'py, pyo3::types::PyString>,
     fp: accel::Fingerprints,
-    globals_pinned: &[&str],
-    builtins: &[&str],
     g: &'static Guard,
     kernel: ffi::vectorcallfunc,
 ) -> Result<(), Refusal> {
-    prepare_common(cx)?;
-    let func = cx.module_attr(attr)?;
+    let func =
+        cx.get_opt_s(&cx.module()?.dict(), attr)?.ok_or_else(|| Refusal::new(format!("statistics.{attr} missing")))?;
     cx.fingerprint_code(&func, fp)?;
-    let globals = cx.module()?.dict();
-    for n in globals_pinned {
-        cx.pin(&globals, n, &g.deps)?;
-    }
-    let math = cx.module_attr("math")?.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?;
-    cx.pin(&math.dict(), "gcd", &g.deps)?;
-    cx.pin(&math.dict(), "isqrt", &g.deps)?;
-    pin_globals(cx, &globals, builtins, &g.deps)?;
     g.capture(&func);
     cx.vectorcall(&func, kernel, &accel::FUNCTION_VECTORCALL)
 }
 
-/// Module globals read on the accelerated path (error-only names are not pinned: on the
-/// inputs the kernels accept, CPython never reads them).
-const COMMON_GLOBALS: &[&str] =
-    &["_sum", "_ss", "_convert", "_exact_ratio", "_coerce", "Fraction", "Decimal", "groupby", "reduce", "math"];
-const SQRT_GLOBALS: &[&str] = &["_float_sqrt_of_frac", "_integer_sqrt_of_frac_rto", "_sqrt_bit_width"];
-const BUILTINS: &[&str] = &["map", "sum", "set", "type", "issubclass"];
-
 macro_rules! target {
-    ($spec:ident, $prep:ident, $name:literal, $attr:literal, $kernel:ident, $guard:ident, $fp:expr, $sqrt:expr) => {
+    ($spec:ident, $prep:ident, $name:literal, $attr:literal, $kernel:ident, $guard:ident, $fp:expr, $_sqrt:expr) => {
         fn $prep<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
-            let mut globals: Vec<&str> = COMMON_GLOBALS.to_vec();
-            if $sqrt {
-                globals.extend_from_slice(SQRT_GLOBALS);
-            }
-            prepare_fn(py, cx, $attr, $fp, &globals, BUILTINS, &$guard, $kernel)
+            prepare_fn(cx, &key(py, $attr), $fp, &$guard, $kernel)
         }
         pub static $spec: TargetSpec = TargetSpec {
             name: $name,
@@ -390,6 +406,7 @@ macro_rules! target {
             counters: &$guard.counters,
             prepare: $prep,
             checkable: true,
+            shared: Some(&SHARED),
             ..TargetSpec::DEFAULT
         };
     };

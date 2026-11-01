@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize
 
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::PyString;
+use pyo3::types::{PyDict, PyString};
 
 use crate::accel::{self, Counters, DepFlag, Original, Prepare, Reason, Refusal, Tools};
 
@@ -70,18 +70,21 @@ pub struct Guard {
     defaults: AtomicPtr<ffi::PyObject>,
     kwdefaults: AtomicPtr<ffi::PyObject>,
     pub tools: Tools,
-    pub deps: DepFlag,
+    /// The flag the target's pins go to: its group's (`GroupSpec`) for the utils groups.
+    pub deps: &'static DepFlag,
     pub counters: Counters,
 }
 
 impl Guard {
-    pub const fn new() -> Self {
+    /// A guard whose dependency check reads `deps` (the flag the group's `GroupSpec` pins
+    /// into).
+    pub const fn new(deps: &'static DepFlag) -> Self {
         Guard {
             code: AtomicPtr::new(std::ptr::null_mut()),
             defaults: AtomicPtr::new(std::ptr::null_mut()),
             kwdefaults: AtomicPtr::new(std::ptr::null_mut()),
             tools: Tools::new(),
-            deps: DepFlag::new(),
+            deps,
             counters: Counters::new(),
         }
     }
@@ -125,24 +128,51 @@ impl Guard {
     }
 }
 
-impl Default for Guard {
-    fn default() -> Self {
-        Self::new()
-    }
+/// A `str` key for a dict lookup or a pin at install (not interned: dict lookups and the
+/// pin watcher compare keys by value when the pointers differ). Install code runs once per
+/// process, so the cheapest construction wins: `pyo3::intern!` costs ~1.3k Ir on first
+/// use (a `OnceCell` that releases and re-takes the thread state), interning ~650 Ir (an
+/// insert into the interned-strings dict), the framework's interning cache a mutex-guarded
+/// map of owned `String`s; a plain `str` ~200 Ir.
+pub fn key<'py>(py: Python<'py>, s: &str) -> Bound<'py, PyString> {
+    PyString::new(py, s)
 }
 
-/// Pin what `LOAD_GLOBAL name` resolves to in `globals`, for each name.
-pub fn pin_globals(
-    cx: &mut Prepare<'_>,
-    globals: &Bound<'_, pyo3::types::PyDict>,
-    names: &[&str],
-    flag: &'static DepFlag,
-) -> Result<(), Refusal> {
-    for n in names {
-        cx.pin_global(globals, n, flag)?;
-    }
-    Ok(())
+/// `dict[key]` with a ready `str` key ([`key`]), refusing when absent.
+pub fn get_s<'py>(
+    cx: &Prepare<'py>,
+    dict: &Bound<'_, PyDict>,
+    key: &Bound<'_, PyString>,
+) -> Result<Bound<'py, PyAny>, Refusal> {
+    cx.get_opt_s(dict, key)?.ok_or_else(|| Refusal::new(format!("{key} missing")))
 }
+
+/// The `__dict__` of `sys.modules[name]` ([`key`]), refusing when it is absent or
+/// not a module. For modules the target's module imported (fully executed by then).
+pub fn module_dict_s<'py>(cx: &Prepare<'py>, name: &Bound<'_, PyString>) -> Result<Bound<'py, PyDict>, Refusal> {
+    let modules = crate::accel::prepare::sys_modules(cx.py())?;
+    let m = get_s(cx, &modules, name)?;
+    Ok(m.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?.dict())
+}
+
+/// `cx.pin_s` of each literal key ([`key`]) into `flag`; `?` on the first
+/// refusal.
+macro_rules! pin_keys {
+    ($cx:expr, $dict:expr, $flag:expr, [$($k:literal),* $(,)?]) => {{
+        let py = $cx.py();
+        $( $cx.pin_s($dict, &$crate::targets::utils_kit::key(py, $k), $flag)?; )*
+    }};
+}
+pub(crate) use pin_keys;
+
+/// `cx.pin_global_s` (what `LOAD_GLOBAL` resolves to) of each literal name ([`key`]).
+macro_rules! pin_global_keys {
+    ($cx:expr, $dict:expr, $flag:expr, [$($k:literal),* $(,)?]) => {{
+        let py = $cx.py();
+        $( $cx.pin_global_s($dict, &$crate::targets::utils_kit::key(py, $k), $flag)?; )*
+    }};
+}
+pub(crate) use pin_global_keys;
 
 // ---------------------------------------------------------------------------------------
 // Instance attribute check (inline values).

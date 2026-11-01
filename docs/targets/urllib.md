@@ -59,7 +59,9 @@ encode errors), bracketed or non-ASCII netlocs. `deps`: a replaced dependency (�
 
 ## 3. Dependencies
 
-Pinned (identity, LOAD_GLOBAL semantics): `quote_from_bytes`, `_ALWAYS_SAFE_BYTES`,
+Pinned once for the whole group (`GroupSpec`, flag `URLLIB_DEPS`; replacing any of them
+suspends all seven targets until it is back), identity, LOAD_GLOBAL semantics:
+`quote_from_bytes`, `_ALWAYS_SAFE_BYTES`,
 `_byte_quoter_factory` (quote, quote_plus), `quote` (quote_plus), `unquote`,
 `_unquote_impl`, `_generate_unquoted_parts`, `_asciire` (unquote*, parse_qs*),
 `unquote_plus` (parse_qsl), `parse_qsl` (parse_qs), `_WHATWG_C0_CONTROL_OR_SPACE`,
@@ -145,17 +147,29 @@ data/billing_engine web/requests_local -n 5 -p 3 --only random,textwrap,urllib,s
 | `web/requests_local` | 266.8 ms | 248.1 ms | 0.930 | `urllib` (`urlsplit`/`parse_qs` in the handler, `requests`' `quote`/`urlparse`) |
 | `data/billing_engine` | 1024.2 ms | 1021.0 ms | 0.997 | `statistics` on `Decimal` totals falls back (by design); `stdev` of floats accelerated |
 
-### Install cost (budget: ≤ 5% of the module's import; ≤ 0.1M Ir per group at `enable()`)
+### Install cost (budget: lazy install ≤ max(5% of the module's import, 0.1M Ir))
 
-`python benches/targets/utils_install_cost.py urllib` (callgrind, fresh processes; the module
-removed from `sys.modules` first, its dependencies imported), after the framework's
-install-cost fixes (wave1 5a690e2, fingerprint format v2): lazy install on `import urllib.parse`
-+523k Ir on an 8.87M-Ir `import urllib.parse` (+5.9%). One target alone (`quote`) costs +190k, each further target ~+55k. `enable(only=["urllib"])` with the module not imported costs 0.56M Ir, the same for
-every group (the registry's `enable()`, not the group). The group's own prepare is trimmed
-(single-probe self-tests or pattern hashes, no `eval`, no probe classes — the inline-values
-layout is calibrated on `os.environ`, the `slot_*` functions read from `os._Environ` —, no
-class pins, pins only for names read on the accepted paths); the remaining fixed cost of the
-first target of a module (~150k Ir) is in the framework's activation path.
+| | cold | warm | budget (max(5%, 0.1M Ir)) |
+|---|---:|---:|---:|
+| `import urllib.parse` plain | 9.55M Ir | 9.63M Ir | |
+| lazy install overhead | +212k (+2.2%) | **+175k (+1.8%)** | 481k: within |
+
+Before this pass: +523k cold (+5.9%), +306k warm.
+
+Method: `python benches/targets/utils_install_cost.py` (callgrind, fresh processes; the
+module removed from `sys.modules` first, its dependencies imported; every setup ends with
+`gc.collect()` so neither side is charged a collection the other's setup absorbed). *Cold*:
+the first group of the process. *Warm*: another group with an imported vectorcall target is
+enabled first, so the framework's one-time costs are not charged to this group
+(REGISTRY_ANNOUNCE_2 item 16). `enable(only=[group])` with the module not imported costs
+0.50M Ir, the same for every group (the registry's first `enable()`, not the group).
+
+The group's install (wave1 b162e61, accel-core's second install-cost pass) is one
+`GroupSpec` (`SHARED`): the statics, symbols, validations and **one set of pins for the
+whole group** are declared once, and each target adds only its function's fingerprint and
+its vectorcall site. Install-time keys are plain `str` objects (`utils_kit::key`): a
+`pyo3::intern!` costs ~1.3k Ir on first use, interning ~650 Ir, a plain `str` ~200 Ir, and
+dict lookups and the pin watcher compare keys by value.
 
 ### First 64 fallback calls (before the registry suspends a target that keeps falling back)
 

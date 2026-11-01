@@ -528,6 +528,19 @@ def test_captured_references_are_accelerated():
     rt.stats(False)
 
 
+def test_group_declarations_and_lazy_self_test():
+    """The six targets share one `GroupSpec` (pins declared once); the generator self-test
+    runs at the first native use and leaves the targets installed and not degraded."""
+    enable()
+    random.Random(4).randint(1, 6)  # first native use (if not already run in this process)
+    random.Random(4).choices("ab", k=2)
+    for t in rt.status()["targets"]:
+        if t["group"] == "random":
+            assert t["state"] == "installed", t
+            assert t.get("shared") == "random", t
+            assert "degraded" not in t, t
+
+
 def test_introspection_unchanged():
     before = {n: (getattr(random.Random, n.split(".")[1])) for n in NAMES}
     sigs = {n: str(inspect.signature(f)) for n, f in before.items()}

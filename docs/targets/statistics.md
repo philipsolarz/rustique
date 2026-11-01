@@ -47,7 +47,9 @@ subclasses (numpy scalars), NaN/inf, big ints, given `xbar`/`mu`, too few points
 
 ## 3. Dependencies
 
-Pinned module globals read on the accelerated path: `_sum`, `_ss`, `_convert`,
+Pinned once for the whole group (`GroupSpec`, flag `STATS_DEPS`; replacing any of them
+suspends all five targets until it is back), the module globals read on the accelerated
+path: `_sum`, `_ss`, `_convert`,
 `_exact_ratio`, `_coerce`, `Fraction`, `Decimal`, `groupby`, `reduce`, `math`, and for
 `stdev`/`pstdev` `_float_sqrt_of_frac`, `_integer_sqrt_of_frac_rto`, `_sqrt_bit_width`
 (checked = 109); `math.gcd`, `math.isqrt`; the builtins `map`, `sum`, `set`, `type`,
@@ -127,17 +129,29 @@ data/billing_engine web/requests_local -n 5 -p 3 --only random,textwrap,urllib,s
 | `web/requests_local` | 266.8 ms | 248.1 ms | 0.930 | `urllib` (`urlsplit`/`parse_qs` in the handler, `requests`' `quote`/`urlparse`) |
 | `data/billing_engine` | 1024.2 ms | 1021.0 ms | 0.997 | `statistics` on `Decimal` totals falls back (by design); `stdev` of floats accelerated |
 
-### Install cost (budget: ≤ 5% of the module's import; ≤ 0.1M Ir per group at `enable()`)
+### Install cost (budget: lazy install ≤ max(5% of the module's import, 0.1M Ir))
 
-`python benches/targets/utils_install_cost.py statistics` (callgrind, fresh processes; the module
-removed from `sys.modules` first, its dependencies imported), after the framework's
-install-cost fixes (wave1 5a690e2, fingerprint format v2): lazy install on `import statistics`
-+443k Ir on a 12.9M-Ir `import statistics` (+3.4%, within budget). `enable(only=["statistics"])` with the module not imported costs 0.56M Ir, the same for
-every group (the registry's `enable()`, not the group). The group's own prepare is trimmed
-(single-probe self-tests or pattern hashes, no `eval`, no probe classes — the inline-values
-layout is calibrated on `os.environ`, the `slot_*` functions read from `os._Environ` —, no
-class pins, pins only for names read on the accepted paths); the remaining fixed cost of the
-first target of a module (~150k Ir) is in the framework's activation path.
+| | cold | warm | budget (max(5%, 0.1M Ir)) |
+|---|---:|---:|---:|
+| `import statistics` plain | 13.53M Ir | 13.59M Ir | |
+| lazy install overhead | +139k (+1.0%) | **+106k (+0.8%)** | 680k: within |
+
+Before this pass: +443k cold, +224k warm.
+
+Method: `python benches/targets/utils_install_cost.py` (callgrind, fresh processes; the
+module removed from `sys.modules` first, its dependencies imported; every setup ends with
+`gc.collect()` so neither side is charged a collection the other's setup absorbed). *Cold*:
+the first group of the process. *Warm*: another group with an imported vectorcall target is
+enabled first, so the framework's one-time costs are not charged to this group
+(REGISTRY_ANNOUNCE_2 item 16). `enable(only=[group])` with the module not imported costs
+0.50M Ir, the same for every group (the registry's first `enable()`, not the group).
+
+The group's install (wave1 b162e61, accel-core's second install-cost pass) is one
+`GroupSpec` (`SHARED`): the statics, symbols, validations and **one set of pins for the
+whole group** are declared once, and each target adds only its function's fingerprint and
+its vectorcall site. Install-time keys are plain `str` objects (`utils_kit::key`): a
+`pyo3::intern!` costs ~1.3k Ir on first use, interning ~650 Ir, a plain `str` ~200 Ir, and
+dict lookups and the pin watcher compare keys by value.
 
 ### First 64 fallback calls (before the registry suspends a target that keeps falling back)
 

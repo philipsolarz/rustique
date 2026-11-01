@@ -30,7 +30,7 @@
 //! (CPython's `getrandbits`/`random` are `@critical_section`), together with the list for
 //! list arguments; nothing that can run Python code (or GC) happens inside it.
 
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 
 use pyo3::ffi;
 use pyo3::prelude::*;
@@ -39,8 +39,9 @@ use rustique_core::random::{Mt, N};
 
 use crate::accel::{self, Prepare, Reason, Refusal, TargetSpec};
 use crate::targets::utils_kit::{
-    _PyType_Lookup, Guard, INST, O, TypeCache, bind, call_original, generic_getattro, int_value, interned, is_type,
-    keep, long_from_i128, nargs, pin_globals, prepare_symbols, unshadowed, version_tag, with_cs, with_cs2,
+    _PyType_Lookup, Guard, INST, O, TypeCache, bind, call_original, generic_getattro, get_s, int_value, interned,
+    is_type, keep, key, long_from_i128, module_dict_s, nargs, prepare_symbols, unshadowed, version_tag, with_cs,
+    with_cs2,
 };
 
 const R: Ordering = Ordering::Relaxed;
@@ -104,8 +105,54 @@ static S: Names = Names {
 };
 
 /// Offset of `RandomObject.index` (`state` follows at +4): `sizeof(PyObject)`, checked by
-/// the self-test against `getstate()`.
+/// the self-test.
 static MT_OFF: AtomicUsize = AtomicUsize::new(0);
+
+/// Pins of the group (`SHARED`): every module global and builtin the originals read.
+static RANDOM_DEPS: accel::DepFlag = accel::DepFlag::new();
+
+/// The generator self-test (layout and stream), run at the first native use instead of at
+/// install (most processes that import `random` never call these methods): `MT_UNKNOWN`,
+/// `MT_GOOD`, or `MT_BAD` (every target degraded, kernels fall back, the next `enable()`
+/// refuses the group).
+static MT_OK: AtomicU8 = AtomicU8::new(MT_UNKNOWN);
+const MT_UNKNOWN: u8 = 0;
+const MT_GOOD: u8 = 1;
+const MT_BAD: u8 = 2;
+const SELFTEST_FAILED: &str = "random generator layout and stream self-test failed";
+
+/// May the kernels use the native generator? (One relaxed load once the test has run.)
+#[inline(always)]
+fn mt_ready() -> bool {
+    match MT_OK.load(R) {
+        MT_GOOD => true,
+        MT_UNKNOWN => mt_check(),
+        _ => false,
+    }
+}
+
+/// Run the self-test (C calls only: a probe `_random.Random`, its C `getrandbits` and
+/// `random`; the probe is private, so nothing observable happens).
+#[cold]
+#[inline(never)]
+fn mt_check() -> bool {
+    // SAFETY: kernels run attached; the statics hold strong references.
+    let ok = unsafe {
+        let py = Python::assume_attached();
+        let base = Bound::from_borrowed_ptr(py, ld(&RND_BASE));
+        let gb = Bound::from_borrowed_ptr(py, ld(&C_GETRANDBITS));
+        let rr = Bound::from_borrowed_ptr(py, ld(&C_RANDOM));
+        // An error (none expected) counts as a failure; the PyErr is dropped (cleared).
+        self_test(&base, &gb, &rr).unwrap_or(false)
+    };
+    let new = if ok { MT_GOOD } else { MT_BAD };
+    if MT_OK.compare_exchange(MT_UNKNOWN, new, R, R).is_ok() && !ok {
+        for spec in TARGETS {
+            accel::degrade(spec, SELFTEST_FAILED);
+        }
+    }
+    ok
+}
 
 #[inline(always)]
 fn ld(p: &AtomicPtr<ffi::PyObject>) -> O {
@@ -224,6 +271,7 @@ unsafe fn below_native(slf: O) -> bool {
     unsafe {
         let Some(c) = class_of(ffi::Py_TYPE(slf)) else { return false };
         c.below_native
+            && mt_ready()
             && (instance_clean(slf, &c)
                 || !(inst_has(slf, ld(&S.randbelow), ld(&RB_WITH))
                     || inst_has(slf, ld(&S.getrandbits), ld(&C_GETRANDBITS))))
@@ -236,7 +284,7 @@ unsafe fn random_native(slf: O) -> bool {
     // SAFETY: as `below_native`.
     unsafe {
         let Some(c) = class_of(ffi::Py_TYPE(slf)) else { return false };
-        c.random_native && (instance_clean(slf, &c) || !inst_has(slf, ld(&S.random), ld(&C_RANDOM)))
+        c.random_native && mt_ready() && (instance_clean(slf, &c) || !inst_has(slf, ld(&S.random), ld(&C_RANDOM)))
     }
 }
 
@@ -300,12 +348,12 @@ unsafe fn add_mul(base: O, mult: O, r: O) -> O {
 // Kernels
 // ---------------------------------------------------------------------------------------
 
-static G_RANDINT: Guard = Guard::new();
-static G_RANDRANGE: Guard = Guard::new();
-static G_CHOICE: Guard = Guard::new();
-static G_SHUFFLE: Guard = Guard::new();
-static G_SAMPLE: Guard = Guard::new();
-static G_CHOICES: Guard = Guard::new();
+static G_RANDINT: Guard = Guard::new(&RANDOM_DEPS);
+static G_RANDRANGE: Guard = Guard::new(&RANDOM_DEPS);
+static G_CHOICE: Guard = Guard::new(&RANDOM_DEPS);
+static G_SHUFFLE: Guard = Guard::new(&RANDOM_DEPS);
+static G_SAMPLE: Guard = Guard::new(&RANDOM_DEPS);
+static G_CHOICES: Guard = Guard::new(&RANDOM_DEPS);
 
 /// `return [start +] [mult *] self._randbelow(n)` once the arguments are checked, natively.
 /// `None`: fall back. `start`/`mult` are int objects with their values.
@@ -965,38 +1013,86 @@ unsafe fn choices(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
 // Preparation and self-test
 // ---------------------------------------------------------------------------------------
 
-/// Fill the group's statics from the `random` module (idempotent per `Random` class) and
-/// run the self-test. C calls only (may run inside the `sys.modules` watcher).
-fn prepare_common<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<Bound<'py, PyType>, Refusal> {
-    prepare_symbols(cx)?;
-    let cls = cx.module_attr("Random")?.cast_into::<PyType>().map_err(PyErr::from)?;
-    if cls.as_ptr() == ld(&RANDOM_CLS) {
-        return Ok(cls);
+/// The group's shared declarations (`GroupSpec`, prepared once before the first target):
+/// the statics (idempotent per `Random` class), and the pins of every module global and
+/// builtin the six originals read on the accepted paths, each validated against the
+/// object it must be. C calls only (may run inside the `sys.modules` watcher). The
+/// generator self-test is lazy (`mt_ready`, first native use).
+fn prepare_group<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
+    if MT_OK.load(R) == MT_BAD {
+        return Err(Refusal::with(accel::Category::Selftest, SELFTEST_FAILED));
     }
-    let cmod = cx.module_attr("_random")?.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?;
-    let base = cx.get(&cmod.dict(), "Random")?.cast_into::<PyType>().map_err(PyErr::from)?;
+    prepare_symbols(cx)?;
+    let g = cx.module()?.dict();
+    let cls = get_s(cx, &g, &key(py, "Random"))?.cast_into::<PyType>().map_err(PyErr::from)?;
+    if cls.as_ptr() != ld(&RANDOM_CLS) {
+        prepare_statics(py, cx, &cls)?;
+    }
+    // Module globals: pinned and checked to be what `random` imports them as (`from math
+    // import floor as _floor`, ...), read from the source modules' dicts.
+    let math = module_dict_s(cx, &key(py, "math"))?;
+    let itertools = module_dict_s(cx, &key(py, "itertools"))?;
+    let sources = [
+        (&key(py, "_index"), module_dict_s(cx, &key(py, "operator"))?, &key(py, "index")),
+        (&key(py, "_floor"), math.clone(), &key(py, "floor")),
+        (&key(py, "_ceil"), math.clone(), &key(py, "ceil")),
+        (&key(py, "_log"), math.clone(), &key(py, "log")),
+        (&key(py, "_isfinite"), math, &key(py, "isfinite")),
+        (&key(py, "_repeat"), itertools.clone(), &key(py, "repeat")),
+        (&key(py, "_accumulate"), itertools, &key(py, "accumulate")),
+        (&key(py, "_bisect"), module_dict_s(cx, &key(py, "bisect"))?, &key(py, "bisect")),
+        (&key(py, "_Sequence"), module_dict_s(cx, &key(py, "_collections_abc"))?, &key(py, "Sequence")),
+    ];
+    for (key, source, attr) in sources {
+        if !get_s(cx, &g, key)?.is(&get_s(cx, &source, attr)?) {
+            return Err(Refusal::with(accel::Category::Deps, format!("random.{key} is not the {attr} it imports")));
+        }
+        cx.pin_s(&g, key, &RANDOM_DEPS)?;
+    }
+    let one = get_s(cx, &g, &key(py, "_ONE"))?;
+    if !is_small_one(&one) {
+        return Err(Refusal::new("random._ONE is not 1"));
+    }
+    cx.pin_s(&g, &key(py, "_ONE"), &RANDOM_DEPS)?;
+    // What `LOAD_GLOBAL` resolves these to (module globals shadowing builtins included).
+    for name in [
+        &key(py, "len"),
+        &key(py, "range"),
+        &key(py, "reversed"),
+        &key(py, "isinstance"),
+        &key(py, "list"),
+        &key(py, "set"),
+    ] {
+        cx.pin_global_s(&g, name, &RANDOM_DEPS)?;
+    }
+    Ok(())
+}
+
+/// Shared declarations of the six targets.
+pub static SHARED: accel::GroupSpec = accel::GroupSpec { name: "random", prepare: prepare_group };
+
+/// Fill the statics from `random.Random` and `_random.Random`.
+fn prepare_statics<'py>(py: Python<'py>, cx: &mut Prepare<'py>, cls: &Bound<'py, PyType>) -> Result<(), Refusal> {
+    let g = cx.module()?.dict();
+    let cmod = get_s(cx, &g, &key(py, "_random"))?.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?;
+    let base = get_s(cx, &cmod.dict(), &key(py, "Random"))?.cast_into::<PyType>().map_err(PyErr::from)?;
     // SAFETY: a ready type: tp_bases is a tuple.
     let bases = unsafe { Bound::from_borrowed_ptr(py, (*cls.as_type_ptr()).tp_bases) };
     let bases = bases.cast::<PyTuple>().map_err(PyErr::from)?;
     if bases.len() != 1 || !bases.get_item(0)?.is(&base) {
         return Err(Refusal::new("random.Random does not derive from _random.Random"));
     }
-    let rb_with = cx.type_attr(&cls, "_randbelow_with_getrandbits")?;
-    if !cx.type_attr(&cls, "_randbelow")?.is(&rb_with) {
+    let cd = crate::accel::prepare::type_dict(cls)?;
+    let bd = crate::accel::prepare::type_dict(&base)?;
+    let rb_with = get_s(cx, &cd, &key(py, "_randbelow_with_getrandbits"))?;
+    if !get_s(cx, &cd, &key(py, "_randbelow"))?.is(&rb_with) {
         return Err(Refusal::new("Random._randbelow is not _randbelow_with_getrandbits"));
-    }
-    let c_getrandbits = cx.type_attr(&base, "getrandbits")?;
-    let c_random = cx.type_attr(&base, "random")?;
-    let c_getstate = cx.type_attr(&base, "getstate")?;
-    let one = cx.module_attr("_ONE")?;
-    if !is_small_one(&one) {
-        return Err(Refusal::new("random._ONE is not 1"));
     }
     keep(&RND_BASE, &base);
     keep(&RB_WITH, &rb_with);
-    keep(&C_GETRANDBITS, &c_getrandbits);
-    keep(&C_RANDOM, &c_random);
-    keep(&ONE, &one);
+    keep(&C_GETRANDBITS, &get_s(cx, &bd, &key(py, "getrandbits"))?);
+    keep(&C_RANDOM, &get_s(cx, &bd, &key(py, "random"))?);
+    keep(&ONE, &get_s(cx, &g, &key(py, "_ONE"))?);
     for (slot, s) in [
         (&S.randbelow, "_randbelow"),
         (&S.getrandbits, "getrandbits"),
@@ -1020,10 +1116,9 @@ fn prepare_common<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<Bound<'
     }
     MT_OFF.store(size_of::<ffi::PyObject>(), R);
     INST.calibrate(py)?;
-    probe_slots(cx)?;
-    cx.self_test("random generator layout and stream", |_py| self_test(&base, &c_getrandbits, &c_random, &c_getstate))?;
+    probe_slots(py, cx)?;
     keep(&RANDOM_CLS, cls.as_any());
-    Ok(cls)
+    Ok(())
 }
 
 fn is_small_one(o: &Bound<'_, PyAny>) -> bool {
@@ -1034,15 +1129,16 @@ fn is_small_one(o: &Bound<'_, PyAny>) -> bool {
 /// The `slot_*` functions CPython installs for Python-level `__len__`/`__getitem__`, read
 /// from `os._Environ` (a Python class defining both; `os` is imported at startup), so no
 /// probe class is created.
-fn probe_slots(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn probe_slots(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if SLOT_SQ_LENGTH.load(R) != 0 {
         return Ok(());
     }
-    let os = cx.loaded_module("os")?;
-    let env = cx.get(&os.dict(), "_Environ")?.cast_into::<PyType>().map_err(PyErr::from)?;
+    let os = module_dict_s(cx, &key(py, "os"))?;
+    let env = get_s(cx, &os, &key(py, "_Environ"))?.cast_into::<PyType>().map_err(PyErr::from)?;
+    let ed = crate::accel::prepare::type_dict(&env)?;
     // The class must define both in Python (its own `__dict__` entries are functions).
-    for n in ["__len__", "__getitem__"] {
-        let f = cx.type_attr(&env, n)?;
+    for n in [&key(py, "__len__"), &key(py, "__getitem__")] {
+        let f = get_s(cx, &ed, n)?;
         // SAFETY: type check of a live object.
         if unsafe { !is_type(f.as_ptr(), &raw mut ffi::PyFunction_Type) } {
             return Err(Refusal::new("os._Environ does not define __len__/__getitem__ in Python"));
@@ -1069,12 +1165,7 @@ fn probe_slots(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 /// the freshly seeded state) equal its `getrandbits(32 * 40)`, then one `random()` value.
 /// Kept small (install-cost budget); the algorithms are covered by `cargo test`
 /// (reference outputs) and the conformance runs.
-fn self_test(
-    base: &Bound<'_, PyType>,
-    getrandbits: &Bound<'_, PyAny>,
-    random: &Bound<'_, PyAny>,
-    _getstate: &Bound<'_, PyAny>,
-) -> PyResult<bool> {
+fn self_test(base: &Bound<'_, PyAny>, getrandbits: &Bound<'_, PyAny>, random: &Bound<'_, PyAny>) -> PyResult<bool> {
     const SEED: u64 = 20_261_101;
     const WORDS: usize = 40;
     let a = base.call1((SEED,))?;
@@ -1108,35 +1199,30 @@ fn self_test(
     Ok(want.to_bits() == got.to_bits() && ia == *copy.index)
 }
 
-/// Shared tail of every target's `prepare`: fingerprint, pins, guard identity, site.
-#[allow(clippy::too_many_arguments)]
+/// A target's own declarations: its function's fingerprint, guard identity and site (the
+/// pins and statics are the group's).
 fn prepare_target<'py>(
     py: Python<'py>,
     cx: &mut Prepare<'py>,
-    attr: &str,
+    attr: &Bound<'py, pyo3::types::PyString>,
     fp: accel::Fingerprints,
-    module_globals: &[&str],
-    builtins: &[&str],
     g: &'static Guard,
     kernel: ffi::vectorcallfunc,
 ) -> Result<(), Refusal> {
-    let cls = prepare_common(py, cx)?;
-    let func = cx.type_attr(&cls, attr)?;
+    // SAFETY: the class kept by the group's prepare (strong reference, attached thread).
+    let cls = unsafe { Bound::from_borrowed_ptr(py, ld(&RANDOM_CLS)) }.cast_into::<PyType>().map_err(PyErr::from)?;
+    let func = cx
+        .get_opt_s(&crate::accel::prepare::type_dict(&cls)?, attr)?
+        .ok_or_else(|| Refusal::new(format!("random.Random.{attr} missing")))?;
     cx.fingerprint_code(&func, fp)?;
-    let globals = cx.module()?.dict();
-    for n in module_globals {
-        cx.pin(&globals, n, &g.deps)?;
-    }
-    pin_globals(cx, &globals, builtins, &g.deps)?;
     g.capture(&func);
     cx.vectorcall(&func, kernel, &accel::FUNCTION_VECTORCALL)
 }
 
 macro_rules! target {
-    ($spec:ident, $prep:ident, $name:literal, $attr:literal, $kernel:ident, $guard:ident, $fp:expr,
-     globals: [$($gl:literal),*], builtins: [$($bl:literal),*]) => {
+    ($spec:ident, $prep:ident, $name:literal, $attr:literal, $kernel:ident, $guard:ident, $fp:expr) => {
         fn $prep<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
-            prepare_target(py, cx, $attr, $fp, &[$($gl),*], &[$($bl),*], &$guard, $kernel)
+            prepare_target(py, cx, &key(py, $attr), $fp, &$guard, $kernel)
         }
         pub static $spec: TargetSpec = TargetSpec {
             name: $name,
@@ -1146,30 +1232,65 @@ macro_rules! target {
             free_threaded: true,
             counters: &$guard.counters,
             prepare: $prep,
+            shared: Some(&SHARED),
             ..TargetSpec::DEFAULT
         };
     };
 }
 
-target!(RANDINT, prep_randint, "random.randint", "randint", vc_randint, G_RANDINT,
-    &[(3, 14, "adea30b60f8787ba"), (3, 15, "35301d24f32825ff")],
-    globals: ["_index"], builtins: []);
-target!(RANDRANGE, prep_randrange, "random.randrange", "randrange", vc_randrange, G_RANDRANGE,
-    &[(3, 14, "fdf9b5db8c0c8ef5"), (3, 15, "9d5fda7e7e5a709a")],
-    globals: ["_index", "_ONE"], builtins: []);
-target!(CHOICE, prep_choice, "random.choice", "choice", vc_choice, G_CHOICE,
-    &[(3, 14, "30ab10d8aa189081"), (3, 15, "7f77eb62838674c9")],
-    globals: [], builtins: ["len"]);
-target!(SHUFFLE, prep_shuffle, "random.shuffle", "shuffle", vc_shuffle, G_SHUFFLE,
-    &[(3, 14, "827e7189dab3b943"), (3, 15, "a37235ce15918735")],
-    globals: [], builtins: ["len", "range", "reversed"]);
-target!(SAMPLE, prep_sample, "random.sample", "sample", vc_sample, G_SAMPLE,
-    &[(3, 14, "0405fd0e5439b39b"), (3, 15, "0a89161adf0e847e")],
-    globals: ["_Sequence", "_ceil", "_log"],
-    builtins: ["isinstance", "len", "list", "set", "range"]);
-target!(CHOICES, prep_choices, "random.choices", "choices", vc_choices, G_CHOICES,
-    &[(3, 14, "de1e524b9f5e3ca9"), (3, 15, "748775b6bd8b61e8")],
-    globals: ["_floor", "_repeat", "_accumulate", "_bisect", "_isfinite"],
-    builtins: ["len", "list"]);
+target!(
+    RANDINT,
+    prep_randint,
+    "random.randint",
+    "randint",
+    vc_randint,
+    G_RANDINT,
+    &[(3, 14, "adea30b60f8787ba"), (3, 15, "35301d24f32825ff")]
+);
+target!(
+    RANDRANGE,
+    prep_randrange,
+    "random.randrange",
+    "randrange",
+    vc_randrange,
+    G_RANDRANGE,
+    &[(3, 14, "fdf9b5db8c0c8ef5"), (3, 15, "9d5fda7e7e5a709a")]
+);
+target!(
+    CHOICE,
+    prep_choice,
+    "random.choice",
+    "choice",
+    vc_choice,
+    G_CHOICE,
+    &[(3, 14, "30ab10d8aa189081"), (3, 15, "7f77eb62838674c9")]
+);
+target!(
+    SHUFFLE,
+    prep_shuffle,
+    "random.shuffle",
+    "shuffle",
+    vc_shuffle,
+    G_SHUFFLE,
+    &[(3, 14, "827e7189dab3b943"), (3, 15, "a37235ce15918735")]
+);
+target!(
+    SAMPLE,
+    prep_sample,
+    "random.sample",
+    "sample",
+    vc_sample,
+    G_SAMPLE,
+    &[(3, 14, "0405fd0e5439b39b"), (3, 15, "0a89161adf0e847e")]
+);
+target!(
+    CHOICES,
+    prep_choices,
+    "random.choices",
+    "choices",
+    vc_choices,
+    G_CHOICES,
+    &[(3, 14, "de1e524b9f5e3ca9"), (3, 15, "748775b6bd8b61e8")]
+);
 
 pub static TARGETS: &[&TargetSpec] = &[&RANDINT, &RANDRANGE, &CHOICE, &SHUFFLE, &SAMPLE, &CHOICES];

@@ -20,13 +20,13 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyType};
+use pyo3::types::{PyDict, PyString, PyType};
 use rustique_core::textwrap::{self as tw, Chunk, Classes, WrapError, WrapOpts};
 
 use crate::accel::{self, Original, Prepare, Reason, Refusal, TargetSpec};
 use crate::targets::utils_kit::{
-    _PyType_Lookup, Guard, INST, O, TypeCache, call_original, generic_getattro, int_value, interned, is_type, keep,
-    nargs, pin_globals, unshadowed, version_tag,
+    _PyType_Lookup, Guard, INST, O, TypeCache, call_original, generic_getattro, get_s, int_value, interned, is_type,
+    keep, key, module_dict_s, nargs, pin_global_keys, pin_keys, unshadowed, version_tag,
 };
 
 const R: Ordering = Ordering::Relaxed;
@@ -421,13 +421,13 @@ unsafe fn class_state_ok() -> bool {
 // Module functions: wrap / fill / shorten
 // ---------------------------------------------------------------------------------------
 
-static G_WRAP: Guard = Guard::new();
-static G_FILL: Guard = Guard::new();
-static G_SHORTEN: Guard = Guard::new();
-static G_DEDENT: Guard = Guard::new();
-static G_INDENT: Guard = Guard::new();
-static G_TW_WRAP: Guard = Guard::new();
-static G_TW_FILL: Guard = Guard::new();
+static G_WRAP: Guard = Guard::new(&TEXTWRAP_DEPS);
+static G_FILL: Guard = Guard::new(&TEXTWRAP_DEPS);
+static G_SHORTEN: Guard = Guard::new(&TEXTWRAP_DEPS);
+static G_DEDENT: Guard = Guard::new(&TEXTWRAP_DEPS);
+static G_INDENT: Guard = Guard::new(&TEXTWRAP_DEPS);
+static G_TW_WRAP: Guard = Guard::new(&TEXTWRAP_DEPS);
+static G_TW_FILL: Guard = Guard::new(&TEXTWRAP_DEPS);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -787,7 +787,8 @@ fn prepare_common<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<Bound<'
     }
     crate::targets::utils_kit::prepare_symbols(cx)?;
     INST.calibrate(py)?;
-    let cls = cx.module_attr("TextWrapper")?.cast_into::<PyType>().map_err(PyErr::from)?;
+    let g = cx.module()?.dict();
+    let cls = get_s(cx, &g, &key(py, "TextWrapper"))?.cast_into::<PyType>().map_err(PyErr::from)?;
     if cls.as_ptr() == ld(&TW_CLS) {
         return Ok(cls);
     }
@@ -805,25 +806,30 @@ fn prepare_common<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<Bound<'
             S_METHODS[i].store(interned(py, n), R);
         }
     }
-    for (i, n) in METHOD_NAMES.iter().enumerate() {
-        keep(&METHODS[i], &cx.type_attr(&cls, n)?);
+    // Keys: the process-lifetime interned names above (no interning-cache lookups).
+    // SAFETY: strong references kept in the statics.
+    let name_of =
+        |p: &AtomicPtr<ffi::PyObject>| unsafe { Bound::from_borrowed_ptr(py, ld(p)).cast_into_unchecked::<PyString>() };
+    let cd = crate::accel::prepare::type_dict(&cls)?;
+    for i in 0..METHOD_NAMES.len() {
+        keep(&METHODS[i], &get_s(cx, &cd, &name_of(&S_METHODS[i]))?);
     }
-    let init = cx.type_attr(&cls, "__init__")?;
+    let init = get_s(cx, &cd, &name_of(&S_INIT))?;
     let defaults = init.getattr("__defaults__")?;
     let kwdefaults = init.getattr("__kwdefaults__")?;
     if !defaults_ok(&defaults, &kwdefaults)? {
         return Err(Refusal::new("TextWrapper.__init__ defaults differ"));
     }
     // Every default must be of the exact type `Opts::defaults` assumes.
-    let trans = cx.type_attr(&cls, "unicode_whitespace_trans")?;
+    let trans = get_s(cx, &cd, &key(py, "unicode_whitespace_trans"))?;
     if !trans.is_exact_instance_of::<PyDict>() {
         return Err(Refusal::new("unicode_whitespace_trans is not a dict"));
     }
     keep(&INIT_FUNC, &init);
-    keep(&FILL_FUNC, &cx.type_attr(&cls, "fill")?);
-    let object = cx.loaded_module("builtins")?.dict().get_item("object")?.ok_or_else(|| Refusal::new("no object"))?;
+    keep(&FILL_FUNC, &get_s(cx, &cd, &name_of(&S_FILL))?);
+    let object = get_s(cx, &module_dict_s(cx, &key(py, "builtins"))?, &key(py, "object"))?;
     let object = object.cast_into::<PyType>().map_err(PyErr::from)?;
-    keep(&NEW_OBJ, &cx.type_attr(&object, "__new__")?);
+    keep(&NEW_OBJ, &get_s(cx, &crate::accel::prepare::type_dict(&object)?, &name_of(&S_NEW))?);
     keep(&INIT_DEFAULTS, &defaults);
     keep(&INIT_KWDEFAULTS, &kwdefaults);
     keep(&TRANS, &trans);
@@ -892,34 +898,51 @@ fn self_test(_py: Python<'_>, cls: &Bound<'_, PyType>) -> PyResult<bool> {
         && pattern_hash(&cls.getattr("sentence_end_re")?)? == 0x0b0c_1660_3b2d_4a6e)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Pins of the group (`SHARED`): `TextWrapper` (the module functions build one; the
+/// methods are its own) and the builtins `dedent` reads.
+static TEXTWRAP_DEPS: accel::DepFlag = accel::DepFlag::new();
+
+/// The group's shared declarations (prepared once before the first target): the statics,
+/// symbols, class checks and pattern self-test, and the pins.
+fn prepare_group<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
+    prepare_common(py, cx)?;
+    let globals = cx.module()?.dict();
+    pin_keys!(cx, &globals, &TEXTWRAP_DEPS, ["TextWrapper"]);
+    pin_global_keys!(cx, &globals, &TEXTWRAP_DEPS, ["min", "max", "enumerate"]);
+    Ok(())
+}
+
+/// Shared declarations of the seven targets.
+pub static SHARED: accel::GroupSpec = accel::GroupSpec { name: "textwrap", prepare: prepare_group };
+
+/// A target's own declarations: fingerprint, guard identity, site. `method`: a function in
+/// `TextWrapper.__dict__`, else a module function.
 fn prepare_fn<'py>(
     py: Python<'py>,
     cx: &mut Prepare<'py>,
-    path: &[&str],
+    attr: &Bound<'py, pyo3::types::PyString>,
+    method: bool,
     fp: accel::Fingerprints,
-    builtins: &[&str],
-    class_pins: bool,
     g: &'static Guard,
     kernel: ffi::vectorcallfunc,
 ) -> Result<(), Refusal> {
-    let cls = prepare_common(py, cx)?;
-    let func = if path.len() == 2 { cx.type_attr(&cls, path[1])? } else { cx.module_attr(path[0])? };
+    let dict = if method {
+        // SAFETY: the class kept by the group's prepare (strong reference).
+        let cls = unsafe { Bound::from_borrowed_ptr(py, ld(&TW_CLS)) }.cast_into::<PyType>().map_err(PyErr::from)?;
+        crate::accel::prepare::type_dict(&cls)?
+    } else {
+        cx.module()?.dict()
+    };
+    let func = cx.get_opt_s(&dict, attr)?.ok_or_else(|| Refusal::new(format!("textwrap: {attr} missing")))?;
     cx.fingerprint_code(&func, fp)?;
-    let globals = cx.module()?.dict();
-    pin_globals(cx, &globals, builtins, &g.deps)?;
-    if class_pins {
-        cx.pin(&globals, "TextWrapper", &g.deps)?;
-    }
     g.capture(&func);
     cx.vectorcall(&func, kernel, &accel::FUNCTION_VECTORCALL)
 }
 
 macro_rules! target {
-    ($spec:ident, $prep:ident, $name:literal, [$($path:literal),+], $kernel:ident, $guard:ident, $fp:expr,
-     builtins: [$($bl:literal),*], class_pins: $cp:expr) => {
+    ($spec:ident, $prep:ident, $name:literal, $attr:literal, $method:expr, $kernel:ident, $guard:ident, $fp:expr) => {
         fn $prep<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
-            prepare_fn(py, cx, &[$($path),+], $fp, &[$($bl),*], $cp, &$guard, $kernel)
+            prepare_fn(py, cx, &key(py, $attr), $method, $fp, &$guard, $kernel)
         }
         pub static $spec: TargetSpec = TargetSpec {
             name: $name,
@@ -930,25 +953,81 @@ macro_rules! target {
             counters: &$guard.counters,
             prepare: $prep,
             checkable: true,
+            shared: Some(&SHARED),
             ..TargetSpec::DEFAULT
         };
     };
 }
 
-target!(WRAP, prep_wrap, "textwrap.wrap", ["wrap"], vc_wrap, G_WRAP,
-    &[(3, 14, "4d8d166465dfcfd7"), (3, 15, "57e1a094dd3a54c8")], builtins: [], class_pins: true);
-target!(FILL, prep_fill, "textwrap.fill", ["fill"], vc_fill, G_FILL,
-    &[(3, 14, "ccf8880beb00cf42"), (3, 15, "b11875c2031ce54f")], builtins: [], class_pins: true);
-target!(SHORTEN, prep_shorten, "textwrap.shorten", ["shorten"], vc_shorten, G_SHORTEN,
-    &[(3, 14, "6b3824240ad86842"), (3, 15, "a8803511854eaf47")], builtins: [], class_pins: true);
-target!(DEDENT, prep_dedent, "textwrap.dedent", ["dedent"], vc_dedent, G_DEDENT,
-    &[(3, 14, "0890210dc2d47494"), (3, 15, "218bbc58f7a3dcd4")],
-    builtins: ["min", "max", "enumerate"], class_pins: false);
-target!(INDENT, prep_indent, "textwrap.indent", ["indent"], vc_indent, G_INDENT,
-    &[(3, 14, "281ce6a3af24b6fd"), (3, 15, "ccca21dec48208e6")], builtins: [], class_pins: false);
-target!(TW_WRAP, prep_tw_wrap, "textwrap.TextWrapper.wrap", ["TextWrapper", "wrap"], vc_tw_wrap, G_TW_WRAP,
-    &[(3, 14, "342108dc0a65162b"), (3, 15, "be9331377cf30cf3")], builtins: [], class_pins: true);
-target!(TW_FILL, prep_tw_fill, "textwrap.TextWrapper.fill", ["TextWrapper", "fill"], vc_tw_fill, G_TW_FILL,
-    &[(3, 14, "da16f10692980f7b"), (3, 15, "49c43f2e8ae86675")], builtins: [], class_pins: true);
+target!(
+    WRAP,
+    prep_wrap,
+    "textwrap.wrap",
+    "wrap",
+    false,
+    vc_wrap,
+    G_WRAP,
+    &[(3, 14, "4d8d166465dfcfd7"), (3, 15, "57e1a094dd3a54c8")]
+);
+target!(
+    FILL,
+    prep_fill,
+    "textwrap.fill",
+    "fill",
+    false,
+    vc_fill,
+    G_FILL,
+    &[(3, 14, "ccf8880beb00cf42"), (3, 15, "b11875c2031ce54f")]
+);
+target!(
+    SHORTEN,
+    prep_shorten,
+    "textwrap.shorten",
+    "shorten",
+    false,
+    vc_shorten,
+    G_SHORTEN,
+    &[(3, 14, "6b3824240ad86842"), (3, 15, "a8803511854eaf47")]
+);
+target!(
+    DEDENT,
+    prep_dedent,
+    "textwrap.dedent",
+    "dedent",
+    false,
+    vc_dedent,
+    G_DEDENT,
+    &[(3, 14, "0890210dc2d47494"), (3, 15, "218bbc58f7a3dcd4")]
+);
+target!(
+    INDENT,
+    prep_indent,
+    "textwrap.indent",
+    "indent",
+    false,
+    vc_indent,
+    G_INDENT,
+    &[(3, 14, "281ce6a3af24b6fd"), (3, 15, "ccca21dec48208e6")]
+);
+target!(
+    TW_WRAP,
+    prep_tw_wrap,
+    "textwrap.TextWrapper.wrap",
+    "wrap",
+    true,
+    vc_tw_wrap,
+    G_TW_WRAP,
+    &[(3, 14, "342108dc0a65162b"), (3, 15, "be9331377cf30cf3")]
+);
+target!(
+    TW_FILL,
+    prep_tw_fill,
+    "textwrap.TextWrapper.fill",
+    "fill",
+    true,
+    vc_tw_fill,
+    G_TW_FILL,
+    &[(3, 14, "da16f10692980f7b"), (3, 15, "49c43f2e8ae86675")]
+);
 
 pub static TARGETS: &[&TargetSpec] = &[&WRAP, &FILL, &SHORTEN, &DEDENT, &INDENT, &TW_WRAP, &TW_FILL];

@@ -106,17 +106,19 @@ replaced dependency (`deps`, see §3); a tool listening (`tools`).
 
 ## 3. Dependencies (pinned)
 
-Module globals and builtins the originals read at call time on the accepted inputs,
-pinned with `cx.pin`/`cx.pin_global` (LOAD_GLOBAL semantics: a module global shadowing
-the builtin counts): `_index` (randint, randrange), `_ONE` (randrange), `len` (choice,
-shuffle, sample, choices), `range`/`reversed` (shuffle), `_Sequence`, `_ceil`, `_log`,
-`isinstance`, `list`, `set`, `range` (sample), `_floor`, `_repeat`, `_accumulate`,
-`_bisect`, `_isfinite`, `list` (choices). Names read only on paths the kernels never take
-(error messages, `counts=`) are not pinned. The class
-attributes (`_randbelow`, `getrandbits`, `random`) are not pinned: they are resolved per
-call through the type-version cache, so patching them sends the calls to the original.
-Each function's `__code__`, `__defaults__` and `__kwdefaults__` are compared per call
-(reassigning them keeps the patched vectorcall).
+The module globals and builtins the six originals read at call time on the accepted
+inputs, pinned once for the whole group (`GroupSpec`, flag `RANDOM_DEPS`):
+`_index`, `_floor`, `_ceil`, `_log`, `_isfinite`, `_repeat`, `_accumulate`, `_bisect`,
+`_Sequence` (each checked at install to be the object `random` imports it as: `operator.index`,
+`math.floor`, ..., `bisect.bisect`, `_collections_abc.Sequence`), `_ONE` (checked = 1), and
+what `LOAD_GLOBAL` resolves `len`, `range`, `reversed`, `isinstance`, `list`, `set` to (a
+module global shadowing the builtin counts). Replacing any of them suspends all six targets
+until the original object is back (CPython's own call meanwhile). Names read only on paths
+the kernels never take (error messages, `counts=`) are not pinned. The class attributes
+(`_randbelow`, `getrandbits`, `random`) are not pinned: they are resolved per call through
+the type-version cache, so patching them sends the calls to the original. Each function's
+`__code__`, `__defaults__` and `__kwdefaults__` are compared per call (reassigning them
+keeps the patched vectorcall).
 
 **Private state skipped:** the `isinstance(population, _Sequence)` ABC cache entries
 (`Sequence._abc_cache`) that `sample`'s first call on a type would add.
@@ -125,13 +127,13 @@ Each function's `__code__`, `__defaults__` and `__kwdefaults__` are compared per
 
 3.14.9 and 3.15.1 (and their free-threaded builds): `random.py`'s six methods are
 identical in both (fingerprints differ only by bytecode); refused on other minors, debug
-builds, and when the self-test fails.
+builds, and after the generator self-test failed (it runs at the first native use).
 
 ### Private CPython symbols and layouts (accepted by the lead)
 
 | what | used for | obtained / checked at install | when missing or mismatched |
 |---|---|---|---|
-| `RandomObject` layout (`int index` at `sizeof(PyObject)`, `uint32_t state[624]` after it) | the native generator | self-test on one probe `_random.Random(seed)` (C calls only): 40 words generated natively from a copy of its raw state equal its C `getrandbits(1280)`, then one `random()` value and the index after it | the group is refused (self-test failure "random generator layout and stream") |
+| `RandomObject` layout (`int index` at `sizeof(PyObject)`, `uint32_t state[624]` after it) | the native generator | self-test at the **first native use** (not at install: ~45k Ir most processes never need), on one private probe `_random.Random(seed)` (C calls only): 40 words generated natively from a copy of its raw state equal its C `getrandbits(1280)`, then one `random()` value and the index after it | the six targets are degraded (`status()` "degraded", every call falls back) and the next `enable()` refuses the group (category `selftest`) |
 | `_PyObject_GetMethod` (exported, `Objects/object.c`) | the exact "does the instance shadow `_randbelow`/`getrandbits`/`random`" answer when the inline-values check cannot answer (materialized `__dict__`, no inline values) | `cx.symbol` | refused, category `symbol` ("symbol _PyObject_GetMethod not exported by this interpreter") |
 | `_PyDictKeys_StringLookup` (exported, `Objects/dictobject.c`) | does a type's shared-keys table contain one of the three names | `dlsym`, during the inline-values calibration | not refused: the inline-values fast check stays off and every instance check goes through `_PyObject_GetMethod` (exact, slower) |
 | inline-values layout (`Py_TPFLAGS_INLINE_VALUES`, `ht_cached_keys`, `dk_nentries` at offset 24 of the keys, the values' `valid` byte and slots after `tp_basicsize`) | the fast "no instance attribute can shadow" check (`utils_kit::InstLayout`) | calibrated on `os.environ` (an `os._Environ`): flags and shared keys present, its five attribute names distinct entries below `dk_nentries`, the `_data` slot holding the object the generic getattr returns | not refused: the fast check stays off (as above) |
@@ -199,10 +201,10 @@ plain CPython; `rq`: `rustique.enable(only=["random"])`. **M**.
 | `rng.choices(L6, [Fraction(1)]*6, k=3)` | 152702 | 152698 | 1.000 | 143422 | 143417 | 1.000 |
 | `rng.choice(UserList)` (Python `__len__`/`__getitem__`) | 3629 | 3629 | 1.000 | 3457 | 3457 | 1.000 |
 | `rng.sample(L6, k=2, counts=[1]*6)` (calls `sample` again: accelerated) | 21338 | 12293 | 0.576 | 19835 | 11748 | 0.592 |
-| mixed traffic on one target (the overriding calls reset the streak and are never suspended; one cell = the whole statement): | | | | | | |
-| `rng.randint(1, 6); own_bits.randint(1, 6)` | 5608 | 4428 | 0.790 | 4407 | 3795 | 0.861 |
-| `rng.choice(L6); sysr.choice(L6)` | 7078 | 5792 | 0.818 | 6002 | 5224 | 0.870 |
-| 4 × `rng.randint(1, 6)` + `own_bits.randint(1, 6)` | 12222 | 6749 | 0.552 | 10161 | 6116 | 0.602 |
+| mixed traffic on one target (stays installed under the net-benefit suspension: ≥ 20% hits; one cell = the whole statement; after wave1 b162e61): | | | | | | |
+| `rng.randint(1, 6); own_bits.randint(1, 6)` | 5608 | 4430 | 0.790 | 4407 | 3797 | 0.862 |
+| `rng.choice(L6); sysr.choice(L6)` (±5%: `SystemRandom`) | 7037 | 5581 | 0.793 | 5910 | 5226 | 0.884 |
+| 4 × `rng.randint(1, 6)` + `own_bits.randint(1, 6)` | 12222 | 6739 | 0.551 | 10161 | 6106 | 0.601 |
 
 Every cell is ≤ 1.05, with and without the JIT. The cells with a Python override measure
 1.000 in the steady state: the kernel declines at entry, and after 64 consecutive fallbacks
@@ -215,13 +217,12 @@ without the JIT but 1.10–1.21 under it (the JIT inlines CPython's own calls in
 They now fall back, so the group is JIT-safe (default `jit_safe: true`).
 
 Mixed traffic: when accelerated calls and calls on an overriding class alternate on one
-target, the hits reset the fallback streak, so the target is never suspended. Each
+target, the target stays installed under the framework's net-benefit suspension (a hit
+credits 4, a fallback debits 1: installed while at least 20% of the calls hit). Each
 overriding call then pays the unsuspended fallback cost: about +325 Ir (the pair
-`rng.randint` + `own_bits.randint`: 4,428 Ir = 786 native + 3,317 original + 325). The
+`rng.randint` + `own_bits.randint`: 4,430 Ir = 786 native + 3,317 original + 327). The
 type cache used to hold one entry, so alternating receiver types re-classified on every
 call (0.973, and 1.094 under the JIT). It now has 8 entries, giving the rows above.
-Suspension policy for such traffic is the framework's (a net-benefit accumulator is
-planned by accel-core).
 
 ### 6.2 Wall time, large inputs (pyperf)
 
@@ -251,17 +252,38 @@ data/billing_engine web/requests_local -n 5 -p 3 --only random,textwrap,urllib,s
 | `web/requests_local` | 266.8 ms | 248.1 ms | 0.930 | `urllib` (`urlsplit`/`parse_qs` in the handler, `requests`' `quote`/`urlparse`) |
 | `data/billing_engine` | 1024.2 ms | 1021.0 ms | 0.997 | `statistics` on `Decimal` totals falls back (by design); `stdev` of floats accelerated |
 
-### Install cost (budget: ≤ 5% of the module's import; ≤ 0.1M Ir per group at `enable()`)
+### Install cost (budget: lazy install ≤ max(5% of the module's import, 0.1M Ir))
 
-`python benches/targets/utils_install_cost.py random` (callgrind, fresh processes; the module
-removed from `sys.modules` first, its dependencies imported), after the framework's
-install-cost fixes (wave1 5a690e2, fingerprint format v2): lazy install on `import random`
-+332k Ir on a 1.06M-Ir `import random` (+31%; its dependencies already imported). One target alone (`random.randint`) costs +159k, each further target ~+20–35k. `enable(only=["random"])` with the module not imported costs 0.56M Ir, the same for
-every group (the registry's `enable()`, not the group). The group's own prepare is trimmed
-(single-probe self-tests or pattern hashes, no `eval`, no probe classes — the inline-values
-layout is calibrated on `os.environ`, the `slot_*` functions read from `os._Environ` —, no
-class pins, pins only for names read on the accepted paths); the remaining fixed cost of the
-first target of a module (~150k Ir) is in the framework's activation path.
+| | cold | warm | budget (max(5%, 0.1M Ir)) |
+|---|---:|---:|---:|
+| `import random` plain | 1.06M Ir | 1.08M Ir | |
+| lazy install overhead | +195k (+18.4%) | **+142k (+13.1%)** | 100k: **over by 42k** |
+
+Before this pass: +332k cold, +226k warm. Where the warm 142k goes (callgrind, inclusive):
+the framework's per-target work dominates. The six code fingerprints cost ~44k (~7k each:
+`_PyCode_GetCode` copies the deoptimized bytecode, then hashing), activating the group's
+22 dict pins ~23k, the six vectorcall sites ~8k. The group's own prepare costs ~35k: the 15
+interned keyword names the kernels compare by pointer (~10k), the identity validation of
+the pinned globals, the class checks. One target alone costs ~80k, each further target
+5–17k (`sample` 17k, `choices` 13k: fingerprint size). The generator self-test (~45k: seeding
+a probe and a full twist) moved to the first native use (§4), so a process that imports
+`random` without calling these methods never pays it. Reaching 100k needs cheaper
+fingerprints or pin activation in the framework, or fewer targets.
+
+Method: `python benches/targets/utils_install_cost.py` (callgrind, fresh processes; the
+module removed from `sys.modules` first, its dependencies imported; every setup ends with
+`gc.collect()` so neither side is charged a collection the other's setup absorbed). *Cold*:
+the first group of the process. *Warm*: another group with an imported vectorcall target is
+enabled first, so the framework's one-time costs are not charged to this group
+(REGISTRY_ANNOUNCE_2 item 16). `enable(only=[group])` with the module not imported costs
+0.50M Ir, the same for every group (the registry's first `enable()`, not the group).
+
+The group's install (wave1 b162e61, accel-core's second install-cost pass) is one
+`GroupSpec` (`SHARED`): the statics, symbols, validations and **one set of pins for the
+whole group** are declared once, and each target adds only its function's fingerprint and
+its vectorcall site. Install-time keys are plain `str` objects (`utils_kit::key`): a
+`pyo3::intern!` costs ~1.3k Ir on first use, interning ~650 Ir, a plain `str` ~200 Ir, and
+dict lookups and the pin watcher compare keys by value.
 
 ### First 64 fallback calls (before the registry suspends a target that keeps falling back)
 
@@ -285,6 +307,7 @@ itself, on the 64th call, costs about 1.5k Ir once. Each fallback pays for the k
 argument and class checks plus the original's eval-loop entry (a call site whose callee has
 a replaced vectorcall is not specialized, so the original's frame is not pushed inline).
 The steady state is 1.000 (§6.1). A program that interleaves accelerated calls with calls on
-an overriding class (e.g. `random.randint` and `SystemRandom().randint`) resets the streak
-and never suspends. Its overriding calls then pay about +325 Ir each, once the class
-classifications are cached (the mixed rows of §6.1).
+an overriding class (e.g. `random.randint` and `SystemRandom().randint`) stays installed
+while at least 20% of the calls hit (net-benefit suspension). Its overriding calls then pay
+about +325 Ir each, once the class classifications are cached (the mixed rows of §6.1).
+Below 20% hits the target is suspended (after about 640 calls from the ceiling).

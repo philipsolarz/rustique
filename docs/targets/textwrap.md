@@ -73,9 +73,12 @@ non-str text); the endless-loop case. `deps`: a replaced dependency (§3).
 
 ## 3. Dependencies
 
-Pinned: `textwrap.TextWrapper` (module global), the class attributes above plus `fill`,
-`__init__`, `__new__` (MRO pins: patching any of them on the class suspends the targets);
-for `dedent` the builtins it reads (`min`, `max`, `enumerate`). Checked per call:
+Pinned once for the whole group (`GroupSpec`, flag `TEXTWRAP_DEPS`): `textwrap.TextWrapper`
+(module global) and what `LOAD_GLOBAL` resolves `dedent`'s builtins to (`min`, `max`,
+`enumerate`); replacing any of them suspends all seven targets until it is back. The class
+attributes above (and `fill`, `__init__`, `__new__`) are checked per call through the
+type-version cache: patching one on `TextWrapper` or a subclass sends the calls to the
+original. Checked per call:
 `TextWrapper.__init__.__defaults__`/`__kwdefaults__` identity (the module functions use
 its defaults) and the contents of `unicode_whitespace_trans` (a mutable dict: six lookups).
 
@@ -163,17 +166,29 @@ data/billing_engine web/requests_local -n 5 -p 3 --only random,textwrap,urllib,s
 | `web/requests_local` | 266.8 ms | 248.1 ms | 0.930 | `urllib` (`urlsplit`/`parse_qs` in the handler, `requests`' `quote`/`urlparse`) |
 | `data/billing_engine` | 1024.2 ms | 1021.0 ms | 0.997 | `statistics` on `Decimal` totals falls back (by design); `stdev` of floats accelerated |
 
-### Install cost (budget: ≤ 5% of the module's import; ≤ 0.1M Ir per group at `enable()`)
+### Install cost (budget: lazy install ≤ max(5% of the module's import, 0.1M Ir))
 
-`python benches/targets/utils_install_cost.py textwrap` (callgrind, fresh processes; the module
-removed from `sys.modules` first, its dependencies imported), after the framework's
-install-cost fixes (wave1 5a690e2, fingerprint format v2): lazy install on `import textwrap`
-+302k Ir on a 3.03M-Ir `import textwrap` (+9.9%). One target alone (`textwrap.dedent`) costs +190k, each further target ~+20k. `enable(only=["textwrap"])` with the module not imported costs 0.56M Ir, the same for
-every group (the registry's `enable()`, not the group). The group's own prepare is trimmed
-(single-probe self-tests or pattern hashes, no `eval`, no probe classes — the inline-values
-layout is calibrated on `os.environ`, the `slot_*` functions read from `os._Environ` —, no
-class pins, pins only for names read on the accepted paths); the remaining fixed cost of the
-first target of a module (~150k Ir) is in the framework's activation path.
+| | cold | warm | budget (max(5%, 0.1M Ir)) |
+|---|---:|---:|---:|
+| `import textwrap` plain | 3.04M Ir | 3.08M Ir | |
+| lazy install overhead | +184k (+6.1%) | **+130k (+4.2%)** | 154k: within |
+
+Before this pass: +302k cold, +203k warm.
+
+Method: `python benches/targets/utils_install_cost.py` (callgrind, fresh processes; the
+module removed from `sys.modules` first, its dependencies imported; every setup ends with
+`gc.collect()` so neither side is charged a collection the other's setup absorbed). *Cold*:
+the first group of the process. *Warm*: another group with an imported vectorcall target is
+enabled first, so the framework's one-time costs are not charged to this group
+(REGISTRY_ANNOUNCE_2 item 16). `enable(only=[group])` with the module not imported costs
+0.50M Ir, the same for every group (the registry's first `enable()`, not the group).
+
+The group's install (wave1 b162e61, accel-core's second install-cost pass) is one
+`GroupSpec` (`SHARED`): the statics, symbols, validations and **one set of pins for the
+whole group** are declared once, and each target adds only its function's fingerprint and
+its vectorcall site. Install-time keys are plain `str` objects (`utils_kit::key`): a
+`pyo3::intern!` costs ~1.3k Ir on first use, interning ~650 Ir, a plain `str` ~200 Ir, and
+dict lookups and the pin watcher compare keys by value.
 
 ### First 64 fallback calls (before the registry suspends a target that keeps falling back)
 
