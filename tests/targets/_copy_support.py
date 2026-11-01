@@ -44,10 +44,10 @@ for _k in ("_FIELD", "_FIELD_CLASSVAR", "_FIELD_INITVAR", "MISSING", "_FIELDS", 
 
 
 def enable() -> None:
-    from rustique import _takeover as rt
+    import rustique
 
-    rt.enable(only=["copy", "dataclasses"])
-    states = {t["name"]: t for t in rt.status()["targets"]}
+    rustique.enable(only=["copy", "dataclasses"])
+    states = {t["name"]: t for t in rustique.status()["targets"]}
     for n in ALL_TARGETS:
         assert states[n]["state"] == "installed", states[n]
 

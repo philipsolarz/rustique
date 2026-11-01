@@ -1,6 +1,6 @@
 """pyperf cells for groups `copy` and `dataclasses` on large inputs (wall time; claims
 ≥ 1.5× only, docs/ACCELERATION.md §7.4). Each cell runs plain and with
-`rustique._takeover.enable(only=["copy", "dataclasses"])` in separate pyperf workers.
+`rustique.enable(only=["copy", "dataclasses"])` in separate pyperf workers.
 
     python benches/targets/copy_pyperf.py [--fast] [-o out.json]
 """
@@ -70,7 +70,7 @@ def main() -> None:
         for mode in ("plain", "enabled"):
             setup = SETUP
             if mode == "enabled":
-                setup = "from rustique import _takeover as _rt; _rt.enable(only=['copy', 'dataclasses'])\n" + SETUP
+                setup = "import rustique as _rt; _rt.enable(only=['copy', 'dataclasses'])\n" + SETUP
             with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
                 f.write(setup)
                 path = f.name

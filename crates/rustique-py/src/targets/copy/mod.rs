@@ -3,11 +3,11 @@
 //! function objects (contract §3.7). See `docs/targets/copy.md`.
 
 pub mod dc;
-pub mod deep;
-pub mod memo;
-pub mod reduce;
-pub mod rt;
-pub mod shallow;
+mod deep;
+mod memo;
+mod reduce;
+mod rt;
+mod shallow;
 
 use std::ffi::c_int;
 use std::sync::atomic::Ordering::Relaxed;
@@ -21,10 +21,10 @@ use rt::*;
 
 const VERSIONS: &[(u8, u8)] = &[(3, 14), (3, 15)];
 
-pub static C_DEEPCOPY: Counters = Counters::new();
-pub static C_COPY: Counters = Counters::new();
+static C_DEEPCOPY: Counters = Counters::new();
+static C_COPY: Counters = Counters::new();
 /// The module globals and builtins `copy.py` reads at call time are the objects validated.
-pub static DEPS_COPY: DepFlag = DepFlag::new();
+static DEPS_COPY: DepFlag = DepFlag::new();
 static TOOLS_DEEPCOPY: Tools = Tools::new();
 static TOOLS_COPY: Tools = Tools::new();
 
@@ -56,7 +56,7 @@ pub static TARGETS: &[&TargetSpec] = &[&DEEPCOPY, &COPY];
 static GET_METHOD: accel::Original<reduce::GetMethodFn> = accel::Original::new();
 
 #[inline(always)]
-pub unsafe fn original(func: O, args: *const O, nargsf: usize, kw: O) -> O {
+unsafe fn original(func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: the saved `_PyFunction_Vectorcall`.
     unsafe { accel::FUNCTION_VECTORCALL.get()(func, args, nargsf, kw) }
 }
@@ -68,7 +68,7 @@ fn nargs(nargsf: usize) -> usize {
 
 /// Is the set `deepcopy` checks atomic types against intact (3.14's is a mutable set)?
 #[inline(always)]
-pub unsafe fn atomic_fast(st: &St) -> bool {
+unsafe fn atomic_fast(st: &St) -> bool {
     match &st.atomic_snap {
         None => true,
         // SAFETY: live set.
@@ -79,7 +79,7 @@ pub unsafe fn atomic_fast(st: &St) -> bool {
 /// Is the `copy.deepcopy` kernel installed and its guards satisfied, so that callers inside
 /// Rustique (dataclasses) may run the engine directly instead of calling the function?
 #[inline(always)]
-pub unsafe fn deepcopy_direct(st: &St, f: O) -> bool {
+unsafe fn deepcopy_direct(st: &St, f: O) -> bool {
     // SAFETY: live function object.
     unsafe {
         f == st.deepcopy_fn && {
@@ -94,7 +94,7 @@ pub unsafe fn deepcopy_direct(st: &St, f: O) -> bool {
 }
 
 /// Kernel for `copy.deepcopy(x, memo=None)`.
-pub unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) -> O {
+unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments; attached thread.
     unsafe {
         let st = st();
@@ -163,7 +163,7 @@ unsafe extern "C" fn vc_copy(func: O, args: *const O, nargsf: usize, kw: O) -> O
 
 /// Canonical code fingerprints (`rustique._rustique._accel.fingerprint`) of every Python
 /// function the kernels replace or emulate.
-pub mod fp {
+mod fp {
     use crate::accel::Fingerprints;
     pub const DEEPCOPY: Fingerprints = &[(3, 14, "a287496a0d76e2fa"), (3, 15, "d19ec63249fba4bc")];
     pub const COPY: Fingerprints = &[(3, 14, "e72c3343e74a17a5"), (3, 15, "08cc44a96c8b6e95")];
@@ -179,7 +179,7 @@ pub mod fp {
 }
 
 /// The CPython 3.14 type sets in copy.py are mutable sets: a snapshot of the hash table.
-pub struct SetSnap {
+struct SetSnap {
     fill: isize,
     used: isize,
     mask: isize,
@@ -214,7 +214,7 @@ impl SetSnap {
     }
 
     #[inline(always)]
-    pub unsafe fn matches(&self, set: O) -> bool {
+    unsafe fn matches(&self, set: O) -> bool {
         // SAFETY: as take.
         unsafe {
             with_cs(set, || {
@@ -354,7 +354,7 @@ fn tstate_offset(cx: &Prepare<'_>, minor: u8) -> Result<usize, Refusal> {
 }
 
 /// `d[k]` of an exact dict with a str key (no Python code runs).
-pub fn dget<'py>(d: &Bound<'py, PyDict>, k: &str) -> Result<Bound<'py, PyAny>, Refusal> {
+fn dget<'py>(d: &Bound<'py, PyDict>, k: &str) -> Result<Bound<'py, PyAny>, Refusal> {
     d.get_item(k)?.ok_or_else(|| crate::refuse!("{k} missing"))
 }
 
@@ -370,7 +370,7 @@ fn func3(o: &Bound<'_, PyAny>) -> PyResult<(O, O, O)> {
 
 /// Validate the copy module and build [`St`] (shared by both targets and by the
 /// dataclasses group); refuses on any difference from the validated sources.
-pub fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>) -> Result<&'static St, Refusal> {
+fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>) -> Result<&'static St, Refusal> {
     let (_, minor) = cx.version();
     let rem_off = tstate_offset(cx, minor)?;
     let copyreg = cx.loaded_module("copyreg")?;
@@ -455,7 +455,6 @@ pub fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyMod
         deepcopy_fn: deepcopy.into_ptr(),
         deepcopy_code,
         deepcopy_defaults,
-        copy_fn: copy_fn.into_ptr(),
         copy_code,
         atomic: atomic_set.into_ptr(),
         atomic_snap: None,
@@ -474,7 +473,6 @@ pub fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyMod
         reconstruct: helpers[H_RECONSTRUCT].0,
         helpers,
         newobj: helpers[H_NEWOBJ].0,
-        newobj_code: helpers[H_NEWOBJ].1,
         object_new: object_attr("__new__"),
         obj_reduce_ex: object_attr("__reduce_ex__"),
         obj_reduce: object_attr("__reduce__"),
@@ -490,7 +488,7 @@ pub fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyMod
         method_type: &raw mut PyMethod_Type,
         frozendict_type: frozendict_type(),
         // SAFETY: static type object read.
-        default_type_hash: unsafe { (*(&raw mut ffi::PyType_Type)).tp_hash.map_or(0, |f| f as usize) },
+        default_type_hash: unsafe { ffi::PyType_Type.tp_hash.map_or(0, |f| f as usize) },
         s_deepcopy: intern(py, "__deepcopy__"),
         s_copy: intern(py, "__copy__"),
         s_copy_method: intern(py, "copy"),

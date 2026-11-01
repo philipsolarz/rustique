@@ -122,11 +122,10 @@ pub struct St {
     pub deepcopy_fn: O,
     pub deepcopy_code: O,
     pub deepcopy_defaults: O,
-    pub copy_fn: O,
     pub copy_code: O,
     pub atomic: O,
     /// 3.14: `_atomic_types` is a mutable set; its table at install.
-    pub atomic_snap: Option<super::SetSnap>,
+    pub(crate) atomic_snap: Option<super::SetSnap>,
     pub copy_atomic: O,
     pub copy_atomic_types: Vec<*mut ffi::PyTypeObject>,
     pub copy_container_types: Vec<*mut ffi::PyTypeObject>,
@@ -144,7 +143,6 @@ pub struct St {
     pub helpers: [(O, O, O); 9],
     // copyreg
     pub newobj: O,
-    pub newobj_code: O,
     /// `object.__new__`, `object.__reduce_ex__`, `object.__reduce__`, `object.__getstate__`.
     pub object_new: O,
     pub obj_reduce_ex: O,
@@ -186,6 +184,7 @@ pub struct St {
 
 // SAFETY: immutable after construction; the objects it points to are kept alive.
 unsafe impl Send for St {}
+// SAFETY: as Send: read-only after construction.
 unsafe impl Sync for St {}
 
 pub static ST: AtomicPtr<St> = AtomicPtr::new(std::ptr::null_mut());
@@ -877,22 +876,6 @@ impl<T, const N: usize> SVec<T, N> {
                 // SAFETY: initialised slots, dropped once.
                 unsafe { self.inline[i].assume_init_drop() };
             }
-        }
-    }
-
-    /// Move every element out, in order.
-    pub fn take_all(&mut self) -> Vec<T> {
-        if self.spilled {
-            self.spilled = false;
-            std::mem::take(&mut self.heap)
-        } else {
-            let mut v = Vec::with_capacity(self.len);
-            for i in 0..self.len {
-                // SAFETY: initialised slots, moved out exactly once.
-                v.push(unsafe { self.inline[i].assume_init_read() });
-            }
-            self.len = 0;
-            v
         }
     }
 }

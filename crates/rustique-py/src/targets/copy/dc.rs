@@ -24,13 +24,13 @@ use crate::accel::{self, Counters, DepFlag, Prepare, Reason, Refusal, TargetSpec
 
 const VERSIONS: &[(u8, u8)] = &[(3, 14), (3, 15)];
 
-pub static C_ASDICT: Counters = Counters::new();
-pub static C_ASTUPLE: Counters = Counters::new();
-pub static C_REPLACE: Counters = Counters::new();
-pub static DEPS_DC: DepFlag = DepFlag::new();
+static C_ASDICT: Counters = Counters::new();
+static C_ASTUPLE: Counters = Counters::new();
+static C_REPLACE: Counters = Counters::new();
+static DEPS_DC: DepFlag = DepFlag::new();
 static TOOLS_DC: Tools = Tools::new();
 
-pub static ASDICT: TargetSpec = TargetSpec {
+static ASDICT: TargetSpec = TargetSpec {
     name: "dataclasses.asdict",
     group: "dataclasses",
     module: Some("dataclasses"),
@@ -41,7 +41,7 @@ pub static ASDICT: TargetSpec = TargetSpec {
     ..TargetSpec::DEFAULT
 };
 
-pub static ASTUPLE: TargetSpec = TargetSpec {
+static ASTUPLE: TargetSpec = TargetSpec {
     name: "dataclasses.astuple",
     group: "dataclasses",
     module: Some("dataclasses"),
@@ -52,7 +52,7 @@ pub static ASTUPLE: TargetSpec = TargetSpec {
     ..TargetSpec::DEFAULT
 };
 
-pub static REPLACE: TargetSpec = TargetSpec {
+static REPLACE: TargetSpec = TargetSpec {
     name: "dataclasses.replace",
     group: "dataclasses",
     module: Some("dataclasses"),
@@ -68,7 +68,7 @@ pub static TARGETS: &[&TargetSpec] = &[&ASDICT, &ASTUPLE, &REPLACE];
 /// Native levels of `_asdict_inner` before the rest of the subtree is left to CPython.
 const MAX_NATIVE_DEPTH: u32 = 200;
 
-pub mod fp {
+mod fp {
     use crate::accel::Fingerprints;
     pub const ASDICT: Fingerprints = &[(3, 14, "8cb2b653a31d83e2"), (3, 15, "6ab2d1d00c3afaa6")];
     pub const ASDICT_INNER: Fingerprints = &[(3, 14, "f9d557aaf4422477"), (3, 15, "eaf04aae2ab27cf8")];
@@ -80,7 +80,7 @@ pub mod fp {
     pub const REPLACE_INNER: Fingerprints = &[(3, 14, "6ccb9cae5dd2acbe"), (3, 15, "7297909faa9d328e")];
 }
 
-pub struct DcSt {
+struct DcSt {
     // (function, code, defaults-or-kwdefaults)
     asdict: (O, O, O),
     asdict_inner: (O, O, O),
@@ -113,6 +113,7 @@ pub struct DcSt {
 
 // SAFETY: immutable after install; referenced objects kept alive.
 unsafe impl Send for DcSt {}
+// SAFETY: as Send: read-only after install.
 unsafe impl Sync for DcSt {}
 
 static DST: AtomicPtr<DcSt> = AtomicPtr::new(null_mut());
@@ -368,8 +369,8 @@ impl Cx {
             // With generic attribute access the lookup below cannot fail (the class has
             // `__dataclass_fields__`); anything else (and its `raise ... from None`) is
             // left to CPython's `fields`.
-            let generic = (*ty(obj)).tp_getattro.map(|f| f as usize)
-                == (*(&raw mut ffi::PyBaseObject_Type)).tp_getattro.map(|f| f as usize);
+            let generic =
+                (*ty(obj)).tp_getattro.map(|f| f as usize) == ffi::PyBaseObject_Type.tp_getattro.map(|f| f as usize);
             if !generic || !intact(d.fields, false) {
                 return call1(d.fields.0, obj);
             }
@@ -922,8 +923,7 @@ unsafe extern "C" fn vc_replace(func: O, args: *const O, nargsf: usize, kw: O) -
         let fs = _PyType_Lookup(t, d.s_fields);
         if fs.is_null()
             || ty(fs) != &raw mut ffi::PyDict_Type
-            || (*t).tp_getattro.map(|f| f as usize)
-                != (*(&raw mut ffi::PyBaseObject_Type)).tp_getattro.map(|f| f as usize)
+            || (*t).tp_getattro.map(|f| f as usize) != ffi::PyBaseObject_Type.tp_getattro.map(|f| f as usize)
         {
             C_REPLACE.fallback_streak(Reason::Args);
             return original(func, args, nargsf, kw);

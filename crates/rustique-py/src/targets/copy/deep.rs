@@ -634,8 +634,7 @@ impl Engine {
                         }
                     }
                     let inline = quick && *self.depth.rem > 0;
-                    loop {
-                        let Some((k, v)) = it.next_borrowed()? else { break };
+                    while let Some((k, v)) = it.next_borrowed()? {
                         // Strong references for whatever outlives this iteration.
                         let own = |o: O| if DictIt::OWNED { o } else { incref(o) };
                         if inline && is_quick(st, ty(v)) {

@@ -126,6 +126,11 @@ CELLS = [
     ("replace small dataclass", "dataclasses.replace(p, x=2)"),
     ("replace no changes", "dataclasses.replace(p)"),
     ("asdict (fallback: dict_factory)", "dataclasses.asdict(p, dict_factory=collections.OrderedDict)"),
+    # Fallbacks before adaptive suspension: each fallback is followed by a hit, which
+    # resets the streak; fallback overhead = (pair cell) - (the hit cell's saving).
+    ("pair: deepcopy memo=OrderedDict + deepcopy int", "deepcopy(cfg, collections.OrderedDict()); deepcopy(7)"),
+    ("pair: copy kw + copy int", "copy.copy(x=rec); copy.copy(7)"),
+    ("pair: asdict factory + asdict", "dataclasses.asdict(p, dict_factory=collections.OrderedDict); dataclasses.asdict(p)"),
 ]
 
 

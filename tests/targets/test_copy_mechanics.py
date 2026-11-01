@@ -20,7 +20,7 @@ from unittest import mock
 import pytest
 
 import _copy_support as S
-from rustique import _takeover as rt
+import rustique as rt
 
 partial_deepcopy = functools.partial(copy.deepcopy)
 SIG = str(inspect.signature(copy.deepcopy))

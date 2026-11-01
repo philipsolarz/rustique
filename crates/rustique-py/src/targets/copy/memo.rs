@@ -92,27 +92,29 @@ impl Native {
             let d = Own::new(ffi::PyDict_New())?;
             let e = self.entries.as_slice();
             let keep = self.keep.as_slice();
-            let n = e.len();
-            for i in 0..=n {
-                if i == self.ka_pos {
-                    let list = Own::new(ffi::PyList_New(1))?;
-                    ffi::PyList_SET_ITEM(list.get(), 0, incref(keep[0]));
-                    for &o in &keep[1..] {
-                        if ffi::PyList_Append(list.get(), o) < 0 {
-                            return Err(());
-                        }
-                    }
-                    let key = Own::new(ffi::PyLong_FromVoidPtr(d.get().cast()))?;
-                    if ffi::PyDict_SetItem(d.get(), key.get(), list.get()) < 0 {
+            let ka = self.ka_pos;
+            let insert_ka = |d: O| -> R<()> {
+                let list = Own::new(ffi::PyList_New(1))?;
+                ffi::PyList_SET_ITEM(list.get(), 0, incref(keep[0]));
+                for &o in &keep[1..] {
+                    if ffi::PyList_Append(list.get(), o) < 0 {
                         return Err(());
                     }
                 }
-                if i < n {
-                    let key = Own::new(ffi::PyLong_FromVoidPtr(e[i].0 as *mut _))?;
-                    if ffi::PyDict_SetItem(d.get(), key.get(), e[i].1) < 0 {
-                        return Err(());
-                    }
+                let key = Own::new(ffi::PyLong_FromVoidPtr(d.cast()))?;
+                if ffi::PyDict_SetItem(d, key.get(), list.get()) < 0 { Err(()) } else { Ok(()) }
+            };
+            for (i, &(k, v)) in e.iter().enumerate() {
+                if i == ka {
+                    insert_ka(d.get())?;
                 }
+                let key = Own::new(ffi::PyLong_FromVoidPtr(k as *mut _))?;
+                if ffi::PyDict_SetItem(d.get(), key.get(), v) < 0 {
+                    return Err(());
+                }
+            }
+            if ka == e.len() {
+                insert_ka(d.get())?;
             }
             self.release();
             Ok(d.into_raw())
@@ -131,18 +133,21 @@ impl Native {
         {
             let keep = self.keep.as_slice();
             let entries = self.entries.as_slice();
-            let n = entries.len();
-            for i in 0..=n {
-                if i == ka {
-                    for &o in keep.iter().rev() {
-                        // SAFETY: owned.
-                        unsafe { decref(o) };
-                    }
-                }
-                if i < n {
+            let release_keep = || {
+                for &o in keep.iter().rev() {
                     // SAFETY: owned.
-                    unsafe { decref(entries[i].1) };
+                    unsafe { decref(o) };
                 }
+            };
+            for (i, &(_, v)) in entries.iter().enumerate() {
+                if i == ka {
+                    release_keep();
+                }
+                // SAFETY: owned.
+                unsafe { decref(v) };
+            }
+            if ka == entries.len() {
+                release_keep();
             }
         }
         if self.entries.len() > LINEAR {
@@ -160,7 +165,10 @@ impl Drop for Native {
     }
 }
 
-/// The memo of one `deepcopy` call tree.
+/// The memo of one `deepcopy` call tree. The native variant is large on purpose: its
+/// first entries live inline (no allocation for small call trees); the enum lives on the
+/// kernel's stack.
+#[allow(clippy::large_enum_variant)]
 pub enum Memo {
     Native(Native),
     /// A real dict (the caller's, or materialised). Strong reference.
