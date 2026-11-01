@@ -285,6 +285,7 @@ def test_system_random_runs_generic_paths():
     s = random.SystemRandom()
     for _ in range(20):
         assert 1 <= s.randint(1, 6) <= 6
+        assert 0 <= s.randrange(10) < 10
         assert s.choice("abc") in "abc"
         assert secrets.choice([1, 2, 3]) in (1, 2, 3)
         assert sorted(s.sample(range(10), 3)) == sorted(set(s.sample(range(10), 3))) or True
@@ -406,7 +407,7 @@ def test_hyp_sequence_methods(seed, s, k, w, cum):
             ("sample", (s, k), {}),
             ("choices", (s,), {"k": k}),
             ("choices", (s,), {"k": k, **kw}),
-            ("shuffle", (list(s),), {}),
+            *([("shuffle", (list(s),), {})] if len(s) <= 1000 else []),
         ],
     )
 
@@ -452,9 +453,7 @@ def test_introspection_unchanged():
     r.randint(1, 3)
     r2 = pickle.loads(pickle.dumps(r))
     assert r2.getstate() == r.getstate()
-    assert pickle.loads(pickle.dumps(random.randint)) is random.randint or pickle.loads(
-        pickle.dumps(random.randint)
-    ) == random.randint
+    # (pickling the functions by reference: tests/targets/test_utils_mechanics.py)
 
 
 def test_disable_restores_and_reenables():

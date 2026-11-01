@@ -128,7 +128,7 @@ static G_PARSE_QSL: Guard = Guard::new();
 static G_PARSE_QS: Guard = Guard::new();
 static G_URLSPLIT: Guard = Guard::new();
 
-/// Check mode: compare with the original.
+/// Count the hit and, in check mode, compare with the original.
 unsafe fn checked(g: &Guard, spec: &'static TargetSpec, r: O, func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: the original with the unchanged arguments.
     unsafe {
@@ -199,7 +199,6 @@ unsafe fn quote_kernel(g: &Guard, spec: &'static TargetSpec, plus: bool, func: O
             // `quote('')` returns its argument; `quote(b'')` returns ''.
             if exact_str(string) && ffi::PyUnicode_GET_LENGTH(string) == 0 {
                 if quote_input(string, encoding, errors).is_some() {
-                    g.counters.hit_streak();
                     return checked(g, spec, ffi::Py_NewRef(string), func, args, nargsf, kw);
                 }
             } else if let Some(bs) = quote_input(string, encoding, errors)
@@ -223,7 +222,6 @@ unsafe fn quote_kernel(g: &Guard, spec: &'static TargetSpec, plus: bool, func: O
                             }
                         }
                     }
-                    g.counters.hit_streak();
                     let r = str_from_ascii(&out);
                     return checked(g, spec, r, func, args, nargsf, kw);
                 }
@@ -342,7 +340,6 @@ unsafe fn unquote_kernel(g: &Guard, spec: &'static TargetSpec, plus: bool, func:
                 return call_original(func, args, nargsf, kw);
             }
             if let Some(r) = unquote_obj(string, plus, errs) {
-                g.counters.hit_streak();
                 return checked(g, spec, r, func, args, nargsf, kw);
             }
         }
@@ -492,7 +489,6 @@ unsafe extern "C" fn vc_parse_qsl(func: O, args: *const O, nargsf: usize, kw: O)
         if g.ready(func)
             && let Some(pairs) = parse_pairs(args, nargsf, kw, true)
         {
-            g.counters.hit_streak();
             let out = ffi::PyList_New(pairs.len() as ffi::Py_ssize_t);
             if out.is_null() {
                 for (a, b) in pairs {
@@ -527,7 +523,6 @@ unsafe extern "C" fn vc_parse_qs(func: O, args: *const O, nargsf: usize, kw: O) 
         if g.ready(func)
             && let Some(pairs) = parse_pairs(args, nargsf, kw, false)
         {
-            g.counters.hit_streak();
             // for name, value in pairs: parsed_result.setdefault-like append
             let d = ffi::PyDict_New();
             let mut ok = !d.is_null();
@@ -652,7 +647,6 @@ unsafe fn urlsplit(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
             ffi::PyErr_Clear();
             return None;
         }
-        g.counters.hit_streak();
         let sub = |r: (usize, usize)| ffi::PyUnicode_Substring(u, r.0 as ffi::Py_ssize_t, r.1 as ffi::Py_ssize_t);
         let opt = |r: up::Range| r.map_or_else(|| ffi::Py_NewRef(none), sub);
         let scheme_obj = match split.scheme_from_url {
@@ -792,31 +786,31 @@ macro_rules! target {
 }
 
 target!(QUOTE, prep_quote, "urllib.parse.quote", "quote", vc_quote, G_QUOTE,
-    &[(3, 14, "PENDING"), (3, 15, "PENDING")],
+    &[(3, 14, "c0eec3251faa8f65"), (3, 15, "28fb43c847e3128d")],
     globals: ["quote_from_bytes", "_ALWAYS_SAFE_BYTES", "_byte_quoter_factory"],
     builtins: ["isinstance", "str", "bytes", "bytearray", "len", "map", "TypeError"]);
 target!(QUOTE_PLUS, prep_quote_plus, "urllib.parse.quote_plus", "quote_plus", vc_quote_plus, G_QUOTE_PLUS,
-    &[(3, 14, "PENDING"), (3, 15, "PENDING")],
+    &[(3, 14, "31fa3e8740c97d84"), (3, 15, "5e99e96821629047")],
     globals: ["quote", "quote_from_bytes", "_ALWAYS_SAFE_BYTES", "_byte_quoter_factory"],
     builtins: ["isinstance", "str", "bytes", "bytearray", "len", "map", "TypeError"]);
 target!(UNQUOTE, prep_unquote, "urllib.parse.unquote", "unquote", vc_unquote, G_UNQUOTE,
-    &[(3, 14, "PENDING"), (3, 15, "PENDING")],
+    &[(3, 14, "8335b8b597cc081b"), (3, 15, "151b56169fb3adb6")],
     globals: ["_unquote_impl", "_generate_unquoted_parts", "_asciire"],
     builtins: ["isinstance", "bytes", "bytearray"]);
 target!(UNQUOTE_PLUS, prep_unquote_plus, "urllib.parse.unquote_plus", "unquote_plus", vc_unquote_plus, G_UNQUOTE_PLUS,
-    &[(3, 14, "PENDING"), (3, 15, "PENDING")],
+    &[(3, 14, "cbf4f33b37ed3e61"), (3, 15, "e7726104e01c82e3")],
     globals: ["unquote", "_unquote_impl", "_generate_unquoted_parts", "_asciire"],
     builtins: ["isinstance", "bytes", "bytearray"]);
 target!(PARSE_QSL, prep_parse_qsl, "urllib.parse.parse_qsl", "parse_qsl", vc_parse_qsl, G_PARSE_QSL,
-    &[(3, 14, "PENDING"), (3, 15, "PENDING")],
+    &[(3, 14, "915a90e9b788d0e4"), (3, 15, "4f00b22b44dedc4a")],
     globals: ["unquote_plus", "unquote", "_unquote_impl", "_generate_unquoted_parts", "_asciire"],
     builtins: ["isinstance", "str", "bytes", "memoryview", "ValueError", "TypeError"]);
 target!(PARSE_QS, prep_parse_qs, "urllib.parse.parse_qs", "parse_qs", vc_parse_qs, G_PARSE_QS,
-    &[(3, 14, "PENDING"), (3, 15, "PENDING")],
+    &[(3, 14, "f876395b877d6f40"), (3, 15, "2fa235c162ad2fb6")],
     globals: ["parse_qsl", "unquote_plus", "unquote", "_unquote_impl", "_generate_unquoted_parts", "_asciire"],
     builtins: ["isinstance", "str", "bytes", "memoryview", "ValueError", "TypeError"]);
 target!(URLSPLIT, prep_urlsplit, "urllib.parse._urlsplit", "_urlsplit", vc_urlsplit, G_URLSPLIT,
-    &[(3, 14, "PENDING"), (3, 15, "PENDING")],
+    &[(3, 14, "ef653b971587fb22"), (3, 15, "6e615fdb83c29cf5")],
     globals: ["_WHATWG_C0_CONTROL_OR_SPACE", "_UNSAFE_URL_BYTES_TO_REMOVE", "scheme_chars", "_splitnetloc",
               "_check_bracketed_netloc", "_checknetloc"],
     builtins: ["bool", "len", "min", "ValueError"]);

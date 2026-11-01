@@ -230,7 +230,7 @@ def test_urlsplit_cache_info_unchanged():
 # Hypothesis
 # ---------------------------------------------------------------------------------------
 
-urlish = st.text(alphabet=st.sampled_from(list("ab:/?#[]@%+=&; \t\n\x00~é€2FfZz") + ["%2", "%e2%82", "://", "//"]), max_size=40)
+urlish = st.lists(st.sampled_from(list("ab:/?#[]@%+=&; \t\n\x00~é€2FfZz") + ["%2", "%e2%82", "://", "//"]), max_size=30).map("".join)
 
 
 @settings(max_examples=400)
