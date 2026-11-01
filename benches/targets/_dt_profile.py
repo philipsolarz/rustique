@@ -13,6 +13,9 @@ if len(sys.argv) > 1 and sys.argv[1] == "_w":
     exec(cg.COMMON, ns)
     exec(cg.RQ, ns)
     stmt = sys.argv[2]
+    if ";;" in stmt:
+        setup, stmt = stmt.split(";;", 1)
+        exec(setup, ns)
     exec(f"def fn(_n):\n    for _ in range(_n):\n        {stmt}\n", ns)
     ns["fn"](50)
     h.start()

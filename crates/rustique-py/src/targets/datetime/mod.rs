@@ -25,6 +25,7 @@ use crate::accel::{Prepare, Refusal, TargetSpec};
 
 pub mod env;
 mod fingerprints;
+mod fmtcache;
 pub mod format;
 pub mod iso;
 pub mod parse;
@@ -295,16 +296,36 @@ fn iso_self_test(cx: &mut Prepare<'_>, which: u8) -> Result<(), Refusal> {
             let mut ok = true;
             let objs: Vec<Bound<'_, PyAny>> = match which {
                 0 => vec![
-                    Bound::from_owned_ptr_or_err(py, ((*api).DateTime_FromDateAndTime)(2024, 2, 29, 23, 59, 58, 4321, ffi::Py_None(), (*api).DateTimeType))?,
-                    Bound::from_owned_ptr_or_err(py, ((*api).DateTime_FromDateAndTime)(7, 1, 2, 3, 4, 5, 0, utc, (*api).DateTimeType))?,
+                    Bound::from_owned_ptr_or_err(
+                        py,
+                        ((*api).DateTime_FromDateAndTime)(
+                            2024,
+                            2,
+                            29,
+                            23,
+                            59,
+                            58,
+                            4321,
+                            ffi::Py_None(),
+                            (*api).DateTimeType,
+                        ),
+                    )?,
+                    Bound::from_owned_ptr_or_err(
+                        py,
+                        ((*api).DateTime_FromDateAndTime)(7, 1, 2, 3, 4, 5, 0, utc, (*api).DateTimeType),
+                    )?,
                 ],
                 1 => vec![Bound::from_owned_ptr_or_err(py, ((*api).Date_FromDate)(987, 12, 31, (*api).DateType))?],
-                _ => vec![Bound::from_owned_ptr_or_err(py, ((*api).Time_FromTime)(7, 5, 9, 123, utc, (*api).TimeType))?],
+                _ => {
+                    vec![Bound::from_owned_ptr_or_err(py, ((*api).Time_FromTime)(7, 5, 9, 123, utc, (*api).TimeType))?]
+                }
             };
             for o in &objs {
                 let this = o.as_ptr();
                 let (k, orig) = match (which, cx_version_15()) {
-                    (1, _) => (iso::date_noargs(this, std::ptr::null_mut()), iso::ORIG_DATE.get()(this, std::ptr::null_mut())),
+                    (1, _) => {
+                        (iso::date_noargs(this, std::ptr::null_mut()), iso::ORIG_DATE.get()(this, std::ptr::null_mut()))
+                    }
                     (0, true) => (
                         iso::datetime_fast(this, std::ptr::null(), 0, std::ptr::null_mut()),
                         iso::ORIG_DATETIME_FAST.get()(this, std::ptr::null(), 0, std::ptr::null_mut()),
@@ -340,6 +361,11 @@ fn iso_self_test(cx: &mut Prepare<'_>, which: u8) -> Result<(), Refusal> {
 fn prepare_iso(cx: &mut Prepare<'_>, which: u8) -> Result<(), Refusal> {
     common(cx)?;
     let py = cx.py();
+    for (k, cell) in [("sep", &iso::K_SEP), ("timespec", &iso::K_TIMESPEC)] {
+        if cell.load(Ordering::Relaxed) == 0 {
+            cell.store(pyo3::types::PyString::intern(py, k).into_ptr() as usize, Ordering::Relaxed);
+        }
+    }
     let api = capi();
     // SAFETY: C API loaded by `common`.
     let (t, label) = unsafe {

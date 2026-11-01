@@ -5,9 +5,7 @@
 //! would neither rebuild its caches nor do anything else observable; otherwise they call
 //! the original with the unchanged arguments.
 
-use std::cell::RefCell;
 use std::ffi::c_int;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use pyo3::ffi;
@@ -19,7 +17,7 @@ use rustique_core::datetime::strptime::{
 };
 
 use super::env::{self, Env, item, obj};
-use super::{fingerprints, ustr, watch};
+use super::{fingerprints, fmtcache, ustr, watch};
 use crate::accel::{Counters, Original, Prepare, Reason, Refusal, Tools, check, code_locally_quiet};
 
 /// Which entry point.
@@ -487,27 +485,24 @@ unsafe fn regex_cached(sp: &SpDeps, fmt: *mut ffi::PyObject) -> bool {
 // Compiled-format cache (per thread: no locks)
 // ---------------------------------------------------------------------------------------
 
-/// (format bytes, compiled or rejected)
-type ProgramEntry = (Box<[u8]>, Option<Rc<Program>>);
-
+static PROGRAMS: fmtcache::Table<Program> = fmtcache::Table::new();
 thread_local! {
-    static PROGS: RefCell<Vec<ProgramEntry>> = const { RefCell::new(Vec::new()) };
+    static LOCAL_PROGRAMS: fmtcache::Local<Program> = const { fmtcache::Local::new() };
 }
 
-fn program(fmt: &[u8]) -> Option<Rc<Program>> {
-    PROGS.with(|c| {
-        let mut c = c.borrow_mut();
-        if let Some((_, p)) = c.iter().find(|(f, _)| &**f == fmt) {
-            return p.clone();
-        }
-        let v = if VERSION.load(Ordering::Relaxed) == 14 { Version::V3_14 } else { Version::V3_15 };
-        let p = strptime::compile(fmt, v).map(Rc::new);
-        if c.len() >= 8 {
-            c.clear();
-        }
-        c.push((fmt.into(), p.clone()));
-        p
-    })
+/// The compiled format (`None`: not ASCII or not in the subset).
+///
+/// # Safety
+/// Attached thread; `fmt` a live exact `str`.
+#[inline(always)]
+unsafe fn program(fmt: *mut ffi::PyObject) -> Option<fmtcache::Cached<Program>> {
+    // SAFETY: per the caller.
+    unsafe {
+        fmtcache::lookup(&PROGRAMS, &LOCAL_PROGRAMS, fmt, |fb| {
+            let v = if VERSION.load(Ordering::Relaxed) == 14 { Version::V3_14 } else { Version::V3_15 };
+            strptime::compile(fb, v)
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -576,11 +571,11 @@ unsafe fn run(
             c.fallback(Reason::Deopt);
             return None;
         }
-        let (Some(fb), Some(sb)) = (ustr::ascii(fmt), ustr::ascii(s)) else {
+        let Some(sb) = ustr::ascii(s) else {
             c.fallback(Reason::Args);
             return None;
         };
-        let Some(p) = program(fb).and_then(|prog| prog.parse(sb, kind == Kind::TimeFn)) else {
+        let Some(p) = program(fmt).and_then(|prog| prog.parse(sb, kind == Kind::TimeFn)) else {
             c.fallback(Reason::Args);
             return None;
         };
@@ -819,6 +814,8 @@ pub fn prepare_common(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if !cx.get_opt(&d, "datetime_date")?.is_some_and(|t| t.as_ptr() as usize == date_t) {
         return Ok(());
     }
+    // Snapshot its dependencies now (install time); a mismatch refuses below.
+    let _ = find_or_capture(cx.py(), &m);
     let locale = cx.get(&d, "locale")?.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?;
     for name in FUNCS {
         cx.fingerprint_code(&cx.get(&d, name)?, fingerprints::code(name))?;

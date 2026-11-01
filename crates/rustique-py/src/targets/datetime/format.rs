@@ -16,8 +16,6 @@
 //!   and `time.struct_time` are the originals (a monkeypatched `time.strftime` is honoured
 //!   by falling back).
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use pyo3::ffi;
@@ -28,7 +26,7 @@ use rustique_core::datetime::cal;
 use rustique_core::datetime::strftime::{self, Compiled, Needs, Out, Tm, TzText};
 
 use super::env::{self, Env, item, obj};
-use super::{capi, ustr, watch};
+use super::{capi, fmtcache, ustr, watch};
 use crate::accel::{Counters, Original, Reason, check};
 
 type O = *mut ffi::PyObject;
@@ -339,27 +337,27 @@ enum Recv {
     Time,
 }
 
-/// (wrapped, format bytes, compiled or rejected)
-type FormatEntry = (bool, Box<[u8]>, Option<Rc<Compiled>>);
-
+static WRAPPED: fmtcache::Table<Compiled> = fmtcache::Table::new();
+static PLAIN: fmtcache::Table<Compiled> = fmtcache::Table::new();
 thread_local! {
-    static FORMATS: RefCell<Vec<FormatEntry>> = const { RefCell::new(Vec::new()) };
+    static LOCAL_WRAPPED: fmtcache::Local<Compiled> = const { fmtcache::Local::new() };
+    static LOCAL_PLAIN: fmtcache::Local<Compiled> = const { fmtcache::Local::new() };
 }
 
-/// The compiled format (per thread; negative results cached too).
-fn compiled(fmt: &[u8], wrapped: bool) -> Option<Rc<Compiled>> {
-    FORMATS.with(|c| {
-        let mut c = c.borrow_mut();
-        if let Some((_, _, p)) = c.iter().find(|(w, f, _)| *w == wrapped && &**f == fmt) {
-            return p.clone();
+/// The compiled format (`None`: not ASCII or not in the subset).
+///
+/// # Safety
+/// Attached thread; `fmt` a live exact `str`.
+#[inline(always)]
+unsafe fn compiled(fmt: O, wrapped: bool) -> Option<fmtcache::Cached<Compiled>> {
+    // SAFETY: per the caller.
+    unsafe {
+        if wrapped {
+            fmtcache::lookup(&WRAPPED, &LOCAL_WRAPPED, fmt, |fb| strftime::compile(fb, true))
+        } else {
+            fmtcache::lookup(&PLAIN, &LOCAL_PLAIN, fmt, |fb| strftime::compile(fb, false))
         }
-        let p = strftime::compile(fmt, wrapped).map(Rc::new);
-        if c.len() >= 16 {
-            c.clear();
-        }
-        c.push((wrapped, fmt.into(), p.clone()));
-        p
-    })
+    }
 }
 
 #[inline]
@@ -397,7 +395,7 @@ unsafe fn method(this: O, fmt: O, time_method: bool) -> Option<O> {
             c.fallback(Reason::Args);
             return None;
         }
-        let Some(cf) = ustr::ascii(fmt).and_then(|fb| compiled(fb, true)).filter(|cf| names_ok(&cf.needs)) else {
+        let Some(cf) = compiled(fmt, true).filter(|cf| names_ok(&cf.needs)) else {
             c.fallback(Reason::Args);
             return None;
         };
@@ -557,7 +555,6 @@ unsafe fn function(module: O, args: O) -> Option<O> {
         if ffi::PyUnicode_CheckExact(fmt) == 0 {
             return None;
         }
-        let cf = ustr::ascii(fmt).and_then(|fb| compiled(fb, false)).filter(|cf| names_ok(&cf.needs))?;
         // struct_time: 9 visible items plus tm_zone and tm_gmtoff stored after them.
         let is_st = ffi::Py_TYPE(tup) as usize == e.struct_time;
         if !(ffi::PyTuple_CheckExact(tup) != 0 || is_st) || ffi::PyTuple_GET_SIZE(tup) != 9 {
@@ -579,6 +576,7 @@ unsafe fn function(module: O, args: O) -> Option<O> {
         {
             return None;
         }
+        let cf = compiled(fmt, false).filter(|cf| names_ok(&cf.needs))?;
         if is_st {
             // gettmarg also reads tm_zone (PyUnicode_AsUTF8) and tm_gmtoff (PyLong_AsLong).
             let zone = ffi::PyTuple_GET_ITEM(tup, 9);

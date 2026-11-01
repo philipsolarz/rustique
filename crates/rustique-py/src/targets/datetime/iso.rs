@@ -217,9 +217,19 @@ pub unsafe extern "C" fn date_noargs(this: O, unused: O) -> O {
     }
 }
 
+/// Interned "sep" / "timespec" (call sites pass interned keyword names: pointer compare
+/// first).
+pub static K_SEP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub static K_TIMESPEC: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Positional/keyword arguments `(sep, timespec)` or `(timespec,)` of the FASTCALL
 /// convention; `None` for anything else (duplicates, unknown names).
-unsafe fn fast_args<const N: usize>(names: [&std::ffi::CStr; N], args: *const O, nargs: ffi::Py_ssize_t, kwnames: O) -> Option<[O; N]> {
+unsafe fn fast_args<const N: usize>(
+    names: [(&std::ffi::CStr, &std::sync::atomic::AtomicUsize); N],
+    args: *const O,
+    nargs: ffi::Py_ssize_t,
+    kwnames: O,
+) -> Option<[O; N]> {
     // SAFETY: CPython's FASTCALL arguments.
     unsafe {
         let nargs = nargs as usize;
@@ -234,7 +244,10 @@ unsafe fn fast_args<const N: usize>(names: [&std::ffi::CStr; N], args: *const O,
             let nkw = ffi::PyTuple_GET_SIZE(kwnames) as usize;
             for k in 0..nkw {
                 let key = ffi::PyTuple_GET_ITEM(kwnames, k as ffi::Py_ssize_t);
-                let slot = names.iter().position(|n| ffi::PyUnicode_EqualToUTF8(key, n.as_ptr()) == 1)?;
+                let slot = names.iter().position(|&(n, k)| {
+                    key as usize == k.load(std::sync::atomic::Ordering::Relaxed)
+                        || ffi::PyUnicode_EqualToUTF8(key, n.as_ptr()) == 1
+                })?;
                 if !out[slot].is_null() {
                     return None;
                 }
@@ -284,7 +297,7 @@ unsafe fn var_args<const N: usize>(names: [&std::ffi::CStr; N], args: O, kw: O) 
 pub unsafe extern "C" fn datetime_fast(this: O, args: *const O, nargs: ffi::Py_ssize_t, kwnames: O) -> O {
     // SAFETY: CPython's calling convention; fallback with unchanged arguments.
     unsafe {
-        if let Some([sep, ts]) = fast_args([c"sep", c"timespec"], args, nargs, kwnames)
+        if let Some([sep, ts]) = fast_args([(c"sep", &K_SEP), (c"timespec", &K_TIMESPEC)], args, nargs, kwnames)
             && let Some(r) = datetime_iso(this, sep, ts)
         {
             if C_DATETIME.hit_check() {
@@ -310,7 +323,9 @@ pub unsafe extern "C" fn datetime_var(this: O, args: O, kw: O) -> O {
             && let Some(r) = datetime_iso(this, sep, ts)
         {
             if C_DATETIME.hit_check() {
-                return check::verify(&super::DATETIME_ISOFORMAT, r, &[this], || ORIG_DATETIME_VAR.get()(this, args, kw));
+                return check::verify(&super::DATETIME_ISOFORMAT, r, &[this], || {
+                    ORIG_DATETIME_VAR.get()(this, args, kw)
+                });
             }
             return r;
         }
@@ -326,11 +341,13 @@ pub unsafe extern "C" fn datetime_var(this: O, args: O, kw: O) -> O {
 pub unsafe extern "C" fn time_fast(this: O, args: *const O, nargs: ffi::Py_ssize_t, kwnames: O) -> O {
     // SAFETY: CPython's calling convention; fallback with unchanged arguments.
     unsafe {
-        if let Some([ts]) = fast_args([c"timespec"], args, nargs, kwnames)
+        if let Some([ts]) = fast_args([(c"timespec", &K_TIMESPEC)], args, nargs, kwnames)
             && let Some(r) = time_iso(this, ts)
         {
             if C_TIME.hit_check() {
-                return check::verify(&super::TIME_ISOFORMAT, r, &[this], || ORIG_TIME_FAST.get()(this, args, nargs, kwnames));
+                return check::verify(&super::TIME_ISOFORMAT, r, &[this], || {
+                    ORIG_TIME_FAST.get()(this, args, nargs, kwnames)
+                });
             }
             return r;
         }

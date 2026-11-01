@@ -108,7 +108,7 @@ CELLS = {
         "try:\n            datetime.strptime('2024-13-01', '%Y-%m-%d')\n        except ValueError:\n            pass", ""),
     "strptime fallback: LC_TIME en_US": ("datetime.strptime(ISO, ISOF)",
                                          "locale.setlocale(locale.LC_TIME, 'en_US.UTF-8')"),
-    "strptime fallback: dependency changed (deps)": ("datetime.strptime(ISO, ISOF)", "_strptime.isinstance = isinstance"),
+    "strptime fallback: dependency changed (deps)": ("_strptime.isinstance = isinstance; datetime.strptime(ISO, ISOF)", ""),
     "strptime fallback: _regex_cache miss (deopt)": ("_strptime._regex_cache.clear(); datetime.strptime(ISO, ISOF)", ""),
     "strptime fallback: tracing tool (tools)": ("datetime.strptime(ISO, ISOF)",
                                                 "import sys; sys.monitoring.use_tool_id(3, 'x'); "
