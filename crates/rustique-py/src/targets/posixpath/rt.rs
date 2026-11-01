@@ -323,12 +323,14 @@ pub unsafe fn str_from_units<T: Unit>(units: &[T]) -> O {
 pub struct Rt {
     pub counters: Counters,
     pub tools: Tools,
-    pub deps: DepFlag,
+    /// The group's dependency flag (its `GroupSpec` pins everything the group's originals
+    /// read at call time).
+    pub deps: &'static DepFlag,
 }
 
 impl Rt {
-    pub const fn new() -> Self {
-        Rt { counters: Counters::new(), tools: Tools::new(), deps: DepFlag::new() }
+    pub const fn new(deps: &'static DepFlag) -> Self {
+        Rt { counters: Counters::new(), tools: Tools::new(), deps }
     }
 
     /// Call the original (`_PyFunction_Vectorcall`) with the unchanged arguments.
@@ -337,7 +339,7 @@ impl Rt {
     /// Vectorcall arguments as received by the kernel.
     #[inline(always)]
     pub unsafe fn fallback(&self, why: Reason, func: O, args: *const O, nargsf: usize, kw: O) -> O {
-        // Consecutive fallbacks (except Deps) suspend the target (adaptive suspension).
+        // Fallbacks (except Deps) debit the net-benefit balance (adaptive suspension).
         self.counters.fallback_streak(why);
         // SAFETY: set by the registry before any kernel is reachable.
         unsafe { accel::FUNCTION_VECTORCALL.get()(func, args, nargsf, kw) }
@@ -357,12 +359,6 @@ impl Rt {
             return Err(Reason::Tools);
         }
         Ok(())
-    }
-}
-
-impl Default for Rt {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

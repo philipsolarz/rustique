@@ -11,6 +11,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _callgrind import region  # noqa: E402
 
+# Whole process: `python -c pass` with RUSTIQUE=1 (every group of Rustique, startup switch)
+# is measured by `benches/startup_switch.py` (dx); the cells here are the paths groups' share.
 CELLS = [
     ("baseline: enable(only=['_selftest'])", "rustique.enable(only=['_selftest'])", "import rustique, posixpath"),
     ("enable(only=['posixpath'])", "rustique.enable(only=['posixpath'])", "import rustique, posixpath"),

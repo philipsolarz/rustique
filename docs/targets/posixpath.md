@@ -32,16 +32,18 @@ str/bytes, empty `relpath`, any error, all fall back.
 Guards per call (≤ 40 Ir): exact shape, one relaxed load of the target's dependency flag,
 the tools guard (global `PY_START` listeners, local events on the function's code).
 
-Dependencies pinned (dict watcher; a change deopts the target until restored):
-`posixpath.os`, `os.fspath`, `posixpath._get_sep`, the builtins the code resolves
-(`isinstance`, `bytes`, `len`, …, via `pin_global`, which also pins "not shadowed in the
-module"), and per target: `posixpath.genericpath` + `genericpath._splitext` (splitext);
-`os.getcwd`/`os.getcwdb`, `posixpath.join`, `posixpath.normpath` (abspath, relpath);
-`posixpath.abspath`, `genericpath._commonprefix` (3.15) / `posixpath.commonprefix` (3.14)
-and the builtins of `genericpath` (relpath). Fingerprints: every Python function the
-kernels reproduce (`join`, `_get_sep`, `_splitext`, `abspath`, `relpath`,
-`(_)commonprefix`, …) and the C functions they call (`os.fspath`, `os.getcwd(b)`,
-`posix._path_normpath`), per minor version.
+Dependencies pinned once for the group (`GroupSpec` `posixpath::SHARED`, 20 pins, one
+dependency flag; a change sends all eight targets to CPython's code until restored):
+`posixpath.os/_get_sep/join/normpath/abspath/genericpath`, `os.fspath/getcwd/getcwdb`,
+`genericpath._splitext`, `genericpath._commonprefix` (3.15) / `posixpath.commonprefix`
+(3.14), and the builtins the code resolves (`isinstance`, `bytes`, `len` in `posixpath`;
+`isinstance`, `list`, `tuple`, `min`, `max`, `enumerate` in `genericpath`; `pin_global`
+also pins "not shadowed in the module"). One flag instead of one per target: patching
+`os.getcwd` (say) now also sends `join` to the original while patched (a `Deps` fallback:
++3 Ir, no suspension). Fingerprints: every Python function the kernels reproduce (`join`,
+`_get_sep`, `_splitext`, `abspath`, `relpath`, `(_)commonprefix`, …) and the C functions
+they call (`os.fspath`, `os.getcwd(b)`, `posix._path_normpath`), per minor version, once
+per object.
 
 ### Identity rules reproduced
 
@@ -78,13 +80,15 @@ the kernel cannot run. Inputs it cannot run without changing observable behaviou
 - a patched dependency.
 
 The framework handles these classes (lead ruling, 2026-11-01): a patched dependency
-suspends the target until it is restored (deopt while unpinned), and 64 consecutive
-fallbacks suspend it until the next `enable()` (adaptive suspension). Steady-state cells of
+suspends the target until it is restored (deopt while unpinned), and the net-benefit
+balance suspends it until the next `enable()` (adaptive suspension: a hit credits 4, any
+other fallback debits 1, suspended at −64, so after 64 fallbacks without a hit; a target
+stays installed while ≥ 20% of its calls hit). Steady-state cells of
 these classes are therefore measured after ≥ 2,500 calls; the cost before suspension (the
 first 60 calls after `enable()`) is reported separately: 1.044–1.059 for join, split,
 splitext and dirname with a user PathLike or `pathlib.Path` argument or cProfile active,
 1.065–1.105 for basename and isabs (the cheapest functions: 2.0k / 1.5k Ir). Mixed traffic
-(exact str with occasional fallbacks) never reaches a streak of 64 and stays far below 1.
+(exact str with occasional fallbacks, ≥ 20% hits) is never suspended and stays far below 1.
 
 `normcase` (517 Ir: a fallback would cost 1.4×, and its only common caller, `fnmatch`, is
 accelerated as a whole), `commonpath`, `commonprefix` (3.15: emits a DeprecationWarning),
@@ -244,13 +248,27 @@ The three groups together; ratios on a shared box are indicative (±~5%).
 
 ## Startup
 
-`benches/targets/paths_startup.py` (callgrind regions, fresh processes, 3.15.1, head d133234,
-after accel-core's install-cost fixes). Any first `rustique.enable(...)` costs 0.64M Ir
-(registry + public switch); the group adds **0.36M Ir** (≈ 0.09 ms) with `posixpath` imported
-(it always is): eight vectorcall sites, the fingerprints of the eight functions and the shared
-helpers (validated once per pass through `Prepare::memo`), and about 75 dependency pins
-(≈ 3k Ir each). Over the 0.1M budget: what remains scales with targets × pins; see the
-report. Nothing is imported.
+`benches/targets/_prof_install.py` (callgrind, 3.15.1, the registry warmed first with an
+imported vectorcall target of another group so one-time calibrations are not counted; head
+after wave1 b162e61). `enable(only=["posixpath"])` with `posixpath` imported (it always
+is) costs **0.21M Ir** (was 0.36M before the `GroupSpec`): eight vectorcall sites, 11
+Python-function and 4 C-function fingerprints (≈ 0.12M), 20 pins (one `GroupSpec`), the normpath
+identity check. Nothing is imported. Still over the 0.1M budget: the fingerprints dominate.
+Pre-interned keys (`pin_s`/`pin_global_s` with `intern!`) measured *slower* here (0.22M:
+each `intern!` site initialises once per process, while `pin`'s interning cache is shared
+with the other groups), so the groups keep `pin`.
+
+Whole process (`benches/targets/_whole.sh`: `python -c pass` through the `.pth` loader,
+callgrind totals, RUSTIQUE=1 vs RUSTIQUE=1 with `RUSTIQUE_EXCLUDE=posixpath,fnmatch,pathlib`):
+the paths groups add **0.98M Ir** (+2.5% of 39.9M). With `os._exit(0)` at the end (no
+interpreter teardown) they add 0.21M (posixpath's enable; fnmatch and pathlib stay pending):
+the other ~0.75M is teardown, in the framework: dict-watcher callbacks while
+`_PyModule_ClearDict` empties the watched module dicts (`guard::on_dict_event` comparing
+every pinned key with `PyUnicode_Compare`, 602 events, ≈ 0.36M) and the module dicts kept
+alive by the installed function objects (gc traversals and dict clearing instead of
+deallocation, ≈ 0.4M: one leaked reference to `posixpath.join` alone costs 0.3–0.5M at
+teardown). Both are fixable in accel-core (compare interned keys by identity; release the
+installs at exit); see the report.
 
 ## Version coverage
 

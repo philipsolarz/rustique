@@ -18,7 +18,7 @@ use pyo3::prelude::*;
 
 use rustique_core::paths::glob::Program;
 
-use crate::accel::{self, Fingerprints, Prepare, Refusal, TargetSpec};
+use crate::accel::{self, DepFlag, Fingerprints, GroupSpec, Prepare, Refusal, TargetSpec};
 use crate::refuse;
 use crate::targets::posixpath::rt::{self, O, Rt, Unit, bytes_view, exact_bytes, exact_str, str_view};
 
@@ -38,9 +38,15 @@ pub(crate) const FPS: &[(&str, Fingerprints)] = &[
     ("posixpath.normcase", &[(3, 14, "0c979efa01cde1ee"), (3, 15, "20a2c8c5e6360108")]),
 ];
 
-static RT_FNMATCH: Rt = Rt::new();
-static RT_FNMATCHCASE: Rt = Rt::new();
-static RT_FILTER: Rt = Rt::new();
+/// The group's dependency flag, pinned once by [`SHARED`].
+static DEPS: DepFlag = DepFlag::new();
+
+static RT_FNMATCH: Rt = Rt::new(&DEPS);
+static RT_FNMATCHCASE: Rt = Rt::new(&DEPS);
+static RT_FILTER: Rt = Rt::new(&DEPS);
+
+/// Declarations shared by the three targets (prepared once, kept while any is installed).
+pub static SHARED: GroupSpec = GroupSpec { name: "fnmatch", prepare: shared };
 
 macro_rules! target {
     ($stat:ident, $name:literal, $rt:ident, $prep:ident) => {
@@ -57,6 +63,7 @@ macro_rules! target {
             // Steady-state JIT cells measured within 1.05 (fallbacks suspend the target).
             jit_safe: true,
             checkable: true,
+            shared: Some(&SHARED),
             ..TargetSpec::DEFAULT
         };
     };
@@ -72,116 +79,92 @@ pub static TARGETS: &[&TargetSpec] = &[&FNMATCH, &FNMATCHCASE, &FILTER];
 // Validation: what `_compile_pattern(pat)` and `os.path.normcase` read
 // ---------------------------------------------------------------------------------------
 
-/// Fingerprint and pin everything `fnmatchcase(name, pat)` reaches on a cache miss:
-/// the whole `fnmatch` namespace (snapshot), the builtins it uses, `re.compile`,
-/// `re._compile` and the parts of `re._parser` whose set semantics the port reproduces.
-fn prep_compile(cx: &mut Prepare<'_>, rt: &'static Rt) -> Result<(), Refusal> {
-    // Validation shared by the three targets: once per enable pass.
-    cx.memo("fnmatch:compile", |cx| {
-        if !rt::init_str_layout(cx.py()) {
-            return Err(refuse!("str layout not calibrated"));
-        }
-        let g = cx.module()?.dict();
-        let cp = cx.get(&g, "_compile_pattern")?;
-        let wrapped = cp.getattr("__wrapped__")?;
-        rt::check_fp(cx, FPS, "fnmatch._compile_pattern", &wrapped)?;
-        for name in ["translate", "_translate", "_join_translated_parts"] {
-            let f = cx.get(&g, name)?;
-            rt::check_fp(cx, FPS, &format!("fnmatch.{name}"), &f)?;
-        }
-        let re = cx.loaded_module("re")?;
-        if !cx.get(&g, "re")?.is(&re) {
-            return Err(refuse!("fnmatch.re is not the re module"));
-        }
-        let esc = cx.get(&g, "_re_escape")?.getattr("__wrapped__")?;
-        let red = re.dict();
-        if !esc.is(&cx.get(&red, "escape")?) {
-            return Err(refuse!("fnmatch._re_escape does not wrap re.escape"));
-        }
-        rt::check_fp(cx, FPS, "re.escape", &esc)?;
-        for name in ["compile", "_compile"] {
-            let f = cx.get(&red, name)?;
-            rt::check_fp(cx, FPS, &format!("re.{name}"), &f)?;
-        }
-        let parser = cx.loaded_module("re._parser")?.dict();
-        for name in ["_parse", "_class_escape"] {
-            let f = cx.get(&parser, name)?;
-            rt::check_fp(cx, FPS, &format!("re._parser.{name}"), &f)?;
-        }
-        Ok(())
-    })?;
+/// The group's shared declarations: everything `fnmatchcase(name, pat)` reaches on a
+/// cache miss (the whole `fnmatch` namespace by snapshot, the builtins it uses,
+/// `re.compile`, `re._compile`, the parts of `re._parser` whose set semantics the port
+/// reproduces) and `os.path.normcase` as `fnmatch`/`filter` reach it (`fnmatch.os` →
+/// `os.path` → `posixpath.normcase` → `os.fspath`): validated and pinned once.
+fn shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    if !rt::init_str_layout(py) {
+        return Err(refuse!("str layout not calibrated"));
+    }
     let g = cx.module()?.dict();
-    let red = cx.loaded_module("re")?.dict();
+    let cp = cx.get(&g, "_compile_pattern")?;
+    let wrapped = cp.getattr("__wrapped__")?;
+    rt::check_fp(cx, FPS, "fnmatch._compile_pattern", &wrapped)?;
+    for name in ["translate", "_translate", "_join_translated_parts"] {
+        let f = cx.get(&g, name)?;
+        rt::check_fp(cx, FPS, &format!("fnmatch.{name}"), &f)?;
+    }
+    let re = cx.loaded_module("re")?;
+    if !cx.get(&g, "re")?.is(&re) {
+        return Err(refuse!("fnmatch.re is not the re module"));
+    }
+    let esc = cx.get(&g, "_re_escape")?.getattr("__wrapped__")?;
+    let red = re.dict();
+    if !esc.is(&cx.get(&red, "escape")?) {
+        return Err(refuse!("fnmatch._re_escape does not wrap re.escape"));
+    }
+    rt::check_fp(cx, FPS, "re.escape", &esc)?;
     for name in ["compile", "_compile"] {
-        cx.pin(&red, name, &rt.deps)?;
+        let f = cx.get(&red, name)?;
+        rt::check_fp(cx, FPS, &format!("re.{name}"), &f)?;
+        cx.pin(&red, name, &DEPS)?;
+    }
+    let parser = cx.loaded_module("re._parser")?.dict();
+    for name in ["_parse", "_class_escape"] {
+        let f = cx.get(&parser, name)?;
+        rt::check_fp(cx, FPS, &format!("re._parser.{name}"), &f)?;
     }
     // Every fnmatch global (functions, `re`, `os`, `posixpath`, the caches) and the
     // absence of module globals shadowing builtins.
-    cx.pin_dict(&g, &rt.deps)?;
+    cx.pin_dict(&g, &DEPS)?;
     for name in ["isinstance", "str", "bytes", "len", "range"] {
-        cx.pin_global(&g, name, &rt.deps)?;
+        cx.pin_global(&g, name, &DEPS)?;
     }
+    // os.path.normcase
+    let os = cx.loaded_module("os")?;
+    let pp = cx.loaded_module("posixpath")?;
+    if !cx.get(&g, "os")?.is(&os) || !cx.get(&g, "posixpath")?.is(&pp) {
+        return Err(refuse!("fnmatch.os / fnmatch.posixpath are not the modules"));
+    }
+    let osd = os.dict();
+    if !cx.get(&osd, "path")?.is(&pp) {
+        return Err(refuse!("os.path is not posixpath"));
+    }
+    let ppd = pp.dict();
+    rt::check_fp(cx, FPS, "posixpath.normcase", &cx.get(&ppd, "normcase")?)?;
+    if !cx.get(&ppd, "os")?.is(&os) {
+        return Err(refuse!("posixpath.os is not the os module"));
+    }
+    rt::check_c(cx, crate::targets::posixpath::FPS, "os.fspath", &cx.get(&osd, "fspath")?)?;
+    cx.pin(&osd, "path", &DEPS)?;
+    cx.pin(&ppd, "normcase", &DEPS)?;
+    cx.pin(&ppd, "os", &DEPS)?;
+    cx.pin(&osd, "fspath", &DEPS)?;
     Ok(())
 }
 
-/// `os.path.normcase` as fnmatch reaches it: `fnmatch.os` → `os.path` → `posixpath`,
-/// whose `normcase` returns `os.fspath(s)`.
-fn prep_normcase(cx: &mut Prepare<'_>, rt: &'static Rt) -> Result<(), Refusal> {
-    cx.memo("fnmatch:normcase", |cx| {
-        let g = cx.module()?.dict();
-        let os = cx.loaded_module("os")?;
-        let pp = cx.loaded_module("posixpath")?;
-        if !cx.get(&g, "os")?.is(&os) || !cx.get(&g, "posixpath")?.is(&pp) {
-            return Err(refuse!("fnmatch.os / fnmatch.posixpath are not the modules"));
-        }
-        let osd = os.dict();
-        if !cx.get(&osd, "path")?.is(&pp) {
-            return Err(refuse!("os.path is not posixpath"));
-        }
-        let ppd = pp.dict();
-        let nc = cx.get(&ppd, "normcase")?;
-        rt::check_fp(cx, FPS, "posixpath.normcase", &nc)?;
-        if !cx.get(&ppd, "os")?.is(&os) {
-            return Err(refuse!("posixpath.os is not the os module"));
-        }
-        let fspath = cx.get(&osd, "fspath")?;
-        rt::check_c(cx, crate::targets::posixpath::FPS, "os.fspath", &fspath)
-    })?;
-    let osd = cx.loaded_module("os")?.dict();
-    let ppd = cx.loaded_module("posixpath")?.dict();
-    cx.pin(&osd, "path", &rt.deps)?;
-    cx.pin(&ppd, "normcase", &rt.deps)?;
-    cx.pin(&ppd, "os", &rt.deps)?;
-    cx.pin(&osd, "fspath", &rt.deps)?;
-    Ok(())
+/// A target: its own function's fingerprint and its vectorcall site.
+fn prep_fn(cx: &mut Prepare<'_>, attr: &str, kernel: ffi::vectorcallfunc) -> Result<(), Refusal> {
+    let g = cx.module()?.dict();
+    let f = cx.get(&g, attr)?;
+    rt::check_fp(cx, FPS, &format!("fnmatch.{attr}"), &f)?;
+    cx.vectorcall(&f, kernel, &accel::FUNCTION_VECTORCALL)
 }
 
 fn prep_fnmatchcase(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    let g = cx.module()?.dict();
-    let f = cx.get(&g, "fnmatchcase")?;
-    rt::check_fp(cx, FPS, "fnmatch.fnmatchcase", &f)?;
-    prep_compile(cx, &RT_FNMATCHCASE)?;
-    cx.vectorcall(&f, k_fnmatchcase, &accel::FUNCTION_VECTORCALL)
+    prep_fn(cx, "fnmatchcase", k_fnmatchcase)
 }
 
 fn prep_fnmatch(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    let g = cx.module()?.dict();
-    let f = cx.get(&g, "fnmatch")?;
-    rt::check_fp(cx, FPS, "fnmatch.fnmatch", &f)?;
-    let fc = cx.get(&g, "fnmatchcase")?;
-    rt::check_fp(cx, FPS, "fnmatch.fnmatchcase", &fc)?;
-    prep_compile(cx, &RT_FNMATCH)?;
-    prep_normcase(cx, &RT_FNMATCH)?;
-    cx.vectorcall(&f, k_fnmatch, &accel::FUNCTION_VECTORCALL)
+    // Its original calls the global `fnmatchcase` (covered by the namespace snapshot).
+    rt::check_fp(cx, FPS, "fnmatch.fnmatchcase", &cx.module_attr("fnmatchcase")?)?;
+    prep_fn(cx, "fnmatch", k_fnmatch)
 }
 
 fn prep_filter(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    let g = cx.module()?.dict();
-    let f = cx.get(&g, "filter")?;
-    rt::check_fp(cx, FPS, "fnmatch.filter", &f)?;
-    prep_compile(cx, &RT_FILTER)?;
-    prep_normcase(cx, &RT_FILTER)?;
-    cx.vectorcall(&f, k_filter, &accel::FUNCTION_VECTORCALL)
+    prep_fn(cx, "filter", k_filter)
 }
 
 // ---------------------------------------------------------------------------------------

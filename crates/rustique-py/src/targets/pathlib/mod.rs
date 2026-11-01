@@ -24,7 +24,7 @@ use pyo3::types::{PyDict, PyString, PyType};
 use rustique_core::paths::Unit;
 use rustique_core::paths::posix::{self, JoinArg, Joined, Piece};
 
-use crate::accel::{self, Fingerprints, Prepare, Refusal, TargetSpec};
+use crate::accel::{self, DepFlag, Fingerprints, GroupSpec, Prepare, Refusal, TargetSpec};
 use crate::refuse;
 use crate::targets::posixpath::rt::{self, O, Rt, Text, exact_str, str_from_units, str_view};
 
@@ -63,49 +63,6 @@ pub(crate) const FPS: &[(&str, Fingerprints)] = &[
     ("posixpath.splitdrive", &[(3, 14, "8514869d9c2a063f"), (3, 15, "3bb7f4243a107b0e")]),
     ("posixpath.splitroot", &[(3, 14, "207c2ea5f38e1e3d"), (3, 15, "886f7acf26378ad4")]),
 ];
-
-/// What parsing reaches through `self` / `cls`.
-const PARSE: &[&str] = &["parser", "_parse_path", "_raw_path", "drive", "root", "_tail"];
-/// What creating a derived path reaches (`_from_parsed_parts` → `with_segments` →
-/// `type(self)(...)`).
-const DERIVE: &[&str] =
-    &["_format_parsed_parts", "_from_parsed_parts", "_from_parsed_string", "with_segments", "__new__", "__init__"];
-
-/// The `PurePath` attributes each original reaches through `self` / `cls` besides itself
-/// (pinned through `PosixPath`'s MRO, which contains `PurePosixPath`'s: patching one on a
-/// class suspends the target; replacing the target's own attribute just stops routing calls
-/// to the kernel).
-fn reached(attr: &str) -> Vec<&'static str> {
-    let mut v: Vec<&'static str> = Vec::new();
-    match attr {
-        "__new__" => {}
-        "__init__" => v.push("parser"),
-        "__truediv__" => v.extend(["with_segments", "__new__", "__init__", "parser"]),
-        "__str__" | "name" | "parts" => {
-            v.extend(PARSE);
-            v.push("_format_parsed_parts");
-        }
-        "suffix" | "stem" => {
-            v.extend(PARSE);
-            v.push("name");
-        }
-        "parent" => {
-            v.extend(PARSE);
-            v.extend(DERIVE);
-        }
-        "__eq__" | "__hash__" => {
-            v.extend(PARSE);
-            v.extend(["_format_parsed_parts", "_str_normcase", "__str__"]);
-        }
-        _ => {
-            // relative_to
-            v.extend(PARSE);
-            v.extend(DERIVE);
-            v.extend(["parents", "__eq__", "_str_normcase", "__str__"]);
-        }
-    }
-    v
-}
 
 // ---------------------------------------------------------------------------------------
 // Validated layout: the two exact classes and the slot offsets
@@ -605,19 +562,26 @@ unsafe fn from_parsed_parts(ty: *mut ffi::PyTypeObject, root: O, tail: O) -> O {
 // Targets and kernels
 // ---------------------------------------------------------------------------------------
 
-static RT_STR: Rt = Rt::new();
-static RT_TRUEDIV: Rt = Rt::new();
-static RT_PARENT: Rt = Rt::new();
-static RT_NAME: Rt = Rt::new();
-static RT_SUFFIX: Rt = Rt::new();
-static RT_STEM: Rt = Rt::new();
-static RT_PARTS: Rt = Rt::new();
-static RT_RELATIVE_TO: Rt = Rt::new();
-static RT_EQ: Rt = Rt::new();
-static RT_HASH: Rt = Rt::new();
-static RT_NEW_PURE: Rt = Rt::new();
-static RT_NEW_PATH: Rt = Rt::new();
-static RT_INIT: Rt = Rt::new();
+/// The group's dependency flag, pinned once by [`SHARED`] (class attributes are guarded by
+/// the classes' version tags instead).
+static DEPS: DepFlag = DepFlag::new();
+
+/// Declarations shared by the thirteen targets (prepared once, kept while any is installed).
+pub static SHARED: GroupSpec = GroupSpec { name: "pathlib", prepare: shared };
+
+static RT_STR: Rt = Rt::new(&DEPS);
+static RT_TRUEDIV: Rt = Rt::new(&DEPS);
+static RT_PARENT: Rt = Rt::new(&DEPS);
+static RT_NAME: Rt = Rt::new(&DEPS);
+static RT_SUFFIX: Rt = Rt::new(&DEPS);
+static RT_STEM: Rt = Rt::new(&DEPS);
+static RT_PARTS: Rt = Rt::new(&DEPS);
+static RT_RELATIVE_TO: Rt = Rt::new(&DEPS);
+static RT_EQ: Rt = Rt::new(&DEPS);
+static RT_HASH: Rt = Rt::new(&DEPS);
+static RT_NEW_PURE: Rt = Rt::new(&DEPS);
+static RT_NEW_PATH: Rt = Rt::new(&DEPS);
+static RT_INIT: Rt = Rt::new(&DEPS);
 
 macro_rules! target {
     ($stat:ident, $prep:ident, $name:literal, $rt:ident, $attr:literal, $kernel:ident) => {
@@ -643,6 +607,7 @@ macro_rules! target {
             // Steady-state JIT cells measured within 1.05 (fallbacks suspend the target).
             jit_safe: true,
             checkable: false,
+            shared: Some(&SHARED),
             ..TargetSpec::DEFAULT
         };
     };
@@ -707,166 +672,137 @@ fn type_dict<'py>(ty: &Bound<'py, PyType>) -> Result<Bound<'py, PyDict>, Refusal
 }
 
 /// Validate the module (fingerprints, classes, slots, pins) once per target.
-/// Validation shared by the thirteen targets (once per enable pass): fingerprints of every
-/// function the kernels reproduce, the two exact classes (default metaclass, `posixpath`
-/// parser, PurePath's slot layout), `posixpath.sep/altsep`, `os.name`, and the C/Python
-/// helpers the parsing reaches.
-fn validate(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    cx.memo("pathlib:validate", |cx| {
-        let py = cx.py();
-        if !rt::init_str_layout(py) {
-            return Err(refuse!("str layout not calibrated"));
+/// The group's shared declarations: fingerprints of every function the kernels reproduce,
+/// the two exact classes (default metaclass, `posixpath` parser, PurePath's slot layout,
+/// their attributes recorded for the version-tag guard), `posixpath.sep/altsep`, `os.name`,
+/// and the pins of every module global and builtin any pathlib original resolves at call
+/// time, once for the thirteen targets.
+fn shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    if !rt::init_str_layout(py) {
+        return Err(refuse!("str layout not calibrated"));
+    }
+    let g = cx.module()?.dict();
+    let mut types = Vec::new();
+    for name in ["PurePath", "PurePosixPath", "PosixPath", "Path", "_PathParents"] {
+        types.push(cx.get(&g, name)?.cast_into::<PyType>().map_err(PyErr::from)?);
+    }
+    let [pure, pure_posix, posix, path, parents] = <[Bound<'_, PyType>; 5]>::try_from(types).expect("five");
+    let pd = type_dict(&pure)?;
+    for (name, _) in FPS {
+        let (owner, a) = name.split_once('.').expect("dotted");
+        let f = match owner {
+            "PurePath" => underlying(&cx.get(&pd, a)?)?,
+            "_PathParents" => underlying(&cx.get(&type_dict(&parents)?, a)?)?,
+            "Path" => underlying(&cx.get(&type_dict(&path)?, a)?)?,
+            _ => cx.get(&cx.loaded_module(owner)?.dict(), a)?,
+        };
+        if *name == "posixpath.splitroot" {
+            rt::check_c(cx, FPS, name, &f)?;
+        } else {
+            rt::check_fp(cx, FPS, name, &f)?;
         }
-        let g = cx.module()?.dict();
-        let mut types = Vec::new();
-        for name in ["PurePath", "PurePosixPath", "PosixPath", "Path", "_PathParents"] {
-            types.push(cx.get(&g, name)?.cast_into::<PyType>().map_err(PyErr::from)?);
+    }
+    let pp = cx.loaded_module("posixpath")?;
+    for t in [&pure_posix, &posix] {
+        if !t.get_type().is(py.get_type::<PyType>()) {
+            return Err(refuse!("custom metaclass"));
         }
-        let [pure, pure_posix, posix, path, parents] = <[Bound<'_, PyType>; 5]>::try_from(types).expect("five");
-        let pd = type_dict(&pure)?;
-        for (name, _) in FPS {
-            let (owner, a) = name.split_once('.').expect("dotted");
-            let f = match owner {
-                "PurePath" => underlying(&cx.get(&pd, a)?)?,
-                "_PathParents" => underlying(&cx.get(&type_dict(&parents)?, a)?)?,
-                "Path" => underlying(&cx.get(&type_dict(&path)?, a)?)?,
-                _ => cx.get(&cx.loaded_module(owner)?.dict(), a)?,
-            };
-            if *name == "posixpath.splitroot" {
-                rt::check_c(cx, FPS, name, &f)?;
-            } else {
-                rt::check_fp(cx, FPS, name, &f)?;
+        // SAFETY: ready types.
+        if unsafe { ffi::PyType_IsSubtype(t.as_type_ptr(), pure.as_type_ptr()) } == 0 {
+            return Err(refuse!("class hierarchy differs"));
+        }
+    }
+    if !cx.type_attr(&pure_posix, "parser")?.is(&pp) {
+        return Err(refuse!("PurePosixPath.parser is not posixpath"));
+    }
+    // Slot offsets: object-typed, writable member descriptors of PurePath.
+    for (k, name) in SLOT_NAMES.iter().enumerate() {
+        let d = cx.get(&pd, name)?;
+        // SAFETY: type check, then the member definition of a member descriptor.
+        let off = unsafe {
+            if ffi::Py_TYPE(d.as_ptr()) != &raw mut ffi::PyMemberDescr_Type {
+                return Err(refuse!("{name} is not a slot"));
             }
-        }
-        let pp = cx.loaded_module("posixpath")?;
-        for t in [&pure_posix, &posix] {
-            if !t.get_type().is(py.get_type::<PyType>()) {
-                return Err(refuse!("custom metaclass"));
+            let m = (*d.as_ptr().cast::<ffi::PyMemberDescrObject>()).d_member;
+            if (*m).type_code != ffi::Py_T_OBJECT_EX || (*m).flags & ffi::Py_READONLY != 0 {
+                return Err(refuse!("{name} is not a writable object slot"));
             }
-            // SAFETY: ready types.
-            if unsafe { ffi::PyType_IsSubtype(t.as_type_ptr(), pure.as_type_ptr()) } == 0 {
-                return Err(refuse!("class hierarchy differs"));
-            }
+            (*m).offset
+        };
+        let prev = OFF[k].swap(off, Relaxed);
+        if prev != 0 && prev != off {
+            return Err(refuse!("slot layout changed"));
         }
-        if !cx.type_attr(&pure_posix, "parser")?.is(&pp) {
-            return Err(refuse!("PurePosixPath.parser is not posixpath"));
-        }
-        // Slot offsets: object-typed, writable member descriptors of PurePath.
-        for (k, name) in SLOT_NAMES.iter().enumerate() {
-            let d = cx.get(&pd, name)?;
-            // SAFETY: type check, then the member definition of a member descriptor.
-            let off = unsafe {
-                if ffi::Py_TYPE(d.as_ptr()) != &raw mut ffi::PyMemberDescr_Type {
-                    return Err(refuse!("{name} is not a slot"));
-                }
-                let m = (*d.as_ptr().cast::<ffi::PyMemberDescrObject>()).d_member;
-                if (*m).type_code != ffi::Py_T_OBJECT_EX || (*m).flags & ffi::Py_READONLY != 0 {
-                    return Err(refuse!("{name} is not a writable object slot"));
-                }
-                (*m).offset
-            };
-            let prev = OFF[k].swap(off, Relaxed);
-            if prev != 0 && prev != off {
-                return Err(refuse!("slot layout changed"));
-            }
-        }
-        let ppd = pp.dict();
-        if !cx.get(&ppd, "sep")?.eq("/")? || !cx.get(&ppd, "altsep")?.is_none() {
-            return Err(refuse!("posixpath.sep/altsep differ"));
-        }
-        let osm = cx.loaded_module("os")?;
-        if !cx.get(&ppd, "os")?.is(&osm) {
-            return Err(refuse!("posixpath.os is not the os module"));
-        }
-        let osd = osm.dict();
-        if !cx.get(&osd, "name")?.eq("posix")? {
-            return Err(refuse!("os.name is not 'posix'"));
-        }
-        let join = cx.get(&ppd, "join")?;
-        rt::check_fp(cx, crate::targets::posixpath::FPS, "posixpath.join", &join)?;
-        rt::check_fp(cx, crate::targets::posixpath::FPS, "posixpath._get_sep", &cx.get(&ppd, "_get_sep")?)?;
-        rt::check_c(cx, crate::targets::posixpath::FPS, "os.fspath", &cx.get(&osd, "fspath")?)?;
-        // The attributes the originals reach are the ones just fingerprinted (looked up
-        // through each class's MRO); the kernels then guard them by version tag.
-        record_class(py, &posix, &pure_posix, &parents)?;
-        store_type(&PURE_POSIX, &pure_posix);
-        store_type(&POSIX, &posix);
-        store_type(&PURE_BASE, &pure);
-        store_type(&PATH_BASE, &path);
-        if DOT.load(Relaxed) == 0 {
-            DOT.store(rt::leak(PyString::new(py, ".").as_any()), Relaxed);
-        }
-        Ok(())
-    })
+    }
+    let ppd = pp.dict();
+    if !cx.get(&ppd, "sep")?.eq("/")? || !cx.get(&ppd, "altsep")?.is_none() {
+        return Err(refuse!("posixpath.sep/altsep differ"));
+    }
+    let osm = cx.loaded_module("os")?;
+    if !cx.get(&ppd, "os")?.is(&osm) {
+        return Err(refuse!("posixpath.os is not the os module"));
+    }
+    let osd = osm.dict();
+    if !cx.get(&osd, "name")?.eq("posix")? {
+        return Err(refuse!("os.name is not 'posix'"));
+    }
+    let join = cx.get(&ppd, "join")?;
+    rt::check_fp(cx, crate::targets::posixpath::FPS, "posixpath.join", &join)?;
+    rt::check_fp(cx, crate::targets::posixpath::FPS, "posixpath._get_sep", &cx.get(&ppd, "_get_sep")?)?;
+    rt::check_c(cx, crate::targets::posixpath::FPS, "os.fspath", &cx.get(&osd, "fspath")?)?;
+    // The attributes the originals reach are the ones just fingerprinted (looked up
+    // through each class's MRO); the kernels then guard them by version tag.
+    record_class(py, &posix, &pure_posix, &parents)?;
+    store_type(&PURE_POSIX, &pure_posix);
+    store_type(&POSIX, &posix);
+    store_type(&PURE_BASE, &pure);
+    store_type(&PATH_BASE, &path);
+    if DOT.load(Relaxed) == 0 {
+        DOT.store(rt::leak(PyString::new(py, ".").as_any()), Relaxed);
+    }
+    let ppd = pp.dict();
+    for key in ["sep", "altsep", "join", "splitroot", "splitdrive", "_get_sep", "os"] {
+        cx.pin(&ppd, key, &DEPS)?;
+    }
+    for name in ["isinstance", "bytes"] {
+        cx.pin_global(&ppd, name, &DEPS)?;
+    }
+    for key in [
+        "os",
+        "PurePath",
+        "PurePosixPath",
+        "PosixPath",
+        "Path",
+        "PureWindowsPath",
+        "WindowsPath",
+        "posixpath",
+        "chain",
+        "_PathParents",
+    ] {
+        cx.pin(&g, key, &DEPS)?;
+    }
+    for name in ["object", "isinstance", "str", "TypeError", "type", "tuple", "hash", "hasattr", "ValueError", "len"] {
+        cx.pin_global(&g, name, &DEPS)?;
+    }
+    // `__new__` reads `os.name`; `__init__`, `posixpath.join` and `splitdrive` call `os.fspath`.
+    for key in ["name", "fspath"] {
+        cx.pin(&osd, key, &DEPS)?;
+    }
+    Ok(())
 }
 
-/// Validate (shared) and declare one target: the pins of what its original reaches, then
-/// the vectorcall site.
+/// A target: its vectorcall site (everything else is shared).
 fn prep(
     cx: &mut Prepare<'_>,
     owner: &str,
     attr: &str,
-    rt: &'static Rt,
+    _rt: &'static Rt,
     kernel: ffi::vectorcallfunc,
 ) -> Result<(), Refusal> {
-    validate(cx)?;
     let g = cx.module()?.dict();
-    fn ty<'py>(cx: &Prepare<'py>, g: &Bound<'py, PyDict>, name: &str) -> Result<Bound<'py, PyType>, Refusal> {
-        Ok(cx.get(g, name)?.cast_into::<PyType>().map_err(PyErr::from)?)
-    }
-    // Class attributes are guarded per call by the classes' version tags (`class_intact`),
-    // `_PathParents` likewise for relative_to (`parents_intact`): no class pins.
-    let names = reached(attr);
-    let ppd = cx.loaded_module("posixpath")?.dict();
-    let osd = cx.loaded_module("os")?.dict();
-    let parses = names.contains(&"_parse_path");
-    if parses {
-        // `_raw_path` → `parser.join`; `_parse_path` → `sep`, `altsep`, `splitroot`;
-        // `_format_parsed_parts` → `splitdrive`; `posixpath.join` / `splitdrive` call
-        // `os.fspath` (through `posixpath.os`) and `_get_sep` resolves `isinstance`/`bytes`.
-        for key in ["sep", "altsep", "join", "splitroot", "splitdrive", "_get_sep", "os"] {
-            cx.pin(&ppd, key, &rt.deps)?;
-        }
-        cx.pin_global(&g, "len", &rt.deps)?;
-        for name in ["isinstance", "bytes"] {
-            cx.pin_global(&ppd, name, &rt.deps)?;
-        }
-    }
-    // The module globals and builtins this original's code (and the helpers it reaches)
-    // resolves at call time.
-    let (globals, builtins): (&[&str], &[&str]) = match attr {
-        "__new__" => {
-            (&["os", "PurePath", "PurePosixPath", "PosixPath", "Path", "PureWindowsPath", "WindowsPath"], &["object"])
-        }
-        "__init__" => (&["os", "PurePath"], &["isinstance", "str", "TypeError"]),
-        "__truediv__" => (&["os", "PurePath", "Path"], &["type", "object", "isinstance", "str", "TypeError"]),
-        "parts" => (&[], &["tuple"]),
-        "parent" => (&["os", "PurePath", "Path"], &["type", "object", "isinstance", "str", "TypeError"]),
-        "__eq__" => (&["PurePath", "posixpath"], &["isinstance", "str"]),
-        "__hash__" => (&["posixpath"], &["hash", "str"]),
-        "relative_to" => (
-            &["os", "PurePath", "Path", "posixpath", "chain", "_PathParents"],
-            &["type", "object", "isinstance", "str", "hasattr", "ValueError", "TypeError"],
-        ),
-        _ => (&[], &[]),
-    };
-    for key in globals {
-        cx.pin(&g, key, &rt.deps)?;
-    }
-    for name in builtins {
-        cx.pin_global(&g, name, &rt.deps)?;
-    }
-    if globals.contains(&"os") {
-        // `__new__` picks the flavour from `os.name` (when called on `PurePath`/`Path`).
-        cx.pin(&osd, "name", &rt.deps)?;
-    }
-    if globals.contains(&"os") || parses {
-        // `__init__` calls `os.fspath(arg)` on every non-path argument; parsing reaches it
-        // through `posixpath.join` / `posixpath.splitdrive`.
-        cx.pin(&osd, "fspath", &rt.deps)?;
-    }
-    let od = type_dict(&ty(cx, &g, if owner == "Path" { "Path" } else { "PurePath" })?)?;
-    let f = underlying(&cx.get(&od, attr)?)?;
+    let cls =
+        cx.get(&g, if owner == "Path" { "Path" } else { "PurePath" })?.cast_into::<PyType>().map_err(PyErr::from)?;
+    let f = underlying(&cx.get(&type_dict(&cls)?, attr)?)?;
     cx.vectorcall(&f, kernel, &accel::FUNCTION_VECTORCALL)
 }
 

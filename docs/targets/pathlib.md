@@ -64,14 +64,15 @@ guarded the same way. Pinned (dict watcher): `posixpath.sep/altsep/join/splitroo
 splitdrive/_get_sep/os`, the pathlib globals each original reads (`os`, `posixpath`,
 `PurePath`, `PurePosixPath`, `PosixPath`, `Path`, `PureWindowsPath`, `WindowsPath`, `chain`,
 `_PathParents`), their builtins, `os.fspath` (called by `__init__`, `posixpath.join`,
-`posixpath.splitdrive`) and `os.name` (read by `__new__`). Fingerprints: all 29 functions
-involved, validated once per enable pass.
+`posixpath.splitdrive`) and `os.name` (read by `__new__`): 31 pins, one `GroupSpec`
+(`pathlib::SHARED`, one dependency flag for the thirteen targets) with the validation.
+Fingerprints: all 29 functions involved, once.
 
 Subclasses (including any overriding `with_segments`, `__init__` or `parser`),
 `PureWindowsPath`, and all other inputs run CPython's code. Reached through slots
 (`__new__`, `__init__`, `__str__`, `__truediv__`, `__eq__`, `__hash__`) that costs +3 Ir;
 for the properties and `relative_to` a fallback costs +210–300 Ir: the framework suspends a
-target after 64 consecutive fallbacks (steady state ≈ 1.00, measured), and the first 60
+target after 64 fallbacks without a hit (net-benefit balance; steady state ≈ 1.00, measured), and the first 60
 calls on a subclass or a `PureWindowsPath` cost 1.27–1.28 for `name`/`suffix` (0.7–2k Ir
 properties), 1.05 for `parent`. Plain-subclass support (as `posixpath` has for str) would
 remove that; not done in wave 1.
@@ -196,19 +197,22 @@ The three groups together; ratios on a shared box are indicative (±~5%).
 ## Startup
 
 `pathlib` is not imported by `enable()`: its thirteen targets install when it is imported.
-`benches/targets/paths_startup.py` (callgrind regions, 3.15.1, head d133234):
+`benches/targets/_prof_install.py` (callgrind, 3.15.1, registry warmed with an imported
+vectorcall target of another group):
 
 | region | Ir |
 |---|---:|
-| `import pathlib`, plain | 7.57M |
-| `import pathlib` after `enable(only=["pathlib"])` | 8.60M (**+1.04M, +13.7%**) |
-| `enable(only=["pathlib"])` with pathlib imported (minus the 0.64M of any first enable) | 1.06M |
+| `import pathlib`, plain | 8.06M |
+| `import pathlib` after `enable(only=["pathlib"])` | 8.51M (**+0.45M, +5.6%**) |
+| `enable(only=["pathlib"])` with pathlib imported | 0.45M |
 
 History: +24M at first (per-target MRO pins), +4.2M (fewer pins), +2.4M (accel-core's v2
-fingerprints and shared pins), +1.0M (class attributes guarded by type version tag, shared
-validation once per pass). What remains: 29 fingerprints (0.23M), about 130 module-global and
-builtin pins across the thirteen targets (≈ 0.4M with `get_opt`), thirteen vectorcall sites.
-Over the 5% budget; see the report.
+fingerprints and shared pins), +1.04M (class attributes guarded by type version tag, shared
+validation once per pass), +0.45M (one `GroupSpec`: ~130 per-target pins became 31). What
+remains: 29 fingerprints (≈ 0.12M), the validation (`record_class`, slot offsets, ≈ 0.1M),
+31 pins, thirteen vectorcall sites. At the lazy-install budget (5% of the import, 0.40M)
+within 0.05M. `python -c pass` never imports pathlib (no startup cost; see posixpath.md
+"Startup" for the whole-process cells).
 
 ## Version coverage
 

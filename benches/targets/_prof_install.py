@@ -5,11 +5,16 @@ if len(sys.argv) > 1 and sys.argv[1] == "_w":
     h = helper()
     import rustique, posixpath, fnmatch
     from rustique._rustique import _accel as A
-    A.enable(["_selftest"], [])  # warm the registry (first-enable work is not the group's)
-    A.disable(["_selftest"])
     g = sys.argv[2]
-    if g == "pathlib-import":
-        A.enable(["pathlib"], [])
+    # Warm the registry with an imported vectorcall target of *another* group (one-time
+    # calibrations are not the measured group's).
+    if not os.environ.get("COLD"):
+        warm = "fnmatch.fnmatchcase" if g == "posixpath" else "posixpath.isabs"
+        A.enable([warm], [])
+        A.disable([warm])
+    if g in ("pathlib-import", "pathlib-plain"):
+        if g == "pathlib-import":
+            A.enable(["pathlib"], [])
         h.start(); import pathlib; h.dump("r"); h.stop()
     elif g == "none":
         h.start(); A.enable(["_selftest"], []); h.dump("r"); h.stop()
