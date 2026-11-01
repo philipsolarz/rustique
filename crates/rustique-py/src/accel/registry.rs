@@ -22,7 +22,7 @@ use pyo3::types::{PyDict, PyList, PyModule};
 use super::guard;
 use super::prepare::{self, FingerprintRecord, Prepare};
 use super::site::{Kind, Site};
-use super::spec::{Category, Refusal, TargetSpec};
+use super::spec::{Category, GroupSpec, Refusal, TargetSpec};
 use super::stats;
 use super::version;
 
@@ -143,6 +143,10 @@ struct Rt {
     suspended: Option<Suspended>,
     /// Times suspended since install.
     suspensions: u32,
+    /// Index in `Registry::groups` of the shared declarations this target uses.
+    group: Option<usize>,
+    /// Flags of the target's own pins (status: `deps_intact`).
+    flags: Vec<&'static guard::DepFlag>,
 }
 
 impl Rt {
@@ -157,6 +161,8 @@ impl Rt {
             tracked: Vec::new(),
             suspended: None,
             suspensions: 0,
+            group: None,
+            flags: Vec::new(),
         }
     }
 }
@@ -166,7 +172,8 @@ impl Rt {
 enum Suspended {
     /// A pinned dependency changed; resumed when every pin re-arms.
     Deps,
-    /// [`stats::STREAK_LIMIT`] consecutive fallbacks; resumed by the next `enable()`.
+    /// The net-benefit score reached its floor ([`stats::STREAK_LIMIT`] consecutive
+    /// fallbacks from fresh, or mostly-fallback traffic); resumed by the next `enable()`.
     Fallback,
 }
 
@@ -183,9 +190,55 @@ struct Registry {
     rt: Vec<Rt>,
     only: Option<Vec<String>>,
     exclude: Vec<String>,
+    groups: Vec<Group>,
+    /// Incremented at the start of each registry pass (a group's refusal is remembered for
+    /// the pass only).
+    pass: u64,
+}
+
+/// A [`GroupSpec`]'s state: its pins' owner while any user is installed.
+struct Group {
+    spec: &'static GroupSpec,
+    owner: u64,
+    users: u32,
+    flags: Vec<&'static guard::DepFlag>,
+    refused: Option<(u64, Refusal)>,
 }
 
 static REG: PyLock<Option<Registry>> = PyLock::new(None);
+
+/// Targets whose lazy validation failed after install (`degrade`): spec address → reason.
+static DEGRADED: Mutex<Vec<(usize, String)>> = Mutex::new(Vec::new());
+static ANY_DEGRADED: AtomicBool = AtomicBool::new(false);
+
+/// Mark an installed target as degraded: a validation it performs lazily (after install,
+/// e.g. on first use) failed, so its kernels fall back. Idempotent (the first reason
+/// stays), cheap, callable from kernels (no Python code, a short process-local lock). The
+/// state stays "installed" and counters keep counting fallbacks; `status()` shows
+/// `"degraded": reason` until the target is disabled.
+pub fn degrade(spec: &'static TargetSpec, reason: &str) {
+    let key = spec as *const TargetSpec as usize;
+    let mut d = DEGRADED.lock().unwrap_or_else(|p| p.into_inner());
+    if !d.iter().any(|(k, _)| *k == key) {
+        d.push((key, reason.to_owned()));
+        ANY_DEGRADED.store(true, Ordering::Relaxed);
+    }
+}
+
+fn degraded_reason(spec: &'static TargetSpec) -> Option<String> {
+    if !ANY_DEGRADED.load(Ordering::Relaxed) {
+        return None;
+    }
+    let key = spec as *const TargetSpec as usize;
+    DEGRADED.lock().unwrap_or_else(|p| p.into_inner()).iter().find(|(k, _)| *k == key).map(|(_, r)| r.clone())
+}
+
+fn clear_degraded(spec: &'static TargetSpec) {
+    if ANY_DEGRADED.load(Ordering::Relaxed) {
+        let key = spec as *const TargetSpec as usize;
+        DEGRADED.lock().unwrap_or_else(|p| p.into_inner()).retain(|(k, _)| *k != key);
+    }
+}
 
 /// Every registered target, in `targets::ALL` order.
 pub fn all_specs() -> &'static [&'static TargetSpec] {
@@ -196,6 +249,8 @@ pub fn all_specs() -> &'static [&'static TargetSpec] {
 fn registry<'a>(g: &'a mut Guard<'_, Option<Registry>>) -> &'a mut Registry {
     g.get_or_insert_with(|| Registry {
         rt: all_specs().iter().map(|_| Rt::new()).collect(),
+        groups: Vec::new(),
+        pass: 0,
         only: None,
         exclude: Vec::new(),
     })
@@ -324,6 +379,8 @@ fn activate_module(
     module: &Bound<'_, PyModule>,
     definitive: bool,
 ) -> bool {
+    prepare::clear_pass_caches();
+    reg.pass += 1;
     let mut ml = false;
     for (i, spec) in all_specs().iter().enumerate() {
         if spec.module == Some(name) && reg.rt[i].state == State::Pending {
@@ -429,7 +486,7 @@ fn resume(reg: &mut Registry, i: usize) -> bool {
     }
     let mut ml = rt.sites.iter().any(|s| s.kind == Kind::MlMeth);
     rt.suspended = None;
-    all_specs()[i].counters.streak.store(0, Ordering::Relaxed);
+    all_specs()[i].counters.rearm();
     if let Some(f) = failed {
         ml |= deactivate(reg, i);
         let rt = &mut reg.rt[i];
@@ -440,7 +497,7 @@ fn resume(reg: &mut Registry, i: usize) -> bool {
     ml
 }
 
-/// Suspend or resume vectorcall targets according to their pins and fallback streaks.
+/// Suspend or resume vectorcall targets according to their pins and net-benefit scores.
 /// Returns whether an `ml_meth` site changed.
 fn resync(_py: Python<'_>, reg: &mut Registry) -> bool {
     let mut ml = false;
@@ -515,6 +572,67 @@ fn jit_enabled(py: Python<'_>) -> bool {
 
 static JIT: AtomicBool = AtomicBool::new(false);
 
+/// Make the shared declarations `g` active (prepared and pinned once); returns its index.
+fn ensure_group(
+    py: Python<'_>,
+    reg: &mut Registry,
+    g: &'static GroupSpec,
+    spec: &'static TargetSpec,
+    module: Option<Bound<'_, PyModule>>,
+) -> Result<usize, Refusal> {
+    let gi = match reg.groups.iter().position(|x| std::ptr::eq(x.spec, g)) {
+        Some(gi) => gi,
+        None => {
+            reg.groups.push(Group { spec: g, owner: 0, users: 0, flags: Vec::new(), refused: None });
+            reg.groups.len() - 1
+        }
+    };
+    let pass = reg.pass;
+    let st = &mut reg.groups[gi];
+    if st.owner != 0 {
+        return Ok(gi);
+    }
+    if let Some((p, r)) = &st.refused
+        && *p == pass
+    {
+        return Err(r.clone());
+    }
+    let mut cx = Prepare::new(py, spec, module, false);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (g.prepare)(py, &mut cx)));
+    let result = match outcome {
+        Ok(Ok(())) if cx.sites.is_empty() => guard::activate(py, std::mem::take(&mut cx.pins))
+            .map_err(|e| Refusal::with(Category::Deps, format!("shared {}: pins: {}", g.name, e.value(py)))),
+        Ok(Ok(())) => Err(Refusal::new(format!("shared {}: declares sites", g.name))),
+        Ok(Err(r)) => Err(r),
+        Err(_) => Err(Refusal::new(format!("shared {}: prepare panicked", g.name))),
+    };
+    release_sites(cx.sites.into_iter().map(|d| d.site));
+    let st = &mut reg.groups[gi];
+    match result {
+        Ok((owner, flags)) => {
+            st.owner = owner;
+            st.flags = flags;
+            st.refused = None;
+            Ok(gi)
+        }
+        Err(r) => {
+            st.refused = Some((pass, r.clone()));
+            Err(r)
+        }
+    }
+}
+
+/// One user of group `gi` fewer; the last one releases its pins.
+fn release_group(reg: &mut Registry, gi: usize) {
+    let st = &mut reg.groups[gi];
+    st.users = st.users.saturating_sub(1);
+    if st.users == 0 && st.owner != 0 {
+        guard::deactivate(st.owner);
+        st.owner = 0;
+        st.flags.clear();
+    }
+}
+
 /// Gate, prepare and install target `i`. Returns whether an `ml_meth` site was installed.
 fn activate(
     py: Python<'_>,
@@ -539,6 +657,24 @@ fn activate(
     if !spec.jit_safe && JIT.load(Ordering::Relaxed) {
         return refuse(reg, Refusal::with(Category::Jit, "jit"));
     }
+    let group = match spec.shared {
+        None => None,
+        Some(g) => match ensure_group(py, reg, g, spec, module.clone()) {
+            Ok(gi) => Some(gi),
+            Err(r) => return refuse(reg, r),
+        },
+    };
+    // The group's pins are kept only while a user is installed: release them if this
+    // target does not get there.
+    let refuse = |reg: &mut Registry, r: Refusal| {
+        if let Some(gi) = group
+            && reg.groups[gi].users == 0
+        {
+            reg.groups[gi].users = 1;
+            release_group(reg, gi);
+        }
+        refuse(reg, r)
+    };
     let mut cx = Prepare::new(py, spec, module, false);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.prepare)(py, &mut cx)));
     let names: Vec<String> = cx.sites.iter().map(|d| site_label(&d.site)).collect();
@@ -581,7 +717,7 @@ fn activate(
         }
         return refuse(reg, Refusal::with(Category::Conflict, f));
     }
-    let owner = match guard::activate(py, cx.pins) {
+    let (owner, own_flags) = match guard::activate(py, cx.pins) {
         Ok(o) => o,
         Err(e) => {
             for mut s in installed.into_iter().rev() {
@@ -593,7 +729,16 @@ fn activate(
     };
     let ml = installed.iter().any(|s| s.kind == Kind::MlMeth);
     let has_vc = installed.iter().any(|s| s.kind == Kind::Vectorcall);
+    let group_flags = match group {
+        Some(gi) => {
+            reg.groups[gi].users += 1;
+            reg.groups[gi].flags.clone()
+        }
+        None => Vec::new(),
+    };
     let rt = &mut reg.rt[i];
+    rt.group = group;
+    rt.flags = own_flags;
     rt.sites = installed;
     rt.pin_owner = owner;
     rt.state = State::Installed;
@@ -601,10 +746,14 @@ fn activate(
     rt.refusal = None;
     rt.suspended = None;
     rt.suspensions = 0;
-    all_specs()[i].counters.streak.store(0, Ordering::Relaxed);
-    all_specs()[i].counters.suspend_requested.store(false, Ordering::Relaxed);
+    spec.counters.arm(spec.hit_credit, spec.fallback_debit);
     if has_vc {
-        rt.tracked = guard::flags_of(owner);
+        rt.tracked = rt.flags.clone();
+        for f in group_flags {
+            if !rt.tracked.iter().any(|t| std::ptr::eq(*t, f)) {
+                rt.tracked.push(f);
+            }
+        }
         guard::track(&rt.tracked, true);
         if !rt.tracked.iter().all(|f| f.ok()) {
             // A dependency already changed between prepare and install.
@@ -646,6 +795,12 @@ fn deactivate(reg: &mut Registry, i: usize) -> bool {
         guard::deactivate(rt.pin_owner);
         rt.pin_owner = 0;
     }
+    rt.flags.clear();
+    clear_degraded(all_specs()[i]);
+    if let Some(gi) = rt.group.take() {
+        release_group(reg, gi);
+    }
+    let rt = &mut reg.rt[i];
     rt.state = State::Disabled;
     rt.reason = None;
     rt.refusal = None;
@@ -720,14 +875,10 @@ pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -
         check_names(o)?;
     }
     check_names(&exclude)?;
-    // Python-function targets (module targets) read the local-monitoring layout: calibrate
-    // it here, outside the registry lock and never inside the `sys.modules` watcher.
-    if all_specs().iter().any(|s| s.module.is_some() && selected(s, only.as_deref(), &exclude)) {
-        version::calibrate_monitoring(py);
-    }
     let mut g = REG.lock(py)?;
     let reg = registry(&mut g);
     prepare::clear_pass_caches();
+    reg.pass += 1;
     JIT.store(jit_enabled(py), Ordering::Relaxed);
     let sys_modules = prepare::sys_modules(py).map_err(|r| PyRuntimeError::new_err(r.reason().to_owned()))?;
     let mut ml = false;
@@ -820,6 +971,29 @@ pub fn installed(py: Python<'_>, names: Option<&[String]>) -> PyResult<Vec<&'sta
         .collect())
 }
 
+/// Per-target immutable status values (name, group, module, versions), built once.
+struct StaticStatus {
+    name: Py<pyo3::types::PyString>,
+    group: Py<pyo3::types::PyString>,
+    module: Option<Py<pyo3::types::PyString>>,
+    versions: Vec<Py<pyo3::types::PyString>>,
+}
+
+fn static_status(py: Python<'_>) -> &'static [StaticStatus] {
+    static CELL: pyo3::sync::PyOnceLock<Vec<StaticStatus>> = pyo3::sync::PyOnceLock::new();
+    CELL.get_or_init(py, || {
+        all_specs()
+            .iter()
+            .map(|s| StaticStatus {
+                name: pyo3::types::PyString::intern(py, s.name).unbind(),
+                group: pyo3::types::PyString::intern(py, s.group).unbind(),
+                module: s.module.map(|m| pyo3::types::PyString::intern(py, m).unbind()),
+                versions: versions_of(s).iter().map(|v| pyo3::types::PyString::new(py, v).unbind()).collect(),
+            })
+            .collect()
+    })
+}
+
 fn versions_of(spec: &TargetSpec) -> Vec<String> {
     let mut v = Vec::new();
     for (a, b) in spec.versions {
@@ -845,8 +1019,9 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         }
         enabled |= matches!(rt.state, State::Installed | State::Pending);
         let d = PyDict::new(py);
-        d.set_item(intern!(py, "name"), spec.name)?;
-        d.set_item(intern!(py, "group"), spec.group)?;
+        let fixed = &static_status(py)[i];
+        d.set_item(intern!(py, "name"), fixed.name.bind(py))?;
+        d.set_item(intern!(py, "group"), fixed.group.bind(py))?;
         d.set_item(intern!(py, "state"), rt.state.as_str())?;
         d.set_item(intern!(py, "reason"), rt.reason.as_deref())?;
         d.set_item(
@@ -854,15 +1029,23 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
             if rt.state == State::Refused { rt.refusal.map(Category::as_str) } else { None },
         )?;
         d.set_item(intern!(py, "sites"), PyList::new(py, &rt.site_names)?)?;
-        d.set_item(intern!(py, "versions"), PyList::new(py, versions_of(spec))?)?;
+        d.set_item(intern!(py, "versions"), PyList::new(py, fixed.versions.iter().map(|v| v.bind(py)))?)?;
         d.set_item(intern!(py, "checkable"), spec.checkable)?;
-        if let Some(m) = spec.module {
-            d.set_item(intern!(py, "module"), m)?;
+        if let Some(m) = &fixed.module {
+            d.set_item(intern!(py, "module"), m.bind(py))?;
         }
-        if rt.pin_owner != 0 {
-            let pins = guard::describe(py, rt.pin_owner);
-            let ok = pins.iter().all(|(_, _, intact, broken)| *intact && !*broken);
+        if rt.pin_owner != 0 || rt.group.is_some() {
+            let group_ok = rt.group.is_none_or(|gi| reg.groups[gi].flags.iter().all(|f| f.ok()));
+            let ok = group_ok && rt.flags.iter().all(|f| f.ok());
             d.set_item(intern!(py, "deps_intact"), ok)?;
+        }
+        if let Some(gi) = rt.group {
+            d.set_item(intern!(py, "shared"), reg.groups[gi].spec.name)?;
+        }
+        if rt.state == State::Installed
+            && let Some(why) = degraded_reason(spec)
+        {
+            d.set_item(intern!(py, "degraded"), why)?;
         }
         if let Some(why) = rt.suspended {
             d.set_item(intern!(py, "suspended"), why.as_str())?;

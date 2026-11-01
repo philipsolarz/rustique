@@ -88,7 +88,27 @@ Dependency pins (one relaxed load per call: `if !DEPS.ok() { fallback(Reason::De
 | "does this subclass override any of these names?" | `static C: accel::guard::OverrideCache` (`set_base`, `overrides(ty)`; keyed by `tp_version_tag`) |
 
 The target must validate what it pins (fingerprint, identity with a known object): a pin
-records the current object. Flags re-arm when the original state comes back
+records the current object. With a key that is already a `str` (`pyo3::intern!(py,
+"fspath")`), `pin_s`, `pin_global_s`, `get_opt_s` skip the interning cache.
+
+**Shared declarations (`GroupSpec`).** When several targets depend on the same module
+globals, declare those pins (and the fingerprints and validations they share) once:
+
+```rust
+static PATHLIB_DEPS: DepFlag = DepFlag::new();
+fn shared(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let g = cx.module()?.dict();
+    for key in ["os", "PurePath", "posixpath"] { cx.pin(&g, key, &PATHLIB_DEPS)?; }
+    cx.fingerprint_code(&cx.module_attr("PurePath")?.getattr("_parse_path")?, FP_PARSE)
+}
+pub static SHARED: GroupSpec = GroupSpec { name: "pathlib", prepare: shared };
+// every target: `shared: Some(&SHARED), ..TargetSpec::DEFAULT`, kernels check PATHLIB_DEPS
+```
+
+The registry prepares it before the first target that names it (same module context; it
+must not declare sites), keeps its pins while any of those targets is installed (refcount),
+releases them with the last one, and refuses every user with its refusal if it refuses.
+Vectorcall users are suspended while one of its pins is off, like their own. Flags re-arm when the original state comes back
 (`mock.patch` exiting). One dict watcher id and one type watcher id serve all of Rustique.
 
 ## 3. Kernels
@@ -116,9 +136,17 @@ unsafe extern "C" fn k_join(f: O, args: *const O, nargsf: usize, kw: O) -> O {
 ```
 
 - Counters: `hit()`, `fallback(reason)` (+3 Ir off); vectorcall kernels use
-  `hit_streak()` / `hit_check_streak()` / `fallback_streak(reason)`: 64 consecutive
-  fallbacks (any reason but `Deps`) suspend the target (original vectorcall and specializer
-  version restored, `status()` shows `"suspended": "fallback"`) until the next `enable()`.
+  `hit_streak()` / `hit_check_streak()` / `fallback_streak(reason)`, which keep a
+  net-benefit score per counter set: a hit adds `hit_credit`, a fallback (any reason but
+  `Deps`) subtracts `fallback_debit`, clamped to [−64 × debit, 256]. At the floor the target
+  is suspended (original vectorcall and specializer version restored, `status()` shows
+  `"suspended": "fallback"`) until the next `enable()`. From a fresh install that is 64
+  consecutive fallbacks; it also catches mixed traffic that never has 64 in a row (one hit
+  in ten calls suspends after ~640 calls from the ceiling). A target stays installed while
+  hits are at least debit / (credit + debit) of its calls: 20% with the defaults 4 / 1;
+  `TargetSpec { hit_credit, fallback_debit }` set the ratio from measured savings and
+  penalty (credit : debit ≈ saving per hit : penalty per fallback). Hot path: a hit at the
+  ceiling is a load and a compare (no store); below it a load and a store.
 - A pin that drops suspends a vectorcall target the same way (`"suspended": "deps"`) until
   it re-arms, so a patched dependency costs CPython's own call; >16 suspensions refuse it.
   Both happen in a coalesced `Py_AddPendingCall` (never inside the dict watcher).
@@ -129,7 +157,12 @@ unsafe extern "C" fn k_join(f: O, args: *const O, nargsf: usize, kw: O) -> O {
   globally to any ungrouped event (PY_START … STOP_ITERATION, RAISE, EXCEPTION_HANDLED,
   PY_UNWIND, PY_THROW, RERAISE; `settrace`/`setprofile`/cProfile/coverage are tools too;
   the verdict is cached per monitoring version) or locally on the original's code object
-  (`_co_monitoring`: 11 local events on 3.14, 16 on 3.15, calibrated at `enable()`).
+  (`_co_monitoring`: 11 local events on 3.14, 16 on 3.15, calibrated once per process
+  when the first vectorcall site is prepared, so processes without one never pay it).
+- `accel::degrade(&SPEC, reason)`: for validations a kernel performs lazily (after
+  install, e.g. on first use) that fail. Idempotent (the first reason stays), no Python
+  code; call it once when the check fails, then fall back. The target stays "installed",
+  counters keep counting, and `status()` shows `"degraded": reason` until it is disabled.
 - `accel::in_main_interpreter()` (~30 Ir) only for process-global sites that hold
   per-interpreter objects; better: be interpreter-agnostic (the extension refuses to load in
   subinterpreters, but static `ml_meth`/slot sites are reached from them).
@@ -160,7 +193,7 @@ check` (dx) and `rustique._takeover` (native tier, compatibility) are thin wrapp
   `ValueError` before anything changes; `quiet=True` skips building the status dict (the
   startup hook). Reads no environment variables, imports nothing.
 - `disable(names=None, quiet=False)`; `status() -> {"targets": [{name, group, state, reason,
-  refusal, sites, versions, checkable, [module, deps_intact, suspended]}], "process":
+  refusal, sites, versions, checkable, [module, deps_intact, shared, degraded, suspended]}], "process":
   {python, hexversion, build, jit, rustique, interpreter, enabled, stats, check, only,
   exclude, native}}`; `stats(enabled=None, reset=False) -> {name: {"hits", "fallback":
   {args, deps, tools, interp, deopt, error, check}, "suspensions"}}`; `check(mode)` /
@@ -203,6 +236,15 @@ check` (dx) and `rustique._takeover` (native tier, compatibility) are thin wrapp
 | groups `containers` (7 ml_meth/slot) / `builtins` (6), first enable | 123k / 60k | 109k / 63k |
 
 Lazy install of one Python-function target on its module's import: +61k Ir (was +171k).
+
+Second pass, measured on paths' groups (ws/paths merged, `benches/targets/_prof_install.py`,
+warm registry, quiet `enable([group])`): posixpath 0.32M, fnmatch 0.36M, pathlib 0.73M
+(was 1.06M); lazy pathlib install +0.35M on an 8.47M `import pathlib` (+4%, was +13.7%).
+What remains there: one pin set per target (~130 pins for pathlib's 13 targets, ≈2–3k Ir
+each: a `GroupSpec` makes it ~10–25 pins once), fingerprints of every reproduced function
+on first use in a process (≈6k Ir each, most of it CPython's `PyCode_GetCode`), and
+`status()` ≈4.8k Ir per target (37 targets: 0.18M, was 0.37M; `rustique.enable()` returns
+it, the startup path does not build it).
 `Prepare::memo(key, f)` lets a group validate shared dependencies once per pass;
 identical pins of several targets share one watch slot.
 
@@ -214,13 +256,21 @@ never reached from specialized attribute loads: property targets are 3.15-only.
 **Per-call costs** (docs/atlas/mechanisms.md §1, unchanged): `ml_meth`/slot fallback +2 Ir,
 counters +3 Ir when off, tools guard 34 + ~4 Ir, a dependency flag one relaxed load, a
 vectorcall fallback +180–260 Ir (+250–350 under the JIT; hence deopt-while-unpinned and
-the fallback streak). Retrofitted kernels: docs/targets/containers.md.
+the net-benefit suspension). Retrofitted kernels: docs/targets/containers.md.
 
 **`enable()`**, callgrind regions, 3.15.1 (`benches/startup_breakdown.py`): 0.36M Ir for
 the 13 `containers`+`builtins` targets including `status()` (0.14M; `quiet=True` skips
 it); a second `enable()` 0.14M. Lazy activation: one `sys.modules` callback per import
 event (a flag load when nothing is pending; a length/bytes compare per pending module name
 otherwise).
+
+One-time work is paid only when needed (`benches/accel_primitives.py`, 3.15.1): the
+local-monitoring calibration (~20k Ir) runs with the first vectorcall site prepared, so an
+`enable()` that leaves module targets pending costs 13k Ir instead of 41k; the loaded
+objects' segments (`patch::writable`, ~9k Ir to build) are kept for the process and
+rebuilt only when the loader's `dlpi_adds`/`dlpi_subs` change (one `dl_iterate_phdr`
+step per pass checks them). The net-benefit score left per-call costs unchanged (649 /
+771 Ir for the hit / alternating cells, 648 / 770 before).
 
 **Startup** (`benches/startup.py`, whole process, `python -c pass` = 39.7M Ir / 9.8 ms,
 3.15.1, fat-LTO release build, CPU-pinned, 40 interleaved runs):

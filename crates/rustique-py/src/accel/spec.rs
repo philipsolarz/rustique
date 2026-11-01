@@ -57,6 +57,32 @@ pub struct TargetSpec {
     /// The exact subset runs no user code and has no side effects, so check mode may run
     /// the original a second time and compare (`check::verify`). Default `false`.
     pub checkable: bool,
+    /// Declarations shared with other targets (typically one module's dependencies):
+    /// prepared once, before the first target that names it, and kept while any of them is
+    /// installed. Default `None`.
+    pub shared: Option<&'static GroupSpec>,
+    /// Net-benefit policy of vectorcall targets (`Counters::hit_streak` /
+    /// `fallback_streak`): a hit credits `hit_credit`, a non-`Deps` fallback debits
+    /// `fallback_debit`, and the target is suspended when the debt reaches
+    /// `64 × fallback_debit`. It stays installed while hits are at least
+    /// `debit / (credit + debit)` of its calls: set the ratio from the measured
+    /// penalty/savings (a kernel saving 400 Ir per hit and costing 200 Ir per fallback:
+    /// credit 2, debit 1). Defaults 4 / 1 (20%).
+    pub hit_credit: u8,
+    pub fallback_debit: u8,
+}
+
+/// Declarations shared by several targets: dependency pins (with the group's own
+/// `DepFlag`s), fingerprints and validations, made once instead of once per target. Its
+/// `prepare` gets the same [`Prepare`] context as a target's (same module) but must not
+/// declare sites. If it refuses, every target that names it is refused with that reason.
+/// Its pins stay active while at least one of those targets is installed; a pin that drops
+/// suspends (vectorcall targets) or falls back every target that checks the group's flag.
+#[derive(Debug)]
+pub struct GroupSpec {
+    /// A unique name (`"pathlib"`), for status and diagnostics.
+    pub name: &'static str,
+    pub prepare: PrepareFn,
 }
 
 static NO_COUNTERS: Counters = Counters::new();
@@ -77,6 +103,9 @@ impl TargetSpec {
         prepare: no_prepare,
         jit_safe: true,
         checkable: false,
+        shared: None,
+        hit_credit: crate::accel::stats::HIT_CREDIT,
+        fallback_debit: crate::accel::stats::FALLBACK_DEBIT,
     };
 
     /// Hidden targets (group starting with `_`): only selected when named explicitly.

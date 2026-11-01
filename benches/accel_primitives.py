@@ -31,6 +31,14 @@ cells = {
     "lazy install on import (_selftest.same)": (S + "A.enable(['_selftest.same'], quiet=True)\n", "import _rustique_selftest", 1),
     "import of the same module, nothing pending": (S, "import _rustique_selftest", 1),
     "status() (13 targets installed)": (S + "A.enable(quiet=True)\n", "A.status()", 1),
+    # Per call, including the loop (compare builds, not cells): hits at the score's ceiling,
+    # and 1 hit + 1 keyword fallback (the score moving below the ceiling).
+    "call: same(1), kernel hit at the ceiling": (
+        S + "import _rustique_selftest as m\nA.enable(['_selftest.same'], quiet=True)\nf = m.same\nfor _ in range(300): f(1)\n",
+        "for _ in range(1000): f(1)", 1000),
+    "call: same(1); same(x=1) alternating, per call": (
+        S + "import _rustique_selftest as m\nA.enable(['_selftest.same'], quiet=True)\nf = m.same\n",
+        "for _ in range(500): f(1); f(x=1)", 1000),
 }
 for k, (setup, stmt, n) in cells.items():
     print(f"{k:58s} {region(stmt, setup) / n:>12,.0f} Ir", flush=True)
