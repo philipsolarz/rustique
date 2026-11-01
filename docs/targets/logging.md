@@ -371,10 +371,28 @@ converters and msec formats, random logger hierarchies/levels/`disabled`/`propag
 `logging.disable` with every level method, `findCaller` depth × stacklevel, and
 `LogRecord` constructor arguments; each compared with CPython's code on the same input.
 
-## 6. Versions
+## 6. Versions and internal layouts
 
-Fingerprints recorded for 3.14 and 3.15 (identical on the free-threaded builds); any other
-minor refuses. The inline-value reads (GIL builds) and the `dk_kind` check are calibrated
-at install against `PyObject_GenericGetAttr` on `logging.root` and probe dicts; a failed
-calibration only turns those fast paths off. `python -O` changes `Thread.name`'s bytecode
-(the `assert` is stripped): `LogRecord.__init__` then refuses (fingerprint).
+Fingerprints (format v2) are recorded for 3.14 and 3.15 (identical on the free-threaded
+builds); any other minor refuses. `python -O` strips the `assert` in `Thread.name`'s
+getter: both bytecodes are recorded, so the group installs under `-O` too (tested).
+
+**CPython internals the kernels rely on** (all identical in 3.14.9 and 3.15.1; each is
+calibrated or cross-checked at install, and a failed check only turns that fast path off):
+
+| internal | where | used for | check / fallback |
+|---|---|---|---|
+| `struct _dictvalues` (`capacity`, `valid`, `values[]`) at `obj + tp_basicsize` (`_PyObject_InlineValues`), `PyHeapTypeObject.ht_cached_keys`, `PyDictKeysObject` (`dk_log2_index_bytes` at 9, `dk_nentries` at 24, unicode entries after the indices) | `common.rs` `TypeCache::read` | reading instance attributes of validated objects (GIL builds only) | calibrated against `PyObject_GenericGetAttr` on `logging.root`; otherwise `PyObject_GenericGetAttr` |
+| `PyDictKeysObject.dk_kind` (offset 10) through `PyDictObject.ma_keys` | `common.rs` `str_keyed` | "every key of this dict is an exact str" | calibrated on probe dicts; otherwise a key scan |
+| `PyFrameObject.f_lineno` (after `f_back`, `f_frame`, `f_trace`) and `PyCodeObject.co_version` | `caller.rs` `line_number` | memoising line numbers of untraced frames (GIL builds only) | layout identical in both minors (source check); `co_version` via the framework's calibrated `RawCode` |
+| `PyCodeObject._co_monitoring` | framework `code_locally_quiet` | local tools on each inlined helper | calibrated by the framework |
+| `_PyObject_GetMethod`, `_PyType_LookupRef`, `PyUnstable_Type_AssignVersionTag`, `PyTime_Time`, `PyFrame_GetLasti` | exported functions | method shadowing checks, class validation, time | resolved at install (`cx.symbol`) or linked |
+
+## 7. Install-cost status (wave 1)
+
+The lazy install on `import logging` (+1.3%) meets the budget. The warm per-group
+`enable()` (0.143M Ir, paid only when `logging` is already imported at `enable()` time) is
+a documented wave-1 overage: what remains is 30 fingerprints, 10 sites and ≈55 pins (shared
+ones declared once in the group's `GroupSpec`), and the remaining lever is framework-side
+(cheaper or deferred fingerprints), not fewer pins. The cost of the public
+`rustique.enable()` wrapper itself (≈0.3–0.6M, inferred) is outside this group.
