@@ -268,8 +268,12 @@ unsafe fn fast_args<const N: usize>(
 }
 
 /// Same for METH_VARARGS | METH_KEYWORDS.
-unsafe fn var_args<const N: usize>(names: [&std::ffi::CStr; N], args: O, kw: O) -> Option<[O; N]> {
-    // SAFETY: CPython's VARARGS arguments.
+unsafe fn var_args<const N: usize>(
+    names: [(&std::ffi::CStr, &std::sync::atomic::AtomicUsize); N],
+    args: O,
+    kw: O,
+) -> Option<[O; N]> {
+    // SAFETY: CPython's VARARGS arguments (an exact kwargs dict with str keys).
     unsafe {
         let nargs = ffi::PyTuple_GET_SIZE(args) as usize;
         if nargs > N {
@@ -279,20 +283,21 @@ unsafe fn var_args<const N: usize>(names: [&std::ffi::CStr; N], args: O, kw: O) 
         for (i, o) in out.iter_mut().enumerate().take(nargs) {
             *o = ffi::PyTuple_GET_ITEM(args, i as ffi::Py_ssize_t);
         }
-        if !kw.is_null() && ffi::PyDict_Size(kw) != 0 {
-            let mut found = 0;
-            for (i, n) in names.iter().enumerate() {
-                let v = ffi::PyDict_GetItemString(kw, n.as_ptr());
-                if !v.is_null() {
-                    if !out[i].is_null() {
-                        return None;
-                    }
-                    out[i] = v;
-                    found += 1;
+        if !kw.is_null() {
+            // Walk the (small) kwargs dict: keys by identity with the interned names, then
+            // by value; no temporary strings.
+            let mut pos: ffi::Py_ssize_t = 0;
+            let mut key: O = std::ptr::null_mut();
+            let mut value: O = std::ptr::null_mut();
+            while ffi::PyDict_Next(kw, &mut pos, &mut key, &mut value) != 0 {
+                let slot = names
+                    .iter()
+                    .position(|&(_, k)| key as usize == k.load(std::sync::atomic::Ordering::Relaxed))
+                    .or_else(|| names.iter().position(|&(n, _)| ffi::PyUnicode_EqualToUTF8(key, n.as_ptr()) == 1))?;
+                if !out[slot].is_null() {
+                    return None;
                 }
-            }
-            if found != ffi::PyDict_Size(kw) {
-                return None;
+                out[slot] = value;
             }
         }
         Some(out)
@@ -328,7 +333,7 @@ pub unsafe extern "C" fn datetime_fast(this: O, args: *const O, nargs: ffi::Py_s
 pub unsafe extern "C" fn datetime_var(this: O, args: O, kw: O) -> O {
     // SAFETY: CPython's calling convention; fallback with unchanged arguments.
     unsafe {
-        if let Some([sep, ts]) = var_args([c"sep", c"timespec"], args, kw)
+        if let Some([sep, ts]) = var_args([(c"sep", &K_SEP), (c"timespec", &K_TIMESPEC)], args, kw)
             && let Some(r) = datetime_iso(this, sep, ts)
         {
             if C_DATETIME.hit_check() {
@@ -372,7 +377,7 @@ pub unsafe extern "C" fn time_fast(this: O, args: *const O, nargs: ffi::Py_ssize
 pub unsafe extern "C" fn time_var(this: O, args: O, kw: O) -> O {
     // SAFETY: CPython's calling convention; fallback with unchanged arguments.
     unsafe {
-        if let Some([ts]) = var_args([c"timespec"], args, kw)
+        if let Some([ts]) = var_args([(c"timespec", &K_TIMESPEC)], args, kw)
             && let Some(r) = time_iso(this, ts)
         {
             if C_TIME.hit_check() {

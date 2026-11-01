@@ -203,24 +203,26 @@ may not run inside the `sys.modules` watcher. Behaviour is covered by CPython's 
 (§7), the matcher's exhaustive tests against the regex tables, and the differential
 fuzzing.
 
-Install cost (`benches/targets/datetime_install.py`, callgrind, 3.15.1; the registry's own
-cost measured with `enable(only=["_selftest.meth"])` = 279,800 Ir, most of it the
-`status()` it returns):
+Install cost (`benches/targets/datetime_install.py`, callgrind, 3.15.1, wave1 5a690e2,
+quiet `_accel.enable`; the registry's own baseline, `enable(only=["_selftest.meth"])`, is
+24,700 Ir):
 
 | region | Ir | group's share |
 |---|---:|---:|
-| `enable(only=["datetime"])`, `datetime`/`_strptime`/`zoneinfo` imported (10 targets install) | 422,000 | ~142,000 |
-| `enable(only=["datetime"])`, nothing imported (`time.strftime` installs, 9 pending) | 349,900 | ~70,000 |
-| `import datetime` after `enable()` (9 targets install lazily) | 434,200 → 532,700 | +98,500 (+22.7%) |
-| the strptime call after `_strptime` was imported (captures it once) | 41,800 → 288,800 | +247,000 (once) |
+| `enable(only=["datetime"])`, `datetime`/`_strptime`/`zoneinfo` imported (10 targets install) | 169,400 | ~145,000 |
+| `enable(only=["datetime"])`, nothing imported (`time.strftime` installs, 9 pending) | 109,700 | ~85,000 |
+| `import datetime` after `enable()` (9 targets install lazily) | 433,700 → 539,600 | +105,900 (+24.4%) |
+| the strptime call after `_strptime` was imported (captures it once) | 41,900 → 287,100 | +245,200, once (2.9% of `import _strptime`, 8.6M Ir) |
 
-Before trimming the first row was 6.35M Ir (fingerprints through the generic hash, four
-times, plus self-tests of every target). The budget (≤ 0.1M Ir per group at `enable()`,
-≤ 5% of the triggering import) is not met yet: of the remaining cost, the group's own part
-is the cheap fingerprints, ten `ml_meth` declarations, the environment capture (builtins,
-`time`, glibc locale, `str`/`timezone` layout calibration) and two probes; the rest is the
-registry's per-target activation (~2–3k Ir per target) and its `sys.modules` watcher.
-`_strptime`'s capture (~0.25M Ir) is ~3% of its own import (8.6M Ir).
+Before trimming the first row was 6.35M Ir (the generic fingerprints of `_strptime`, four
+times, plus a self-test per target). The budget (≤ 0.1M Ir per group at `enable()`, ≤ 5% of
+the triggering import) is still exceeded by the first and third rows. Of the 145k: the
+registry's local-monitoring calibration for module targets (~26k plus a probe compile),
+`phdr` writability checks of 10 sites (~14k), the group's environment capture (builtins,
+`time`, glibc locale, layout calibrations: ~40k), 10 cheap C fingerprints (~11k), two
+probes, and ~2–3k of registry work per target. `import datetime` pays the same per-target
+work against a cheap import (434k Ir); folding the 10 targets into fewer (one per entry
+family) or sharing the registry's per-target overhead would be the next steps.
 
 ## 5. Private state
 
@@ -240,52 +242,52 @@ Ir per call, region-instrumented, each cell in its own process, Ir(2n) − Ir(n)
 
 | cell | CPython Ir | Rustique Ir | ratio | ratio, JIT on |
 |---|---:|---:|---:|---:|
-| strptime log %d/%b/%Y:%H:%M:%S %z | 62648 | 4919 | 0.079 |  |
-| strptime %Y-%m-%d %H:%M:%S | 42784 | 3108 | 0.073 |  |
-| strptime iso %f%z | 66773 | 4536 | 0.068 |  |
-| strptime %m/%d/%Y %I:%M %p | 45738 | 3344 | 0.073 |  |
-| date.strptime %Y-%m-%d | 31404 | 2375 | 0.076 |  |
-| time.strptime %Y-%m-%d %H:%M:%S | 43405 | 3749 | 0.086 |  |
-| strptime fallback: subclass receiver | 42963 | 43114 | 1.004 | 0.997 |
-| strptime fallback: unsupported %U | 39251 | 39755 | 1.013 | 1.007 |
-| strptime fallback: no match (error) | 22621 | 23465 | 1.037 | 1.040 |
-| strptime fallback: LC_TIME en_US | 56573 | 56874 | 1.005 | 1.006 |
-| strptime fallback: dependency changed (deps) | 43103 | 43326 | 1.005 | 1.003 |
-| strptime fallback: _regex_cache miss (deopt) | 103059 | 104485 | 1.014 | 1.006 |
-| strptime fallback: tracing tool (tools) | 43761 | 44102 | 1.008 | 1.006 |
-| strftime %Y-%m-%d %H:%M:%S | 17215 | 1898 | 0.110 |  |
-| strftime %Y-%m (utc) | 16990 | 1467 | 0.086 |  |
-| strftime %Y-%m-%d %H:00 (fixed offset) | 17876 | 1754 | 0.098 |  |
-| strftime %a %d %b %Y %H:%M %Z (ZoneInfo) | 21975 | 4440 | 0.202 |  |
-| strftime %A (ZoneInfo) | 16583 | 2397 | 0.145 |  |
-| strftime %a, %d %b %Y %H:%M:%S GMT (utc) | 19103 | 2198 | 0.115 |  |
-| date.strftime %Y-%m-%d | 15828 | 1373 | 0.087 |  |
-| time.strftime method %H:%M:%S.%f | 11866 | 1517 | 0.128 |  |
-| f-string {dt:%Y-%m-%d} | 16490 | 1860 | 0.113 |  |
+| strptime log %d/%b/%Y:%H:%M:%S %z | 62633 | 4929 | 0.079 |  |
+| strptime %Y-%m-%d %H:%M:%S | 42774 | 3108 | 0.073 |  |
+| strptime iso %f%z | 66758 | 4546 | 0.068 |  |
+| strptime %m/%d/%Y %I:%M %p | 45728 | 3344 | 0.073 |  |
+| date.strptime %Y-%m-%d | 31399 | 2366 | 0.075 |  |
+| time.strptime %Y-%m-%d %H:%M:%S | 43386 | 3749 | 0.086 |  |
+| strptime fallback: subclass receiver | 42944 | 42975 | 1.001 | 0.997 |
+| strptime fallback: unsupported %U | 39213 | 39545 | 1.008 | 1.007 |
+| strptime fallback: no match (error) | 22602 | 23460 | 1.038 | 1.040 |
+| strptime fallback: LC_TIME en_US | 56587 | 56767 | 1.003 | 1.006 |
+| strptime fallback: dependency changed (deps) | 42700 | 42993 | 1.007 | 1.003 |
+| strptime fallback: _regex_cache miss (deopt) | 103021 | 103759 | 1.007 | 1.006 |
+| strptime fallback: tracing tool (tools) | 43723 | 43998 | 1.006 | 1.006 |
+| strftime %Y-%m-%d %H:%M:%S | 17185 | 1874 | 0.109 |  |
+| strftime %Y-%m (utc) | 16820 | 1423 | 0.085 |  |
+| strftime %Y-%m-%d %H:00 (fixed offset) | 17727 | 1729 | 0.098 |  |
+| strftime %a %d %b %Y %H:%M %Z (ZoneInfo) | 21737 | 4393 | 0.202 |  |
+| strftime %A (ZoneInfo) | 16551 | 2343 | 0.142 |  |
+| strftime %a, %d %b %Y %H:%M:%S GMT (utc) | 18954 | 2173 | 0.115 |  |
+| date.strftime %Y-%m-%d | 15787 | 1348 | 0.085 |  |
+| time.strftime method %H:%M:%S.%f | 11878 | 1492 | 0.126 |  |
+| f-string {dt:%Y-%m-%d} | 16296 | 1835 | 0.113 |  |
 | time.strftime(fmt, struct_time) | 5346 | 1972 | 0.369 |  |
 | time.strftime(fmt, tuple) | 5267 | 1945 | 0.369 |  |
-| time.strftime fallback: year < 1000 | 6146 | 6379 | 1.038 | 1.040 |
-| strftime fallback: subclass | 17251 | 13876 | 0.804 | 0.811 |
-| strftime fallback: unsupported %U | 15787 | 16167 | 1.024 | 1.020 |
-| strftime fallback: names in en_US | 15631 | 16138 | 1.032 | 1.023 |
-| strftime numeric in en_US | 17195 | 1898 | 0.110 |  |
-| isoformat() | 6350 | 738 | 0.116 |  |
-| isoformat() utc | 8768 | 1239 | 0.141 |  |
-| isoformat(timespec='minutes') ZoneInfo | 8645 | 2529 | 0.293 |  |
-| str(dt) | 6663 | 1066 | 0.160 |  |
+| time.strftime fallback: year < 1000 | 6146 | 6354 | 1.034 | 1.040 |
+| strftime fallback: subclass | 17221 | 13834 | 0.803 | 0.811 |
+| strftime fallback: unsupported %U | 15644 | 16091 | 1.029 | 1.020 |
+| strftime fallback: names in en_US | 15479 | 16069 | 1.038 | 1.023 |
+| strftime numeric in en_US | 17095 | 1874 | 0.110 |  |
+| isoformat() | 6350 | 747 | 0.118 |  |
+| isoformat() utc | 8775 | 1247 | 0.142 |  |
+| isoformat(timespec='minutes') ZoneInfo | 8600 | 2525 | 0.294 |  |
+| str(dt) | 6663 | 1075 | 0.161 |  |
 | date.isoformat() | 3079 | 512 | 0.166 |  |
 | time.isoformat() | 3908 | 676 | 0.173 |  |
 | isoformat(sep=' ', timespec='seconds') | 6030 | 906 | 0.150 |  |
 | isoformat fallback: subclass | 5616 | 5667 | 1.009 | 1.011 |
-| isoformat fallback: unknown timespec (error) | 2704 | 2805 | 1.038 | 1.018 |
-| fromisoformat full tz | 2191 | 2204 | 1.006 |  |
+| isoformat fallback: unknown timespec (error) | 2660 | 2772 | 1.042 | 1.018 |
+| fromisoformat full tz | 2172 | 2172 | 1.000 |  |
 
 Fast paths: strptime 0.068–0.086 (the original runs `_strptime`'s Python code: 31k–67k Ir),
 strftime 0.086–0.20 (0.37 for `time.strftime`, whose original is already a thin C call
 into `wcsftime`), isoformat 0.12–0.29. ZoneInfo cells keep the cost of calling its C
 methods (`dst`, `utcoffset`, `tzname`) through the method protocol.
 
-Fallback and reject paths, every one ≤ 1.05 (JIT on: ≤ 1.04): subclass receivers, unsupported
+Fallback and reject paths, every one ≤ 1.05 (max 1.042; JIT on, measured on the previous build: ≤ 1.04): subclass receivers, unsupported
 directives, errors (the original raises), non-C `LC_TIME`, a changed dependency (`deps`), a
 `_regex_cache` miss (the original compiles), a tool listening (`tools`), years < 1000 in
 `time.strftime`, unknown `timespec`. "strftime fallback: subclass" is 0.80 because the
