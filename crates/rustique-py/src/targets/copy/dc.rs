@@ -308,6 +308,8 @@ struct Cx {
     st: &'static St,
     d: &'static DcSt,
     depth: Depth,
+    /// `_asdict_inner` / `_astuple_inner` (whichever this call uses) is intact.
+    inner_ok: bool,
 }
 
 impl Cx {
@@ -432,7 +434,7 @@ impl Cx {
             }
             let f = Own::new(ffi::PyObject_GetAttr(g.get(), d.s_deepcopy_attr))?;
             if super::deepcopy_direct(st, f.get()) && accel::tools_quiet(&TOOLS_DC, f.get()) {
-                super::C_DEEPCOPY.hit();
+                super::C_DEEPCOPY.hit_streak();
                 let mut e = deep::Engine::new(st, null_mut(), super::atomic_fast(st));
                 return e.run(obj).map(Some);
             }
@@ -451,8 +453,12 @@ impl Cx {
         let d = self.d;
         // SAFETY: live objects.
         unsafe {
-            if level >= MAX_NATIVE_DEPTH || !intact(d.asdict_inner, false) {
+            if level >= MAX_NATIVE_DEPTH || !self.inner_ok {
                 return call2(d.asdict_inner.0, obj, (&raw mut ffi::PyDict_Type).cast());
+            }
+            // An atomic value: the helper's frame could be entered and returns it.
+            if is_quick(self.st, ty(obj)) && *self.depth.rem > 0 {
+                return Ok(incref(obj));
             }
             self.depth.push()?;
             let r = self.asdict_body(obj, level);
@@ -576,7 +582,7 @@ unsafe fn enter(f: (O, O, O), kw: bool, func: O) -> Result<Cx, Reason> {
             return Err(Reason::Tools);
         }
         let st: &'static St = &*st;
-        Ok(Cx { st, d: dst(), depth: Depth::new(st) })
+        Ok(Cx { st, d: dst(), depth: Depth::new(st), inner_ok: false })
     }
 }
 
@@ -590,17 +596,18 @@ unsafe extern "C" fn vc_asdict(func: O, args: *const O, nargsf: usize, kw: O) ->
                     && ffi::PyTuple_GET_ITEM(kw, 0) == d.s_dict_factory
                     && *args.add(1) == (&raw mut ffi::PyDict_Type).cast()));
         if !ok_args {
-            C_ASDICT.fallback(Reason::Args);
+            C_ASDICT.fallback_streak(Reason::Args);
             return original(func, args, nargsf, kw);
         }
         let mut cx = match enter(d.asdict, true, func) {
             Ok(cx) => cx,
             Err(r) => {
-                C_ASDICT.fallback(r);
+                C_ASDICT.fallback_streak(r);
                 return original(func, args, nargsf, kw);
             }
         };
-        C_ASDICT.hit();
+        C_ASDICT.hit_streak();
+        cx.inner_ok = intact(d.asdict_inner, false);
         let obj = *args;
         let r = (|| {
             cx.depth.push()?; // asdict's frame
@@ -627,8 +634,12 @@ impl Cx {
         let d = self.d;
         // SAFETY: live objects.
         unsafe {
-            if level >= MAX_NATIVE_DEPTH || !intact(d.astuple_inner, false) {
+            if level >= MAX_NATIVE_DEPTH || !self.inner_ok {
                 return call2(d.astuple_inner.0, obj, (&raw mut ffi::PyTuple_Type).cast());
+            }
+            // An atomic value: the helper's frame could be entered and returns it.
+            if is_quick(self.st, ty(obj)) && *self.depth.rem > 0 {
+                return Ok(incref(obj));
             }
             self.depth.push()?;
             let r = self.astuple_body(obj, level);
@@ -733,17 +744,18 @@ unsafe extern "C" fn vc_astuple(func: O, args: *const O, nargsf: usize, kw: O) -
                     && ffi::PyTuple_GET_ITEM(kw, 0) == d.s_tuple_factory
                     && *args.add(1) == (&raw mut ffi::PyTuple_Type).cast()));
         if !ok_args {
-            C_ASTUPLE.fallback(Reason::Args);
+            C_ASTUPLE.fallback_streak(Reason::Args);
             return original(func, args, nargsf, kw);
         }
         let mut cx = match enter(d.astuple, true, func) {
             Ok(cx) => cx,
             Err(r) => {
-                C_ASTUPLE.fallback(r);
+                C_ASTUPLE.fallback_streak(r);
                 return original(func, args, nargsf, kw);
             }
         };
-        C_ASTUPLE.hit();
+        C_ASTUPLE.hit_streak();
+        cx.inner_ok = intact(d.astuple_inner, false);
         let obj = *args;
         let r = (|| {
             cx.depth.push()?;
@@ -852,17 +864,17 @@ unsafe extern "C" fn vc_replace(func: O, args: *const O, nargsf: usize, kw: O) -
     unsafe {
         let d = dst();
         if nargs(nargsf) != 1 {
-            C_REPLACE.fallback(Reason::Args);
+            C_REPLACE.fallback_streak(Reason::Args);
             return original(func, args, nargsf, kw);
         }
         let mut cx = match enter(d.replace, false, func) {
             Ok(cx) if intact(d.replace_inner, false) && intact(d.is_dc, false) => cx,
             Ok(_) => {
-                C_REPLACE.fallback(Reason::Deps);
+                C_REPLACE.fallback_streak(Reason::Deps);
                 return original(func, args, nargsf, kw);
             }
             Err(r) => {
-                C_REPLACE.fallback(r);
+                C_REPLACE.fallback_streak(r);
                 return original(func, args, nargsf, kw);
             }
         };
@@ -876,10 +888,10 @@ unsafe extern "C" fn vc_replace(func: O, args: *const O, nargsf: usize, kw: O) -
             || (*t).tp_getattro.map(|f| f as usize)
                 != (*(&raw mut ffi::PyBaseObject_Type)).tp_getattro.map(|f| f as usize)
         {
-            C_REPLACE.fallback(Reason::Args);
+            C_REPLACE.fallback_streak(Reason::Args);
             return original(func, args, nargsf, kw);
         }
-        C_REPLACE.hit();
+        C_REPLACE.hit_streak();
         let r = (|| {
             cx.depth.push()?; // replace's frame
             // replace(obj, /, **changes): a new dict of the keyword arguments.

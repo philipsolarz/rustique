@@ -211,6 +211,14 @@ pub unsafe fn helper_intact(st: &St, i: usize) -> bool {
     }
 }
 
+/// `str`, `int`, `NoneType`, `float`, `bool`: the atomic types copied inline by the
+/// container loops (when the atomic set is known intact).
+#[inline(always)]
+pub fn is_quick(st: &St, t: *mut ffi::PyTypeObject) -> bool {
+    let a = &st.atomic_types;
+    t == a[0] || t == a[1] || t == a[2] || t == a[3] || t == a[4]
+}
+
 // ---------------------------------------------------------------------------------------
 // Python-frame recursion counter (`tstate->py_recursion_remaining`)
 // ---------------------------------------------------------------------------------------
@@ -220,7 +228,7 @@ pub unsafe fn helper_intact(st: &St, i: usize) -> bool {
 /// thread-state counter: user code called from inside a kernel sees the depth CPython's
 /// would, and `RecursionError` is raised at the same frame.
 pub struct Depth {
-    rem: *mut c_int,
+    pub rem: *mut c_int,
     headroom: *mut c_int,
     pub pushed: i32,
 }
@@ -655,6 +663,49 @@ impl DictIt {
         DictIt { d, pos: 0, used, len: used, done: false }
     }
 
+    /// Like [`Self::next`] but borrowed references on GIL builds (valid until the next
+    /// Python code or C-API call that can run Python code; strong on free-threaded builds,
+    /// where `owned` says to release them).
+    #[inline(always)]
+    pub unsafe fn next_borrowed(&mut self) -> R<Option<(O, O)>> {
+        #[cfg(Py_GIL_DISABLED)]
+        {
+            // SAFETY: as next.
+            unsafe { self.next() }
+        }
+        #[cfg(not(Py_GIL_DISABLED))]
+        {
+            if self.done {
+                return Ok(None);
+            }
+            // SAFETY: live dict; no other thread runs while we hold the GIL.
+            unsafe {
+                let d = self.d;
+                if ma_used(d) != self.used {
+                    self.done = true;
+                    ffi::PyErr_SetString(ffi::PyExc_RuntimeError, c"dictionary changed size during iteration".as_ptr());
+                    return Err(());
+                }
+                let mut k: O = std::ptr::null_mut();
+                let mut v: O = std::ptr::null_mut();
+                if ffi::PyDict_Next(d, &mut self.pos, &mut k, &mut v) == 0 {
+                    self.done = true;
+                    return Ok(None);
+                }
+                if self.len == 0 {
+                    self.done = true;
+                    ffi::PyErr_SetString(ffi::PyExc_RuntimeError, c"dictionary keys changed during iteration".as_ptr());
+                    return Err(());
+                }
+                self.len -= 1;
+                Ok(Some((k, v)))
+            }
+        }
+    }
+
+    /// Whether [`Self::next_borrowed`] returns strong references.
+    pub const OWNED: bool = cfg!(Py_GIL_DISABLED);
+
     #[inline(always)]
     pub unsafe fn next(&mut self) -> R<Option<(O, O)>> {
         if self.done {
@@ -696,5 +747,139 @@ impl DictIt {
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Small vectors (no allocation for small call trees)
+// ---------------------------------------------------------------------------------------
+
+/// A vector whose first `N` elements live inline; beyond that everything moves to the heap.
+pub struct SVec<T, const N: usize> {
+    len: usize,
+    inline: [std::mem::MaybeUninit<T>; N],
+    heap: Vec<T>,
+    spilled: bool,
+}
+
+impl<T, const N: usize> SVec<T, N> {
+    #[inline(always)]
+    pub fn new() -> Self {
+        SVec { len: 0, inline: [const { std::mem::MaybeUninit::uninit() }; N], heap: Vec::new(), spilled: false }
+    }
+
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        if self.spilled { self.heap.len() } else { self.len }
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline(always)]
+    pub fn push(&mut self, v: T) {
+        if self.spilled {
+            self.heap.push(v);
+        } else if self.len < N {
+            self.inline[self.len].write(v);
+            self.len += 1;
+        } else {
+            self.spill();
+            self.heap.push(v);
+        }
+    }
+
+    #[cold]
+    fn spill(&mut self) {
+        let mut h = Vec::with_capacity(N * 4);
+        for i in 0..self.len {
+            // SAFETY: initialised slots, moved out exactly once.
+            h.push(unsafe { self.inline[i].assume_init_read() });
+        }
+        self.len = 0;
+        self.heap = h;
+        self.spilled = true;
+    }
+
+    #[inline(always)]
+    pub fn pop(&mut self) -> Option<T> {
+        if self.spilled {
+            self.heap.pop()
+        } else if self.len == 0 {
+            None
+        } else {
+            self.len -= 1;
+            // SAFETY: initialised slot, moved out once.
+            Some(unsafe { self.inline[self.len].assume_init_read() })
+        }
+    }
+
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[T] {
+        if self.spilled {
+            &self.heap
+        } else {
+            // SAFETY: the first `len` slots are initialised.
+            unsafe { std::slice::from_raw_parts(self.inline.as_ptr().cast(), self.len) }
+        }
+    }
+
+    #[inline(always)]
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        if self.spilled {
+            &mut self.heap
+        } else {
+            // SAFETY: the first `len` slots are initialised.
+            unsafe { std::slice::from_raw_parts_mut(self.inline.as_mut_ptr().cast(), self.len) }
+        }
+    }
+
+    /// Drop every element (in order) and empty the vector, keeping its storage.
+    pub fn clear(&mut self) {
+        if self.spilled {
+            self.heap.clear();
+        } else {
+            let n = self.len;
+            self.len = 0;
+            for i in 0..n {
+                // SAFETY: initialised slots, dropped once.
+                unsafe { self.inline[i].assume_init_drop() };
+            }
+        }
+    }
+
+    /// Move every element out, in order.
+    pub fn take_all(&mut self) -> Vec<T> {
+        if self.spilled {
+            self.spilled = false;
+            std::mem::take(&mut self.heap)
+        } else {
+            let mut v = Vec::with_capacity(self.len);
+            for i in 0..self.len {
+                // SAFETY: initialised slots, moved out exactly once.
+                v.push(unsafe { self.inline[i].assume_init_read() });
+            }
+            self.len = 0;
+            v
+        }
+    }
+}
+
+impl<T, const N: usize> Drop for SVec<T, N> {
+    fn drop(&mut self) {
+        if !self.spilled {
+            for i in (0..self.len).rev() {
+                // SAFETY: initialised slots, dropped once.
+                unsafe { self.inline[i].assume_init_drop() };
+            }
+        }
+    }
+}
+
+impl<T, const N: usize> Default for SVec<T, N> {
+    fn default() -> Self {
+        Self::new()
     }
 }

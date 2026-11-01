@@ -16,10 +16,11 @@ use super::rt::*;
 
 /// Native image of CPython's memo dict.
 pub struct Native {
-    keys: Vec<usize>,
-    vals: Vec<O>, // strong
+    /// `(id(x), copy)` in insertion order (values strong).
+    entries: SVec<(usize, O), 16>,
     index: hashbrown::HashMap<usize, u32, foldhash::fast::FixedState>,
-    keep: Vec<O>, // strong; the list at memo[id(memo)]
+    /// The list at memo[id(memo)] (strong).
+    keep: SVec<O, 16>,
     /// Number of entries inserted before the keep-alive list was (position of id(memo)).
     ka_pos: usize,
 }
@@ -27,29 +28,26 @@ pub struct Native {
 const LINEAR: usize = 12;
 
 impl Native {
+    #[inline(always)]
     pub fn new() -> Native {
         Native {
-            keys: Vec::new(),
-            vals: Vec::new(),
+            entries: SVec::new(),
             index: hashbrown::HashMap::with_hasher(foldhash::fast::FixedState::with_seed(0)),
-            keep: Vec::new(),
+            keep: SVec::new(),
             ka_pos: usize::MAX,
         }
     }
 
     #[inline(always)]
     fn find(&self, k: usize) -> Option<usize> {
-        if self.keys.len() <= LINEAR {
-            self.keys.iter().position(|&x| x == k)
-        } else {
-            self.index.get(&k).map(|&i| i as usize)
-        }
+        let e = self.entries.as_slice();
+        if e.len() <= LINEAR { e.iter().position(|&(x, _)| x == k) } else { self.index.get(&k).map(|&i| i as usize) }
     }
 
     /// Borrowed value for `id(x)`.
     #[inline(always)]
     pub fn get(&self, x: O) -> Option<O> {
-        self.find(x as usize).map(|i| self.vals[i])
+        self.find(x as usize).map(|i| self.entries.as_slice()[i].1)
     }
 
     /// `memo[id(x)] = y` (y borrowed; a new key goes last, an existing one keeps its place).
@@ -59,16 +57,15 @@ impl Native {
         // SAFETY: live object.
         unsafe { incref(y) };
         if let Some(i) = self.find(k) {
-            let old = std::mem::replace(&mut self.vals[i], y);
+            let old = std::mem::replace(&mut self.entries.as_mut_slice()[i].1, y);
             // SAFETY: owned.
             unsafe { decref(old) };
             return;
         }
-        let i = self.keys.len();
-        self.keys.push(k);
-        self.vals.push(y);
+        let i = self.entries.len();
+        self.entries.push((k, y));
         if i == LINEAR {
-            for (j, &key) in self.keys.iter().enumerate() {
+            for (j, &(key, _)) in self.entries.as_slice().iter().enumerate() {
                 self.index.insert(key, j as u32);
             }
         } else if i > LINEAR {
@@ -80,7 +77,7 @@ impl Native {
     #[inline(always)]
     pub unsafe fn keep_alive(&mut self, x: O) {
         if self.ka_pos == usize::MAX {
-            self.ka_pos = self.keys.len();
+            self.ka_pos = self.entries.len();
         }
         // SAFETY: live object.
         self.keep.push(unsafe { incref(x) });
@@ -93,12 +90,14 @@ impl Native {
         // SAFETY: attached thread.
         unsafe {
             let d = Own::new(ffi::PyDict_New())?;
-            let n = self.keys.len();
+            let e = self.entries.as_slice();
+            let keep = self.keep.as_slice();
+            let n = e.len();
             for i in 0..=n {
                 if i == self.ka_pos {
                     let list = Own::new(ffi::PyList_New(1))?;
-                    ffi::PyList_SET_ITEM(list.get(), 0, incref(self.keep[0]));
-                    for &o in &self.keep[1..] {
+                    ffi::PyList_SET_ITEM(list.get(), 0, incref(keep[0]));
+                    for &o in &keep[1..] {
                         if ffi::PyList_Append(list.get(), o) < 0 {
                             return Err(());
                         }
@@ -109,8 +108,8 @@ impl Native {
                     }
                 }
                 if i < n {
-                    let key = Own::new(ffi::PyLong_FromVoidPtr(self.keys[i] as *mut _))?;
-                    if ffi::PyDict_SetItem(d.get(), key.get(), self.vals[i]) < 0 {
+                    let key = Own::new(ffi::PyLong_FromVoidPtr(e[i].0 as *mut _))?;
+                    if ffi::PyDict_SetItem(d.get(), key.get(), e[i].1) < 0 {
                         return Err(());
                     }
                 }
@@ -124,25 +123,33 @@ impl Native {
     /// entries in insertion order, the keep-alive list (released back to front, as
     /// `list_dealloc`) at its position.
     pub unsafe fn release(&mut self) {
-        let n = self.keys.len();
-        let keep = std::mem::take(&mut self.keep);
-        let vals = std::mem::take(&mut self.vals);
         let ka = self.ka_pos;
-        self.keys.clear();
-        self.index.clear();
         self.ka_pos = usize::MAX;
-        for i in 0..=n {
-            if i == ka {
-                for &o in keep.iter().rev() {
+        if self.entries.is_empty() && self.keep.is_empty() {
+            return;
+        }
+        {
+            let keep = self.keep.as_slice();
+            let entries = self.entries.as_slice();
+            let n = entries.len();
+            for i in 0..=n {
+                if i == ka {
+                    for &o in keep.iter().rev() {
+                        // SAFETY: owned.
+                        unsafe { decref(o) };
+                    }
+                }
+                if i < n {
                     // SAFETY: owned.
-                    unsafe { decref(o) };
+                    unsafe { decref(entries[i].1) };
                 }
             }
-            if i < n {
-                // SAFETY: owned.
-                unsafe { decref(vals[i]) };
-            }
         }
+        if self.entries.len() > LINEAR {
+            self.index.clear();
+        }
+        self.keep.clear();
+        self.entries.clear();
     }
 }
 

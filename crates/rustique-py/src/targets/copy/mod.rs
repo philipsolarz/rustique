@@ -100,31 +100,31 @@ pub unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw:
                 1 => std::ptr::null_mut(),
                 2 => *args.add(1),
                 _ => {
-                    C_DEEPCOPY.fallback(Reason::Args);
+                    C_DEEPCOPY.fallback_streak(Reason::Args);
                     return original(func, args, nargsf, kw);
                 }
             }
         } else if n == 1 && ffi::PyTuple_GET_SIZE(kw) == 1 && ffi::PyTuple_GET_ITEM(kw, 0) == st.s_memo {
             *args.add(1)
         } else {
-            C_DEEPCOPY.fallback(Reason::Args);
+            C_DEEPCOPY.fallback_streak(Reason::Args);
             return original(func, args, nargsf, kw);
         };
         let memo = if memo == ffi::Py_None() { std::ptr::null_mut() } else { memo };
         if !memo.is_null() && ty(memo) != &raw mut ffi::PyDict_Type {
-            C_DEEPCOPY.fallback(Reason::Args);
+            C_DEEPCOPY.fallback_streak(Reason::Args);
             return original(func, args, nargsf, kw);
         }
         let fo = func.cast::<ffi::PyFunctionObject>();
         if !DEPS_COPY.ok() || (*fo).func_code != st.deepcopy_code || (*fo).func_defaults != st.deepcopy_defaults {
-            C_DEEPCOPY.fallback(Reason::Deps);
+            C_DEEPCOPY.fallback_streak(Reason::Deps);
             return original(func, args, nargsf, kw);
         }
         if !accel::tools_quiet(&TOOLS_DEEPCOPY, func) {
-            C_DEEPCOPY.fallback(Reason::Tools);
+            C_DEEPCOPY.fallback_streak(Reason::Tools);
             return original(func, args, nargsf, kw);
         }
-        C_DEEPCOPY.hit();
+        C_DEEPCOPY.hit_streak();
         let mut e = deep::Engine::new(st, memo, atomic_fast(st));
         e.run(*args).unwrap_or(std::ptr::null_mut())
     }
@@ -136,19 +136,19 @@ unsafe extern "C" fn vc_copy(func: O, args: *const O, nargsf: usize, kw: O) -> O
     unsafe {
         let st = st();
         if !kw.is_null() || nargs(nargsf) != 1 {
-            C_COPY.fallback(Reason::Args);
+            C_COPY.fallback_streak(Reason::Args);
             return original(func, args, nargsf, kw);
         }
         let fo = func.cast::<ffi::PyFunctionObject>();
         if !DEPS_COPY.ok() || (*fo).func_code != st.copy_code || !(*fo).func_defaults.is_null() {
-            C_COPY.fallback(Reason::Deps);
+            C_COPY.fallback_streak(Reason::Deps);
             return original(func, args, nargsf, kw);
         }
         if !accel::tools_quiet(&TOOLS_COPY, func) {
-            C_COPY.fallback(Reason::Tools);
+            C_COPY.fallback_streak(Reason::Tools);
             return original(func, args, nargsf, kw);
         }
-        C_COPY.hit();
+        C_COPY.hit_streak();
         shallow::copy(st, *args, st.minor >= 15).unwrap_or(std::ptr::null_mut())
     }
 }

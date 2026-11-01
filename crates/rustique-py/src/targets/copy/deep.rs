@@ -121,7 +121,7 @@ pub struct Engine {
     pub st: &'static St,
     pub depth: Depth,
     pub memo: Memo,
-    stack: Vec<Frame>,
+    stack: SVec<Frame, 8>,
     /// Helpers verified intact (bit i) / modified (bit 16 + i) in this call.
     checked: u32,
     atomic_fast: bool,
@@ -137,7 +137,7 @@ impl Engine {
             depth: unsafe { Depth::new(st) },
             // SAFETY: live dict.
             memo: if memo.is_null() { Memo::Native(Native::new()) } else { Memo::Dict(unsafe { incref(memo) }) },
-            stack: Vec::new(),
+            stack: SVec::new(),
             checked: 0,
             atomic_fast,
         }
@@ -481,14 +481,8 @@ impl Engine {
                 }
                 K::Dict { y: y.into_raw(), it: DictIt::new(x), key: null_mut(), vcopy: null_mut(), frozen }
             } else if c == st.h_tuple {
-                let y = match Own::new(ffi::PyList_New(0)) {
-                    Ok(y) => y,
-                    Err(()) => {
-                        self.depth.pop();
-                        return Err(());
-                    }
-                };
-                K::Tuple { y: y.into_raw(), i: 0 }
+                // The comprehension's list is only built once a copy can differ.
+                K::Tuple { y: null_mut(), i: 0 }
             } else {
                 K::Method
             };
@@ -514,53 +508,82 @@ impl Engine {
     unsafe fn step(&mut self, input: O) -> R<Step> {
         let st = self.st;
         let top = self.stack.len() - 1;
-        if let K::Recon(slot) = &mut self.stack[top].k {
+        if let K::Recon(slot) = &mut self.stack.as_mut_slice()[top].k {
             let mut rc = slot.take().expect("recon state");
-            let (x, d) = (self.stack[top].x, self.stack[top].d);
+            let (x, d) = (self.stack.as_mut_slice()[top].x, self.stack.as_mut_slice()[top].d);
             // SAFETY: attached thread.
             let r = unsafe { self.recon(&mut rc, x, d, input) };
-            if let K::Recon(slot) = &mut self.stack[top].k {
+            if let K::Recon(slot) = &mut self.stack.as_mut_slice()[top].k {
                 *slot = Some(rc);
             }
             return r;
         }
         let input = Own(input);
+        let quick = self.atomic_fast;
         // SAFETY: attached thread; frames own what they point to.
         unsafe {
-            let f = &mut self.stack[top];
+            let f = &mut self.stack.as_mut_slice()[top];
             let x = f.x;
             match &mut f.k {
                 K::List { y, i } => {
                     if !input.get().is_null() && ffi::PyList_Append(*y, input.get()) < 0 {
                         return Err(());
                     }
-                    match list_item(x, *i) {
-                        Some(item) => {
-                            *i += 1;
-                            // The item stays alive in a temporary frame slot: reuse `hold`.
-                            xdecref(std::mem::replace(&mut f.hold, item));
-                            Ok(Step::Child(item))
-                        }
-                        None => {
-                            let y = std::mem::replace(y, null_mut());
-                            Ok(Step::Done(y))
+                    // Atomic items inline: `deepcopy(a, memo)` returns `a` once its frame
+                    // could be entered (the budget is the same for every item).
+                    let inline = quick && *self.depth.rem > 0;
+                    loop {
+                        match list_item(x, *i) {
+                            Some(item) => {
+                                *i += 1;
+                                if inline && is_quick(st, ty(item)) {
+                                    let r = ffi::PyList_Append(*y, item);
+                                    decref(item);
+                                    if r < 0 {
+                                        return Err(());
+                                    }
+                                    continue;
+                                }
+                                // The item stays alive in a temporary frame slot: `hold`.
+                                xdecref(std::mem::replace(&mut f.hold, item));
+                                return Ok(Step::Child(item));
+                            }
+                            None => return Ok(Step::Done(std::mem::replace(y, null_mut()))),
                         }
                     }
                 }
                 K::Tuple { y, i } => {
+                    let n = ffi::PyTuple_GET_SIZE(x);
                     if !input.get().is_null() && ffi::PyList_Append(*y, input.get()) < 0 {
                         return Err(());
                     }
-                    if *i < ffi::PyTuple_GET_SIZE(x) {
+                    let inline = quick && *self.depth.rem > 0;
+                    while *i < n {
                         let item = ffi::PyTuple_GET_ITEM(x, *i);
                         *i += 1;
+                        if inline && is_quick(st, ty(item)) {
+                            if !y.is_null() && ffi::PyList_Append(*y, item) < 0 {
+                                return Err(());
+                            }
+                            continue;
+                        }
+                        if y.is_null() {
+                            // The comprehension's list, holding the copies so far (the
+                            // atomic items themselves).
+                            *y = nn(ffi::PyList_New(0))?;
+                            for j in 0..*i - 1 {
+                                if ffi::PyList_Append(*y, ffi::PyTuple_GET_ITEM(x, j)) < 0 {
+                                    return Err(());
+                                }
+                            }
+                        }
                         return Ok(Step::Child(item));
                     }
                     // try: return memo[id(x)] except KeyError: pass
                     let (ylist, d) = (*y, f.d);
                     match &mut self.memo {
-                        Memo::Native(n) => {
-                            if let Some(v) = n.get(x) {
+                        Memo::Native(m) => {
+                            if let Some(v) = m.get(x) {
                                 return Ok(Step::Done(incref(v)));
                             }
                         }
@@ -577,7 +600,9 @@ impl Engine {
                             ffi::PyErr_Clear();
                         }
                     }
-                    let n = ffi::PyTuple_GET_SIZE(x);
+                    if ylist.is_null() {
+                        return Ok(Step::Done(incref(x)));
+                    }
                     let same = (0..n).all(|j| ffi::PyTuple_GET_ITEM(x, j) == ffi::PyList_GET_ITEM(ylist, j));
                     if same { Ok(Step::Done(incref(x))) } else { Ok(Step::Done(nn(ffi::PyList_AsTuple(ylist))?)) }
                 }
@@ -591,17 +616,38 @@ impl Engine {
                         // The key's copy arrived: y[kcopy] = vcopy.
                         let vc = Own(std::mem::replace(vcopy, null_mut()));
                         xdecref(std::mem::replace(key, null_mut()));
-                        if ffi::PyObject_SetItem(*y, input.get(), vc.get()) < 0 {
+                        if ffi::PyDict_SetItem(*y, input.get(), vc.get()) < 0 {
                             return Err(());
                         }
                     }
-                    match it.next()? {
-                        Some((k, v)) => {
-                            *key = k;
-                            xdecref(std::mem::replace(&mut f.hold, v));
-                            Ok(Step::Child(v))
+                    let inline = quick && *self.depth.rem > 0;
+                    loop {
+                        let Some((k, v)) = it.next_borrowed()? else { break };
+                        // Strong references for whatever outlives this iteration.
+                        let own = |o: O| if DictIt::OWNED { o } else { incref(o) };
+                        if inline && is_quick(st, ty(v)) {
+                            if is_quick(st, ty(k)) {
+                                let r = ffi::PyDict_SetItem(*y, k, v);
+                                if DictIt::OWNED {
+                                    decref(k);
+                                    decref(v);
+                                }
+                                if r < 0 {
+                                    return Err(());
+                                }
+                                continue;
+                            }
+                            // The value is its own copy; the key needs the full path.
+                            *vcopy = own(v);
+                            *key = own(k);
+                            return Ok(Step::Child(k));
                         }
-                        None => {
+                        *key = own(k);
+                        xdecref(std::mem::replace(&mut f.hold, own(v)));
+                        return Ok(Step::Child(v));
+                    }
+                    {
+                        {
                             if !*frozen {
                                 return Ok(Step::Done(std::mem::replace(y, null_mut())));
                             }
