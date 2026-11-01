@@ -3,6 +3,9 @@
 Typed, natively stored ``List``/``Dict``/``Set``/``FrozenSet`` containers with builtin-compatible
 semantics, vectorised expressions over the element placeholder ``X``, and fixed-width
 scalar types. See ``docs/ARCHITECTURE.md``.
+
+PYTEST_DONT_REWRITE (pytest would warn that this package, imported at startup under
+``RUSTIQUE=1``, cannot be rewritten: it ships the ``rustique.pytest_plugin`` entry point).
 """
 
 # `_collections_abc` holds the classes `collections.abc` re-exports. The interpreter has

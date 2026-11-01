@@ -30,7 +30,7 @@ declare -A REPO=(
 declare -A DEPS=(
     [attrs]="pytest hypothesis pympler cloudpickle"
     [rich]="pytest attrs"
-    [sqlglot]="pytest"
+    [sqlglot]="pytest pytz duckdb pandas"
     [requests]="pytest pytest-httpbin pytest-mock trustme werkzeug"
     [networkx]="pytest numpy scipy"
 )
@@ -62,14 +62,16 @@ for p in "${PROJECTS[@]}"; do
     venv="$WORK/venv-$p"
     if [ ! -x "$venv/bin/python" ]; then
         "$PY" -m venv "$venv"
-        "$venv/bin/python" -m pip install -q --disable-pip-version-check --no-index --find-links "$WHEELS" rustique
-        "$venv/bin/python" -m pip install -q --disable-pip-version-check -e "$src" ${DEPS[$p]} > "$out/install.log" 2>&1 \
-            || { echo "$p: install failed (see $out/install.log)"; continue; }
     fi
+    "$venv/bin/python" -m pip install -q --disable-pip-version-check -e "$src" ${DEPS[$p]} > "$out/install.log" 2>&1 \
+        || echo "$p: some dependencies failed to install (see $out/install.log)"
+    "$venv/bin/python" -m pip install -q --disable-pip-version-check --force-reinstall --no-deps --no-index \
+        --find-links "$WHEELS" rustique
     "$venv/bin/python" -m rustique status > "$out/status.txt" 2>&1
     cd "$src" || continue
     # shellcheck disable=SC2086
     set -- "$venv/bin/python" -m pytest -q -p no:cacheprovider ${ARGS[$p]}
+    env -u RUSTIQUE "$@" > "$out/warmup.log" 2>&1  # compile the .pyc files once
     for mode in plain startup plugin diff; do
         case $mode in
             plain)   r=$(timed "$out/$mode.log" env -u RUSTIQUE "$@") ;;

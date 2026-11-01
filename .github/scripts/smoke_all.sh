@@ -27,6 +27,9 @@ for py in "$@"; do
         status=1
         continue
     fi
+    # pytest too (from the index, when reachable): the smoke test then checks the plugin and
+    # that RUSTIQUE=1 adds no pytest warning.
+    "$vpy" -m pip install --disable-pip-version-check -q pytest 2>/dev/null || echo "smoke $tag: no pytest (offline)"
     (cd "$work" && "$vpy" "$here/wheel_smoke.py" --expect-installed) || { echo "::error::smoke $tag failed"; status=1; }
 done
 exit $status

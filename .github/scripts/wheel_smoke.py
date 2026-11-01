@@ -84,6 +84,23 @@ def main() -> int:
     diff = py("-m", "rustique", "diff", "--quiet", "--", sys.executable, "-c", BATTERY)
     check("python -m rustique diff (identical)", diff.returncode == 0, diff.stdout + diff.stderr)
 
+    if py("-c", "import pytest").returncode == 0:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "test_smoke.py"), "w") as f:
+                f.write("import json\n\ndef test_json():\n    assert json.loads(json.dumps([1, 2.5])) == [1, 2.5]\n")
+            plain_t = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", d],
+                                     capture_output=True, text=True, cwd=d)
+            on_t = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", d],
+                                  capture_output=True, text=True, cwd=d, env={**os.environ, "RUSTIQUE": "1"})
+            plug = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--rustique", d],
+                                  capture_output=True, text=True, cwd=d)
+        check("RUSTIQUE=1 pytest: same result, no warning", plain_t.returncode == on_t.returncode == 0
+              and "warning" not in on_t.stdout, on_t.stdout[-800:])
+        check("pytest --rustique (entry point plugin)", plug.returncode == 0 and "enabled by pytest --rustique" in plug.stdout,
+              plug.stdout[-800:])
+
     print(f"\n{len(failures)} failure(s)" if failures else "\nall checks passed")
     return 1 if failures else 0
 

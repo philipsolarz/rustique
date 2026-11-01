@@ -2,9 +2,9 @@
 
 Importing this module runs the switch. It sits at the top of site-packages, *outside* the
 ``rustique`` package, next to ``_rustique_startup.pth``, whose one import line imports it
-only when ``RUSTIQUE`` is in the environment::
+only when ``RUSTIQUE`` is set to something other than ``0``::
 
-    import os; 'RUSTIQUE' in os.environ and __import__('_rustique_startup')
+    import os; os.environ.get('RUSTIQUE', '0') != '0' and __import__('_rustique_startup')
 
 Importing anything under ``rustique`` loads the extension module, so the decision whether
 to do anything at all is taken here, with only ``os`` and ``sys`` (already imported by
@@ -16,6 +16,10 @@ Values of ``RUSTIQUE``: ``1``/``true``/``yes``/``on`` enable at startup; empty a
 ``0``/``false``/``no``/``off`` do nothing here (``0`` also turns every later
 ``rustique.enable()`` into a no-op: the kill switch, see ``rustique._switch``). Like the
 ``PYTHON*`` variables, the ``RUSTIQUE*`` variables are ignored under ``-E`` and ``-I``.
+
+PYTEST_DONT_REWRITE: pytest marks every module of a distribution that has a ``pytest11``
+entry point for assertion rewriting and warns when one is already imported, which this
+module and ``rustique`` are under ``RUSTIQUE=1``.
 """
 
 import os

@@ -388,7 +388,7 @@ def test_pth_is_one_cheap_import_line():
     with open(os.path.join(PYSRC, "_rustique_startup.pth")) as f:
         lines = [ln for ln in f.read().splitlines() if ln.strip() and not ln.startswith("#")]
     assert len(lines) == 1 and lines[0].startswith("import ")  # site exec()s only `import ` lines
-    assert "'RUSTIQUE' in os.environ" in lines[0]
+    assert "os.environ.get('RUSTIQUE', '0') != '0'" in lines[0]
     assert not os.path.exists(os.path.join(PYSRC, "_rustique_startup.start"))  # see docs/targets/dx.md
 
 
