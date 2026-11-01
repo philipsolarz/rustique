@@ -21,7 +21,7 @@ from unittest import mock
 import pytest
 
 from rustique import _rustique
-from rustique import _takeover as rt
+import rustique as rt
 
 A = _rustique._accel
 TARGETS = [

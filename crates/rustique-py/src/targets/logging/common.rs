@@ -517,7 +517,7 @@ pub unsafe fn generic_attrs(t: Tp, setattr_too: bool) -> bool {
     unsafe {
         let ga = (*t).tp_getattro.map(|f| f as usize);
         let sa = (*t).tp_setattro.map(|f| f as usize);
-        let has_dict = (*t).tp_dictoffset != 0 || (*t).tp_flags & ffi::Py_TPFLAGS_MANAGED_DICT != 0;
+        let has_dict = (*t).tp_dictoffset != 0 || ffi::PyType_GetFlags(t) & ffi::Py_TPFLAGS_MANAGED_DICT != 0;
         has_dict
             && ga == Some(ffi::PyObject_GenericGetAttr as *const () as usize)
             && (!setattr_too || sa == Some(ffi::PyObject_GenericSetAttr as *const () as usize))
