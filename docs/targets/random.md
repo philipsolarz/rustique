@@ -15,12 +15,12 @@ randint`, bound methods, `partial`) reach the kernels; identity, pickling, signa
 
 | target | module (lazy install) | validated | free-threaded | checkable | JIT |
 |---|---|---|---|---|---|
-| `random.randint` | `random` | 3.14, 3.15 | yes | no (consumes state) | refused (`jit_safe: false`, §6.1) |
-| `random.randrange` | `random` | 3.14, 3.15 | yes | no | refused |
-| `random.choice` | `random` | 3.14, 3.15 | yes | no | refused |
-| `random.shuffle` | `random` | 3.14, 3.15 | yes | no | refused |
-| `random.sample` | `random` | 3.14, 3.15 | yes | no | refused |
-| `random.choices` | `random` | 3.14, 3.15 | yes | no | refused |
+| `random.randint` | `random` | 3.14, 3.15 | yes | no (consumes state) | yes (§6.1) |
+| `random.randrange` | `random` | 3.14, 3.15 | yes | no | yes |
+| `random.choice` | `random` | 3.14, 3.15 | yes | no | yes |
+| `random.shuffle` | `random` | 3.14, 3.15 | yes | no | yes |
+| `random.sample` | `random` | 3.14, 3.15 | yes | no | yes |
+| `random.choices` | `random` | 3.14, 3.15 | yes | no | yes |
 
 `uniform` and `_randbelow_with_getrandbits` are not targets: `uniform` costs ~1,000 Ir, so
 any fallback (Decimal, numpy scalars, a Python `random()`) would exceed 1.05, and
@@ -31,20 +31,25 @@ any fallback (Decimal, numpy scalars, a Python `random()`) would exceed 1.05, an
 
 CPython's methods reach randomness only through `self._randbelow(n)`
 (`_randbelow_with_getrandbits` unless a subclass changes it), `self.getrandbits(k)` and
-`self.random()`. For each call the kernel decides, without running Python code, how
-`self` resolves these three attributes — exactly as `LOAD_ATTR` would: the class MRO
-(`_PyType_Lookup`), then the instance `__dict__`:
+`self.random()`. At entry, before anything observable, the kernel decides without running
+Python code how `self` resolves these three attributes — exactly as `LOAD_ATTR` would: the
+class MRO (`_PyType_Lookup`), then the instance `__dict__`:
 
 | `self._randbelow` / `self.getrandbits` / `self.random` | what the kernel does |
 |---|---|
-| `_randbelow_with_getrandbits` + C `getrandbits` (exact `Random`, subclasses that override none of them) | runs the algorithm natively on the object's `RandomObject` state (`rustique_core::random::Mt`): `genrand_uint32`, `getrandbits(k)` word order (least significant first, last word shifted), the rejection loop `while r >= n`, `random()` = `(a*2**26+b)/2**53`. Same words consumed in the same order, so `getstate()` afterwards is identical (tested on every call of the differential tests) |
-| `_randbelow_with_getrandbits` + a Python `getrandbits` (`SystemRandom`, user generators) | the loop is inlined and `self.getrandbits(k)` is called each time exactly as the bytecode would (looked up again before every call; `r >= n` through the rich comparison) — `randint`/`randrange`/`choice`/`shuffle`/`sample` |
-| another `_randbelow` (a subclass overriding `random()` gets `_randbelow_without_getrandbits`), or an instance attribute shadowing either | `self._randbelow(n)` is called (`randint`/`randrange`/`choice`); `shuffle`/`sample` take `randbelow = self._randbelow` once, as CPython does, and call it |
-| a Python `random()` (`choices`) | `random = self.random` once, then `floor(random() * n)` / `bisect(cum_weights, random() * total, 0, hi)` with `_floor`/`_bisect` called whenever `random()` does not return an exact float |
+| `_randbelow_with_getrandbits` + C `getrandbits` (exact `Random`, subclasses that override none of them); for `choices`, the C `random` | runs the algorithm natively on the object's `RandomObject` state (`rustique_core::random::Mt`): `genrand_uint32`, `getrandbits(k)` word order (least significant first, last word shifted), the rejection loop `while r >= n`, `random()` = `(a*2**26+b)/2**53`. Same words consumed in the same order, so `getstate()` afterwards is identical (tested on every call of the differential tests) |
+| anything else: a Python `getrandbits` (`SystemRandom`, user generators), another `_randbelow` (a subclass overriding `random()` gets `_randbelow_without_getrandbits` from `Random.__init_subclass__`), a Python `random()` (`choices`), an instance attribute shadowing any of them | CPython's original runs (`stats()` reason `args`) |
 
-Results built from these draws use the generic number and sequence protocols on the
-objects the user code returns (`a + r`, `istart + istep * r`, `seq[r]`, `x[i], x[j] =
-x[j], x[i]`, `j in selected`), in CPython's order.
+**A kernel never calls user code** (lead's ruling on the wave-1 report, after ruling 15):
+the overrides are known before anything observable, so the decision is made at entry and
+the original runs with CPython's frames — an exception raised in a Python `getrandbits`,
+`_randbelow` or `random()` carries the traceback of `randint` → `_randbelow_with_getrandbits`
+→ `getrandbits` exactly as without Rustique (`test_user_code_errors_have_cpythons_frames`).
+Only C code runs inside a kernel: the C `getrandbits`/`random` algorithm, `len()`/`[]` of
+C-level sequences in `choice`, and exact-`int` arithmetic (`istart + istep * r` beyond
+`i128`). The one Python function a kernel can call is CPython's own
+`_randbelow_with_getrandbits(0)`, when a C-level sequence's length drops to 0 between
+`choice`'s two `len()` calls (CPython then loops forever in it; so does the kernel).
 
 `sample` chooses between the pool and the set method like CPython:
 `n <= 21 + 4 ** ceil(log(3k, 4))` (k > 5). CPython computes the exponent in floating point;
@@ -88,7 +93,9 @@ Accelerated (positional or keyword arguments):
 - `choices(population, weights=None, *, cum_weights=None, k=1)`: same populations,
   weights/cum_weights a `list`/`tuple` of exact ints/floats.
 
-Falls back (CPython's original runs; `stats()` reason): any other argument type
+Falls back (CPython's original runs; `stats()` reason): a receiver whose `_randbelow` /
+`getrandbits` (or `random` for `choices`) is not CPython's C one — Python overrides,
+`SystemRandom`, instance attributes (`args`, §1); any other argument type
 (`args`); every error CPython raises (empty sequence, empty range, `b < a`, zero step,
 negative/oversized `k`, weights length mismatch, non-positive or non-finite total,
 `counts=`, `TypeError`s) — decided before anything observable (`args`); a class or
@@ -105,7 +112,7 @@ shuffle, sample, choices), `range`/`reversed` (shuffle), `_Sequence`, `_ceil`, `
 `_bisect`, `_isfinite`, `list` (choices). Names read only on paths the kernels never take
 (error messages, `counts=`) are not pinned. The class
 attributes (`_randbelow`, `getrandbits`, `random`) are not pinned: they are resolved per
-call through the type-version cache, so patching them changes the path, not the result.
+call through the type-version cache, so patching them sends the calls to the original.
 Each function's `__code__`, `__defaults__` and `__kwdefaults__` are compared per call
 (reassigning them keeps the patched vectorcall).
 
@@ -116,9 +123,18 @@ Each function's `__code__`, `__defaults__` and `__kwdefaults__` are compared per
 
 3.14.9 and 3.15.1 (and their free-threaded builds): `random.py`'s six methods are
 identical in both (fingerprints differ only by bytecode); refused on other minors, debug
-builds, and when the self-test fails (the `RandomObject` layout checked against
-`getstate()`, 1,400 natively generated words and three `random()` values against CPython's
-on probe generators, C calls only).
+builds, and when the self-test fails.
+
+### Private CPython symbols and layouts (accepted by the lead)
+
+| what | used for | obtained / checked at install | when missing or mismatched |
+|---|---|---|---|
+| `RandomObject` layout (`int index` at `sizeof(PyObject)`, `uint32_t state[624]` after it) | the native generator | self-test on one probe `_random.Random(seed)` (C calls only): 40 words generated natively from a copy of its raw state equal its C `getrandbits(1280)`, then one `random()` value and the index after it | the group is refused (self-test failure "random generator layout and stream") |
+| `_PyObject_GetMethod` (exported, `Objects/object.c`) | the exact "does the instance shadow `_randbelow`/`getrandbits`/`random`" answer when the inline-values check cannot answer (materialized `__dict__`, no inline values) | `cx.symbol` | refused, category `symbol` ("symbol _PyObject_GetMethod not exported by this interpreter") |
+| `_PyDictKeys_StringLookup` (exported, `Objects/dictobject.c`) | does a type's shared-keys table contain one of the three names | `dlsym`, during the inline-values calibration | not refused: the inline-values fast check stays off and every instance check goes through `_PyObject_GetMethod` (exact, slower) |
+| inline-values layout (`Py_TPFLAGS_INLINE_VALUES`, `ht_cached_keys`, `dk_nentries` at offset 24 of the keys, the values' `valid` byte and slots after `tp_basicsize`) | the fast "no instance attribute can shadow" check (`utils_kit::InstLayout`) | calibrated on `os.environ` (an `os._Environ`): flags and shared keys present, its five attribute names distinct entries below `dk_nentries`, the `_data` slot holding the object the generic getattr returns | not refused: the fast check stays off (as above) |
+| `slot_sq_length`, `slot_sq_item`, `slot_mp_length`, `slot_mp_subscript` (CPython's slot wrappers for Python `__len__`/`__getitem__`) | `choice` on C-level sequences: excludes types whose `len()`/`[]` run Python code | read from `os._Environ`'s type slots, after checking that class defines both methods as Python functions | refused ("os._Environ does not define __len__/__getitem__ in Python" / "... has no sequence/mapping slots") |
+| `_PyType_Lookup` (`PyAPI_FUNC`, `Include/cpython/object.h`) | MRO lookups of the three names (borrowed, compared only) | linked (non-limited API) | exported by every 3.14/3.15 build |
 
 ## 5. Conformance
 
@@ -141,50 +157,56 @@ plain CPython; `rq`: `rustique.enable(only=["random"])`. **M**.
 
 | cell | orig Ir | rq Ir | ratio | JIT orig | JIT rq | JIT ratio |
 |---|---:|---:|---:|---:|---:|---:|
-| `randint(1, 6)` (module function) | 2195 | 799 | 0.364 | 1894 | 802 | 0.423 |
-| `rng.randint(3, 7)` | 2291 | 809 | 0.353 | 2056 | 813 | 0.395 |
-| `rng.randint(0, 2**40)` | 4691 | 1044 | 0.222 | 4315 | 1037 | 0.240 |
-| `rng.randint(0, 2**64)` (128-bit path) | 4791 | 1680 | 0.351 | 4536 | 1684 | 0.371 |
-| `rng.randint(1, 2**70)` | 4782 | 1814 | 0.379 | 4527 | 1807 | 0.399 |
-| `rng.randint(a=1, b=6)` (keywords) | 2354 | 981 | 0.417 | 2102 | 984 | 0.468 |
-| `rng.randint(True, 6)` | 2168 | 805 | 0.371 | 1915 | 808 | 0.422 |
-| `rng.randrange(10)` | 2212 | 776 | 0.351 | 1946 | 780 | 0.401 |
-| `rng.randrange(0, 100, 5)` | 3212 | 1081 | 0.337 | 2615 | 1085 | 0.415 |
-| `rng.choice(list of 6)` | 1770 | 546 | 0.308 | 1629 | 549 | 0.337 |
-| `rng.choice(tuple of 4)` | 2157 | 569 | 0.264 | 2035 | 576 | 0.283 |
-| `rng.choice('abcdef')` | 1778 | 642 | 0.361 | 1633 | 645 | 0.395 |
-| `rng.choice(range(10))` | 2887 | 1498 | 0.519 | 2761 | 1501 | 0.544 |
-| `rng.choice(deque)` (C sequence, generic protocol) | 1906 | 787 | 0.413 | 1765 | 790 | 0.448 |
-| `rng.choices(words, k=40)` | 33643 | 7025 | 0.209 | 32651 | 7038 | 0.216 |
-| `rng.choices(T4, weights=[50,30,15,5])` | 8340 | 2595 | 0.311 | 7737 | 2599 | 0.336 |
-| `rng.choices(L6, cum_weights=[1..6])` | 6101 | 3359 | 0.551 | 5574 | 3364 | 0.604 |
-| `rng.choices(L6)` | 3894 | 957 | 0.246 | 3705 | 962 | 0.260 |
-| `rng.sample(words, 5)` | 17249 | 2300 | 0.133 | 16337 | 2313 | 0.142 |
-| `rng.sample(range(10**6), 20)` (set method) | 59154 | 18087 | 0.306 | 57311 | 18068 | 0.315 |
-| `rng.shuffle(list of 100)` | 175741 | 8876 | 0.051 | 163572 | 8931 | 0.055 |
-| `sub.randint(1, 6)` (subclass, no overrides) | 2153 | 800 | 0.372 | 1908 | 803 | 0.421 |
-| `sub.choice(L6)` | 1796 | 547 | 0.304 | 1665 | 550 | 0.330 |
-| generic paths: | | | | | | |
-| `own.randint(1, 6)` (Python `random()`: `_randbelow_without_getrandbits` called) | 6330 | 6328 | 1.000 | 6025 | 6222 | 1.033 |
-| `own.choice(L6)` (same) | 5974 | 6109 | 1.023 | 5775 | 6003 | 1.040 |
-| `own.choices(L6)` (Python `random()` called) | 4616 | 2546 | 0.551 | 4380 | 2608 | 0.596 |
-| `own.sample(L100, 2)` | 17947 | 13110 | 0.730 | 17327 | 12957 | 0.748 |
-| `own_bits.randint(1, 6)` (Python `getrandbits`, the SystemRandom shape) | 3047 | 2764 | 0.907 | 2418 | 2838 | **1.174** |
-| `own_bits.choice(L6)` | 2691 | 2545 | 0.946 | 2174 | 2619 | **1.205** |
-| `own_bits.shuffle(L6)` | 17023 | 15503 | 0.911 | 13838 | 15622 | **1.129** |
-| `own_bits.sample(L6, 2)` | 11420 | 6272 | 0.549 | 9878 | 6389 | 0.647 |
-| `own_bits.choices(L6)` (C `random()`: native) | 3899 | 956 | 0.245 | 3709 | 961 | 0.259 |
-| `shadow.choice(L6)` (instance attribute shadows `getrandbits`) | 1642 | 1521 | 0.927 | 1385 | 1525 | **1.102** |
-| fallbacks (steady state: the target suspends after 64 consecutive fallbacks): | | | | | | |
-| `rng.choices(L6, [Fraction(1)]*6, k=3)` | 152319 | 152329 | 1.000 | 143032 | 143041 | 1.000 |
+| `randint(1, 6)` (module function) | 2169 | 769 | 0.355 | 1892 | 770 | 0.407 |
+| `rng.randint(3, 7)` | 2291 | 777 | 0.339 | 2056 | 781 | 0.380 |
+| `rng.randint(0, 2**40)` | 4691 | 1012 | 0.216 | 4315 | 1005 | 0.233 |
+| `rng.randint(0, 2**64)` (128-bit path) | 4791 | 1635 | 0.341 | 4536 | 1639 | 0.361 |
+| `rng.randint(1, 2**70)` | 4782 | 1768 | 0.370 | 4527 | 1761 | 0.389 |
+| `rng.randint(a=1, b=6)` (keywords) | 2354 | 949 | 0.403 | 2102 | 952 | 0.453 |
+| `rng.randint(True, 6)` | 2168 | 773 | 0.356 | 1915 | 776 | 0.405 |
+| `rng.randrange(10)` | 2212 | 744 | 0.336 | 1946 | 748 | 0.384 |
+| `rng.randrange(0, 100, 5)` | 3212 | 1049 | 0.327 | 2615 | 1053 | 0.403 |
+| `rng.choice(list of 6)` | 1770 | 517 | 0.292 | 1629 | 520 | 0.319 |
+| `rng.choice(tuple of 4)` | 2157 | 540 | 0.250 | 2035 | 547 | 0.269 |
+| `rng.choice('abcdef')` | 1778 | 613 | 0.345 | 1633 | 616 | 0.377 |
+| `rng.choice(range(10))` | 2887 | 1469 | 0.509 | 2761 | 1472 | 0.533 |
+| `rng.choice(deque)` (C sequence: `len()` twice, `[]`) | 1906 | 750 | 0.394 | 1765 | 753 | 0.427 |
+| `rng.choices(words, k=40)` | 33643 | 6893 | 0.205 | 32651 | 6906 | 0.212 |
+| `rng.choices(T4, weights=[50,30,15,5])` | 8340 | 2575 | 0.309 | 7737 | 2579 | 0.333 |
+| `rng.choices(L6, cum_weights=[1..6])` | 6101 | 3261 | 0.535 | 5574 | 3266 | 0.586 |
+| `rng.choices(L6)` | 3894 | 872 | 0.224 | 3705 | 877 | 0.237 |
+| `rng.sample(words, 5)` | 17249 | 2254 | 0.131 | 16338 | 2265 | 0.139 |
+| `rng.sample(range(10**6), 20)` (set method) | 59154 | 18056 | 0.305 | 57311 | 18034 | 0.315 |
+| `rng.shuffle(list of 100)` | 175741 | 8850 | 0.050 | 163572 | 8905 | 0.054 |
+| `sub.randint(1, 6)` (subclass, no overrides) | 2153 | 768 | 0.357 | 1908 | 771 | 0.404 |
+| `sub.choice(L6)` | 1796 | 518 | 0.288 | 1665 | 521 | 0.313 |
+| `own_bits.choices(L6)` (Python `getrandbits`, C `random()`: native) | 3899 | 871 | 0.223 | 3709 | 876 | 0.236 |
+| Python overrides of the randomness sources: the original runs, decided at entry (steady state: the target suspends after 64 consecutive fallbacks): | | | | | | |
+| `own.randint(1, 6)` (Python `random()`, hence `_randbelow_without_getrandbits`) | 6330 | 6330 | 1.000 | 6025 | 6025 | 1.000 |
+| `own.choice(L6)` (same) | 5974 | 5974 | 1.000 | 5775 | 5775 | 1.000 |
+| `own.choices(L6)` (same) | 4616 | 4616 | 1.000 | 4380 | 4380 | 1.000 |
+| `own.sample(L100, 2)` (same) | 17947 | 17947 | 1.000 | 17327 | 17327 | 1.000 |
+| `own_bits.randint(1, 6)` (Python `getrandbits`, the SystemRandom shape) | 3047 | 3047 | 1.000 | 2418 | 2418 | 1.000 |
+| `own_bits.choice(L6)` (same) | 2691 | 2691 | 1.000 | 2174 | 2174 | 1.000 |
+| `own_bits.shuffle(L6)` (same) | 17023 | 17023 | 1.000 | 13838 | 13838 | 1.000 |
+| `own_bits.sample(L6, 2)` (same) | 11420 | 11423 | 1.000 | 9878 | 9881 | 1.000 |
+| `shadow.choice(L6)` (instance attribute shadows `getrandbits`) | 1642 | 1642 | 1.000 | 1385 | 1411 | 1.019 |
+| `sysr.randint(1, 6)` (`SystemRandom`; see note) | 5213 | 4942 | 0.948 | 4398 | 4537 | 1.032 |
+| `sysr.choice(L6)` (`SystemRandom`) | 4646 | 4698 | 1.011 | 4363 | 4190 | 0.960 |
+| other fallbacks (steady state): | | | | | | |
+| `rng.choices(L6, [Fraction(1)]*6, k=3)` | 152702 | 152698 | 1.000 | 143422 | 143417 | 1.000 |
 | `rng.choice(UserList)` (Python `__len__`/`__getitem__`) | 3629 | 3629 | 1.000 | 3457 | 3457 | 1.000 |
-| `rng.sample(L6, k=2, counts=[1]*6)` (calls `sample` again: accelerated) | 21338 | 12336 | 0.578 | 19835 | 11791 | 0.594 |
+| `rng.sample(L6, k=2, counts=[1]*6)` (calls `sample` again: accelerated) | 21338 | 12284 | 0.576 | 19835 | 11739 | 0.592 |
 
-Every cell is ≤ 1.05 without the JIT. **Under the JIT**, CPython inlines its own calls into
-a Python `getrandbits` (SystemRandom, user generators) while a kernel's call into it enters
-the eval loop (C → Python): those cells are 1.10–1.21. The targets are therefore declared
-`jit_safe: false` (refused with reason `jit` when the JIT is enabled); the native paths would
-be 0.22–0.47 under the JIT.
+Every cell is ≤ 1.05, with and without the JIT. The cells with a Python override measure
+1.000 in the steady state: the kernel declines at entry, and after 64 consecutive fallbacks
+the registry suspends the target (its original vectorcall restored until the next
+`enable()`). The `SystemRandom` cells vary by ±5% between runs in both columns: `os.urandom`
+is not seeded, so the number of `getrandbits` rejections in `_randbelow` differs per process.
+Before the wave-1 ruling, the kernels called those overrides from native code: 0.91–0.95
+without the JIT but 1.10–1.21 under it (the JIT inlines CPython's own calls into a Python
+`getrandbits`; a kernel's call enters the eval loop), so the group was `jit_safe: false`.
+They now fall back, so the group is JIT-safe (default `jit_safe: true`).
 
 ### 6.2 Wall time, large inputs (pyperf)
 
@@ -228,6 +250,25 @@ first target of a module (~150k Ir) is in the framework's activation path.
 
 ### First 64 fallback calls (before the registry suspends a target that keeps falling back)
 
-`python benches/targets/utils_first64.py` (Ir per call over 64 calls, fresh process):
-`r.choice(UserList)`: 4,434 → 4,870 Ir/call (1.098, +436); `r.choices('abc', [Fraction]*3)`: 46,589 → 47,378 (1.017). After 64 consecutive fallbacks the target is suspended and the cells above
-measure 1.000 (steady state).
+`python benches/targets/utils_first64.py random [--n N]` (Ir per call over the first N calls
+in a fresh process, plain vs enabled; 3.15.1). **M**.
+
+| cell | plain Ir/call | enabled Ir/call | ratio (N = 64) | extra Ir per call |
+|---|---:|---:|---:|---:|
+| `ob.randint(1, 6)` (Python `getrandbits`) | 3,712 | 4,383 | 1.181 | +670 |
+| `ob.choice(L6)` (same) | 3,474 | 3,976 | 1.144 | +502 |
+| `ob.shuffle(L6)` (same) | 17,120 | 17,629 | 1.030 | +509 |
+| `orr.randint(1, 6)` (Python `random()`) | 6,979 | 7,650 | 1.096 | +671 |
+| `orr.choices(L6)` (same) | 5,359 | 5,829 | 1.088 | +470 |
+| `sysr.randint(1, 6)` (`SystemRandom`, ±5% noise) | 5,807 | 6,473 | 1.115 | +666 |
+| `sysr.choice(L6)` (same) | 5,783 | 6,279 | 1.086 | +496 |
+| `r.choice(UserList)` | 4,434 | 4,871 | 1.099 | +437 |
+| `r.choices('abc', [Fraction]*3)` | 46,592 | 47,310 | 1.015 | +718 |
+
+The extra cost is per call (N = 32 and N = 63 give the same +450–700 Ir). The suspension
+itself, on the 64th call, costs about 1.5k Ir once. Each fallback pays for the kernel's
+argument and class checks plus the original's eval-loop entry (a call site whose callee has
+a replaced vectorcall is not specialized, so the original's frame is not pushed inline).
+The steady state is 1.000 (§6.1). A program that interleaves accelerated calls with calls on
+an overriding class (e.g. `random.randint` and `SystemRandom().randint`) resets the streak,
+never suspends, and keeps paying this cost on the overriding calls.

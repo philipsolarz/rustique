@@ -87,6 +87,15 @@ functions would create is not created).
 3.14.9 and 3.15.1 and their free-threaded builds; refused elsewhere, on fingerprint
 mismatch, and when the chunking self-test fails.
 
+### Private CPython symbols and layouts (accepted by the lead)
+
+| what | used for | obtained / checked at install | when missing or mismatched |
+|---|---|---|---|
+| `_PyUnicode_IsAlpha`, `_PyUnicode_IsDecimalDigit`, `_PyUnicode_IsDigit`, `_PyUnicode_IsNumeric`, `_PyUnicode_IsWhitespace` (exported, `Objects/unicodectype.c`) | `\w`, `\d`, `\s` of `wordsep_re`/`wordsep_simple_re` and `str.strip/isspace/split` on non-ASCII code points: CPython's own Unicode database | `cx.symbol`, then the chunking self-test against the compiled patterns' `split` | refused, category `symbol` ("symbol ... not exported by this interpreter"); a self-test mismatch refuses the group |
+| `_PyObject_GetMethod` (exported, `Objects/object.c`) | the exact "does the `TextWrapper` instance shadow a method" answer when the inline-values check cannot answer | `cx.symbol` | refused, category `symbol` |
+| `_PyDictKeys_StringLookup` + the inline-values layout (`utils_kit::InstLayout`, shared with `random`, see docs/targets/random.md §4) | the fast "no instance attribute can shadow a method" check | `dlsym` + calibration on `os.environ` | not refused: the fast check stays off and `_PyObject_GetMethod` answers (exact, slower) |
+| `_PyType_Lookup` (`PyAPI_FUNC`, `Include/cpython/object.h`) | MRO lookups of the methods and class attributes (compared only) | linked (non-limited API) | exported by every 3.14/3.15 build |
+
 ## 5. Conformance
 
 `python tests/conformance/run_target_suites.py --targets textwrap --modules ...` (CPython's own test

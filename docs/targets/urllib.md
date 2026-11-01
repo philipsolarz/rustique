@@ -76,6 +76,8 @@ its first call with a `%`).
 3.14.9 and 3.15.1 and their free-threaded builds; refused elsewhere and on fingerprint or
 constant mismatch.
 
+Private CPython symbols and layouts: none (public C API only).
+
 ## 5. Conformance
 
 `python tests/conformance/run_target_suites.py --targets urllib --modules ...` (CPython's own test

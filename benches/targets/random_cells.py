@@ -55,7 +55,7 @@ CELLS = {
     "rng.shuffle(L100)": "rng.shuffle(L100)",
     "sub.randint(1, 6) [subclass]": "sub.randint(1, 6)",
     "sub.choice(L6) [subclass]": "sub.choice(L6)",
-    # generic paths / fallbacks
+    # Python overrides of the randomness sources: the original runs (decided at entry)
     "own.randint(1, 6) [random() overridden]": "own.randint(1, 6)",
     "own.choice(L6) [random() overridden]": "own.choice(L6)",
     "own_bits.randint(1, 6) [Python getrandbits]": "own_bits.randint(1, 6)",
@@ -64,6 +64,9 @@ CELLS = {
     "own_bits.choices(L6) [Python getrandbits]": "own_bits.choices(L6)",
     "own.choices(L6) [Python random]": "own.choices(L6)",
     "own.sample(L100, 2) [Python random]": "own.sample(L100, 2)",
+    "sysr.randint(1, 6) [SystemRandom]": "sysr.randint(1, 6)",
+    "sysr.choice(L6) [SystemRandom]": "sysr.choice(L6)",
+    # other fallbacks and edge forms
     "rng.randint(True, 6) [bool]": "rng.randint(True, 6)",
     "rng.randint(1, 2**70) [big]": "rng.randint(1, 1180591620717411303424)",
     "rng.choice('abcdef') [str]": "rng.choice('abcdef')",

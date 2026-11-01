@@ -60,6 +60,8 @@ inputs. **Private state skipped:** none.
 3.14.9 and 3.15.1 and their free-threaded builds (the five functions and their helpers
 are identical in both).
 
+Private CPython symbols and layouts: none (public C API only).
+
 ## 5. Conformance
 
 `python tests/conformance/run_target_suites.py --targets statistics --modules ...` (CPython's own test

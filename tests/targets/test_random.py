@@ -197,7 +197,8 @@ def test_module_functions_and_global_instance():
 
 
 # ---------------------------------------------------------------------------------------
-# Subclasses, overrides, instance attributes: the generic paths
+# Subclasses, overrides, instance attributes: native when the randomness sources are
+# CPython's own, otherwise the original runs (a kernel never calls user code)
 # ---------------------------------------------------------------------------------------
 
 
@@ -279,7 +280,7 @@ def test_subclasses_match(cls):
     same(lambda: cls(77), *ALL_OPS, *ERRORS)
 
 
-def test_system_random_runs_generic_paths():
+def test_system_random_falls_back():
     enable()
     rt.stats(True, reset=True)
     s = random.SystemRandom()
@@ -288,15 +289,103 @@ def test_system_random_runs_generic_paths():
         assert 0 <= s.randrange(10) < 10
         assert s.choice("abc") in "abc"
         assert secrets.choice([1, 2, 3]) in (1, 2, 3)
-        assert sorted(s.sample(range(10), 3)) == sorted(set(s.sample(range(10), 3))) or True
+        assert len(set(s.sample(range(10), 3))) == 3
         assert len(s.choices("ab", k=3)) == 3
         l = list(range(5))
         s.shuffle(l)
         assert sorted(l) == list(range(5))
     st_ = rt.stats()
-    for name in NAMES:
-        assert st_[name]["hits"] > 0, name
     rt.stats(False)
+    for name in NAMES:
+        assert st_[name]["hits"] == 0, name
+        assert st_[name]["fallback"]["args"] > 0, name
+
+
+OVERRIDES = [LoggingBits, LoggingRandom, OddBits, OwnBelow, FloatyRandom, OddRandom]
+
+
+@pytest.mark.parametrize("cls", OVERRIDES)
+def test_python_overrides_fall_back_and_sub_runs_native(cls):
+    """Decided at entry: a method whose randomness source is a Python override never runs
+    natively; a plain subclass does. (A Python `random()` alone also replaces `_randbelow`
+    with `_randbelow_without_getrandbits`, via `Random.__init_subclass__`.)"""
+    py_random = "random" in cls.__dict__
+    enable()
+    for c, native_below, native_random in ((cls, False, not py_random), (Sub, True, True)):
+        rt.stats(True, reset=True)
+        r = c(5)
+        for op in (
+            lambda: r.randint(1, 6),
+            lambda: r.randrange(10),
+            lambda: r.choice("abc"),
+            lambda: r.shuffle([1, 2, 3]),
+            lambda: r.sample(range(10), 2),
+            lambda: r.choices("abc", k=2),
+        ):
+            outcome(op)  # OddBits/OddRandom make CPython raise
+        st_ = rt.stats()
+        rt.stats(False)
+        for name in NAMES:
+            native = native_random if name == "random.choices" else native_below
+            assert st_[name]["hits"] == int(native), (c, name, st_[name])
+
+
+class RaisingBits(random.Random):
+    def getrandbits(self, k):
+        raise KeyError("bits")
+
+
+class RaisingBelow(random.Random):
+    def _randbelow(self, n):
+        raise KeyError("below")
+
+
+class RaisingRandom(random.Random):
+    def random(self):
+        raise KeyError("random")
+
+
+def _frames(fn):
+    try:
+        fn()
+    except KeyError as e:
+        tb, names = e.__traceback__, []
+        while tb is not None:
+            names.append((tb.tb_frame.f_code.co_name, tb.tb_lineno))
+            tb = tb.tb_next
+        return type(e), e.args, names[1:]
+    raise AssertionError("no error")
+
+
+@pytest.mark.parametrize(
+    "cls,op",
+    [
+        (RaisingBits, lambda r: r.randint(1, 6)),
+        (RaisingBits, lambda r: r.randrange(3, 30, 3)),
+        (RaisingBits, lambda r: r.choice([1, 2, 3])),
+        (RaisingBits, lambda r: r.shuffle([1, 2, 3])),
+        (RaisingBits, lambda r: r.sample(range(100), 3)),
+        (RaisingBelow, lambda r: r.randint(1, 6)),
+        (RaisingBelow, lambda r: r.choice("abc")),
+        (RaisingBelow, lambda r: r.choice(collections.deque("abc"))),
+        (RaisingBelow, lambda r: r.shuffle([1, 2, 3])),
+        (RaisingBelow, lambda r: r.sample([1, 2, 3], 2)),
+        (RaisingRandom, lambda r: r.choices("abc", k=2)),
+        (RaisingRandom, lambda r: r.choices("abc", [1, 2, 3], k=2)),
+    ],
+)
+def test_user_code_errors_have_cpythons_frames(cls, op):
+    """An exception raised by user code (an override) carries CPython's traceback: the
+    frames of `randint`/`choice`/... and of the helpers that called the override."""
+    def run():
+        return op(cls(1))
+
+    rt.disable()
+    plain = _frames(run)
+    enable()
+    fast = _frames(run)
+    assert fast == plain
+    assert len(plain[2]) >= 2  # the method's frame and the override's
 
 
 def test_instance_attributes_shadow():
