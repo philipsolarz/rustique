@@ -148,8 +148,11 @@ budget "≤ 40 Ir or ≤ 1% of the original's cheapest realistic call".
 revalidates by value and caches the outcome per generation): the `builtins` dict, the
 `time` module dict, the `_strptime` and `locale` module dicts and `locale.locale_alias`
 as whole dicts (`accel::guard::watch_dict_generation`: they change rarely), and the
-`sys.modules` entries `time`, `_strptime`, `locale`, `zoneinfo`, `_zoneinfo`
-(`accel::guard::watch`, per key: `sys.modules` changes on every import). Revalidation
+`sys.modules` entries `time`, `_strptime`, `zoneinfo`, `_zoneinfo` (`accel::guard::watch`,
+per key: `sys.modules` changes on every import). These watches are registered with the
+`_datetime` group (when `datetime` is imported); `time.strftime` depends on none of them
+(it holds the `time` module, `struct_time` and the C locale's name), so a process that
+never imports `datetime` registers no watch. Revalidation
 checks by identity or value what the originals read: the builtins they call (`__import__`,
 `isinstance`, `len`, `int`, `str`, `tuple`, `enumerate`, `range`, `ValueError`,
 `TypeError`, `KeyError`); `time.strftime`, `time.struct_time`, `time._STRUCT_TM_ITEMS`,
@@ -191,39 +194,60 @@ builds) are the registry's canonical format v2 (cached per code object):
   `locale.{getlocale, _parse_localename, normalize}` (`LocaleTime`'s code is not: its
   output is checked by value). Checked when the kernels first see a `_strptime` module
   object (the call after the one that imported it), together with the dependency
-  snapshot; a mismatch makes the strptime kernels fall back (reason in
-  `_accel._datetime_debug()["strptime_last_failure"]`; the registry's planned "degraded"
-  status annotation will show it in `status()`). The registry's dev tool lists them
+  snapshot; a mismatch makes the strptime kernels fall back, and `status()` shows the four
+  strptime targets as `"degraded": "_strptime: fingerprint: …"` (`accel::degrade`, once;
+  they stay installed, hit again when `sys.modules` holds a module that validates, and
+  keep the annotation until `disable()`; the latest reason is also in
+  `_accel._datetime_debug()["strptime_last_failure"]`). The registry's dev tool lists them
   (record mode checks them in `prepare` when `_strptime` is imported):
   `python -m rustique._takeover._dev report --only datetime --import datetime,_strptime,time`.
 
-Self-tests (kernel vs original on a probe) only for `time.strftime` and
-`date.isoformat` (one call each); the strptime originals run Python code, which `prepare`
-may not run inside the `sys.modules` watcher. Behaviour is covered by CPython's suites
-(§7), the matcher's exhaustive tests against the regex tables, and the differential
-fuzzing.
+**Shared declarations.** The nine targets `_datetime`'s import installs share a
+`GroupSpec` ("datetime"): environment capture (builtins, `sys.modules`, the watches), the
+datetime C API, the layout calibrations, the strptime statics and the interned
+`isoformat` keyword names are prepared once per registry pass.
 
-Install cost (`benches/targets/datetime_install.py`, callgrind, 3.15.1, wave1 5a690e2,
+Self-test (kernel vs original on a probe): `date.isoformat` only (one call); the strptime
+originals run Python code, which `prepare` may not run inside the `sys.modules` watcher.
+Behaviour is covered by CPython's suites (§7), the matcher's exhaustive tests against the
+regex tables, the differential fuzzing, and check mode.
+
+Install cost (`benches/targets/datetime_install.py`, callgrind, 3.15.1, wave1 b162e61,
 quiet `_accel.enable`; the registry's own baseline, `enable(only=["_selftest.meth"])`, is
-24,700 Ir):
+23,800 Ir). Budget: ≤ 0.1M Ir per group at `enable()`; lazy installs ≤ max(5% of the
+triggering import, 0.1M Ir).
 
-| region | Ir | group's share |
-|---|---:|---:|
-| `enable(only=["datetime"])`, `datetime`/`_strptime`/`zoneinfo` imported (10 targets install) | 171,200 | ~147,000 |
-| `enable(only=["datetime"])`, nothing imported (`time.strftime` installs, 9 pending) | 109,200 | ~85,000 |
-| `import datetime` after `enable()` (9 targets install lazily) | 433,300 → 542,200 | +108,900 (+25.1%) |
-| the strptime call after `_strptime` was imported (captures it once) | 41,600 → 380,600 | +339,000, once (3.6% of `import _strptime`, 9.4M Ir; 245k with the group's earlier cheap fingerprint) |
+| region | Ir | group's share | budget |
+|---|---:|---:|---:|
+| `enable(only=["datetime"])`, `datetime`/`_strptime`/`zoneinfo` imported (10 targets install) | 119,900 | ~96,100 | 100,000 |
+| `enable(only=["datetime"])`, only `time` imported (`time.strftime` installs, 9 pending) | 39,700 | ~15,700 | 100,000 |
+| `import datetime` after `enable()` (9 targets install lazily) | 432,600 → 515,500 | +83,000 (+19.2%) | 100,000 |
+| the strptime call after `_strptime` was imported (captures it once) | 41,800 → 379,100 | +337,200, once (3.6% of `import _strptime`, 9.43M Ir) | 471,600 |
 
-Before trimming the first row was 6.35M Ir (the v1 fingerprints of `_strptime`, four
-times, at install, plus a self-test per target). The budget (≤ 0.1M Ir per group at `enable()`, ≤ 5% of
-the triggering import) is still exceeded by the first and third rows. Of the ~147k: the
-registry's local-monitoring calibration for module targets (~26k plus a probe compile),
-`phdr` writability checks of 10 sites (~14k), the group's environment capture (builtins,
-`time`, glibc locale, layout calibrations: ~40k), 10 C fingerprints, two
-probes, and ~2–3k of registry work per target. `import datetime` pays the same per-target
-work against a cheap import (433k Ir). Next step (ruling): adopt accel-core's second pass
-(GroupSpec, pre-interned keys, cheaper activation) when it lands and re-measure, including
-the whole-process cells (`python -c pass` with `RUSTIQUE=1`, `devtools/import_startup`).
+Other builds (same bench): group's share at `enable()` 97.7k (3.15.1t), 95.8k (3.14.9),
+97.2k (3.14.9t); `import datetime` +81.8k / +82.2k / +83.2k; the `_strptime` capture
++352k / +326k / +340k once (budget 5% of `import _strptime`: 725k / 399k / 394k).
+
+Before trimming the first row was 6.35M Ir (v1 fingerprints of `_strptime`, four times,
+at install, plus a self-test per target), then 171k (wave1 5a690e2) before the shared
+declarations, static builtins and the `time`-only environment for `time.strftime`.
+
+Whole processes (`benches/targets/datetime_startup.py`, callgrind, 3.15.1, startup switch
+installed; "registry" is `RUSTIQUE=1 RUSTIQUE_ONLY=_selftest.meth`, the group's column is
+`RUSTIQUE=1 RUSTIQUE_ONLY=datetime` minus that):
+
+| `python -c …` | plain | registry | group |
+|---|---:|---:|---:|
+| `pass` | 41,004,850 | 43,133,848 | +28,900 (+0.07%) |
+| `import datetime` | 41,489,534 | 43,620,672 | +154,500 (+0.35%) |
+| `import datetime` + one `strftime` + one `isoformat` | 41,658,842 | 43,789,703 | +149,000 (+0.34%) |
+| `import datetime` + three `datetime.strptime` | 77,228,188 | 79,339,506 | +596,500 (+0.75%) |
+
+Of the `import datetime` row, ~53k is interpreter shutdown: the group's watches see the
+~160 builtins re-insertions and the `sys.modules` teardown (Rustique's dict watcher is
+called for every event of a watched dict; with `os._exit(0)` the row is +100.5k). The
+strptime row includes the one-time `_strptime` capture (337k). `devtools/import_startup`
+(`--only datetime`, wall): ratio 0.998–1.05, "same" (noise).
 
 ## 5. Private state
 
@@ -361,4 +385,7 @@ $R datetime run --py 3.15.1 -- python benches/targets/datetime_cg.py -o cg.json 
 $R datetime run --py 3.15.1 -- python tests/conformance/run_target_suites.py --targets datetime \
     --modules test.test_strptime,test.test_datetime,test.test_time
 $R datetime run --py 3.15.1 -- python benches/workloads/run.py compare data/log_analytics data/tz_events data/csv_etl --only datetime -n 5 -p 3
+$R datetime run --py 3.15.1 -- python benches/targets/datetime_install.py
+# whole processes: needs the startup .pth in site-packages (editable installs lack it)
+$R datetime run --py 3.15.1 -- bash -c 'cp python/_rustique_startup.pth "$(python -c "import site; print(site.getsitepackages()[0])")" && python benches/targets/datetime_startup.py'
 ```
