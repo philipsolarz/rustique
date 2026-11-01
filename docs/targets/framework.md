@@ -84,6 +84,8 @@ Dependency pins (one relaxed load per call: `if !DEPS.ok() { fallback(Reason::De
 | a class attribute along the MRO | `cx.pin_attr(&ty, "default", &DEPS)?` |
 | a whole dict (instance attributes incl. absent keys, a class dict) | `cx.pin_dict(&obj_dict, &DEPS)?` |
 | a value legitimately replaced at run time | `accel::guard::watch(&d, "key", &GEN)` (an `AtomicU64` generation: revalidate by value when it moves) |
+| a fact derived from a small dict (any key) | `accel::guard::watch_dict_generation(&d, &GEN)` |
+| "does this subclass override any of these names?" | `static C: accel::guard::OverrideCache` (`set_base`, `overrides(ty)`; keyed by `tp_version_tag`) |
 
 The target must validate what it pins (fingerprint, identity with a known object): a pin
 records the current object. Flags re-arm when the original state comes back
@@ -98,7 +100,7 @@ unsafe extern "C" fn k_join(f: O, args: *const O, nargsf: usize, kw: O) -> O {
             C.fallback_streak(Reason::Args);
         } else if !DEPS.ok() {
             C.fallback_streak(Reason::Deps);
-        } else if !accel::tools_quiet(&TOOLS, f) {     // Python targets only (34 + ~4 Ir)
+        } else if !accel::tools_quiet(&TOOLS, f) {     // Python targets only (~40 Ir)
             C.fallback_streak(Reason::Tools);
         } else {
             let r = join2(*args, *args.add(1));
@@ -123,6 +125,11 @@ unsafe extern "C" fn k_join(f: O, args: *const O, nargsf: usize, kw: O) -> O {
 - Check mode (`checkable` targets): `hit_check()` / `check::verify(...)`; mismatches count
   as `fallback["check"]` and return the original's result (`"warn"`) or raise
   `RustiqueCheckError` (`"raise"`).
+- Tools guard (`accel::tools_quiet`): falls back when any `sys.monitoring` tool listens
+  globally to any ungrouped event (PY_START … STOP_ITERATION, RAISE, EXCEPTION_HANDLED,
+  PY_UNWIND, PY_THROW, RERAISE; `settrace`/`setprofile`/cProfile/coverage are tools too;
+  the verdict is cached per monitoring version) or locally on the original's code object
+  (`_co_monitoring`: 11 local events on 3.14, 16 on 3.15, calibrated at `enable()`).
 - `accel::in_main_interpreter()` (~30 Ir) only for process-global sites that hold
   per-interpreter objects; better: be interpreter-agnostic (the extension refuses to load in
   subinterpreters, but static `ml_meth`/slot sites are reached from them).
