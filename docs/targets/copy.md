@@ -146,11 +146,89 @@ the code objects recognised as `return self`).
 
 ## 4. Conformance (`tests/conformance/run_target_suites.py`)
 
-RESULTS_CONFORMANCE
+`--targets copy,dataclasses --modules test.test_copy,test.test_copyreg,test.test_dataclasses
+--expect-installed copy.deepcopy,copy.copy,dataclasses.asdict,dataclasses.astuple`: identical
+per-test outcomes plain vs enabled on 3.15.1, 3.15.1t, 3.14.9, 3.14.9t (3.15: test_copy 84
+pass, test_copyreg 6, test_dataclasses 284 + 1 skip; 3.14: 81 / 6 / 279 + 1 skip), 0
+differences. Full pytest on the four builds: all pass except 4 `tests/test_dx.py` tests that
+assume `containers` is the only non-builtins group (they see `copy` and `dataclasses` too;
+not ours to change).
 
 ## 5. Measurements
 
-RESULTS_MEASUREMENTS
+### 5.1 Callgrind cells (`benches/targets/copy_cells.py`, Ir per call, enabled / plain)
+
+| cell | plain Ir (3.15.1) | 3.15.1 | 3.14.9 | 3.15.1t |
+|---|---|---|---|---|
+| deepcopy int | 712 | 0.429 | 0.563 | 0.430 |
+| deepcopy record (10 fields) | 24,230 | 0.170 | 0.166 | 0.209 |
+| deepcopy list of 5 records | 119,142 | 0.163 | 0.154 | 0.208 |
+| deepcopy tuple of immutables | 19,354 | 0.131 | 0.131 | 0.131 |
+| deepcopy small dataclass | 29,328 | 0.259 | 0.241 | 0.270 |
+| deepcopy dataclass tree (datetimes, enums) | 141,431 | 0.257 | 0.232 | 0.271 |
+| deepcopy plain / slotted object | 35,404 / 38,163 | 0.249 / 0.229 | 0.231 / 0.215 | 0.275 / 0.240 |
+| deepcopy enum member | 3,002 | 0.453 | 0.531 | 0.448 |
+| deepcopy set / frozenset | 27,987 / 29,122 | 0.186 / 0.191 | 0.173 / 0.174 | 0.200 / 0.203 |
+| deepcopy datetime | 13,104 | 0.308 | 0.292 | 0.297 |
+| deepcopy Decimal | 2,847 | 0.353 | 0.405 | 0.353 |
+| deepcopy explicit `{}` memo | 25,459 | 0.296 | 0.290 | 0.357 |
+| copy int / record / set | 645 / 1,688 / 1,477 | 0.610 / 0.753 / 0.708 | 0.655 / 0.748 / 0.943 | 0.589 / 0.703 / 0.670 |
+| copy list100 / dict100 | 3,123 / 5,076 | 0.869 / 0.922 | 0.869 / 0.917 | 0.840 / 0.890 |
+| copy plain object / dataclass | 12,714 / 12,636 | 0.369 / 0.372 | 0.392 / 0.386 | 0.373 / 0.370 |
+| copy enum / datetime | 1,884 / 6,629 | 0.424 / 0.359 | 0.690 / 0.421 | 0.395 / 0.334 |
+| asdict small dataclass / tree | 12,622 / 76,330 | 0.397 / 0.367 | 0.380 / 0.363 | 0.449 / 0.414 |
+| astuple small dataclass | 12,478 | 0.362 | 0.362 | 0.411 |
+
+Restarts (user code reached; CPython's call from scratch). A restart costs the wasted
+native prefix plus the C-call entry of every call the original's helpers make into the
+function (they are not inlined while the kernel is installed); the helpers' calls for
+subtrees without user code run natively, so a restarted call is still cheaper than plain:
+
+| cell | plain Ir | 3.15.1 | 3.14.9 | 3.15.1t |
+|---|---|---|---|---|
+| `__deepcopy__` hook at the root (its children copied natively) | 13,993 | 0.716 | 0.713 | 0.769 |
+| 5 records then a hook (restart at the end) | 131,181 | 0.493 | 0.470 | 0.582 |
+| 5 records then a `uuid.UUID` (Python `__getstate__`) | 144,310 | 0.542 | 0.526 | 0.618 |
+| hook last, 4 levels deep | 150,529 | 0.581 | 0.562 | 0.658 |
+| same structure without the hook (no restart) | 138,172 | 0.169 | 0.160 | 0.210 |
+| registered copier / copyreg reductor / dict subclass | 13,207 / 19,053 / 26,053 | 0.649 / 0.779 / 0.849 | 0.655 / 0.802 / 0.872 | 0.713 / 0.821 / 0.872 |
+| `OrderedDict` (C `__reduce__`, not recognised) | 22,489 | 1.030 | 1.020 | 1.029 |
+| pair: restart, hook at the root + deepcopy int | 14,700 | 0.709 | 0.705 | 0.753 |
+| pair: restart, hook last 4 levels deep + deepcopy int | 151,179 | 0.582 | 0.564 | 0.657 |
+| pair: `copy.copy` of a `__copy__` hook + copy int | 3,495 | 1.147 | 1.326 | 1.146 |
+| `copy.copy` of a `__copy__` hook (suspended after the streak) | 2,824 | 0.983 | 0.992 | 1.000 |
+
+Fallbacks before any work: `memo=OrderedDict` 0.991 (alone; suspended) and 1.113 paired
+with a hit (every nested call of the original's helpers is a C call); `copy.copy(x, kw)`
+paired 1.025; `asdict(dict_factory=...)` 0.998.
+
+### 5.2 Install cost (`benches/targets/copy_install.py`, quiet `_accel.enable`, Ir)
+
+| | 3.15.1 | 3.14.9 |
+|---|---|---|
+| `enable(['copy'])` (copy imported) | 259,266 | 253,138 |
+| same with `copy` not imported (framework pass + lazy hook) | 39,463 | 35,032 |
+| group `copy`'s own | 219,803 | 218,106 |
+| group `dataclasses`'s own | 253,958 | 241,110 |
+| `import copy` plain / with lazy install | 1,334,673 / 1,593,638 (+19.4%) | 525,005 / 782,162 (+49.0%) |
+| `import dataclasses` plain / lazy install (both groups) | 5,549,503 / 5,858,113 (+5.6%) | 25,698,514 / 26,078,043 (+1.5%) |
+
+Over the 0.1M budget. Group `copy` (profiled on 3.15.1): 11 code fingerprints of the emulated
+functions (`deepcopy`, `copy`, five `_deepcopy_*` helpers, `_keep_alive`, `_reconstruct`,
+`copyreg.__newobj__`, `copyreg._slotnames`) ≈ 69k (≈6.3k each, framework v2), pins ≈ 29k for
+the first target and 13k for the second, module/str lookups and interning ≈ 35k, vectorcall
+sites ≈ 7k, framework activation ≈ 38k plus the one-time monitoring probe ≈ 27k. Every
+fingerprint covers code the kernels execute instead of CPython; dropping any would mean
+restarting where that code is reached. Group `dataclasses`: 6 fingerprints (≈38k) and ~28
+pins per target (`pin_global` for 9-10 builtins each); a single snapshot pin of the module
+globals is not usable on 3.15, where the lazy `import copy` reifies a global on first use.
+`import copy` is a tiny module, so the framework's own lazy-install baseline (~60k) alone
+exceeds 5% of it.
+
+### 5.3 pyperf and workloads
+
+RESULTS_TIMING
+
 
 ## 6. Tests
 
