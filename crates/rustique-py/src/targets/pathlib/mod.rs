@@ -612,20 +612,43 @@ fn prep(
         }
     }
     let ppd = pp.dict();
-    for key in ["sep", "altsep", "join", "splitroot", "splitdrive"] {
-        cx.pin(&ppd, key, &rt.deps)?;
-    }
     if !cx.get(&ppd, "sep")?.eq("/")? || !cx.get(&ppd, "altsep")?.is_none() {
         return Err(refuse!("posixpath.sep/altsep differ"));
     }
-    let join = cx.get(&ppd, "join")?;
-    rt::check_fp(cx, crate::targets::posixpath::FPS, "posixpath.join", &join)?;
-    rt::check_fp(cx, crate::targets::posixpath::FPS, "posixpath._get_sep", &cx.get(&ppd, "_get_sep")?)?;
-    cx.pin(&ppd, "_get_sep", &rt.deps)?;
-    for key in ["os", "posixpath", "PurePath", "chain", "_PathParents"] {
+    let parses = reached(attr).contains(&"_parse_path");
+    if parses {
+        // `_raw_path` → `parser.join`; `_parse_path` → `sep`, `altsep`, `splitroot`;
+        // `_format_parsed_parts` → `splitdrive`.
+        for key in ["sep", "altsep", "join", "splitroot", "splitdrive", "_get_sep"] {
+            cx.pin(&ppd, key, &rt.deps)?;
+        }
+        let join = cx.get(&ppd, "join")?;
+        rt::check_fp(cx, crate::targets::posixpath::FPS, "posixpath.join", &join)?;
+        rt::check_fp(cx, crate::targets::posixpath::FPS, "posixpath._get_sep", &cx.get(&ppd, "_get_sep")?)?;
+        cx.pin_global(&g, "len", &rt.deps)?;
+    }
+    // The module globals and builtins this original's code (and the helpers it reaches)
+    // resolves at call time.
+    let (globals, builtins): (&[&str], &[&str]) = match attr {
+        "__new__" => {
+            (&["os", "PurePath", "PurePosixPath", "PosixPath", "Path", "PureWindowsPath", "WindowsPath"], &["object"])
+        }
+        "__init__" => (&["os", "PurePath"], &["isinstance", "str", "TypeError"]),
+        "__truediv__" => (&["os", "PurePath", "Path"], &["type", "object", "isinstance", "str", "TypeError"]),
+        "parts" => (&[], &["tuple"]),
+        "parent" => (&["os", "PurePath", "Path"], &["type", "object", "isinstance", "str", "TypeError"]),
+        "__eq__" => (&["PurePath", "posixpath"], &["isinstance", "str"]),
+        "__hash__" => (&["posixpath"], &["hash", "str"]),
+        "relative_to" => (
+            &["os", "PurePath", "Path", "posixpath", "chain", "_PathParents"],
+            &["type", "object", "isinstance", "str", "hasattr", "ValueError", "TypeError"],
+        ),
+        _ => (&[], &[]),
+    };
+    for key in globals {
         cx.pin(&g, key, &rt.deps)?;
     }
-    for name in ["isinstance", "type", "object", "hasattr", "len", "tuple", "str", "hash", "ValueError"] {
+    for name in builtins {
         cx.pin_global(&g, name, &rt.deps)?;
     }
     // Slot offsets: object-typed, writable member descriptors of PurePath.
@@ -666,21 +689,17 @@ fn prep(
         }
         *v = ptrs;
     }
-    // `__new__` picks the flavour from `os.name` when called on `PurePath`/`Path` itself.
     let osd = cx.loaded_module("os")?.dict();
     if !cx.get(&osd, "name")?.eq("posix")? {
         return Err(refuse!("os.name is not 'posix'"));
     }
-    cx.pin(&osd, "name", &rt.deps)?;
-    // `__init__` calls `os.fspath(arg)` on every non-path argument.
-    let fspath = cx.get(&osd, "fspath")?;
-    rt::check_c(cx, crate::targets::posixpath::FPS, "os.fspath", &fspath)?;
-    cx.pin(&osd, "fspath", &rt.deps)?;
-    for key in ["PurePosixPath", "PosixPath", "Path", "PureWindowsPath", "WindowsPath"] {
-        cx.pin(&g, key, &rt.deps)?;
-    }
-    for name in ["isinstance", "TypeError"] {
-        cx.pin_global(&g, name, &rt.deps)?;
+    if globals.contains(&"os") {
+        // `__new__` picks the flavour from `os.name` (when called on `PurePath`/`Path`);
+        // `__init__` calls `os.fspath(arg)` on every non-path argument.
+        cx.pin(&osd, "name", &rt.deps)?;
+        let fspath = cx.get(&osd, "fspath")?;
+        rt::check_c(cx, crate::targets::posixpath::FPS, "os.fspath", &fspath)?;
+        cx.pin(&osd, "fspath", &rt.deps)?;
     }
     store_type(&PURE_BASE, &pure);
     store_type(&PATH_BASE, &path);

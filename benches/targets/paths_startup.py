@@ -15,8 +15,8 @@ CELLS = [
     ("enable(only=['posixpath'])", "rustique.enable(only=['posixpath'])", "import rustique, posixpath"),
     ("enable(only=['fnmatch']) (fnmatch imported)", "rustique.enable(only=['fnmatch'])", "import rustique, fnmatch"),
     ("enable(only=['pathlib']) (pathlib imported)", "rustique.enable(only=['pathlib'])", "import rustique, pathlib"),
-    ("import fnmatch, plain", "import fnmatch", "import rustique"),
-    ("import fnmatch, fnmatch group pending", "import fnmatch", "import rustique; rustique.enable(only=['fnmatch'])"),
+    ("enable(only=['posixpath','fnmatch','pathlib'])", "rustique.enable(only=['posixpath', 'fnmatch', 'pathlib'])",
+     "import rustique, posixpath, fnmatch, pathlib"),
     ("import pathlib, plain", "import pathlib", "import rustique"),
     ("import pathlib, pathlib group pending", "import pathlib", "import rustique; rustique.enable(only=['pathlib'])"),
 ]

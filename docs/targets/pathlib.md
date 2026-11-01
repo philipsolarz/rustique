@@ -117,6 +117,30 @@ Callgrind as in docs/targets/posixpath.md (`benches/targets/paths_cg.py`, CPytho
 | `pp.relative_to(root) cProfile on` | 301414 | 301483 | 1.000 | 1.005 |
 
 
+Under `PYTHON_JIT=1` (3.15.1, warmed 30,000 iterations; steady state):
+
+| cell | CPython Ir | Rustique Ir | ratio |
+|---|---:|---:|---:|
+| `Path(p)` | 4030 | 1826 | 0.453 |
+| `str(Path(p))` | 23988 | 6385 | 0.266 |
+| `Path(d) / f` | 9578 | 3234 | 0.338 |
+| `str(pp / f)` | 29203 | 9005 | 0.308 |
+| `pp.name` | 568 | 376 | 0.663 |
+| `pp.parent` | 8041 | 2657 | 0.330 |
+| `pp.relative_to(root)` | 100332 | 4878 | 0.049 |
+| `hash(Path(p))` | 36060 | 7132 | 0.198 |
+| `Path(p) == pp` | 30889 | 6547 | 0.212 |
+| `PurePosixPath(d, f)` | 4679 | 1881 | 0.402 |
+| `str(pp)` | 611 | 335 | 0.548 |
+| `pp == pq` | 1357 | 459 | 0.338 |
+| `hash(pp)` | 833 | 535 | 0.642 |
+| `PurePosixPath(p).name (fresh)` | 16532 | 5265 | 0.319 |
+| `pw.name PureWindowsPath` | 568 | 568 | 1.000 |
+| `ms.name subclass` | 568 | 568 | 1.000 |
+| `str(ms / f) subclass` | 27692 | 27747 | 1.002 |
+| `pp.name cProfile on` | 2824 | 2824 | 1.000 |
+| `pp.relative_to(root) cProfile on` | 301423 | 301601 | 1.001 |
+
 ## Conformance
 
 `tests/conformance/run_target_suites.py --targets posixpath,fnmatch,pathlib --modules
@@ -146,4 +170,4 @@ the four builds.
 3.14 and 3.15: the PurePath core is the same except `__fspath__` (3.15: alias of
 `__str__`, accelerated with it; 3.14: its own function calling `str(self)`, which reaches
 the `__str__` kernel) and `relative_to`'s loop (same result without `walk_up`).
-`jit_safe: false`.
+`jit_safe: true` (see Measurements: under `PYTHON_JIT=1` the steady-state cells, fallbacks included, stay within 1.05; a fallback before suspension costs +250–350 Ir, inferred from docs/atlas/mechanisms.md §1.3).

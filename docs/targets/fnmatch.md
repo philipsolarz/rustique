@@ -86,6 +86,24 @@ whose inner `fnmatchcase` call is still accelerated.
 | `filter(iter, '*.py')` | 63373 | 60947 | 0.962 | 0.969 |
 
 
+Under `PYTHON_JIT=1` (3.15.1, warmed 30,000 iterations; steady state):
+
+| cell | CPython Ir | Rustique Ir | ratio |
+|---|---:|---:|---:|
+| `fnmatch(f, '*.py')` | 4292 | 628 | 0.146 |
+| `fnmatch(f, 'coverage.*') miss` | 3715 | 666 | 0.179 |
+| `fnmatch(f, '[!t]*_[0-9]*.py')` | 3715 | 658 | 0.177 |
+| `fnmatch(fb, b'*.py') bytes` | 4394 | 589 | 0.134 |
+| `fnmatch(fs, '*.py') str subclass` | 4290 | 647 | 0.151 |
+| `fnmatch(Path, '*.py')` | 4989 | 2509 | 0.503 |
+| `fnmatch(f, '*.py') os.fspath patched` | 4707 | 2214 | 0.470 |
+| `fnmatch(f, '*.py') cProfile on` | 15202 | 15226 | 1.002 |
+| `fnmatchcase(f, '*.py')` | 3104 | 628 | 0.202 |
+| `fnmatchcase(fs, '*.py') str subclass` | 3102 | 647 | 0.209 |
+| `any(fnmatch(f, pat) for 12 pats)` | 50896 | 13516 | 0.266 |
+| `filter(32 names, '*.py')` | 56561 | 5322 | 0.094 |
+| `filter(iter, '*.py')` | 57621 | 59227 | 1.028 |
+
 ## Conformance
 
 `tests/conformance/run_target_suites.py --targets posixpath,fnmatch,pathlib --modules
@@ -113,4 +131,4 @@ the four builds.
 ## Version coverage
 
 3.14 and 3.15 (`fnmatch.py` is identical in both; fingerprints recorded per minor).
-`jit_safe: false`.
+`jit_safe: true` (see Measurements: under `PYTHON_JIT=1` the steady-state cells, fallbacks included, stay within 1.05; a fallback before suspension costs +250–350 Ir, inferred from docs/atlas/mechanisms.md §1.3).

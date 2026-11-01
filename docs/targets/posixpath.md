@@ -163,6 +163,39 @@ bytes; `ps`/`ds`/`fs` instances of `class S(str): pass`; `PL` a minimal user Pat
 | `commonpath((pb, db)) bytes` | 24737 | 24729 | 1.000 |  |
 
 
+Under `PYTHON_JIT=1` (3.15.1, warmed 30,000 iterations; steady state):
+
+| cell | CPython Ir | Rustique Ir | ratio |
+|---|---:|---:|---:|
+| `join(d, f)` | 3471 | 981 | 0.283 |
+| `join(root, 'src', 'pkg', f)` | 7184 | 1364 | 0.190 |
+| `join(d, '/abs')` | 2330 | 603 | 0.259 |
+| `join(db, fb) bytes` | 3514 | 715 | 0.203 |
+| `join(latin1, f)` | 3496 | 997 | 0.285 |
+| `join(ds, fs) str subclass` | 3879 | 2313 | 0.596 |
+| `join(PathLike, f)` | 4155 | 3566 | 0.858 |
+| `join(Path, f)` | 4157 | 3568 | 0.858 |
+| `join(d, f) os.fspath patched` | 3780 | 3780 | 1.000 |
+| `join(d, f) _get_sep patched` | 3596 | 3596 | 1.000 |
+| `join(d, f) cProfile on` | 13854 | 13854 | 1.000 |
+| `split(p)` | 3257 | 1117 | 0.343 |
+| `split(p) os.fspath patched` | 3455 | 3450 | 0.999 |
+| `split(p) cProfile on` | 14468 | 14468 | 1.000 |
+| `splitext(p)` | 2962 | 1091 | 0.368 |
+| `splitext(p) os.fspath patched` | 3170 | 3170 | 1.000 |
+| `basename(p)` | 1590 | 605 | 0.381 |
+| `basename(p) os.fspath patched` | 1816 | 1816 | 1.000 |
+| `basename(p) cProfile on` | 9403 | 9403 | 1.000 |
+| `dirname(p)` | 2885 | 631 | 0.219 |
+| `dirname(p) os.fspath patched` | 2986 | 2967 | 0.994 |
+| `isabs(p)` | 1142 | 310 | 0.272 |
+| `isabs(p) os.fspath patched` | 1368 | 1368 | 1.000 |
+| `relpath(p, root)` | 18091 | 6733 | 0.372 |
+| `relpath(pb, rootb) bytes` | 19081 | 4953 | 0.260 |
+| `relpath(ps, root) str subclass` | 19188 | 7432 | 0.387 |
+| `relpath(p, root) os.fspath patched` | 18880 | 18875 | 1.000 |
+| `abspath(p)` | 2691 | 2194 | 0.815 |
+
 ## Conformance
 
 `tests/conformance/run_target_suites.py --targets posixpath,fnmatch,pathlib --modules
@@ -190,5 +223,6 @@ the four builds.
 ## Version coverage
 
 3.14 and 3.15 (fingerprints recorded for both; identical on GIL and free-threaded builds).
-Free-threaded builds: the kernels read immutable str/bytes only. `jit_safe: false`: under
-`PYTHON_JIT=1` a fallback costs +250–350 Ir (refused with reason "jit").
+Free-threaded builds: the kernels read immutable str/bytes only. `jit_safe: true`: under
+`PYTHON_JIT=1` the steady-state cells stay within 1.05 (table below); a fallback before
+suspension costs +250–350 Ir (docs/atlas/mechanisms.md §1.3).
