@@ -166,7 +166,12 @@ def all_cells():
     return {**CELLS, **ERROR_CELLS}
 
 
-def worker(name: str, variant: str) -> None:
+def reset_stmt(name: str) -> str:
+    """A call that hits the cell's target (ends a fallback streak)."""
+    return "loads('0')" if "loads" in name else "dumps(0)"
+
+
+def worker(name: str, variant: str, first64: bool = False) -> None:
     h = helper()
     stmt, groups = all_cells()[name]
     ns: dict = {}
@@ -190,6 +195,24 @@ def worker(name: str, variant: str) -> None:
     body = line * UNROLL
     exec(f"def fn(_n):\n{binds}    for _ in range(_n):\n{body}", ns)
     fn = ns["fn"]
+    if first64:
+        # Vectorcall targets suspend after 64 consecutive fallbacks: measure the cost of
+        # the first ones (20 and 40 calls, each phase after a hit that resets the streak).
+        reset = eval("lambda: " + reset_stmt(name), ns)
+        fn(4)
+        reset()
+        fn(2)
+        reset()
+        h.start()
+        fn(2)
+        h.dump("a")
+        h.stop()
+        reset()
+        h.start()
+        fn(4)
+        h.dump("b")
+        h.stop()
+        return
     jit = getattr(sys, "_jit", None)
     fn(30000 if (jit and jit.is_enabled()) else 50)
     fn(N)
@@ -203,12 +226,12 @@ def worker(name: str, variant: str) -> None:
     h.stop()
 
 
-def run_cell(name: str, variant: str, env: dict) -> tuple[float | None, str | None]:
+def run_cell(name: str, variant: str, env: dict, first64: bool = False) -> tuple[float | None, str | None]:
     with tempfile.TemporaryDirectory() as d:
         out = os.path.join(d, "cg.out")
         cmd = ["valgrind", "--tool=callgrind", "--instr-atstart=no", "--dump-instr=no", "--dump-line=no",
                "--compress-strings=no", "-q", f"--callgrind-out-file={out}", sys.executable,
-               os.path.abspath(__file__), "_worker", name, variant]
+               os.path.abspath(__file__), "_worker", name, variant] + (["first64"] if first64 else [])
         r = subprocess.run(cmd, env=env, capture_output=True, text=True)
         if r.returncode:
             return None, r.stderr[-2000:]
@@ -224,24 +247,26 @@ def run_cell(name: str, variant: str, env: dict) -> tuple[float | None, str | No
                         break
             if tag:
                 tot[tag] = t
-        return (tot["b"] - tot["a"]) / (N * UNROLL), None
+        n = 2 if first64 else N
+        return (tot["b"] - tot["a"]) / (n * UNROLL), None
 
 
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "_worker":
-        worker(sys.argv[2], sys.argv[3])
+        worker(sys.argv[2], sys.argv[3], len(sys.argv) > 4 and sys.argv[4] == "first64")
         return
     p = argparse.ArgumentParser()
     p.add_argument("--only", default="")
     p.add_argument("-j", type=int, default=4)
     p.add_argument("--jit", action="store_true")
+    p.add_argument("--first64", action="store_true", help="cost of the first fallbacks (before suspension)")
     p.add_argument("-o")
     a = p.parse_args()
     env = {**os.environ, "PYTHONHASHSEED": "0", "PYTHON_JIT": "1" if a.jit else "0"}
     names = [n for n in all_cells() if not a.only or any(s in n for s in a.only.split("|"))]
     jobs = [(n, v) for n in names for v in ("plain", "on")]
     with ThreadPoolExecutor(a.j) as ex:
-        res = dict(zip(jobs, ex.map(lambda j: run_cell(j[0], j[1], env), jobs)))
+        res = dict(zip(jobs, ex.map(lambda j: run_cell(j[0], j[1], env, a.first64), jobs)))
     rows = {}
     worst = 0.0
     for n in names:
@@ -255,10 +280,10 @@ def main() -> None:
         rows[n] = {"plain": round(p_ir, 1), "on": round(o_ir, 1), "ratio": round(ratio, 3)}
         print(f"{n:48s} {p_ir:10.0f} {o_ir:10.0f} {ratio:7.3f}", flush=True)
     build = f"{sys.version.split()[0]}{'t' if sysconfig.get_config_var('Py_GIL_DISABLED') else ''}"
-    print(f"# {build} jit={a.jit}: worst ratio {worst:.3f}")
+    print(f"# {build} jit={a.jit} first64={a.first64}: worst ratio {worst:.3f}")
     if a.o:
         with open(a.o, "w") as f:
-            json.dump({"build": build, "jit": a.jit, "rows": rows}, f, indent=1)
+            json.dump({"build": build, "jit": a.jit, "first64": a.first64, "rows": rows}, f, indent=1)
 
 
 if __name__ == "__main__":
