@@ -93,8 +93,12 @@ unsafe extern "C" fn k_meth(m: O, x: O) -> O {
     // SAFETY: METH_O call.
     unsafe {
         if ffi::PyLong_CheckExact(x) != 0 {
-            C_METH.hit();
-            return tagged(&KERNEL_STR, x);
+            let r = tagged(&KERNEL_STR, x);
+            if C_METH.hit_check() {
+                // Check mode sees the (deliberate) difference from the original.
+                return accel::check::verify(&METH, r, &[x], || ORIG_METH.get()(m, x));
+            }
+            return r;
         }
         C_METH.fallback(Reason::Args);
         ORIG_METH.get()(m, x)
@@ -232,14 +236,87 @@ macro_rules! target {
     };
 }
 
-target!(METH, "_selftest.meth", None, C_METH, prepare_meth);
+pub static METH: TargetSpec = TargetSpec {
+    name: "_selftest.meth",
+    group: "_selftest",
+    module: None,
+    versions: VERSIONS,
+    free_threaded: true,
+    counters: &C_METH,
+    prepare: prepare_meth,
+    checkable: true,
+    ..TargetSpec::DEFAULT
+};
 target!(VECTORCALL, "_selftest.vectorcall", Some(MODULE), C_VC, prepare_vectorcall);
 target!(SLOT, "_selftest.slot", Some(MODULE), C_SLOT, prepare_slot);
 target!(BADFP, "_selftest.badfp", Some(MODULE), C_NONE, prepare_badfp);
 target!(REFUSE, "_selftest.refuse", None, C_NONE, prepare_refuse);
 target!(CAS, "_selftest.cas", None, C_NONE, prepare_cas);
+target!(SNAPSHOT, "_selftest.snapshot", Some(MODULE), C_SNAP, prepare_snapshot);
 
-pub static TARGETS: &[&TargetSpec] = &[&METH, &VECTORCALL, &SLOT, &BADFP, &REFUSE, &CAS];
+pub static TARGETS: &[&TargetSpec] = &[&METH, &VECTORCALL, &SLOT, &BADFP, &REFUSE, &CAS, &SNAPSHOT];
+
+// ---------------------------------------------------------------------------------------
+// _selftest.snapshot: a snapshot pin (`pin_dict`) on an instance dict.
+// ---------------------------------------------------------------------------------------
+
+static C_SNAP: Counters = Counters::new();
+static SNAP_DEPS: DepFlag = DepFlag::new();
+
+unsafe extern "C" fn k_ident2(f: O, args: *const O, nargsf: usize, kw: O) -> O {
+    // SAFETY: vectorcall arguments from CPython; attached thread.
+    unsafe {
+        if kw.is_null() && nargsf & !ffi::PY_VECTORCALL_ARGUMENTS_OFFSET == 1 && SNAP_DEPS.ok() {
+            C_SNAP.hit();
+            return tagged(&KERNEL_STR, *args);
+        }
+        C_SNAP.fallback(Reason::Deps);
+        accel::FUNCTION_VECTORCALL.get()(f, args, nargsf, kw)
+    }
+}
+
+fn prepare_snapshot(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let f = cx.module_attr("ident2")?;
+    let obj = cx.module_attr("OBJ")?;
+    let d = obj.getattr("__dict__")?.cast_into::<pyo3::types::PyDict>().map_err(PyErr::from)?;
+    cx.pin_dict(&d, &SNAP_DEPS)?;
+    cx.vectorcall(&f, k_ident2, &accel::FUNCTION_VECTORCALL)
+}
+
+/// The snapshot self-test's dependency flag.
+#[pyfunction]
+fn _selftest_snapshot_ok() -> bool {
+    SNAP_DEPS.ok()
+}
+
+/// Which vectorcall a function has: "kernel" (a self-test kernel), "original"
+/// (`_PyFunction_Vectorcall`) or "other".
+#[pyfunction]
+fn _selftest_vectorcall(func: &Bound<'_, pyo3::types::PyFunction>) -> &'static str {
+    // SAFETY: an exact function object.
+    let vc = unsafe { (*func.as_ptr().cast::<ffi::PyFunctionObject>()).vectorcall }.map_or(0, |f| f as usize);
+    if vc == k_ident as ffi::vectorcallfunc as usize || vc == k_ident2 as ffi::vectorcallfunc as usize {
+        "kernel"
+    } else if vc == crate::accel::prepare::function_vectorcall() {
+        "original"
+    } else {
+        "other"
+    }
+}
+
+static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Generation watch on `dict[key]` with the self-test counter (idempotent).
+#[pyfunction]
+fn _selftest_watch(dict: &Bound<'_, pyo3::types::PyDict>, key: &str) -> PyResult<()> {
+    accel::guard::watch(dict, key, &GEN)
+}
+
+/// The self-test generation counter.
+#[pyfunction]
+fn _selftest_gen() -> u64 {
+    GEN.load(Ordering::Relaxed)
+}
 
 // ---------------------------------------------------------------------------------------
 // Python helpers
@@ -289,5 +366,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_selftest_untamper, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_probe_state, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_deps_ok, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_snapshot_ok, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_vectorcall, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_watch, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_gen, m)?)?;
     Ok(())
 }
