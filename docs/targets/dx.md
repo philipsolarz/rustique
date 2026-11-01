@@ -157,6 +157,7 @@ in `rustique._switch` (not imported here), extension of wave1 at 41fe7e6.
 | `RUSTIQUE=1` | 1.073 | 1.105 | 1.053 | 1.083 | 1.092 | 1.126 | 1.057 | 1.092 |
 | `import rustique` | 1.070 | 1.099 | 1.051 | 1.076 | 1.086 | 1.110 | 1.051 | 1.074 |
 | `import rustique; rustique.enable()` | 1.083 | 1.113 | 1.063 | 1.090 | 1.098 | 1.124 | 1.063 | 1.089 |
+| marginal: `RUSTIQUE=1` vs unset, same venv | 1.045 | 1.072 (+0.70 ms) | 1.045 | 1.070 (+0.69 ms) | 1.043 | 1.075 (+0.75 ms) | 1.043 | 1.077 (+0.77 ms) |
 
 Before slimming `__init__.py` (hook module already gone): 3.15.1 bare `RUSTIQUE=1` 1.079 /
 1.112, `import + enable()` 1.089 / 1.119. Decomposition on 3.15.1 (callgrind, **M**):

@@ -198,7 +198,12 @@ def main() -> None:
         ]
         rows = measure(variants, "pass", args.rounds, args.ir_runs)
         show("startup cells (ratios vs plain `python -c pass`)", rows)
+        unset, on = rows[1], rows[2]
+        marginal = {"ir": on["ir"] / unset["ir"], "ms": on["ms_median"] / unset["ms_median"]}
+        print(f"marginal cost of RUSTIQUE=1 in the same venv (vs unset): Ir {marginal['ir']:.4f}, "
+              f"wall {marginal['ms']:.4f} (+{on['ms_median'] - unset['ms_median']:.2f} ms)")
         results["cells"] = rows
+        results["marginal"] = marginal
     else:
         variants = []
         for pair in args.pairs:
