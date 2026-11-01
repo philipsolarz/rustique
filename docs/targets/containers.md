@@ -83,6 +83,27 @@ makes CPython's call 305 Ir; it was 1.062 until the count kernels learned to rej
 heap-type needles with one flag test, f189e6c). The release build's plain-interpreter table matches the one above
 within ±1 Ir on fallbacks.
 
+**Phase 3 follow-up (wave1 after `f5090f9`).** The integrated scoreboard (Phase 3,
+`docs/atlas/phase3.md` §7.1) found three cells above 1.05 that the cells above do not
+cover: `x.count(hit)` on a 1-element list or tuple of tuples (1.065–1.070) and `miss in x`
+on a 1-element list of tuples (1.050–1.055), where CPython's whole call is ~300–400 Ir and
+the delegation cost +19–21 Ir. Two changes: non-scalar needles are rejected with one test
+of the type flags (heap types and the tuple/list/dict/bytes subclass flags, which
+`needs_generic` reads once), and the `count` kernels moved their scan out of line so that
+the delegation path needs no stack frame (it had pushed three registers). Callgrind, release
+build, dev box (scoreboard cells, enabled / plain):
+
+| cell | 3.15.1 before → after | 3.15.1t after |
+|---|---|---|
+| `list/x.count(hit)/object/1` | 1.070 → **1.030** | 1.026 |
+| `tuple/x.count(hit)/object/1` | 1.070 → **1.030** | 1.027 |
+| `list/miss in x/object/1` | 1.050 → **1.040** | 1.045 |
+| `tuple/miss in x/object/1` | 1.049 → **1.038** | 1.038 |
+
+and in the cells above (release build): `objs.count(o)` 1.017, `tobjs.count(o)` 1.023 (JIT
+1.029), `o in mixed` 1.032 (JIT 1.035). Scalar `count` hits pay up to +21 Ir for the extra
+call level (e.g. `x.count(hit)/int/8` 0.449 → 0.467).
+
 Large inputs (wall time): docs/TAKEOVER.md §3.4 (unchanged kernels).
 
 ## Conformance

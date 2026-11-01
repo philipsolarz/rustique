@@ -582,19 +582,52 @@ impl Driver for Locked {
     }
 }
 
-/// A needle no fast path can decide: an instance of a class defined in Python (heap type),
-/// or anything [`maybe_scalar`] rejects. Used where such a needle delegates at once.
+/// Type flags of needles no fast path decides, rejected by one test: instances of classes
+/// defined in Python (heap types; Python subclasses of `int`/`str` too, which the scans'
+/// exact checks would reject anyway) and the builtin containers. These are the common
+/// non-scalar needles (`objs.count(o)`, `(a, b) in pairs`).
+const GENERIC_FLAGS: std::ffi::c_ulong = ffi::Py_TPFLAGS_HEAPTYPE
+    | ffi::Py_TPFLAGS_TUPLE_SUBCLASS
+    | ffi::Py_TPFLAGS_LIST_SUBCLASS
+    | ffi::Py_TPFLAGS_DICT_SUBCLASS
+    | ffi::Py_TPFLAGS_BYTES_SUBCLASS;
+
+/// `tp_flags` of a type, read once (an atomic on free-threaded builds).
+///
+/// # Safety
+/// `t` must be a live type object.
+#[inline(always)]
+unsafe fn type_flags(t: *mut ffi::PyTypeObject) -> std::ffi::c_ulong {
+    // SAFETY: a live type object.
+    #[cfg(not(Py_GIL_DISABLED))]
+    unsafe {
+        (*t).tp_flags
+    }
+    // SAFETY: a live type object; relaxed, as `PyType_HasFeature`.
+    #[cfg(Py_GIL_DISABLED)]
+    unsafe {
+        (*t).tp_flags.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// A needle no fast path can decide: [`GENERIC_FLAGS`], or anything [`maybe_scalar`]
+/// rejects. Such a needle delegates at once (the fallback stays a few instructions: the
+/// scoreboard's 1-element `objs.count(o)` costs CPython ~300 Ir).
 ///
 /// # Safety
 /// `op` must be a live object.
 #[inline(always)]
 unsafe fn needs_generic(op: *mut ffi::PyObject) -> bool {
-    // SAFETY: type object reads of a live object.
+    // SAFETY: type object reads of a live object; `Py_None` is a static object.
     unsafe {
         let t = ffi::Py_TYPE(op);
-        // Instances of classes defined in Python (heap types) are never plain scalars, and
-        // they are the common non-scalar needle: one flag test rejects them.
-        ffi::PyType_HasFeature(t, ffi::Py_TPFLAGS_HEAPTYPE) != 0 || !maybe_scalar(op)
+        let f = type_flags(t);
+        if f & GENERIC_FLAGS != 0 {
+            return true;
+        }
+        !(f & (ffi::Py_TPFLAGS_LONG_SUBCLASS | ffi::Py_TPFLAGS_UNICODE_SUBCLASS) != 0
+            || t == float_type()
+            || op == ffi::Py_None())
     }
 }
 
@@ -780,7 +813,7 @@ unsafe fn ft_prelude(list: *mut ffi::PyObject, needle: *mut ffi::PyObject, mode:
                 return Some(Outcome::Done(Ok(Some(1))));
             }
         }
-        if !maybe_scalar(needle) {
+        if needs_generic(needle) {
             return Some(Outcome::Delegate);
         }
         // A heuristic peek at the first element's type, without a reference: it only picks
@@ -924,7 +957,7 @@ unsafe fn prelude(
     // The needle first: a needle that needs CPython's comparison makes any scan wasted
     // work (`objs.count(o)` would scan, then delegate).
     // SAFETY: live objects.
-    if unsafe { !maybe_scalar(needle) } {
+    if unsafe { needs_generic(needle) } {
         return Some(Outcome::Delegate);
     }
     if first == needle {
@@ -1000,7 +1033,7 @@ unsafe extern "C" fn k_list_contains(seq: *mut ffi::PyObject, el: *mut ffi::PyOb
                 C_LIST_CONTAINS.hit();
                 return 1;
             }
-            if !maybe_scalar(el) || !maybe_scalar(first) {
+            if needs_generic(el) || !maybe_scalar(first) {
                 C_LIST_CONTAINS.fallback(Reason::Args);
                 return ORIG_LIST_CONTAINS.get()(seq, el);
             }
@@ -1042,7 +1075,7 @@ unsafe extern "C" fn k_tuple_contains(seq: *mut ffi::PyObject, el: *mut ffi::PyO
             C_TUPLE_CONTAINS.hit();
             return 1;
         }
-        if !maybe_scalar(el) || !maybe_scalar(first) {
+        if needs_generic(el) || !maybe_scalar(first) {
             C_TUPLE_CONTAINS.fallback(Reason::Args);
             return ORIG_TUPLE_CONTAINS.get()(seq, el);
         }
@@ -1181,6 +1214,13 @@ unsafe extern "C" fn k_list_count(slf: *mut ffi::PyObject, value: *mut ffi::PyOb
         // SAFETY: same arguments to the original METH_O function.
         return unsafe { ORIG_LIST_COUNT.get()(slf, value) };
     }
+    // SAFETY: METH_O arguments, forwarded (a tail call: the entry above needs no frame).
+    unsafe { list_count_scan(slf, value) }
+}
+
+/// The scan behind `list.count` (out of line: see [`k_list_count`]). Panic-free.
+#[inline(never)]
+unsafe extern "C" fn list_count_scan(slf: *mut ffi::PyObject, value: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: METH_O: `slf` is a list, `value` a live object.
     match unsafe { list_prelude(slf, value, Scan::Count).unwrap_or_else(|| scan_list_slow(slf, value, Scan::Count)) } {
         Outcome::Done(r) => {
@@ -1205,6 +1245,13 @@ unsafe extern "C" fn k_tuple_count(slf: *mut ffi::PyObject, value: *mut ffi::PyO
         // SAFETY: same arguments to the original METH_O function.
         return unsafe { ORIG_TUPLE_COUNT.get()(slf, value) };
     }
+    // SAFETY: METH_O arguments, forwarded (a tail call: the entry above needs no frame).
+    unsafe { tuple_count_scan(slf, value) }
+}
+
+/// The scan behind `tuple.count` (out of line: see [`k_tuple_count`]). Panic-free.
+#[inline(never)]
+unsafe extern "C" fn tuple_count_scan(slf: *mut ffi::PyObject, value: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: METH_O: `slf` is a tuple, `value` a live object.
     match unsafe { tuple_prelude(slf, value, Scan::Count).unwrap_or_else(|| scan_tuple_slow(slf, value, Scan::Count)) }
     {
