@@ -230,7 +230,7 @@ target never suspends (the first-64-calls cost). "[deps]": a pinned dependency r
 | info disabled | 1,343 | 836 | **0.623** | | | |
 | debug disabled, no args | 1,172 | 803 | **0.685** | 1,150 | 806 | 0.700 |
 | debug disabled, kwargs | 1,932 | 957 | **0.495** | 1,897 | 960 | 0.506 |
-| isEnabledFor (not a site) | 612 | 612 | **1.000** | 689 | 689 | 1.000 |
+| isEnabledFor (not a site) | 612 | 612 | **1.000** | 689 | – | – |
 | LogRecord() | 19,339 | 7,685 | **0.397** | 15,744 | 7,687 | 0.488 |
 | makeRecord | 19,802 | 8,106 | **0.409** | | | |
 | findCaller | 12,491 | 4,100 | **0.328** | 11,585 | 4,103 | 0.354 |
