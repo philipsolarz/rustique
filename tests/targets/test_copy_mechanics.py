@@ -7,6 +7,7 @@ stress gives no wrong result.
 from __future__ import annotations
 
 import copy
+import copyreg
 import dataclasses
 import functools
 import inspect
@@ -529,3 +530,52 @@ def test_astuple_lists_native():
     h = hits("dataclasses.astuple")
     assert dataclasses.astuple(P(1, [2, [3]])) == (1, [2, [3]])
     assert hits("dataclasses.astuple") == h + 1 and fallbacks("dataclasses.astuple") == {}
+
+
+def test_root_class_decision_cached_and_invalidated():
+    """A root whose class needs user code goes straight to the original next time; changing
+    the class (new version tag) or a registration (watched dicts) re-decides."""
+
+    class H:
+        def __copy__(self):
+            return H()
+
+        def __deepcopy__(self, memo):
+            return H()
+
+    copy.copy(H())
+    copy.deepcopy(H())
+    assert S.A.copy_root_blocked(H) == (True, True)
+    del H.__copy__  # the class changed: decided again (natively now)
+    assert S.A.copy_root_blocked(H)[1] is False
+    h = hits("copy.copy")
+    copy.copy(H())
+    assert hits("copy.copy") == h + 1
+
+    class R:
+        pass
+
+    copyreg.pickle(R, lambda o: (R, ()))
+    try:
+        copy.deepcopy(R())
+        assert S.A.copy_root_blocked(R)[0]
+    finally:
+        del copyreg.dispatch_table[R]
+    assert not S.A.copy_root_blocked(R)[0]
+    h = hits("copy.deepcopy")
+    copy.deepcopy(R())
+    assert hits("copy.deepcopy") == h + 1
+
+
+def test_transient_conditions_do_not_block():
+    """A helper with local monitoring events (or replaced defaults) only falls back for now."""
+    orig = copy._deepcopy_list.__defaults__
+    copy._deepcopy_list.__defaults__ = (copy.deepcopy,)  # same callable, other tuple
+    try:
+        copy.deepcopy([1, [2]])
+    finally:
+        copy._deepcopy_list.__defaults__ = orig
+    assert S.A.copy_root_blocked(list) == (False, False)
+    h = hits("copy.deepcopy")
+    copy.deepcopy([1, [2]])
+    assert hits("copy.deepcopy") == h + 1

@@ -38,6 +38,11 @@ pub static DEEPCOPY: TargetSpec = TargetSpec {
     counters: &C_DEEPCOPY,
     prepare: prepare_deepcopy,
     shared: Some(&SHARED),
+    // Measured (callgrind, docs/targets/copy.md §5): a direct fallback costs ~420 Ir over
+    // CPython (the C call the interpreter cannot inline); a hit saves 400 Ir (an atomic
+    // root) to 20k+ (a record): installed while at least a third of the calls hit.
+    hit_credit: 2,
+    fallback_debit: 1,
     ..TargetSpec::DEFAULT
 };
 
@@ -50,6 +55,11 @@ pub static COPY: TargetSpec = TargetSpec {
     counters: &C_COPY,
     prepare: prepare_copy,
     shared: Some(&SHARED),
+    // Measured: a fallback costs ~420 Ir over CPython; a hit saves 250 Ir (an atomic) to
+    // ~420 (a record or container; 8k for a plain object): installed while half the calls
+    // hit.
+    hit_credit: 1,
+    fallback_debit: 1,
     ..TargetSpec::DEFAULT
 };
 
@@ -168,42 +178,98 @@ thread_local! {
 /// (bounded C stack: a few hundred kB at most).
 const DEEP_FALLBACK: u32 = 128;
 
-/// Count a fallback; outside a fallback of the same target it also debits the net-benefit
-/// score. The original's helpers (and hooks) call the function again for every level: those
-/// nested fallbacks repeat the one already debited and are only counted.
+/// Call the original after a fallback (`why`), with one thread-local access: count it, and
+/// debit the net-benefit score unless it is a call the original's helpers (or hooks) make
+/// inside a fallback of the same target (those repeat the outer one level by level);
+/// `always_debit` for abandoned restarts (work was wasted). Nesting deeper than
+/// [`DEEP_FALLBACK`] puts the original vectorcall back ([`leave_kernel`]).
 #[inline(always)]
-fn debit(c: &'static accel::Counters, nest: &'static std::thread::LocalKey<std::cell::Cell<u32>>, why: Reason) {
-    if nest.with(|n| n.get()) > 0 {
-        c.fallback(why);
-    } else {
-        c.fallback_streak(why);
-    }
-}
-
-/// `original(...)`, counting the nesting of fallbacks on this thread.
-#[inline(always)]
-unsafe fn fallback_call(
+#[allow(clippy::too_many_arguments)]
+unsafe fn fall(
     c: &'static accel::Counters,
     nest: &'static std::thread::LocalKey<std::cell::Cell<u32>>,
+    why: Reason,
+    always_debit: bool,
     func: O,
     args: *const O,
     nargsf: usize,
     kw: O,
 ) -> O {
-    let depth = nest.with(|n| {
-        let d = n.get() + 1;
-        n.set(d);
-        d
-    });
-    if depth == DEEP_FALLBACK {
-        // SAFETY: a live function object (the target's).
-        unsafe { leave_kernel(c, func) };
-    }
-    // SAFETY: vectorcall arguments.
-    let r = unsafe { original(func, args, nargsf, kw) };
-    nest.with(|n| n.set(n.get() - 1));
-    r
+    nest.with(|n| {
+        let depth = n.get();
+        if depth == 0 || always_debit {
+            c.fallback_streak(why);
+        } else {
+            c.fallback(why);
+        }
+        n.set(depth + 1);
+        if depth + 1 == DEEP_FALLBACK {
+            // SAFETY: a live function object (the target's).
+            unsafe { leave_kernel(c, func) };
+        }
+        // SAFETY: vectorcall arguments.
+        let r = unsafe { original(func, args, nargsf, kw) };
+        n.set(n.get() - 1);
+        r
+    })
 }
+
+/// Classes whose instances, as roots, always need user code (a `__deepcopy__`/`__copy__`
+/// hook, a registered copier or reductor): calls with such a root go straight to the
+/// original, before any other work. Keyed by `(type, tp_version_tag)`: any change to the
+/// class gives it a new tag. A stale or torn entry can only send a call to the original,
+/// which is always correct.
+pub(crate) struct RootCache {
+    ty: [std::sync::atomic::AtomicUsize; 64],
+    tag: [std::sync::atomic::AtomicU32; 64],
+    /// [`REGISTRATIONS`] when the entry was made.
+    reg: [std::sync::atomic::AtomicU64; 64],
+}
+
+/// Bumped on any change of `copy._deepcopy_dispatch` or `copyreg.dispatch_table` (dict
+/// watcher): a decision that rested on a registration goes stale with it.
+static REGISTRATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+impl RootCache {
+    const fn new() -> RootCache {
+        RootCache {
+            ty: [const { std::sync::atomic::AtomicUsize::new(0) }; 64],
+            tag: [const { std::sync::atomic::AtomicU32::new(0) }; 64],
+            reg: [const { std::sync::atomic::AtomicU64::new(u64::MAX) }; 64],
+        }
+    }
+
+    #[inline(always)]
+    fn slot(cls: *mut ffi::PyTypeObject) -> usize {
+        ((cls as usize) >> 6) & 63
+    }
+
+    #[inline(always)]
+    unsafe fn blocked(&self, cls: *mut ffi::PyTypeObject) -> bool {
+        let i = Self::slot(cls);
+        // SAFETY: a live type object.
+        let tag = unsafe { (*cls).tp_version_tag };
+        self.ty[i].load(Relaxed) == cls as usize
+            && tag != 0
+            && self.tag[i].load(Relaxed) == tag
+            && self.reg[i].load(Relaxed) == REGISTRATIONS.load(Relaxed)
+    }
+
+    #[cold]
+    unsafe fn block(&self, cls: *mut ffi::PyTypeObject) {
+        // SAFETY: a live type object.
+        let tag = unsafe { (*cls).tp_version_tag };
+        if tag != 0 {
+            let i = Self::slot(cls);
+            self.ty[i].store(cls as usize, Relaxed);
+            self.tag[i].store(tag, Relaxed);
+            self.reg[i].store(REGISTRATIONS.load(Relaxed), Relaxed);
+        }
+    }
+}
+
+static ROOTS_DEEPCOPY: RootCache = RootCache::new();
+static ROOTS_COPY: RootCache = RootCache::new();
 
 unsafe extern "C" {
     /// Public C API (funcobject.h), not in pyo3's bindings.
@@ -298,6 +364,10 @@ mod skip {
 
 /// Kernel for `copy.deepcopy(x, memo=None)`.
 unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) -> O {
+    let fb = |why, always| {
+        // SAFETY: vectorcall arguments.
+        unsafe { fall(&C_DEEPCOPY, &NEST_DEEPCOPY, why, always, func, args, nargsf, kw) }
+    };
     // SAFETY: vectorcall arguments; attached thread.
     unsafe {
         let st = st();
@@ -306,45 +376,42 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
             match n {
                 1 => std::ptr::null_mut(),
                 2 => *args.add(1),
-                _ => {
-                    debit(&C_DEEPCOPY, &NEST_DEEPCOPY, Reason::Args);
-                    return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
-                }
+                _ => return fb(Reason::Args, false),
             }
         } else if n == 1 && ffi::PyTuple_GET_SIZE(kw) == 1 && ffi::PyTuple_GET_ITEM(kw, 0) == st.s_memo {
             *args.add(1)
         } else {
-            debit(&C_DEEPCOPY, &NEST_DEEPCOPY, Reason::Args);
-            return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
+            return fb(Reason::Args, false);
         };
-        let memo = if memo == ffi::Py_None() { std::ptr::null_mut() } else { memo };
-        // Any other memo's `__contains__`/`__getitem__` could be user code.
-        if !memo.is_null() && ty(memo) != &raw mut ffi::PyDict_Type {
-            debit(&C_DEEPCOPY, &NEST_DEEPCOPY, Reason::Args);
-            return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
-        }
         let fo = func.cast::<ffi::PyFunctionObject>();
         if !DEPS_COPY.ok() || (*fo).func_code != st.deepcopy_code || (*fo).func_defaults != st.deepcopy_defaults {
-            debit(&C_DEEPCOPY, &NEST_DEEPCOPY, Reason::Deps);
-            return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
+            return fb(Reason::Deps, false);
         }
         if !accel::tools_quiet(&TOOLS_DEEPCOPY, func) {
-            debit(&C_DEEPCOPY, &NEST_DEEPCOPY, Reason::Tools);
-            return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
+            return fb(Reason::Tools, false);
         }
         let x = *args;
+        let cls = ty(x);
         let budget = recursion_remaining();
-        // `if cls in _atomic_types: return x` (deepcopy's frame only).
-        if is_quick(ty(x)) && budget > 0 && quick_atomic(st, ty(x)) {
+        // `if cls in _atomic_types: return x` (deepcopy's frame only; any memo, untouched).
+        if is_quick(cls) && budget > 0 && quick_atomic(st, cls) {
             C_DEEPCOPY.hit_streak();
             return incref(x);
+        }
+        // A root whose class needs user code: straight to the original, no work done.
+        if ROOTS_DEEPCOPY.blocked(cls) {
+            return fb(Reason::Deopt, false);
+        }
+        // Any other memo's `__contains__`/`__getitem__` could be user code.
+        let memo = if memo == ffi::Py_None() { std::ptr::null_mut() } else { memo };
+        if !memo.is_null() && ty(memo) != &raw mut ffi::PyDict_Type {
+            return fb(Reason::Args, false);
         }
         let fast = atomic_fast(st);
         // Inside a restarted call whose kernel already found user code below `x`: the
         // original's helpers reach `x` again, and the kernel would find it again.
         if RESTARTING.load(Relaxed) != 0 && skip::contains(x) {
-            C_DEEPCOPY.fallback(Reason::Deopt);
-            return fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
+            return fb(Reason::Deopt, false);
         }
         let mut path = Vec::new();
         let e = deep::Engine::new(st, memo, fast, budget);
@@ -353,26 +420,27 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
                 C_DEEPCOPY.hit_streak();
                 y
             }
-            Err(false) => {
-                // User code at the root itself: nothing was wasted. Reached again through a
-                // fallback's helpers (a list of hook objects), it is only counted; called
-                // directly, it debits the net-benefit score like any fallback (a caller
-                // that only copies hook objects gets the target suspended).
-                debit(&C_DEEPCOPY, &NEST_DEEPCOPY, Reason::Deopt);
-                fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw)
-            }
-            Err(true) => {
+            Err(deep::RESTART_ABANDONED) => {
                 // User code (or an error, or the recursion limit) below: CPython's own call,
                 // from scratch, with the unchanged arguments; the abandoned work always
-                // debits the net-benefit score. While it runs, the containers on the path to the node
-                // that needs user code go straight to the original when the helpers reach
-                // them again (each would restart at the same node: no user code ran before
-                // it), so a deep restart does not re-traverse its prefix once per level.
-                C_DEEPCOPY.fallback_streak(Reason::Deopt);
+                // debits the net-benefit score. While it runs, the containers on the path
+                // to the node that needs user code go straight to the original when the
+                // helpers reach them again (each would restart at the same node: no user
+                // code ran before it), so a deep restart does not re-traverse its prefix
+                // once per level.
                 let mark = skip::push(&path);
-                let r = fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw);
+                let r = fb(Reason::Deopt, true);
                 skip::truncate(mark);
                 r
+            }
+            Err(k) => {
+                // User code at the root itself: nothing was wasted (a hook object reached
+                // again through a fallback's helpers is only counted). When the root's
+                // class decided it, later roots of that class skip the kernel's work.
+                if k == deep::RESTART_ROOT_CLASS {
+                    ROOTS_DEEPCOPY.block(cls);
+                }
+                fb(Reason::Deopt, false)
             }
         }
     }
@@ -380,32 +448,41 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
 
 /// Kernel for `copy.copy(x)`.
 unsafe extern "C" fn vc_copy(func: O, args: *const O, nargsf: usize, kw: O) -> O {
+    let fb = |why| {
+        // SAFETY: vectorcall arguments.
+        unsafe { fall(&C_COPY, &NEST_COPY, why, false, func, args, nargsf, kw) }
+    };
     // SAFETY: vectorcall arguments; attached thread.
     unsafe {
         let st = st();
         if !kw.is_null() || nargs(nargsf) != 1 {
-            debit(&C_COPY, &NEST_COPY, Reason::Args);
-            return fallback_call(&C_COPY, &NEST_COPY, func, args, nargsf, kw);
+            return fb(Reason::Args);
         }
         let fo = func.cast::<ffi::PyFunctionObject>();
         if !DEPS_COPY.ok() || (*fo).func_code != st.copy_code || !(*fo).func_defaults.is_null() {
-            debit(&C_COPY, &NEST_COPY, Reason::Deps);
-            return fallback_call(&C_COPY, &NEST_COPY, func, args, nargsf, kw);
+            return fb(Reason::Deps);
         }
         if !accel::tools_quiet(&TOOLS_COPY, func) {
-            debit(&C_COPY, &NEST_COPY, Reason::Tools);
-            return fallback_call(&C_COPY, &NEST_COPY, func, args, nargsf, kw);
+            return fb(Reason::Tools);
         }
-        match shallow::copy(st, *args, recursion_remaining()) {
-            Some(y) => {
+        let x = *args;
+        let cls = ty(x);
+        // The root's class decides everything in `copy.copy`: one whose hook or registered
+        // reductor is user code goes straight to the original.
+        if ROOTS_COPY.blocked(cls) {
+            return fb(Reason::Deopt);
+        }
+        match shallow::copy(st, x, recursion_remaining()) {
+            Ok(y) => {
                 C_COPY.hit_streak();
                 y
             }
-            None => {
-                // Decided before anything was built: inside a fallback of `copy` (hooks
-                // calling `copy.copy` recursively) counted only; otherwise a streak step.
-                debit(&C_COPY, &NEST_COPY, Reason::Deopt);
-                fallback_call(&C_COPY, &NEST_COPY, func, args, nargsf, kw)
+            Err(block) => {
+                // Decided before anything was built.
+                if block {
+                    ROOTS_COPY.block(cls);
+                }
+                fb(Reason::Deopt)
             }
         }
     }
@@ -476,6 +553,89 @@ fn probed() -> [*mut ffi::PyTypeObject; 9] {
     }
 }
 
+/// CPython's `set` lookup of `key` (hash `h`) over `entries` (`setentry {key, hash}`),
+/// restricted to its first linear run (`set_do_lookup`: the home slot, then the next
+/// [`LINEAR_PROBES`] slots when they fit below the mask): `Some((last slot inspected,
+/// found))` when it ends there by identity or at an empty slot; `None` when it would go on
+/// (perturbation) or compare with `__eq__` (an equal hash, another key).
+fn first_run_lookup(entries: &[[usize; 2]], mask: usize, key: usize, h: usize) -> Option<(usize, bool)> {
+    let home = h & mask;
+    let run = if home + LINEAR_PROBES <= mask { LINEAR_PROBES } else { 0 };
+    for (j, &[ek, eh]) in entries.iter().enumerate().skip(home).take(run + 1) {
+        if eh == 0 && ek == 0 {
+            return Some((j, false));
+        }
+        if eh == h {
+            return if ek == key { Some((j, true)) } else { None };
+        }
+    }
+    None
+}
+
+/// 3.14 install self-test: the `set` layout and lookup [`SetSnap`] mirrors — the
+/// `PySetObject` header, `setentry {key, hash}`, and linear probing over
+/// [`LINEAR_PROBES`] slots — checked on a crafted set against CPython's own lookup.
+fn calibrate_set_probing(py: Python<'_>) -> Result<(), Refusal> {
+    let bad = |what: &str| Refusal::with(accel::Category::Layout, format!("set table layout differs: {what}"));
+    let s = pyo3::types::PySet::empty(py)?;
+    // Fillers at their home slots 32..60 grow the table past 64 slots, leaving 0..31 free.
+    for i in 32..60 {
+        s.add(i)?;
+    }
+    let Ok(zero) = 0i64.into_pyobject(py);
+    let zero = zero.into_any();
+    s.add(&zero)?;
+    // SAFETY: a live exact set (public PySetObject layout); read under its lock.
+    let (mask, entries) = unsafe {
+        with_cs(s.as_ptr(), || {
+            let r = &*s.as_ptr().cast::<RawSet>();
+            (r.mask as usize, std::slice::from_raw_parts(r.table, (r.mask + 1) as usize).to_vec())
+        })
+    };
+    if mask < 63 || r_used(&s) != 29 {
+        return Err(bad("table size"));
+    }
+    // A key colliding with 0 at slot 0: linear probing puts it in slot 1.
+    let Ok(coll) = ((mask + 1) as i64).into_pyobject(py);
+    let coll = coll.into_any();
+    s.add(&coll)?;
+    // SAFETY: as above.
+    let entries2 = unsafe {
+        with_cs(s.as_ptr(), || {
+            let r = &*s.as_ptr().cast::<RawSet>();
+            if r.mask as usize != mask {
+                return None;
+            }
+            Some(std::slice::from_raw_parts(r.table, (r.mask + 1) as usize).to_vec())
+        })
+    }
+    .ok_or_else(|| bad("table resized"))?;
+    if entries[0] != [zero.as_ptr() as usize, 0]
+        || entries2[1] != [coll.as_ptr() as usize, mask + 1]
+        || entries2[33][1] != 33
+    {
+        return Err(bad("setentry {key, hash} / linear probing"));
+    }
+    // The mirrored lookup answers as CPython's for present, colliding and absent keys.
+    for k in [0i64, (mask + 1) as i64, 2 * (mask + 1) as i64, 33, 64, 31] {
+        let Ok(o) = k.into_pyobject(py);
+        let o = o.into_any();
+        let h = o.hash()? as usize;
+        let want = s.contains(&o)?;
+        match first_run_lookup(&entries2, mask, o.as_ptr() as usize, h) {
+            Some((_, got)) if got == want => {}
+            None if !want => {} // an equal-hash miss would be left to CPython anyway
+            _ => return Err(bad(&format!("lookup of {k}"))),
+        }
+    }
+    Ok(())
+}
+
+fn r_used(s: &Bound<'_, pyo3::types::PySet>) -> isize {
+    // SAFETY: a live exact set.
+    unsafe { (*s.as_ptr().cast::<RawSet>()).used }
+}
+
 impl SetSnap {
     unsafe fn take(set: O) -> SetSnap {
         // SAFETY: a live set (public PySetObject layout).
@@ -488,19 +648,8 @@ impl SetSnap {
                 for t in probed() {
                     // Type objects hash by address (metatype `type`).
                     let h = ffi::PyObject_Hash(t.cast()) as usize;
-                    let home = h & mask;
-                    let run = if home + LINEAR_PROBES <= mask { LINEAR_PROBES } else { 0 };
-                    for (j, &[ek, eh]) in entries.iter().enumerate().skip(home).take(run + 1) {
-                        if eh == 0 && ek == 0 {
-                            probes.push((t as usize, home, j, false));
-                            break;
-                        }
-                        if eh == h {
-                            if ek == t as usize {
-                                probes.push((t as usize, home, j, true));
-                            }
-                            break; // found, or an `__eq__` call: not recorded
-                        }
+                    if let Some((last, found)) = first_run_lookup(&entries, mask, t as usize, h) {
+                        probes.push((t as usize, h & mask, last, found));
                     }
                 }
                 SetSnap { fill: s.fill, used: s.used, mask: s.mask, table: s.table as usize, entries, probes }
@@ -881,6 +1030,9 @@ fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>
         s_new: intern(py, "__new__"),
     };
     if minor < 15 {
+        calibrate_set_probing(py)?;
+    }
+    if minor < 15 {
         // SAFETY: a live set.
         st.atomic_snap = Some(unsafe { SetSnap::take(st.atomic) });
         // SAFETY: live sets.
@@ -922,6 +1074,11 @@ fn pin_deps(cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>) -> Result<(), Refu
 fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let copy = cx.module()?.clone();
     ensure_state(py, cx, &copy)?;
+    for d in [dget(&copy.dict(), "_deepcopy_dispatch")?, dget(&cx.loaded_module("copyreg")?.dict(), "dispatch_table")?]
+    {
+        let d = d.cast_into::<PyDict>().map_err(PyErr::from)?;
+        accel::guard::watch_dict_generation(&d, &REGISTRATIONS)?;
+    }
     pin_deps(cx, &copy)
 }
 
@@ -960,6 +1117,15 @@ fn copy_recursion_remaining() -> PyResult<c_int> {
 }
 
 /// Python-visible helpers (on `rustique._rustique._accel`).
+/// Whether roots of `cls` go straight to the original in `deepcopy` / `copy.copy` (tests).
+#[pyfunction]
+fn copy_root_blocked(cls: &Bound<'_, pyo3::types::PyType>) -> (bool, bool) {
+    let t = cls.as_type_ptr();
+    // SAFETY: a live type object.
+    unsafe { (ROOTS_DEEPCOPY.blocked(t), ROOTS_COPY.blocked(t)) }
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(copy_recursion_remaining, m)?)
+    m.add_function(wrap_pyfunction!(copy_recursion_remaining, m)?)?;
+    m.add_function(wrap_pyfunction!(copy_root_blocked, m)?)
 }

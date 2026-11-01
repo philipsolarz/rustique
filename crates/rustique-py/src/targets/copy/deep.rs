@@ -105,6 +105,11 @@ enum Step {
     Done(O),
 }
 
+/// Restart kinds of [`Engine::run`].
+pub const RESTART_ROOT: u8 = 0;
+pub const RESTART_ROOT_CLASS: u8 = 1;
+pub const RESTART_ABANDONED: u8 = 2;
+
 pub struct Engine {
     st: &'static St,
     /// `py_recursion_remaining` when the emulated calls started, and the emulated Python
@@ -118,6 +123,9 @@ pub struct Engine {
     atomic_fast: bool,
     /// The root's frame was entered: a restart from here on abandons work.
     started: bool,
+    /// The root's class itself sends it to user code (a hook, a registered copier or
+    /// reductor): calls with roots of that class can go straight to the original.
+    block_root: bool,
 }
 
 impl Engine {
@@ -135,14 +143,16 @@ impl Engine {
             checked: 0,
             atomic_fast,
             started: false,
+            block_root: false,
         }
     }
 
     /// Copy `root`; `Err(abandoned)`: restart in the original (no exception is left set);
     /// `abandoned` is false when nothing was built yet (user code at the root itself).
     /// `path` receives, on an abandoning restart, the containers being copied when the
-    /// kernel stopped (root first).
-    pub unsafe fn run(mut self, root: O, path: &mut Vec<usize>) -> Result<O, bool> {
+    /// kernel stopped (root first). `Err`: [`RESTART_ROOT`], [`RESTART_ROOT_CLASS`] (the
+    /// root's class needs user code) or [`RESTART_ABANDONED`].
+    pub unsafe fn run(mut self, root: O, path: &mut Vec<usize>) -> Result<O, u8> {
         // SAFETY: attached thread.
         let r = unsafe { self.drive(root) };
         let r = match r {
@@ -152,14 +162,19 @@ impl Engine {
                 Err(()) => {
                     // SAFETY: owned.
                     unsafe { decref(y) };
-                    Err(true)
+                    Err(RESTART_ABANDONED)
                 }
             },
             Err(()) => {
                 if self.started {
                     path.extend(self.stack.as_slice().iter().map(|f| f.x as usize));
+                    Err(RESTART_ABANDONED)
+                    // SAFETY: attached thread.
+                } else if self.block_root && unsafe { ffi::PyErr_Occurred() }.is_null() {
+                    Err(RESTART_ROOT_CLASS)
+                } else {
+                    Err(RESTART_ROOT)
                 }
-                Err(self.started)
             }
         };
         // Partial copies go first, then the memo (as CPython's frames and dict would).
@@ -312,20 +327,31 @@ impl Engine {
                     false
                 };
                 if !native {
-                    return Err(()); // a registered copier: user code
+                    // A registered copier is user code; one of copy.py's own helpers
+                    // (modified, or with local monitoring events) only for now.
+                    let foreign =
+                        c != st.h_list && c != st.h_dict && c != st.h_tuple && c != st.h_frozendict && c != st.h_method;
+                    self.block_root |= root && foreign;
+                    return Err(());
                 }
                 return self.push_helper(x, c);
             }
             if ffi::PyType_IsSubtype(cls, &raw mut ffi::PyType_Type) != 0 {
                 return self.ready(x, incref(x));
             }
-            if let Some(y) = self.deepcopy_hook(x, cls)? {
-                return self.ready(x, y);
+            match self.deepcopy_hook(x, cls) {
+                Ok(Some(y)) => return self.ready(x, y),
+                Ok(None) => {}
+                Err(class_level) => {
+                    self.block_root |= root && class_level;
+                    return Err(());
+                }
             }
             // `dispatch_table.get(cls)`: any reductor is user code.
             let r = dict_get(st.dispatch_table, cls.cast())?;
             if !r.is_null() {
                 decref(r);
+                self.block_root |= root;
                 return Err(());
             }
             if (cls == &raw mut ffi::PySet_Type || cls == &raw mut ffi::PyFrozenSet_Type) && self.helper(H_SLOTNAMES) {
@@ -354,12 +380,12 @@ impl Engine {
     /// `copier = getattr(x, "__deepcopy__", None)` decided purely: `Ok(None)` when absent
     /// (or None), the copy when it is a `return self` method; Err otherwise (user code).
     #[inline(always)]
-    unsafe fn deepcopy_hook(&self, x: O, cls: *mut ffi::PyTypeObject) -> R<Option<O>> {
+    unsafe fn deepcopy_hook(&self, x: O, cls: *mut ffi::PyTypeObject) -> Result<Option<O>, bool> {
         let st = self.st;
         // SAFETY: live objects; generic attribute access only.
         unsafe {
             if !generic_getattr(cls) {
-                return Err(());
+                return Err(false);
             }
             let d = _PyType_Lookup(cls, st.s_deepcopy);
             if !d.is_null() && ty(d) == &raw mut ffi::PyMethodDescr_Type && known(cls) == Some(Known::Decimal) {
@@ -367,19 +393,28 @@ impl Engine {
                 return Ok(Some(incref(x)));
             }
             if !d.is_null() && d != ffi::Py_None() && ty(d) != &raw mut ffi::PyFunction_Type {
-                return Err(()); // a descriptor whose `__get__` could be user code
+                return Err(true); // a descriptor whose `__get__` could be user code
             }
-            let m = Own(getattr_opt(x, st.s_deepcopy)?);
+            let m = Own(getattr_opt(x, st.s_deepcopy).map_err(|()| false)?);
             let m = m.get();
             if m.is_null() || m == ffi::Py_None() {
                 return Ok(None);
             }
-            if ty(m) == &raw mut PyMethod_Type && is_return_self(method_func(m), 2) {
-                // `def __deepcopy__(self, memo): return self` (Enum): its frame only.
-                self.touch()?;
-                return Ok(Some(incref(method_self(m))));
+            if ty(m) == &raw mut PyMethod_Type {
+                let f = method_func(m);
+                if is_return_self(f, 2) {
+                    // `def __deepcopy__(self, memo): return self` (Enum): its frame only.
+                    self.touch().map_err(|()| false)?;
+                    return Ok(Some(incref(method_self(m))));
+                }
+                // A hook of the class itself (not an instance attribute), and not a `return
+                // self` hidden by local monitoring events: the class decides.
+                let own = f == d
+                    && ty(f) == &raw mut ffi::PyFunction_Type
+                    && crate::accel::guard::code_locally_quiet((*f.cast::<ffi::PyFunctionObject>()).func_code);
+                return Err(own);
             }
-            Err(())
+            Err(false)
         }
     }
 

@@ -143,6 +143,9 @@ CELLS = [
     ("pair: restart (hook at the root) + deepcopy int", "deepcopy(hook); deepcopy(7)"),
     ("pair: restart (hook last, 4 levels deep) + deepcopy int", "deepcopy(nest_h); deepcopy(7)"),
     ("pair: copy __copy__ hook + copy int", "copy.copy(hook); copy.copy(7)"),
+    ("pair: deepcopy OrderedDict + deepcopy int", "deepcopy(od); deepcopy(7)"),
+    ("policy: deepcopy 1 int per 3 OrderedDicts (suspends)", "deepcopy(od); deepcopy(od); deepcopy(od); deepcopy(7)"),
+    ("policy: copy 1 int per 3 hooks (suspends)", "copy.copy(hook); copy.copy(hook); copy.copy(hook); copy.copy(7)"),
     ("pair: asdict factory + asdict", "dataclasses.asdict(p, dict_factory=collections.OrderedDict); dataclasses.asdict(p)"),
 ]
 

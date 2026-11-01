@@ -56,16 +56,17 @@ enum Hook {
     SelfC,
 }
 
-/// `getattr(cls, "__copy__", None)`; Err when calling it could run user code.
+/// `getattr(cls, "__copy__", None)`; `Err(class_level)` when calling it could run user code
+/// (`class_level`: the class's own hook decides it, not the metatype or local monitoring).
 #[inline(always)]
-unsafe fn copy_hook(st: &St, cls: *mut ffi::PyTypeObject) -> R<Hook> {
+unsafe fn copy_hook(st: &St, cls: *mut ffi::PyTypeObject) -> Result<Hook, bool> {
     // SAFETY: live type objects.
     unsafe {
         let meta = ty(cls.cast());
         // `type.__getattribute__`, and no data descriptor `__copy__` on the metatype.
         let type_getattro = ffi::PyType_Type.tp_getattro.map(|f| f as usize);
         if (*meta).tp_getattro.map(|f| f as usize) != type_getattro || !_PyType_Lookup(meta, st.s_copy).is_null() {
-            return Err(());
+            return Err(false);
         }
         let d = _PyType_Lookup(cls, st.s_copy);
         if d.is_null() || d == ffi::Py_None() {
@@ -77,25 +78,32 @@ unsafe fn copy_hook(st: &St, cls: *mut ffi::PyTypeObject) -> R<Hook> {
         if ty(d) == &raw mut ffi::PyMethodDescr_Type && known(cls) == Some(Known::Decimal) {
             return Ok(Hook::SelfC);
         }
-        Err(())
+        if ty(d) == &raw mut ffi::PyFunction_Type {
+            return Err(crate::accel::guard::code_locally_quiet((*d.cast::<ffi::PyFunctionObject>()).func_code));
+        }
+        Err(true)
     }
 }
 
-/// `copy.copy(x)`; `None`: restart in the original.
-pub unsafe fn copy(st: &St, x: O, budget: i32) -> Option<O> {
+/// `copy.copy(x)`; `Err(block)`: call the original (`block`: the class of `x` itself sends
+/// it to user code — a `__copy__` hook, a registered reductor).
+pub unsafe fn copy(st: &St, x: O, budget: i32) -> Result<O, bool> {
+    let mut block = false;
     // SAFETY: attached thread, live x.
-    let r = unsafe { copy_body(st, x, budget) };
+    let r = unsafe { copy_body(st, x, budget, &mut block) };
     match r {
-        Ok(y) => Some(y),
+        Ok(y) => Ok(y),
         Err(()) => {
             // SAFETY: attached thread.
+            let clean = unsafe { ffi::PyErr_Occurred() }.is_null();
+            // SAFETY: attached thread.
             unsafe { ffi::PyErr_Clear() };
-            None
+            Err(block && clean)
         }
     }
 }
 
-unsafe fn copy_body(st: &St, x: O, budget: i32) -> R<O> {
+unsafe fn copy_body(st: &St, x: O, budget: i32, block: &mut bool) -> R<O> {
     // SAFETY: as copy.
     unsafe {
         // copy's own frame.
@@ -127,7 +135,14 @@ unsafe fn copy_body(st: &St, x: O, budget: i32) -> R<O> {
         if ffi::PyType_IsSubtype(cls, &raw mut ffi::PyType_Type) != 0 {
             return Ok(incref(x));
         }
-        match copy_hook(st, cls)? {
+        let hook = match copy_hook(st, cls) {
+            Ok(h) => h,
+            Err(class_level) => {
+                *block = class_level;
+                return Err(());
+            }
+        };
+        match hook {
             Hook::None => {}
             Hook::SelfPy => {
                 // `def __copy__(self): return self` (Enum): its frame only.
@@ -141,6 +156,7 @@ unsafe fn copy_body(st: &St, x: O, budget: i32) -> R<O> {
         let r = dict_get(st.dispatch_table, cls.cast())?;
         if !r.is_null() {
             decref(r);
+            *block = true;
             return Err(());
         }
         let Some(rv) = plain_reduce(st, x, cls, false, budget - 1 > 0)? else {
