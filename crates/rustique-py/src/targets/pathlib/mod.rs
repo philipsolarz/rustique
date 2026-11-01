@@ -634,6 +634,15 @@ fn prep(
         rt::check_fp(cx, crate::targets::posixpath::FPS, "posixpath.join", &join)?;
         rt::check_fp(cx, crate::targets::posixpath::FPS, "posixpath._get_sep", &cx.get(&ppd, "_get_sep")?)?;
         cx.pin_global(&g, "len", &rt.deps)?;
+        // `posixpath.join` and `posixpath.splitdrive` call `os.fspath` (through
+        // `posixpath.os`) and `_get_sep` resolves `isinstance` / `bytes`.
+        if !cx.get(&ppd, "os")?.is(&cx.loaded_module("os")?) {
+            return Err(refuse!("posixpath.os is not the os module"));
+        }
+        cx.pin(&ppd, "os", &rt.deps)?;
+        for name in ["isinstance", "bytes"] {
+            cx.pin_global(&ppd, name, &rt.deps)?;
+        }
     }
     // The module globals and builtins this original's code (and the helpers it reaches)
     // resolves at call time.
@@ -702,9 +711,12 @@ fn prep(
         return Err(refuse!("os.name is not 'posix'"));
     }
     if globals.contains(&"os") {
-        // `__new__` picks the flavour from `os.name` (when called on `PurePath`/`Path`);
-        // `__init__` calls `os.fspath(arg)` on every non-path argument.
+        // `__new__` picks the flavour from `os.name` (when called on `PurePath`/`Path`).
         cx.pin(&osd, "name", &rt.deps)?;
+    }
+    if globals.contains(&"os") || parses {
+        // `__init__` calls `os.fspath(arg)` on every non-path argument; parsing reaches it
+        // through `posixpath.join` / `posixpath.splitdrive`.
         let fspath = cx.get(&osd, "fspath")?;
         rt::check_c(cx, crate::targets::posixpath::FPS, "os.fspath", &fspath)?;
         cx.pin(&osd, "fspath", &rt.deps)?;
