@@ -936,19 +936,19 @@ macro_rules! target {
 }
 
 target!(WRAP, prep_wrap, "textwrap.wrap", ["wrap"], vc_wrap, G_WRAP,
-    &[(3, 14, "3693405a8fb53e5c"), (3, 15, "a2632ba2df2a23a3")], builtins: [], class_pins: true);
+    &[(3, 14, "4d8d166465dfcfd7"), (3, 15, "57e1a094dd3a54c8")], builtins: [], class_pins: true);
 target!(FILL, prep_fill, "textwrap.fill", ["fill"], vc_fill, G_FILL,
-    &[(3, 14, "2a8243c0a41ca2ad"), (3, 15, "0236093725ea15dc")], builtins: [], class_pins: true);
+    &[(3, 14, "ccf8880beb00cf42"), (3, 15, "b11875c2031ce54f")], builtins: [], class_pins: true);
 target!(SHORTEN, prep_shorten, "textwrap.shorten", ["shorten"], vc_shorten, G_SHORTEN,
-    &[(3, 14, "1e331e723a975c7a"), (3, 15, "37134789c5932809")], builtins: [], class_pins: true);
+    &[(3, 14, "6b3824240ad86842"), (3, 15, "a8803511854eaf47")], builtins: [], class_pins: true);
 target!(DEDENT, prep_dedent, "textwrap.dedent", ["dedent"], vc_dedent, G_DEDENT,
-    &[(3, 14, "893f855ff5f348e9"), (3, 15, "e7dee1126e679cdc")],
+    &[(3, 14, "0890210dc2d47494"), (3, 15, "218bbc58f7a3dcd4")],
     builtins: ["min", "max", "enumerate"], class_pins: false);
 target!(INDENT, prep_indent, "textwrap.indent", ["indent"], vc_indent, G_INDENT,
-    &[(3, 14, "f900977c89bc767a"), (3, 15, "5b8ede3946f79b26")], builtins: [], class_pins: false);
+    &[(3, 14, "281ce6a3af24b6fd"), (3, 15, "ccca21dec48208e6")], builtins: [], class_pins: false);
 target!(TW_WRAP, prep_tw_wrap, "textwrap.TextWrapper.wrap", ["TextWrapper", "wrap"], vc_tw_wrap, G_TW_WRAP,
-    &[(3, 14, "306c46f71fa226ab"), (3, 15, "5da373846fc66b9a")], builtins: [], class_pins: true);
+    &[(3, 14, "342108dc0a65162b"), (3, 15, "be9331377cf30cf3")], builtins: [], class_pins: true);
 target!(TW_FILL, prep_tw_fill, "textwrap.TextWrapper.fill", ["TextWrapper", "fill"], vc_tw_fill, G_TW_FILL,
-    &[(3, 14, "f4a79c3b7712c1b4"), (3, 15, "0fcd68ac19533157")], builtins: [], class_pins: true);
+    &[(3, 14, "da16f10692980f7b"), (3, 15, "49c43f2e8ae86675")], builtins: [], class_pins: true);
 
 pub static TARGETS: &[&TargetSpec] = &[&WRAP, &FILL, &SHORTEN, &DEDENT, &INDENT, &TW_WRAP, &TW_FILL];

@@ -1607,23 +1607,23 @@ macro_rules! target {
 }
 
 target!(RANDINT, prep_randint, "random.randint", "randint", vc_randint, G_RANDINT,
-    &[(3, 14, "b27a71f673fed060"), (3, 15, "545e3e7cb98f48cd")],
+    &[(3, 14, "adea30b60f8787ba"), (3, 15, "35301d24f32825ff")],
     globals: ["_index"], builtins: []);
 target!(RANDRANGE, prep_randrange, "random.randrange", "randrange", vc_randrange, G_RANDRANGE,
-    &[(3, 14, "8908f05589aa8f2e"), (3, 15, "1a9ec83028108206")],
+    &[(3, 14, "fdf9b5db8c0c8ef5"), (3, 15, "9d5fda7e7e5a709a")],
     globals: ["_index", "_ONE"], builtins: []);
 target!(CHOICE, prep_choice, "random.choice", "choice", vc_choice, G_CHOICE,
-    &[(3, 14, "27842dbf5347cdc8"), (3, 15, "0fe17a0dca4704ca")],
+    &[(3, 14, "30ab10d8aa189081"), (3, 15, "7f77eb62838674c9")],
     globals: [], builtins: ["len"]);
 target!(SHUFFLE, prep_shuffle, "random.shuffle", "shuffle", vc_shuffle, G_SHUFFLE,
-    &[(3, 14, "427ad4e7b927876c"), (3, 15, "030048553c6487ba")],
+    &[(3, 14, "827e7189dab3b943"), (3, 15, "a37235ce15918735")],
     globals: [], builtins: ["len", "range", "reversed"]);
 target!(SAMPLE, prep_sample, "random.sample", "sample", vc_sample, G_SAMPLE,
-    &[(3, 14, "f107f053e2e5804f"), (3, 15, "f9f0292868e437e0")],
+    &[(3, 14, "0405fd0e5439b39b"), (3, 15, "0a89161adf0e847e")],
     globals: ["_Sequence", "_ceil", "_log"],
     builtins: ["isinstance", "len", "list", "set", "range"]);
 target!(CHOICES, prep_choices, "random.choices", "choices", vc_choices, G_CHOICES,
-    &[(3, 14, "6b08a02ab968bfe1"), (3, 15, "a5cb98605af7c1a7")],
+    &[(3, 14, "de1e524b9f5e3ca9"), (3, 15, "748775b6bd8b61e8")],
     globals: ["_floor", "_repeat", "_accumulate", "_bisect", "_isfinite"],
     builtins: ["len", "list"]);
 

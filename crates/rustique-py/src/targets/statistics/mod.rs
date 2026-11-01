@@ -402,7 +402,7 @@ target!(
     "mean",
     vc_mean,
     G_MEAN,
-    &[(3, 14, "f965edbb248560ec"), (3, 15, "2702a8b4e7589a40")],
+    &[(3, 14, "aede1e231da734c8"), (3, 15, "6ea74ea49665b2f8")],
     false
 );
 target!(
@@ -412,7 +412,7 @@ target!(
     "variance",
     vc_variance,
     G_VARIANCE,
-    &[(3, 14, "da484ff53464c57d"), (3, 15, "d0173634ced8d9be")],
+    &[(3, 14, "69a1cb731cbacbfb"), (3, 15, "75d05a4f59205ba3")],
     false
 );
 target!(
@@ -422,7 +422,7 @@ target!(
     "pvariance",
     vc_pvariance,
     G_PVARIANCE,
-    &[(3, 14, "1133e4437cd927fc"), (3, 15, "c2ae9a2a763eba0a")],
+    &[(3, 14, "a49fa71b6f4e3479"), (3, 15, "4920b5933f38b272")],
     false
 );
 target!(
@@ -432,7 +432,7 @@ target!(
     "stdev",
     vc_stdev,
     G_STDEV,
-    &[(3, 14, "4e802c6e994da097"), (3, 15, "2d195d7de19fcfb4")],
+    &[(3, 14, "c9cffbff8f4a75b9"), (3, 15, "ab6b25030f5fadbc")],
     true
 );
 target!(
@@ -442,7 +442,7 @@ target!(
     "pstdev",
     vc_pstdev,
     G_PSTDEV,
-    &[(3, 14, "0402f69b3138380d"), (3, 15, "7c048d821fae9703")],
+    &[(3, 14, "e7164b1668097211"), (3, 15, "7c2a7d7cebcdf53e")],
     true
 );
 

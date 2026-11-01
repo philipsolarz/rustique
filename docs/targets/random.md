@@ -207,13 +207,14 @@ data/billing_engine web/requests_local -n 5 -p 3 --only random,textwrap,urllib,s
 ### Install cost (budget: ≤ 5% of the module's import; ≤ 0.1M Ir per group at `enable()`)
 
 `python benches/targets/utils_install_cost.py random` (callgrind, fresh processes; the module
-removed from `sys.modules` first, its dependencies imported): lazy install on `import random`
-+724k Ir on a 1.06M-Ir `import random` (+68%; dependencies already imported). `enable(only=["random"])` with the module not imported costs 0.92M Ir, the same for every
-group (the registry's `enable()` + `status()`, not the group). **Over budget**: the install is
-dominated by the framework's per-function fingerprint (~35–60k Ir each) and
-`Prepare::vectorcall`/pin activation; accel-core is reducing those (lead, item 13). The
-group's own prepare is already trimmed (minimal self-test, no `eval`, no class pins, pins only
-for names read on the accepted paths). To be re-measured after the framework fix.
+removed from `sys.modules` first, its dependencies imported), after the framework's
+install-cost fixes (wave1 5a690e2, fingerprint format v2): lazy install on `import random`
++332k Ir on a 1.06M-Ir `import random` (+31%; its dependencies already imported). One target alone (`random.randint`) costs +159k, each further target ~+20–35k. `enable(only=["random"])` with the module not imported costs 0.56M Ir, the same for
+every group (the registry's `enable()`, not the group). The group's own prepare is trimmed
+(single-probe self-tests or pattern hashes, no `eval`, no probe classes — the inline-values
+layout is calibrated on `os.environ`, the `slot_*` functions read from `os._Environ` —, no
+class pins, pins only for names read on the accepted paths); the remaining fixed cost of the
+first target of a module (~150k Ir) is in the framework's activation path.
 
 ### First 64 fallback calls (before the registry suspends a target that keeps falling back)
 

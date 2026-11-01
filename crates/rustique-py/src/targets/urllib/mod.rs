@@ -826,31 +826,31 @@ macro_rules! target {
 }
 
 target!(QUOTE, prep_quote, "urllib.parse.quote", "quote", vc_quote, G_QUOTE,
-    &[(3, 14, "c0eec3251faa8f65"), (3, 15, "28fb43c847e3128d")],
+    &[(3, 14, "63e2a4049e9eaf92"), (3, 15, "94de6386774e0075")],
     globals: ["quote_from_bytes", "_ALWAYS_SAFE_BYTES", "_byte_quoter_factory"],
     builtins: ["isinstance", "str", "bytes", "bytearray", "len", "map"]);
 target!(QUOTE_PLUS, prep_quote_plus, "urllib.parse.quote_plus", "quote_plus", vc_quote_plus, G_QUOTE_PLUS,
-    &[(3, 14, "31fa3e8740c97d84"), (3, 15, "5e99e96821629047")],
+    &[(3, 14, "a94b1533a164b8f0"), (3, 15, "a048317d78bf0841")],
     globals: ["quote", "quote_from_bytes", "_ALWAYS_SAFE_BYTES", "_byte_quoter_factory"],
     builtins: ["isinstance", "str", "bytes", "bytearray", "len", "map"]);
 target!(UNQUOTE, prep_unquote, "urllib.parse.unquote", "unquote", vc_unquote, G_UNQUOTE,
-    &[(3, 14, "8335b8b597cc081b"), (3, 15, "151b56169fb3adb6")],
+    &[(3, 14, "aa04e1662d0123ca"), (3, 15, "1e55635c96370788")],
     globals: ["_unquote_impl", "_generate_unquoted_parts", "_asciire"],
     builtins: ["isinstance", "bytes", "bytearray"]);
 target!(UNQUOTE_PLUS, prep_unquote_plus, "urllib.parse.unquote_plus", "unquote_plus", vc_unquote_plus, G_UNQUOTE_PLUS,
-    &[(3, 14, "cbf4f33b37ed3e61"), (3, 15, "e7726104e01c82e3")],
+    &[(3, 14, "acbbc4556e4ffe7a"), (3, 15, "66c61fa58bfdacc7")],
     globals: ["unquote", "_unquote_impl", "_generate_unquoted_parts", "_asciire"],
     builtins: ["isinstance", "bytes", "bytearray"]);
 target!(PARSE_QSL, prep_parse_qsl, "urllib.parse.parse_qsl", "parse_qsl", vc_parse_qsl, G_PARSE_QSL,
-    &[(3, 14, "915a90e9b788d0e4"), (3, 15, "4f00b22b44dedc4a")],
+    &[(3, 14, "c4385431f4670861"), (3, 15, "6cf72a7ada63572a")],
     globals: ["unquote_plus", "unquote", "_unquote_impl", "_generate_unquoted_parts", "_asciire"],
     builtins: ["isinstance", "str"]);
 target!(PARSE_QS, prep_parse_qs, "urllib.parse.parse_qs", "parse_qs", vc_parse_qs, G_PARSE_QS,
-    &[(3, 14, "f876395b877d6f40"), (3, 15, "2fa235c162ad2fb6")],
+    &[(3, 14, "d9510d05a0e09245"), (3, 15, "4228046b5716b612")],
     globals: ["parse_qsl", "unquote_plus", "unquote", "_unquote_impl", "_generate_unquoted_parts", "_asciire"],
     builtins: ["isinstance", "str"]);
 target!(URLSPLIT, prep_urlsplit, "urllib.parse._urlsplit", "_urlsplit", vc_urlsplit, G_URLSPLIT,
-    &[(3, 14, "ef653b971587fb22"), (3, 15, "6e615fdb83c29cf5")],
+    &[(3, 14, "8d4cdc781ae3dbf2"), (3, 15, "d7c3aef3e7e67e8d")],
     globals: ["_WHATWG_C0_CONTROL_OR_SPACE", "_UNSAFE_URL_BYTES_TO_REMOVE", "scheme_chars", "_splitnetloc",
               "_check_bracketed_netloc", "_checknetloc"],
     builtins: ["bool", "len", "min"]);

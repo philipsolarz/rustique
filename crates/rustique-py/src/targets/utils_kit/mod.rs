@@ -12,9 +12,7 @@
 //! - small exact-type helpers (ints, critical sections, keyword binding).
 
 use std::ffi::{CStr, c_int};
-use std::sync::atomic::{
-    AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering, Ordering::Relaxed,
-};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering, Ordering::Relaxed};
 
 use pyo3::ffi;
 use pyo3::prelude::*;
@@ -151,7 +149,7 @@ pub fn pin_globals(
 // ---------------------------------------------------------------------------------------
 
 /// Calibrated layout of objects whose type has `Py_TPFLAGS_INLINE_VALUES` (3.13+): the
-/// managed `__dict__` pointer before the object and the inline values after
+/// inline values after
 /// `tp_basicsize` (`struct _dictvalues { u8 capacity, size, embedded, valid; values[] }`),
 /// plus `dk_nentries` of the type's shared keys (`ht_cached_keys`).
 ///
@@ -162,12 +160,10 @@ pub fn pin_globals(
 /// and they still have `n`, no such object has `name` in its `__dict__`.
 pub struct InstLayout {
     ok: AtomicBool,
-    dict_off: AtomicIsize,
     lookup: AtomicUsize,
 }
 
-pub static INST: InstLayout =
-    InstLayout { ok: AtomicBool::new(false), dict_off: AtomicIsize::new(0), lookup: AtomicUsize::new(0) };
+pub static INST: InstLayout = InstLayout { ok: AtomicBool::new(false), lookup: AtomicUsize::new(0) };
 
 /// `Py_TPFLAGS_INLINE_VALUES` (object.h, 3.13+).
 const TPFLAGS_INLINE_VALUES: std::ffi::c_ulong = 1 << 2;
@@ -194,10 +190,14 @@ fn dlsym(_name: &CStr) -> usize {
 }
 
 impl InstLayout {
-    /// Calibrate once (no Python code runs: a class is created by calling `type`, an
-    /// instance's attributes set and its dict materialized through the generic C paths).
-    /// On any mismatch the fast check stays off and kernels use `_PyObject_GetMethod`
-    /// (exact, slower).
+    /// Calibrate once, on `os.environ` (an `os._Environ`, a plain Python class whose
+    /// `__init__` sets `_data`, `encodekey`, `decodekey`, `encodevalue`, `decodevalue`;
+    /// `os` is imported at startup), so no probe class is created (install-cost budget).
+    /// Checks: the type uses inline values with shared keys; the instance's values are valid
+    /// and hold `_data` at the slot `_PyDictKeys_StringLookup` gives; the five names are
+    /// distinct entries below `dk_nentries`. No Python code runs (generic attribute read on
+    /// a class without `__getattr__`). On any mismatch the fast check stays off and kernels
+    /// use `_PyObject_GetMethod` (exact, slower).
     pub fn calibrate(&self, py: Python<'_>) -> PyResult<bool> {
         if self.ok.load(Relaxed) {
             return Ok(true);
@@ -206,62 +206,41 @@ impl InstLayout {
         if lookup == 0 {
             return Ok(false);
         }
-        let dict_off: isize = if cfg!(Py_GIL_DISABLED) { -8 } else { -24 };
-        // SAFETY: C-level object creation and layout reads on probe objects we own.
+        let Some(os) = py.import("sys")?.getattr("modules")?.get_item("os").ok() else { return Ok(false) };
+        let env = os.getattr("environ")?;
+        // SAFETY: layout reads on a live object; the generic getattr runs no Python code.
         let ok = unsafe {
-            let ty = ffi::PyObject_CallFunction(
-                (&raw mut ffi::PyType_Type).cast(),
-                c"s()N".as_ptr(),
-                c"_rustique_inline_probe".as_ptr(),
-                ffi::PyDict_New(),
-            );
-            if ty.is_null() {
-                return Err(PyErr::fetch(py));
-            }
-            let ty = Bound::from_owned_ptr(py, ty);
-            let tp = ty.as_ptr().cast::<ffi::PyTypeObject>();
-            if ffi::PyType_GetFlags(tp) & TPFLAGS_INLINE_VALUES == 0 {
+            let o = env.as_ptr();
+            let tp = ffi::Py_TYPE(o);
+            if ffi::PyType_GetFlags(tp) & TPFLAGS_INLINE_VALUES == 0 || !generic_getattro(tp) {
                 return Ok(false);
             }
-            let obj = Bound::from_owned_ptr_or_err(py, ffi::PyObject_CallNoArgs(ty.as_ptr()))?;
-            let o = obj.as_ptr();
-            let sentinel = PyString::new(py, "sentinel");
-            let name_a = PyString::intern(py, "a");
-            let name_b = PyString::intern(py, "b");
-            if ffi::PyObject_SetAttr(o, name_a.as_ptr(), sentinel.as_ptr()) < 0 {
-                return Err(PyErr::fetch(py));
-            }
-            let values = o.cast::<u8>().add((*tp).tp_basicsize as usize);
             let keys = (*tp.cast::<ffi::PyHeapTypeObject>()).ht_cached_keys.cast::<u8>();
-            let dictp = o.cast::<u8>().offset(dict_off).cast::<O>();
+            if keys.is_null() {
+                return Ok(false);
+            }
             let f = std::mem::transmute::<usize, StringLookupFn>(lookup);
-            let mut ok = !keys.is_null()
-                && *values >= 2
+            let names = ["_data", "encodekey", "decodekey", "encodevalue", "decodevalue"];
+            let mut ix = Vec::with_capacity(names.len());
+            for n in names {
+                ix.push(f(keys, PyString::intern(py, n).as_ptr()));
+            }
+            let data = Bound::from_owned_ptr_or_err(
+                py,
+                ffi::PyObject_GenericGetAttr(o, PyString::intern(py, "_data").as_ptr()),
+            )?;
+            let values = o.cast::<u8>().add((*tp).tp_basicsize as usize);
+            let nent = *keys.add(DK_NENTRIES_OFF).cast::<usize>();
+            let mut sorted = ix.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            sorted.len() == names.len()
+                && ix.iter().all(|&i| i >= 0 && (i as usize) < nent && i < isize::from(*values))
+                && nent < 64
                 && *values.add(3) == 1
-                && *values.add(8).cast::<O>() == sentinel.as_ptr()
-                && (*dictp).is_null()
-                && *keys.add(DK_NENTRIES_OFF).cast::<usize>() == 1
-                && f(keys, name_a.as_ptr()) == 0
-                && f(keys, name_b.as_ptr()) < 0;
-            if ok {
-                if ffi::PyObject_SetAttr(o, name_b.as_ptr(), sentinel.as_ptr()) < 0 {
-                    return Err(PyErr::fetch(py));
-                }
-                ok = *keys.add(DK_NENTRIES_OFF).cast::<usize>() == 2 && f(keys, name_b.as_ptr()) == 1;
-            }
-            if ok {
-                // Materialize the dict: the pointer must appear where we read it.
-                let d = ffi::PyObject_GenericGetDict(o, std::ptr::null_mut());
-                if d.is_null() {
-                    return Err(PyErr::fetch(py));
-                }
-                ok = *dictp == d;
-                ffi::Py_DECREF(d);
-            }
-            ok
+                && *values.add(8).cast::<O>().add(ix[0] as usize) == data.as_ptr()
         };
         if ok {
-            self.dict_off.store(dict_off, Relaxed);
             self.lookup.store(lookup, Relaxed);
             self.ok.store(true, Relaxed);
         }
@@ -337,8 +316,10 @@ impl InstLayout {
         }
     }
 
-    /// Does `obj` (of an inline-values type) use only its inline values (valid, no
-    /// materialized dict)?
+    /// Are `obj`'s inline values valid? Then its attributes are exactly the shared-key
+    /// entries with a non-NULL value: a materialized dict keeps using the inline values until
+    /// a key outside the shared keys is added or `__dict__` is replaced, and both mark them
+    /// invalid (CPython 3.13–3.15, `Objects/dictobject.c`).
     ///
     /// # Safety
     /// Live object of an inline-values type; layout calibrated.
@@ -348,8 +329,7 @@ impl InstLayout {
         unsafe {
             let tp = ffi::Py_TYPE(obj);
             let values = obj.cast::<u8>().add((*tp).tp_basicsize as usize);
-            let dictp = obj.cast::<u8>().offset(self.dict_off.load(Relaxed)).cast::<O>();
-            std::ptr::read_volatile(values.add(3)) == 1 && std::ptr::read_volatile(dictp).is_null()
+            std::ptr::read_volatile(values.add(3)) == 1
         }
     }
 }
