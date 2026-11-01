@@ -285,6 +285,30 @@ def test_record_subclass_and_factory():
     assert record_view(a) == record_view(b)
 
 
+def test_multiprocessing_process_name():
+    import multiprocessing
+
+    A.stats(True, True)
+    mk = lambda: logging.LogRecord("n", 20, "/p.py", 1, "m", (), None)  # noqa: E731
+    a, b = both(mk)
+    assert record_view(a) == record_view(b) and a.processName == "MainProcess"
+    proc = multiprocessing.current_process()
+    old = proc.name
+    try:
+        proc.name = "renamed-main"
+        a, b = both(mk)
+        assert a.processName == b.processName == "renamed-main"
+    finally:
+        proc.name = old
+    with mock.patch.dict(sys.modules, {"multiprocessing": None}):
+        a, b = both(mk)
+        assert record_view(a) == record_view(b) and a.processName == "MainProcess"
+    with mock.patch.object(multiprocessing, "current_process", lambda: types.SimpleNamespace(name="mocked")):
+        a, b = both(mk)
+        assert a.processName == b.processName == "mocked"
+    assert hits("logging.LogRecord.__init__") >= 3
+
+
 def test_asyncio_task_name():
     import asyncio
 

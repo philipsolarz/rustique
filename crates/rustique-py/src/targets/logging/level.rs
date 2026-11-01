@@ -129,7 +129,10 @@ pub unsafe extern "C" fn vc_is_enabled_for(func: O, args: *const O, nargsf: usiz
                 }
                 return v;
             }
-            Reason::Deopt
+            // A cache miss: CPython's path takes the lock and fills the cache, so the next
+            // call hits. Transient: not a fallback streak.
+            STATS.fallback(Reason::Deopt);
+            return original(func, args, nargsf, kw);
         };
         STATS.fallback_streak(why);
         original(func, args, nargsf, kw)
@@ -174,8 +177,11 @@ unsafe fn level_call(func: O, args: *const O, nargsf: usize, kw: O, level: O, co
                     return r;
                 }
             }
-            // Enabled (or undecided): CPython's own frames run the record path.
-            Reason::Deopt
+            // Enabled (or undecided): CPython's own frames run the record path. Not a
+            // fallback streak: the kernel decided, the call is just not one it replaces
+            // (an enabled call costs the kernel's checks, ~1% of a record).
+            STATS.fallback(Reason::Deopt);
+            return original(func, args, nargsf, kw);
         };
         STATS.fallback_streak(why);
         original(func, args, nargsf, kw)

@@ -348,6 +348,7 @@ fn prepare_record(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         let n = common::names();
         record::RECORDS.set_names([n.created, n.msecs]);
         record::THREADS.set_names([n.t_initialized, n.t_name]);
+        record::MP_PROCS.set_names([n.t_name]);
     }
     calibrate(cx)?;
     record::reset_mapping_cache();
@@ -487,6 +488,7 @@ fn _logging_reset_caches() {
     level::LOGGERS.clear();
     record::RECORDS.clear();
     record::THREADS.clear();
+    record::MP_PROCS.clear();
     record::reset_mapping_cache();
     format::clear_type_caches();
 }

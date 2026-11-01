@@ -23,6 +23,7 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 
 use pyo3::ffi;
+use pyo3::prelude::*;
 
 use super::common::*;
 use crate::accel::guard::DepFlag;
@@ -183,7 +184,7 @@ impl<const N: usize> Drop for Owned<N> {
     }
 }
 
-/// `getLevelName(level)` for an exact int: `Some(new ref)`, `None` to fall back.
+/// `getLevelName(level)` for an exact int or `None`: `Some(new ref)`, `None` to fall back.
 unsafe fn level_name(level: O) -> Option<O> {
     // SAFETY: attached thread; pinned dicts.
     unsafe {
@@ -191,7 +192,13 @@ unsafe fn level_name(level: O) -> Option<O> {
         if !exact_dict(l2n) {
             return None;
         }
-        match int_keyed_get(l2n, level) {
+        // `None` (makeLogRecord): equal to no int key; the lookup only checks key types.
+        let found = if level == ffi::Py_None() {
+            if dict_all(l2n, |k, _| exact_int(k)) { Ok(None) } else { Err(()) }
+        } else {
+            int_keyed_get(l2n, level)
+        };
+        match found {
             Ok(Some(v)) => {
                 if v != ffi::Py_None() {
                     return Some(v);
@@ -286,6 +293,162 @@ unsafe fn sys_module(name: usize) -> Result<O, ()> {
     }
 }
 
+/// `module.name` for an exact module whose dict holds `name` (what `module.name` returns
+/// then: `ModuleType` has no descriptor of these names). NULL when absent (CPython would
+/// consult a module `__getattr__`: the caller falls back).
+unsafe fn module_attr(m: O, name: O) -> O {
+    // SAFETY: attached thread; exact module (checked by the caller); str key.
+    unsafe {
+        let d = ffi::PyModule_GetDict(m);
+        let mut v: O = std::ptr::null_mut();
+        if d.is_null() || ffi::PyDict_GetItemRef(d, name, &mut v) != 1 {
+            ffi::PyErr_Clear();
+            return std::ptr::null_mut();
+        }
+        v
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// multiprocessing: `mp.current_process().name`
+// ---------------------------------------------------------------------------------------
+
+/// `multiprocessing.process.current_process` (fingerprinted when first seen), its code,
+/// its globals, and the `BaseProcess.name` property.
+static MP_CURRENT_PROCESS: Cap = Cap::new();
+static MP_CODE: Cap = Cap::new();
+static MP_GLOBALS: Cap = Cap::new();
+pub static MP_NAME_PROP: Cap = Cap::new();
+/// 0 unknown, 1 validated, 2 refused.
+static MP_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// Reads `_name`.
+pub static MP_PROCS: TypeCache<1> = TypeCache::new(validate_mp_process);
+
+const FP_CURRENT_PROCESS: &[(u8, u8, &str)] = &[(3, 14, "01900e79efcd8937"), (3, 15, "83d674bf5a867b44")];
+const FP_PROCESS_NAME: &[(u8, u8, &str)] = &[(3, 14, "2e8055fc252f98f3"), (3, 15, "2ea326cab5d76f13")];
+
+unsafe fn validate_mp_process(t: Tp) -> bool {
+    // SAFETY: attached thread; live type.
+    unsafe {
+        let n = n();
+        generic_attrs(t, false) && resolves_to(t, o(n.name), MP_NAME_PROP.get()) && plain_attr(t, o(n.t_name))
+    }
+}
+
+fn fingerprint_ok(obj: O, expected: &'static [(u8, u8, &'static str)]) -> bool {
+    let (major, minor) = crate::accel::version::running();
+    let Some(want) = crate::accel::fingerprint::expected_for(expected, major, minor) else { return false };
+    // SAFETY: attached thread (kernel); a live object.
+    let py = unsafe { Python::assume_attached() };
+    // SAFETY: borrowed reference kept alive by the caller.
+    let b = unsafe { Bound::from_borrowed_ptr(py, obj) };
+    crate::accel::fingerprint::any(&b).is_ok_and(|f| f == want)
+}
+
+/// Validate `multiprocessing.current_process` the first time multiprocessing is seen.
+#[cold]
+unsafe fn capture_mp(cp: O) -> bool {
+    // SAFETY: attached thread.
+    unsafe {
+        let st = MP_STATE.load(Relaxed);
+        if st != 0 {
+            return st == 1;
+        }
+        let ok = (|| {
+            if ffi::Py_TYPE(cp) != &raw mut ffi::PyFunction_Type || !fingerprint_ok(cp, FP_CURRENT_PROCESS) {
+                return false;
+            }
+            let f = cp.cast::<ffi::PyFunctionObject>();
+            let globals = (*f).func_globals;
+            // the module that defines it, as imported
+            let mut pm: O = std::ptr::null_mut();
+            let key = ffi::PyUnicode_InternFromString(c"multiprocessing.process".as_ptr());
+            let found = !key.is_null() && ffi::PyDict_GetItemRef(SYS_MODULES.get(), key, &mut pm) == 1;
+            ffi::Py_XDECREF(key);
+            if !found {
+                ffi::PyErr_Clear();
+                return false;
+            }
+            let same = ffi::Py_TYPE(pm) == &raw mut ffi::PyModule_Type && ffi::PyModule_GetDict(pm) == globals;
+            let bp = if same {
+                let k = ffi::PyUnicode_InternFromString(c"BaseProcess".as_ptr());
+                let bp = if k.is_null() { std::ptr::null_mut() } else { module_attr(pm, k) };
+                ffi::Py_XDECREF(k);
+                bp
+            } else {
+                std::ptr::null_mut()
+            };
+            ffi::Py_DECREF(pm);
+            if bp.is_null() || ffi::PyType_Check(bp) == 0 {
+                ffi::Py_XDECREF(bp);
+                return false;
+            }
+            let prop = _PyType_LookupRef(bp.cast(), o(n().name));
+            ffi::Py_DECREF(bp);
+            if prop.is_null() {
+                return false;
+            }
+            let ok = ffi::Py_TYPE(prop) == &raw mut ffi::PyProperty_Type && {
+                let fget = ffi::PyObject_GetAttrString(prop, c"fget".as_ptr());
+                if fget.is_null() {
+                    ffi::PyErr_Clear();
+                }
+                let ok = !fget.is_null() && fingerprint_ok(fget, FP_PROCESS_NAME);
+                ffi::Py_XDECREF(fget);
+                ok
+            };
+            if ok {
+                MP_NAME_PROP.set(prop);
+                MP_GLOBALS.set(globals);
+                MP_CODE.set((*f).func_code);
+                MP_CURRENT_PROCESS.set(cp);
+            }
+            ffi::Py_DECREF(prop);
+            ok
+        })();
+        ffi::PyErr_Clear();
+        MP_STATE.store(if ok { 1 } else { 2 }, Relaxed);
+        ok
+    }
+}
+
+/// `mp.current_process().name` for the multiprocessing module `mp`: `Some(new ref)`, or
+/// `None` to fall back. `current_process()` returns the global `_current_process` of
+/// `multiprocessing.process` and `name` is `BaseProcess.name` (`return self._name`): read
+/// directly once both are validated (fingerprints, identities), so no Python code runs.
+unsafe fn mp_process_name(mp: O) -> Option<O> {
+    // SAFETY: attached thread.
+    unsafe {
+        if ffi::Py_TYPE(mp) != &raw mut ffi::PyModule_Type {
+            return None;
+        }
+        let n = n();
+        let cp = module_attr(mp, o(n.current_process));
+        if cp.is_null() {
+            return None;
+        }
+        ffi::Py_DECREF(cp); // identity only (validated: held by MP_CURRENT_PROCESS)
+        if cp != MP_CURRENT_PROCESS.get() && (MP_STATE.load(Relaxed) != 0 || !capture_mp(cp) || cp != MP_CURRENT_PROCESS.get()) {
+            return None;
+        }
+        if (*cp.cast::<ffi::PyFunctionObject>()).func_code != MP_CODE.get() {
+            return None;
+        }
+        let mut proc: O = std::ptr::null_mut();
+        if ffi::PyDict_GetItemRef(MP_GLOBALS.get(), o(n.current_process_g), &mut proc) != 1 {
+            ffi::PyErr_Clear();
+            return None;
+        }
+        let e = MP_PROCS.entry(ffi::Py_TYPE(proc));
+        let name = match e {
+            Some(e) => MP_PROCS.read(e, proc, 0),
+            None => std::ptr::null_mut(),
+        };
+        ffi::Py_DECREF(proc);
+        (!name.is_null()).then_some(name)
+    }
+}
+
 /// Capture `_asyncio`'s functions the first time asyncio is seen.
 #[cold]
 unsafe fn capture_asyncio() -> bool {
@@ -300,8 +463,8 @@ unsafe fn capture_asyncio() -> bool {
             ffi::Py_XDECREF(aio);
             return false;
         }
-        let ct = get_any(aio, o(n().current_task));
-        let rl = get_any(aio, o(n().get_running_loop));
+        let ct = module_attr(aio, o(n().current_task));
+        let rl = module_attr(aio, o(n().get_running_loop));
         let task = ffi::PyObject_GetAttrString(aio, c"Task".as_ptr());
         if task.is_null() {
             ffi::PyErr_Clear();
@@ -341,7 +504,7 @@ unsafe fn task_name() -> Result<O, ()> {
             return Err(());
         }
         // `asyncio.current_task` must be the C function.
-        let ct = get_any(aio, o(n().current_task));
+        let ct = module_attr(aio, o(n().current_task));
         ffi::Py_DECREF(aio);
         let same = ct == AIO_CURRENT_TASK.get();
         ffi::Py_XDECREF(ct);
@@ -390,7 +553,7 @@ unsafe fn init(me: O, a: *const O, n_args: usize) -> Outcome {
             (*a.add(1), *a.add(2), *a.add(3), *a.add(4), *a.add(5), *a.add(6), *a.add(7));
         let func = if n_args >= 9 { *a.add(8) } else { ffi::Py_None() };
         let sinfo = if n_args >= 10 { *a.add(9) } else { ffi::Py_None() };
-        if !exact_tuple(args) || !exact_int(level) || !exact_str(pathname) {
+        if !exact_tuple(args) || !(exact_int(level) || level == ffi::Py_None()) || !exact_str(pathname) {
             return Outcome::Fallback(Reason::Args);
         }
         let mut rargs = args;
@@ -448,8 +611,11 @@ unsafe fn init(me: O, a: *const O, n_args: usize) -> Outcome {
                     o(nm.main_process)
                 }
                 Ok(mp) => {
+                    let name = mp_process_name(mp);
                     ffi::Py_DECREF(mp);
-                    return Outcome::Fallback(Reason::Args);
+                    let Some(name) = name else { return Outcome::Fallback(Reason::Args) };
+                    own.0[10] = name;
+                    name
                 }
                 Err(()) => return Outcome::Fallback(Reason::Args),
             }
