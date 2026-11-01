@@ -16,7 +16,7 @@ import tomllib
 import pytest
 
 import rustique
-from rustique import _report
+from rustique import _report, _switch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PYSRC = os.path.join(ROOT, "python")
@@ -189,11 +189,11 @@ def test_unknown_env_names_never_raise_with_the_real_framework(monkeypatch):
 
 
 def test_names_parsing():
-    assert rustique._names(None) is None
-    assert rustique._names("json, copy;re,,json") == ("json", "copy", "re")
-    assert rustique._names(["a", " b "]) == ("a", "b")
+    assert _switch.names(None) is None
+    assert _switch.names("json, copy;re,,json") == ("json", "copy", "re")
+    assert _switch.names(["a", " b "]) == ("a", "b")
     with pytest.raises(TypeError):
-        rustique._names([1])
+        _switch.names([1])
 
 
 def test_stats_switches(fake, monkeypatch):
@@ -249,12 +249,12 @@ def test_report_target(monkeypatch, value, expected):
         monkeypatch.delenv("RUSTIQUE_REPORT", raising=False)
     else:
         monkeypatch.setenv("RUSTIQUE_REPORT", value)
-    assert rustique._report_target() == expected
+    assert _switch.report_target() == expected
 
 
 def test_report_target_pid(monkeypatch):
     monkeypatch.setenv("RUSTIQUE_REPORT", "/tmp/r-{pid}.txt")
-    assert rustique._report_target() == f"/tmp/r-{os.getpid()}.txt"
+    assert _switch.report_target() == f"/tmp/r-{os.getpid()}.txt"
 
 
 # --- report formatting --------------------------------------------------------------------

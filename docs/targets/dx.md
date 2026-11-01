@@ -8,7 +8,7 @@ layer. Usage: [`docs/USAGE.md`](../USAGE.md). Every number is **M** (measured; h
 
 | deliverable | what ships | key measurement / decision |
 |---|---|---|
-| zero-code switch | `_rustique_startup.pth` + `_rustique_startup.py` at the site-packages root (in the wheel and the sdist) | no PEP 829 `.start` file: on 3.15.1 it costs **1.72×** `python -c pass` (§1.2). Installed but unset: **1.025× Ir** (3.15), **1.044×** (3.14) in a bare venv; **≤ 1.012×** where any other `.pth` exists (§1.3) |
+| zero-code switch | one `_rustique_startup.pth` line at the site-packages root (in the wheel and the sdist) | no PEP 829 `.start` file: on 3.15.1 it costs **1.72×** `python -c pass` (§1.2). Installed but unset: **1.025× Ir** (3.15), **1.044×** (3.14) in a bare venv; **≤ 1.012×** where any other `.pth` exists (§1.3) |
 | control | `RUSTIQUE=0` kill switch (overrides code), `RUSTIQUE_ONLY` / `RUSTIQUE_EXCLUDE` (narrow only), `-E`/`-I` honoured | §2 |
 | visibility | `RUSTIQUE_STATS`, `RUSTIQUE_REPORT` (stderr / file / JSON), `python -m rustique status`, `python -m rustique report -- <cmd>` | §3 |
 | CI | `python -m rustique diff -- <cmd>` (exit code, stdout/stderr, per-test outcomes, timing); pytest plugin `--rustique` (fails on unexpected refusals or check mismatches, xdist-aware); check mode `RUSTIQUE_CHECK=1\|raise` | §4 |
@@ -21,28 +21,34 @@ layer. Usage: [`docs/USAGE.md`](../USAGE.md). Every number is **M** (measured; h
 
 ### 1.1 Mechanism
 
-The wheel puts two files at the root of site-packages (maturin `include`, format
-`["sdist", "wheel"]`; `python/` is the python-source, so `python/X` lands at the wheel root):
+The wheel (and the sdist) puts one file at the root of site-packages, `_rustique_startup.pth`
+(maturin `include` with format `["sdist", "wheel"]`; `python/` is the python-source, so
+`python/X` lands at the wheel root). `site` runs its one import line at every interpreter
+start:
 
-- `_rustique_startup.pth`, one import line, executed by `site` at every interpreter start:
+```
+import os; os.environ.get('RUSTIQUE', '0') != '0' and __import__('rustique')._startup()
+```
 
-  ```
-  import os; 'RUSTIQUE' in os.environ and __import__('_rustique_startup')
-  ```
+- `RUSTIQUE` unset or `0`: nothing is imported (`os` is already loaded by `site`).
+- Otherwise `rustique` is imported and `rustique._startup()` runs. It honours `-E`/`-I`
+  (`sys.flags.ignore_environment`) and parses `RUSTIQUE`:
+  - `1`/`true`/`yes`/`on`: the quiet enable (`_accel.enable(..., quiet=True)`: no status
+    dict is built);
+  - `false`/`no`/`off`/empty: nothing;
+  - anything else: a one-line warning.
 
-  With `RUSTIQUE` unset nothing is imported (`os` is already loaded by `site`).
-- `_rustique_startup.py` (outside the `rustique` package: importing `rustique.anything` runs
-  `rustique/__init__.py`, which loads the extension). Importing it runs `start()`: honour
-  `-E`/`-I` (`sys.flags.ignore_environment`), parse `RUSTIQUE` (`1/true/yes/on` → enable;
-  `0/false/no/off`/empty → nothing; anything else → one-line warning), then
-  `import rustique; rustique._startup()` (the quiet enable: no status dict is built). Every failure (no extension
-  for this interpreter, a broken install) prints one line to stderr and returns: the switch
-  never breaks interpreter startup (tested with a `rustique` package that raises on import).
-  `start()` is idempotent and is the entry point a future `.start` file will name.
+  It never raises. If the extension cannot be imported (no wheel for this interpreter, a
+  broken install), `site` prints the failing line with its traceback and the interpreter
+  starts plain. This is tested with a `rustique` package that raises on import.
+- History: the first version imported a separate top-level `_rustique_startup` module,
+  which took the decision with only `os`/`sys`. It was dropped at the lead's request
+  (startup budget, §1.3): the `.pth` line already does the cheap test, and the module cost
+  ~0.3M Ir (~0.75%) on the `RUSTIQUE=1` path.
 
 `maturin develop` (editable) does not install `include` files, so development venvs have no
 startup file and `RUSTIQUE=1` does nothing there (`python -m rustique status` says so). The
-tests exercise the shipped files through `site.addsitedir(<copy>)` in subprocesses.
+tests exercise the shipped line through `site.addsitedir(<copy>)` in subprocesses.
 
 ### 1.2 Why no PEP 829 `.start` file (yet) — an upstream issue to file
 
@@ -71,10 +77,13 @@ Suggested fix for CPython: resolve `pkg.mod:callable` in `site` with
 `importlib.import_module` + `getattr` (both already loaded) and keep `pkgutil` for the
 error path. To file (lead), with this table.
 
-Plan: ship `_rustique_startup.start` (content: `_rustique_startup:start`) once `site` stops
+Plan: ship `_rustique_startup.start` once `site` stops
 paying this, or for 3.18+ where `.pth` import lines are silently ignored (PEP 829 schedule;
 `Lib/site.py` `_warn_future_us(..., remove=(3, 18))`). Wheels are per-minor (cp314, cp315),
 so the `.start` file can be added for the minors that need it without touching the others.
+A `.start` entry point always imports its module, so it will name a tiny top-level module
+again (e.g. `_rustique_startup:start`, testing `RUSTIQUE` with `os` only): naming
+`rustique:_startup` would load the extension at every interpreter start.
 
 ### 1.3 What the `.pth` line costs (`RUSTIQUE` unset)
 
@@ -119,8 +128,8 @@ on the path ~0.3M Ir (~0.75%; re-import timing: 35–60 µs each, mostly import 
 The lead made startup the binding constraint (`import rustique; rustique.enable()` ≤ 1.05),
 so:
 
-- **Module budget**: the `RUSTIQUE=1` path loads `_rustique_startup`, `rustique` and the
-  extension, nothing else; `import rustique` loads `rustique` + `rustique._rustique`;
+- **Module budget**: the `RUSTIQUE=1` path loads `rustique` and the extension, nothing
+  else (no hook module); `import rustique` loads `rustique` + `rustique._rustique`;
   `enable()` loads nothing (a `sys.modules` diff in `tests`/§8). The whole switch (env
   parsing, kill switch, selection, check mode, report registration) lives in
   `rustique/__init__.py` over the extension's `_accel` primitives; report formatting
@@ -269,7 +278,7 @@ and `CHECK MISMATCHES` (any mismatch fails `diff` and the pytest session).
 `maturin build --profile dev-release --zig --compatibility manylinux_2_28` (ziglang 0.17
 from PyPI) for 3.15.1, 3.15.1t, 3.14.9, 3.14.9t → `rustique-0.2.0-cp31{4,5}-cp31{4,5}{,t}
 -manylinux_2_28_x86_64.whl`; `smoke_all.sh` with real `pip` into fresh venvs: **11/11
-checks on each of the 4 builds** (44 ok). The sdist contains `python/_rustique_startup.{py,pth}`.
+checks on each of the 4 builds** (44 ok). The sdist contains `python/_rustique_startup.pth`.
 
 ### 5.3 Interpreters without a wheel
 
@@ -326,12 +335,12 @@ What the experience surfaced, and what changed:
 
 1. **False alarm, fixed**: under `RUSTIQUE=1` every pytest run printed two
    `PytestAssertRewriteWarning: Module already imported so cannot be rewritten; rustique`
-   (and `_rustique_startup`). pytest marks every top-level module of a distribution that
+   (and the then-separate `_rustique_startup` module). pytest marks every top-level module of a distribution that
    has a `pytest11` entry point for assertion rewriting and warns when one is already
    imported — and the startup switch imports both before pytest starts. `diff` flagged it
    on attrs and rich (stdout and the warnings count differed). Fix: `PYTEST_DONT_REWRITE`
-   in both module docstrings (pytest's documented opt-out), and the `.pth` line no longer
-   imports the hook under `RUSTIQUE=0`. The wheel smoke test now checks that
+   in the package docstring (pytest's documented opt-out), and the `.pth` line imports
+   nothing under `RUSTIQUE=0`. The wheel smoke test now checks that
    `RUSTIQUE=1 pytest` adds no warning and that `pytest --rustique` loads through the entry
    point.
 2. **Timing skew, fixed in the runner**: the first run of a fresh checkout compiles every

@@ -13,8 +13,10 @@ only when ``RUSTIQUE`` is set to something other than ``0``::
 
     import os; os.environ.get('RUSTIQUE', '0') != '0' and __import__('rustique')._startup()
 
-It imports no other Python module at import or enable time; formatting (report at exit,
-CLI) and the native tier are imported on use.
+It imports no other Python module at import or enable time and keeps its own code small
+(every code object is unmarshalled at each start): the common path (``RUSTIQUE=1`` or
+``enable()`` with no selection, no ``RUSTIQUE_ONLY``/``_EXCLUDE``/``_STATS``/``_REPORT``/
+``_CHECK``) is here; anything configured goes through ``rustique._switch``, imported then.
 
 Environment (read at every enable; all ignored under ``-E``/``-I``, like ``PYTHON*``):
 
@@ -83,21 +85,11 @@ _LAZY = frozenset({
     "Dict", "DictType", "Expr", "FrozenSet", "FrozenSetType", "List", "ListType", "Set", "SetType", "Tuple",
     "X", "arange", "f32", "f64", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
 })
-# The containers implement the full ABC protocols. The lazy extension registers them when it
-# creates the types; an extension that does not (wave 0) gets them registered here.
-_ABCS = {"List": "MutableSequence", "Dict": "MutableMapping", "Set": "MutableSet", "Tuple": "Sequence",
-         "FrozenSet": "Set"}
 
 
 def __getattr__(name: str):
     if name in _LAZY:
-        value = getattr(_rustique, name)
-        if name in _ABCS:
-            import _collections_abc  # loaded by the interpreter at startup
-
-            abc = getattr(_collections_abc, _ABCS[name])
-            if not issubclass(value, abc):
-                abc.register(value)
+        value = getattr(_rustique, name)  # the extension creates it (and registers its ABC)
         globals()[name] = value
         return value
     if name == "RustiqueCheckError":
@@ -109,132 +101,34 @@ def __dir__():
     return sorted(set(globals()) | _LAZY | {"RustiqueCheckError"})
 
 
-# --- the switch (docs/ACCELERATION.md §8) -----------------------------------------------------
+# --- the switch (docs/ACCELERATION.md §8; the configured paths: rustique._switch) ------------
 
-_ON = ("1", "true", "yes", "on")
-_OFF = ("0", "false", "no", "off")
-_VARIABLES = ("RUSTIQUE", "RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_STATS", "RUSTIQUE_REPORT", "RUSTIQUE_CHECK")
 # How Rustique was turned on in this process, and what the last enable selected.
 _state: dict = {"source": None, "only": None, "exclude": (), "killed_calls": 0, "report": None}
 _UNSET = object()
-
-
-def _env(name: str) -> str | None:
-    """A ``RUSTIQUE*`` variable, or None (unset, or ``-E``/``-I``)."""
-    return None if sys.flags.ignore_environment else os.environ.get(name)
-
-
-def _flag(value: str | None) -> bool | None:
-    if value is None:
-        return None
-    v = value.strip().lower()
-    return True if v in _ON else False if v in _OFF else None
+_CONFIG = ("RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_STATS", "RUSTIQUE_REPORT", "RUSTIQUE_CHECK")
 
 
 def _killed() -> bool:
     """``RUSTIQUE=0`` (or ``false``/``no``/``off``): every enable path is a no-op."""
-    return _flag(_env("RUSTIQUE")) is False
-
-
-def _names(value) -> tuple[str, ...] | None:
-    """``"json, copy"`` / ``["json", "copy"]`` -> ``("json", "copy")``; None stays None."""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        value = value.replace(";", ",").split(",")
-    out: list[str] = []
-    for v in value:
-        if not isinstance(v, str):
-            raise TypeError(f"group or target names must be str, not {type(v).__name__}")
-        v = v.strip()
-        if v and v not in out:
-            out.append(v)
-    return tuple(out)
-
-
-def _targets() -> list[tuple[str, str]]:
-    return [(t[0], t[1]) for t in _accel.targets()]
-
-
-def _known(var: str, sel: tuple[str, ...] | None) -> tuple[str, ...] | None:
-    """``sel`` without names no target or group has, with one warning on stderr (an
-    environment variable never raises; ``enable()`` raises on unknown names in code)."""
-    if not sel:
-        return sel
-    targets = _targets()
-    known = {n for n, _ in targets} | {g for _, g in targets}
-    unknown = [n for n in sel if n not in known]
-    if unknown:
-        groups = ", ".join(sorted({g for _, g in targets if not g.startswith("_")}))
-        sys.stderr.write(f"rustique: {var}: no target or group named {', '.join(map(repr, unknown))}, ignored "
-                         f"(groups: {groups})\n")
-    return tuple(n for n in sel if n in known)
-
-
-def _narrow(code: tuple[str, ...] | None, env: tuple[str, ...] | None) -> tuple[str, ...] | None:
-    """The intersection of two ``only`` selections of groups or target names."""
-    if env is None:
-        return code
-    if code is None:
-        return env
-    return tuple(n for n, g in _targets() if (n in code or g in code) and (n in env or g in env))
-
-
-def _check_mode() -> str | None:
-    """What ``RUSTIQUE_CHECK`` asks for: ``"warn"``, ``"raise"``, ``"off"`` or None (unset)."""
-    value = _env("RUSTIQUE_CHECK")
-    if value is None or not value.strip():
-        return None
-    v = value.strip().lower()
-    if v in ("warn", "raise"):
-        return v
-    flag = _flag(v)
-    if flag is None:
-        sys.stderr.write(f"rustique: ignoring RUSTIQUE_CHECK={value!r} (expected 1, raise or 0)\n")
-        return None
-    return "warn" if flag else "off"
-
-
-def _report_target() -> str | None:
-    """Where ``RUSTIQUE_REPORT`` sends the report: None, ``"stderr"`` or a path."""
-    value = _env("RUSTIQUE_REPORT")
-    if value is None or not value.strip():
-        return None
-    flag = _flag(value)
-    if flag is False:
-        return None
-    if flag is True or value.strip().lower() == "stderr":
-        return "stderr"
-    return value.strip().replace("{pid}", str(os.getpid()))
+    v = None if sys.flags.ignore_environment else os.environ.get("RUSTIQUE")
+    return v is not None and v.strip().lower() in ("0", "false", "no", "off")
 
 
 def _enable(only=None, exclude=None, native=None, builtins=True, source="rustique.enable()") -> None:
-    """``enable()`` without building the status (the startup path's quiet enable)."""
-    report = _report_target()
-    if report is not None:
-        _report_to(report, counters=False)
+    """``enable()`` without building the status (the quiet enable of the startup path)."""
+    if (only is not None or exclude is not None or native or not builtins
+            or (not sys.flags.ignore_environment and any(k in os.environ for k in _CONFIG))):
+        from rustique import _switch
+
+        return _switch.enable(only, exclude, native, builtins, source)
     if _killed():
         _state["killed_calls"] += 1
         return
-    # Unknown names in RUSTIQUE_ONLY narrow to nothing, never to everything.
-    env_only = _known("RUSTIQUE_ONLY", _names(_env("RUSTIQUE_ONLY")))
-    env_exclude = _known("RUSTIQUE_EXCLUDE", _names(_env("RUSTIQUE_EXCLUDE")) or ())
-    sel_only = _narrow(_names(only), env_only)
-    sel_exclude = tuple(dict.fromkeys((_names(exclude) or ()) + env_exclude + (() if builtins else ("builtins",))))
-    mode = _check_mode()
-    if mode is not None:
-        _accel.check(mode)
-    if report is not None or _flag(_env("RUSTIQUE_STATS")):
-        _accel.stats(True)
-    _accel.enable(None if sel_only is None else list(sel_only), list(sel_exclude), quiet=True)
-    if native:
-        from rustique._takeover import _hook
-
-        _hook.install((native,) if isinstance(native, str) else tuple(native))
-        _accel._set_native(list(_hook.patterns()))
+    _accel.enable(None, None, quiet=True)
     if _state["source"] is None:
         _state["source"] = source
-    _state["only"], _state["exclude"] = sel_only, sel_exclude
+    _state["only"], _state["exclude"] = None, ()
 
 
 def enable(*, only=None, exclude=None, native=None, builtins: bool = True) -> dict:
@@ -253,7 +147,7 @@ def enable(*, only=None, exclude=None, native=None, builtins: bool = True) -> di
 def disable() -> dict:
     """Restore every original entry point and stop rewriting imports (modules already
     rewritten by the native tier keep their code). Returns :func:`status`."""
-    _accel.disable(quiet=True)  # also stops the native tier's import rewriting
+    _accel.disable(quiet=True)
     _state["source"] = None
     return status()
 
@@ -266,18 +160,10 @@ def status() -> dict:
     selection and the ``RUSTIQUE*`` variables in effect."""
     st = _accel.status()
     proc = st["process"]
+    env = {} if sys.flags.ignore_environment else os.environ
     proc["free_threaded"] = not getattr(sys, "_is_gil_enabled", lambda: True)()
-    proc["switch"] = {
-        "source": _state["source"],
-        "killed": _killed(),
-        "killed_calls": _state["killed_calls"],
-        "only": _state["only"],
-        "exclude": _state["exclude"],
-        "stats": bool(proc.get("stats")),
-        "report": _state["report"],
-        "check": proc.get("check"),
-        "env": {k: v for k in _VARIABLES if (v := _env(k)) is not None},
-    }
+    proc["switch"] = dict(_state, killed=_killed(), stats=bool(proc.get("stats")), check=proc.get("check"),
+                          env={k: env[k] for k in ("RUSTIQUE", *_CONFIG) if k in env})
     return st
 
 
@@ -311,46 +197,15 @@ def native(obj=None, /):
 
 
 def _startup() -> None:
-    """``RUSTIQUE=1`` at interpreter startup, called by the ``_rustique_startup.pth`` line
-    (the quiet enable: no status dict). ``1``/``true``/``yes``/``on`` enable; ``0``/
-    ``false``/``no``/``off``/empty do nothing; anything else warns. Never raises: a failure
-    prints one line and the interpreter starts plain."""
-    value = _env("RUSTIQUE")  # None under -E/-I
-    if value is None:
-        return
-    flag = _flag(value) if value.strip() else False
-    if flag is None:
-        sys.stderr.write(f"rustique: ignoring RUSTIQUE={value!r} (expected 1 or 0)\n")
-        return
-    if flag:
+    """``RUSTIQUE=1`` at interpreter startup, called by the ``_rustique_startup.pth`` line.
+    ``1``/``true``/``yes``/``on`` enable; ``0``/``false``/``no``/``off``/empty do nothing;
+    anything else warns. Never raises: a failure prints one line and Python starts plain."""
+    value = None if sys.flags.ignore_environment else os.environ.get("RUSTIQUE")
+    v = "" if value is None else value.strip().lower()
+    if v in ("1", "true", "yes", "on"):
         try:
             _enable(source="RUSTIQUE=1")
         except Exception as exc:
             sys.stderr.write(f"rustique: RUSTIQUE={value} ignored: {type(exc).__name__}: {exc}\n")
-
-
-# --- report at exit (formatting imported only then) -------------------------------------------
-
-
-def _report_to(target: str, counters: bool = True) -> None:
-    """Print (``"stderr"``) or append (a path) the report at exit."""
-    if _state["report"] is None:
-        import atexit  # builtin module
-
-        atexit.register(_report_at_exit)
-    _state["report"] = target
-    if counters:
-        _accel.stats(True)
-
-
-def _record() -> dict:
-    """This process's status and counters as one JSON-able record."""
-    return {"pid": os.getpid(), "argv": list(sys.argv), "status": status(), "stats": stats(), "counters": True}
-
-
-def _report_at_exit() -> None:
-    target = _state["report"]
-    if target is not None:
-        from rustique import _report
-
-        _report.write(target, _record)
+    elif v not in ("", "0", "false", "no", "off"):
+        sys.stderr.write(f"rustique: ignoring RUSTIQUE={value!r} (expected 1 or 0)\n")

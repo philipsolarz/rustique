@@ -82,7 +82,9 @@ _KEY = pytest.StashKey[_Session]()
 def _record() -> dict:
     import rustique
 
-    return rustique._record()
+    from rustique import _switch
+
+    return _switch.record()
 
 
 def _mismatches(rec: dict) -> dict[str, int]:
