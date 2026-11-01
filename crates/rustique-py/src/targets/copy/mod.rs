@@ -316,9 +316,15 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
                 y
             }
             Err(false) => {
-                // User code at the root itself (a hook object, typically reached again
-                // through the original's helpers): nothing was wasted; counted, no streak.
-                C_DEEPCOPY.fallback(Reason::Deopt);
+                // User code at the root itself: nothing was wasted. Reached again through a
+                // fallback's helpers (a list of hook objects), it is counted without
+                // extending the streak; called directly, it is a persistent fallback like
+                // any other (the streak suspends a caller that only copies hook objects).
+                if NEST_DEEPCOPY.with(|n| n.get()) > 0 {
+                    C_DEEPCOPY.fallback(Reason::Deopt);
+                } else {
+                    C_DEEPCOPY.fallback_streak(Reason::Deopt);
+                }
                 fallback_call(&C_DEEPCOPY, &NEST_DEEPCOPY, func, args, nargsf, kw)
             }
             Err(true) => {
@@ -362,9 +368,13 @@ unsafe extern "C" fn vc_copy(func: O, args: *const O, nargsf: usize, kw: O) -> O
                 y
             }
             None => {
-                // Decided before anything was built (copy.copy is one level deep): counted,
-                // not a streak.
-                C_COPY.fallback(Reason::Deopt);
+                // Decided before anything was built: inside a fallback of `copy` (hooks
+                // calling `copy.copy` recursively) counted only; otherwise a streak step.
+                if NEST_COPY.with(|n| n.get()) > 0 {
+                    C_COPY.fallback(Reason::Deopt);
+                } else {
+                    C_COPY.fallback_streak(Reason::Deopt);
+                }
                 fallback_call(&C_COPY, &NEST_COPY, func, args, nargsf, kw)
             }
         }

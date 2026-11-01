@@ -405,9 +405,9 @@ def test_restart_streak_suspends_and_hit_resets():
         copy.deepcopy(7)
     st = S.A.stats()["copy.deepcopy"]
     assert st["fallback"]["deopt"] == 80 and st["hits"] == 40 and st["suspensions"] == 0
-    # Root-level restarts alone never suspend (nothing is wasted).
-    for _ in range(100):
-        copy.deepcopy(h)
+    # Root-level restarts reached through a fallback's helpers never suspend.
+    copy.deepcopy([h] * 100)
+    copy.deepcopy(7)
     assert S.A.stats()["copy.deepcopy"]["suspensions"] == 0
     # Abandoned work, repeatedly (no nested hit in between): suspended at the streak limit.
     for _ in range(70):
