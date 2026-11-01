@@ -141,6 +141,45 @@ so:
 
 Measured after the change: §1.4.
 
+### 1.4 Startup cells, release build (**M**)
+
+`benches/dx/startup.py cells PLAIN RUSTIQUE`: `maturin build --release --zig` (fat LTO,
+4.2 MB `.so`) wheels `pip install`ed into fresh venvs; every ratio against `python -c pass`
+in an identical venv without Rustique; callgrind median of 3, wall median (p10–p90) of 60
+interleaved rounds, pinned to one CPU (`taskset -c 3`), dev box. Bare venv = no other
+`.pth`; "other .pth" = both venvs carry one comment-only `.pth` (what an editable install or
+setuptools brings). Layout: no hook module, slim `rustique/__init__.py`, configured paths
+in `rustique._switch` (not imported here), extension of wave1 at 41fe7e6.
+
+| cell | 3.15.1 bare: Ir | wall | other .pth: Ir | wall | 3.14.9 bare: Ir | wall | other .pth: Ir | wall |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| installed, `RUSTIQUE` unset | 1.026 | 1.032 | 1.008 | 1.011 | 1.047 | 1.047 | 1.013 | 1.014 |
+| `RUSTIQUE=1` | 1.073 | 1.105 | 1.053 | 1.083 | 1.092 | 1.126 | 1.057 | 1.092 |
+| `import rustique` | 1.070 | 1.099 | 1.051 | 1.076 | 1.086 | 1.110 | 1.051 | 1.074 |
+| `import rustique; rustique.enable()` | 1.083 | 1.113 | 1.063 | 1.090 | 1.098 | 1.124 | 1.063 | 1.089 |
+
+Before slimming `__init__.py` (hook module already gone): 3.15.1 bare `RUSTIQUE=1` 1.079 /
+1.112, `import + enable()` 1.089 / 1.119. Decomposition on 3.15.1 (callgrind, **M**):
+
+| part | Ir |
+|---|---:|
+| `site`'s `utf-8-sig` codec import for any `.pth` | +770k |
+| the `.pth` line (compile + test) | +240k |
+| extension load (dlopen, relocations, lazy PyO3 module init) | +964k |
+| package import machinery (finder, `rustique/__init__` pyc read) | ~+250k |
+| `rustique/__init__.py` content beyond a one-line `__init__` | +389k (was +624k) |
+| quiet enable (`_accel.enable(..., quiet=True)`, 13 targets) | +240–270k |
+| `status()` (built by `enable()`) | +260k |
+
+Wall exceeds Ir because loading the extension is mostly page faults and relocations
+(kernel time, not counted by callgrind). The lead's conclusion (2026-11-01): the Python
+package cannot reach wall ≤ 1.05, so the `RUSTIQUE=1` path will load **only the extension**,
+and the environment semantics move into `_accel` in Rust (one implementation for the startup
+path and explicit `enable()`). The semantics are specified in this doc (§2) and
+`docs/USAGE.md`, and `tests/test_dx.py` is their contract, independent of which layer
+implements them. dx sent the spec to accel-core; the numbers after that change are theirs
+to report with this bench.
+
 ## 2. Control
 
 | path | `RUSTIQUE=0` | `RUSTIQUE_ONLY` / `RUSTIQUE_EXCLUDE` | `RUSTIQUE_STATS` / `_REPORT` / `_CHECK` |
