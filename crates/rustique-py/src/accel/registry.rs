@@ -248,12 +248,16 @@ pub(crate) unsafe fn on_sys_modules_event(
         if ffi::PyUnicode_CheckExact(key) == 0 {
             return;
         }
+        // Module names of targets are ASCII: compare the key's PEP 393 data in place (no
+        // allocation, no UTF-8 cache attached to the caller's string).
+        if ffi::PyUnicode_KIND(key) != ffi::PyUnicode_1BYTE_KIND {
+            return;
+        }
+        let len = ffi::PyUnicode_GET_LENGTH(key) as usize;
+        let data = std::slice::from_raw_parts(ffi::PyUnicode_DATA(key).cast::<u8>(), len);
         let name = {
             let l = lazy();
-            l.pending.iter().copied().find(|n| {
-                let c = std::ffi::CString::new(*n).unwrap_or_default();
-                ffi::PyUnicode_CompareWithASCIIString(key, c.as_ptr()) == 0
-            })
+            l.pending.iter().copied().find(|n| n.as_bytes() == data)
         };
         let Some(name) = name else { return };
         let saved = ffi::PyErr_GetRaisedException();
