@@ -341,6 +341,17 @@ pub static SHARED_B: TargetSpec = TargetSpec {
     ..TargetSpec::DEFAULT
 };
 
+/// `accel::degrade` on the named self-test target.
+#[pyfunction]
+fn _selftest_degrade(name: &str, reason: &str) -> PyResult<()> {
+    let spec = TARGETS
+        .iter()
+        .find(|t| t.name == name)
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("unknown self-test target"))?;
+    accel::degrade(spec, reason);
+    Ok(())
+}
+
 /// The shared self-test group's dependency flag.
 #[pyfunction]
 fn _selftest_shared_ok() -> bool {
@@ -519,5 +530,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_selftest_overrides, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_watch_dict, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_shared_ok, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_degrade, m)?)?;
     Ok(())
 }

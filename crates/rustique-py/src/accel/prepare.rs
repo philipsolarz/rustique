@@ -407,7 +407,9 @@ impl<'py> Prepare<'py> {
         // SAFETY: an exact function object: its code is a live code object.
         let code =
             unsafe { Bound::from_borrowed_ptr(self.py, (*func.as_ptr().cast::<ffi::PyFunctionObject>()).func_code) };
-        if version::monitoring_layout_ok() != Some(true) {
+        // The local-monitoring layout the tools guard reads: calibrated on the first
+        // vectorcall site of the process (a probe code object; C calls only).
+        if !version::calibrate_monitoring(self.py) {
             return Err(Refusal::with(Category::Layout, format!("{}: local monitoring layout not calibrated", what())));
         }
         if !version::code_layout_cached(&code)? {
@@ -685,14 +687,14 @@ fn memo_put(key: &'static str, r: Result<(), Refusal>) {
     }
 }
 
-/// Start/end of a registry pass: forget memoized validations and the loaded objects'
-/// segments (code fingerprints are cached for the process: the cache keeps the code objects
-/// alive, so an address is never reused).
+/// Start/end of a registry pass: forget memoized validations (code fingerprints are cached
+/// for the process: the cache keeps the code objects alive, so an address is never reused;
+/// the loaded objects' segments are kept while the loader's counters stay the same).
 pub(crate) fn clear_pass_caches() {
     if let Ok(mut m) = MEMO.lock() {
         m.clear();
     }
-    crate::patch::clear_snapshot();
+    crate::patch::new_pass();
 }
 
 fn refuse_missing(key: &str) -> Refusal {

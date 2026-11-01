@@ -172,7 +172,8 @@ impl Rt {
 enum Suspended {
     /// A pinned dependency changed; resumed when every pin re-arms.
     Deps,
-    /// [`stats::STREAK_LIMIT`] consecutive fallbacks; resumed by the next `enable()`.
+    /// The net-benefit score reached its floor ([`stats::STREAK_LIMIT`] consecutive
+    /// fallbacks from fresh, or mostly-fallback traffic); resumed by the next `enable()`.
     Fallback,
 }
 
@@ -205,6 +206,39 @@ struct Group {
 }
 
 static REG: PyLock<Option<Registry>> = PyLock::new(None);
+
+/// Targets whose lazy validation failed after install (`degrade`): spec address → reason.
+static DEGRADED: Mutex<Vec<(usize, String)>> = Mutex::new(Vec::new());
+static ANY_DEGRADED: AtomicBool = AtomicBool::new(false);
+
+/// Mark an installed target as degraded: a validation it performs lazily (after install,
+/// e.g. on first use) failed, so its kernels fall back. Idempotent (the first reason
+/// stays), cheap, callable from kernels (no Python code, a short process-local lock). The
+/// state stays "installed" and counters keep counting fallbacks; `status()` shows
+/// `"degraded": reason` until the target is disabled.
+pub fn degrade(spec: &'static TargetSpec, reason: &str) {
+    let key = spec as *const TargetSpec as usize;
+    let mut d = DEGRADED.lock().unwrap_or_else(|p| p.into_inner());
+    if !d.iter().any(|(k, _)| *k == key) {
+        d.push((key, reason.to_owned()));
+        ANY_DEGRADED.store(true, Ordering::Relaxed);
+    }
+}
+
+fn degraded_reason(spec: &'static TargetSpec) -> Option<String> {
+    if !ANY_DEGRADED.load(Ordering::Relaxed) {
+        return None;
+    }
+    let key = spec as *const TargetSpec as usize;
+    DEGRADED.lock().unwrap_or_else(|p| p.into_inner()).iter().find(|(k, _)| *k == key).map(|(_, r)| r.clone())
+}
+
+fn clear_degraded(spec: &'static TargetSpec) {
+    if ANY_DEGRADED.load(Ordering::Relaxed) {
+        let key = spec as *const TargetSpec as usize;
+        DEGRADED.lock().unwrap_or_else(|p| p.into_inner()).retain(|(k, _)| *k != key);
+    }
+}
 
 /// Every registered target, in `targets::ALL` order.
 pub fn all_specs() -> &'static [&'static TargetSpec] {
@@ -452,7 +486,7 @@ fn resume(reg: &mut Registry, i: usize) -> bool {
     }
     let mut ml = rt.sites.iter().any(|s| s.kind == Kind::MlMeth);
     rt.suspended = None;
-    all_specs()[i].counters.streak.store(0, Ordering::Relaxed);
+    all_specs()[i].counters.rearm();
     if let Some(f) = failed {
         ml |= deactivate(reg, i);
         let rt = &mut reg.rt[i];
@@ -463,7 +497,7 @@ fn resume(reg: &mut Registry, i: usize) -> bool {
     ml
 }
 
-/// Suspend or resume vectorcall targets according to their pins and fallback streaks.
+/// Suspend or resume vectorcall targets according to their pins and net-benefit scores.
 /// Returns whether an `ml_meth` site changed.
 fn resync(_py: Python<'_>, reg: &mut Registry) -> bool {
     let mut ml = false;
@@ -712,8 +746,7 @@ fn activate(
     rt.refusal = None;
     rt.suspended = None;
     rt.suspensions = 0;
-    all_specs()[i].counters.streak.store(0, Ordering::Relaxed);
-    all_specs()[i].counters.suspend_requested.store(false, Ordering::Relaxed);
+    spec.counters.arm(spec.hit_credit, spec.fallback_debit);
     if has_vc {
         rt.tracked = rt.flags.clone();
         for f in group_flags {
@@ -763,6 +796,7 @@ fn deactivate(reg: &mut Registry, i: usize) -> bool {
         rt.pin_owner = 0;
     }
     rt.flags.clear();
+    clear_degraded(all_specs()[i]);
     if let Some(gi) = rt.group.take() {
         release_group(reg, gi);
     }
@@ -841,11 +875,6 @@ pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -
         check_names(o)?;
     }
     check_names(&exclude)?;
-    // Python-function targets (module targets) read the local-monitoring layout: calibrate
-    // it here, outside the registry lock and never inside the `sys.modules` watcher.
-    if all_specs().iter().any(|s| s.module.is_some() && selected(s, only.as_deref(), &exclude)) {
-        version::calibrate_monitoring(py);
-    }
     let mut g = REG.lock(py)?;
     let reg = registry(&mut g);
     prepare::clear_pass_caches();
@@ -1012,6 +1041,11 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         }
         if let Some(gi) = rt.group {
             d.set_item(intern!(py, "shared"), reg.groups[gi].spec.name)?;
+        }
+        if rt.state == State::Installed
+            && let Some(why) = degraded_reason(spec)
+        {
+            d.set_item(intern!(py, "degraded"), why)?;
         }
         if let Some(why) = rt.suspended {
             d.set_item(intern!(py, "suspended"), why.as_str())?;

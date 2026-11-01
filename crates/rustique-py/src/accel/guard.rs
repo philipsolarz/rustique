@@ -67,7 +67,7 @@ const ALL_EVENTS: [u8; UNGROUPED_EVENTS] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
 /// Number of local events in `_Py_LocalMonitors.tools` (`_co_monitoring`'s first member):
 /// `_PY_MONITORING_LOCAL_EVENTS` = 11 on 3.14, `_PY_MONITORING_UNGROUPED_EVENTS` = 16 on
 /// 3.15 (RAISE, EXCEPTION_HANDLED, PY_UNWIND, PY_THROW, RERAISE became local events).
-/// Calibrated at `enable()` (`version::monitoring_layout_ok`).
+/// Calibrated on the first vectorcall site prepared (`version::calibrate_monitoring`).
 pub const LOCAL_EVENTS: usize = if cfg!(Py_3_15) { 16 } else { 11 };
 
 // ---------------------------------------------------------------------------------------
@@ -151,11 +151,11 @@ impl std::fmt::Debug for Tools {
 /// No tool listens *locally* on this code object (`sys.monitoring.set_local_events`, what a
 /// debugger breakpoint or a per-function profiler does). Reads `_co_monitoring` (NULL until a
 /// tool ever instrumented the code) and its first member `local_monitors.tools[LOCAL_EVENTS]`
-/// (internal layout: 11 events on 3.14, 16 on 3.15; calibrated at `enable()`).
+/// (internal layout: 11 events on 3.14, 16 on 3.15; calibrated with the first vectorcall site).
 ///
 /// # Safety
 /// `code` is a live code object; layout calibrated (`version::code_layout_ok_for`,
-/// `version::monitoring_layout_ok`).
+/// `version::calibrate_monitoring`).
 #[inline(always)]
 pub unsafe fn code_locally_quiet(code: *mut ffi::PyObject) -> bool {
     // SAFETY: per the caller.
