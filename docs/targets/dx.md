@@ -35,7 +35,7 @@ The wheel puts two files at the root of site-packages (maturin `include`, format
   `rustique/__init__.py`, which loads the extension). Importing it runs `start()`: honour
   `-E`/`-I` (`sys.flags.ignore_environment`), parse `RUSTIQUE` (`1/true/yes/on` → enable;
   `0/false/no/off`/empty → nothing; anything else → one-line warning), then
-  `rustique._switch.startup()` = `enable(_source="RUSTIQUE=1")`. Every failure (no extension
+  `import rustique; rustique._startup()` (the quiet enable: no status dict is built). Every failure (no extension
   for this interpreter, a broken install) prints one line to stderr and returns: the switch
   never breaks interpreter startup (tested with a `rustique` package that raises on import).
   `start()` is idempotent and is the entry point a future `.start` file will name.
@@ -111,14 +111,26 @@ Unset: within the ≤ 1.05 bar on every build; the ≤ 1.01 target is met only w
 `.pth` exists — impossible on a bare venv for any `.pth`/`.start` mechanism (the codec
 import is in `site`). Lead ruling (2026-11-01): ship the `.pth`.
 
-**`RUSTIQUE=1` costs 1.22–1.25×** (`python -c pass`, dev-release wheel, 13 wave-0
-targets). Decomposition on 3.15.1 (callgrind Ir, **M**): `import rustique` +7.46M (the
-extension: dlopen of a 6.4 MB `.so` and PyO3 module init — 86%), `enable()` +1.0M,
-`status()` +0.26M; the DX Python layer (`_rustique_startup`, `_switch`) is ~0.1 ms wall
-(re-import timing). Dropping a separate adapter module saved one import (~35 µs). The
-extension's import cost is accel-core's/the lead's (Phase 0 measured `import rustique;
-enable()` at 1.17× too): this is above the 1.05 bar for `python -c pass` and is the biggest
-open startup item (§9).
+**`RUSTIQUE=1` cost 1.22–1.25×** with the first layout (`python -c pass`, dev-release
+wheel, 13 wave-0 targets; table above). Decomposition on 3.15.1 (callgrind Ir, **M**):
+`import rustique` +7.46M (the extension: dlopen of a 6.4 MB `.so` and PyO3 module init with
+every opt-in type — 86%), `enable()` +1.0M, `status()` +0.26M, and every pure-Python module
+on the path ~0.3M Ir (~0.75%; re-import timing: 35–60 µs each, mostly import machinery).
+The lead made startup the binding constraint (`import rustique; rustique.enable()` ≤ 1.05),
+so:
+
+- **Module budget**: the `RUSTIQUE=1` path loads `_rustique_startup`, `rustique` and the
+  extension, nothing else; `import rustique` loads `rustique` + `rustique._rustique`;
+  `enable()` loads nothing (a `sys.modules` diff in `tests`/§8). The whole switch (env
+  parsing, kill switch, selection, check mode, report registration) lives in
+  `rustique/__init__.py` over the extension's `_accel` primitives; report formatting
+  (`rustique._report`) is imported by the `atexit` hook only, the CLI and the native tier
+  on use. The startup path calls `_accel.enable` without building `status()`.
+- **Lazy opt-in API**: `List`, `Dict`, `X`, scalars, … are module `__getattr__` (PEP 562)
+  over the extension, which accel-core made lazy (types and ABC registrations created on
+  first use).
+
+Measured after the change: §1.4.
 
 ## 2. Control
 

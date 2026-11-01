@@ -235,6 +235,8 @@ rustique.enable(*, only=None, exclude=None, native=None, builtins=True) -> dict
 rustique.disable() -> dict
 rustique.status() -> dict
 rustique.stats(enabled=None, reset=False) -> dict
+rustique.check(mode=...) -> str | None        # "warn" | "raise" | "off"; no argument: current mode
+rustique.RustiqueCheckError                    # raised by check mode "raise" on a mismatch
 ```
 
 - `enable`: installs the selected targets. It is idempotent and additive.
@@ -251,6 +253,7 @@ rustique.stats(enabled=None, reset=False) -> dict
     how Rustique was turned on (`RUSTIQUE=1`, `rustique.enable()`, `python -m rustique`,
     `pytest --rustique`), whether the kill switch is set, and which `RUSTIQUE*` variables
     are set.
+- `check`: check mode from code, same as `RUSTIQUE_CHECK`. It returns the previous mode.
 - `stats`: returns `{name: {"hits": n, "fallback": {reason: n}}}`. `stats(True)` turns
   counting on, `stats(reset=True)` zeroes the counters after the snapshot.
 
