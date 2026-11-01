@@ -27,17 +27,7 @@ __all__ = ["RustiqueCheckError", "check", "disable", "enable", "native", "stats"
 #: Raised by a kernel's result check in ``check("raise")`` mode (an ``AssertionError``).
 RustiqueCheckError = _accel.RustiqueCheckError
 
-_state: dict[str, object] = {"native": ()}
-
 _UNSET = object()
-
-
-def _names(value: str | Iterable[str] | None) -> list[str] | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        value = value.split(",")
-    return [v.strip() for v in value if v and v.strip()]
 
 
 def enable(
@@ -58,43 +48,39 @@ def enable(
     variables (the switches of docs/ACCELERATION.md §8 are the DX layer's). Returns
     :func:`status`.
     """
-    excl = _names(exclude) or []
-    if not builtins:
-        excl.append("builtins")
-    _accel.enable(_names(only), excl)
+    st = _accel.enable(only, exclude, builtins, quiet=bool(native))
     if native:
         from rustique._takeover import _hook
 
         patterns = (native,) if isinstance(native, str) else tuple(native)
         _hook.install(patterns)
-        _state["native"] = _hook.patterns()
-    return status()
+        _accel._set_native(list(_hook.patterns()))
+        st = _accel.status()
+    return st
 
 
 def disable() -> dict[str, object]:
     """Restore every original entry point and stop rewriting imports (modules already
     rewritten by the native tier keep their rewritten code). Returns :func:`status`."""
-    _accel.disable()
     if "rustique._takeover._hook" in sys.modules:
         sys.modules["rustique._takeover._hook"].uninstall()
-    _state["native"] = ()
-    return status()
+    _accel._set_native([])
+    return _accel.disable()
 
 
 def status() -> dict[str, object]:
-    """``{"targets": [{"name", "group", "state", "reason", "sites", "versions"}, ...],
-    "process": {...}}``. ``state`` is ``"installed"``, ``"pending-import"`` (its module is
-    not imported yet), ``"refused"`` (``reason`` says why) or ``"disabled"``."""
-    st = _accel.status()
-    st["process"]["native"] = tuple(_state["native"])  # type: ignore[arg-type,index]
-    return st
+    """``{"targets": [{"name", "group", "state", "reason", "refusal", "sites", "versions",
+    ...}], "process": {...}}``. ``state`` is ``"installed"``, ``"pending-import"`` (its
+    module is not imported yet), ``"refused"`` (``reason``/``refusal`` say why) or
+    ``"disabled"``."""
+    return _accel.status()
 
 
 def stats(enabled: bool | None = None, reset: bool = False) -> dict[str, dict[str, object]]:
-    """Per-target counters ``{name: {"hits": n, "fallback": {reason: n}}}``.
+    """Per-target counters ``{name: {"hits": n, "fallback": {reason: n}, "suspensions": n}}``.
 
-    ``enabled`` switches counting on or off (off by default; ``RUSTIQUE_STATS=1``);
-    ``reset`` zeroes the counters after taking the snapshot."""
+    ``enabled`` switches counting on or off (off by default); ``reset`` zeroes the
+    counters after taking the snapshot."""
     return _accel.stats(enabled, reset)
 
 
@@ -106,8 +92,6 @@ def check(mode: object = _UNSET) -> str | None:
     otherwise set it and return the previous one."""
     if mode is _UNSET:
         return _accel.check_mode()
-    if mode is None or mode is False:
-        mode = "off"
     return _accel.check(mode)
 
 

@@ -30,6 +30,7 @@ CELLS = {
     "ext": "import rustique._rustique",
     "import": "import rustique",
     "enable": "import rustique; rustique.enable()",
+    "enable_quiet": "import rustique._rustique as r; r._accel.enable(quiet=True)",
 }
 
 
@@ -58,6 +59,19 @@ def callgrind(code: str) -> dict[str, int]:
     return {"total": total, **dict(sorted(by_obj.items(), key=lambda kv: -kv[1])[:8])}
 
 
+def faults(code: str, n: int = 5) -> dict[str, float]:
+    """`perf stat` page faults (median of n runs)."""
+    vals: dict[str, list[float]] = {}
+    for _ in range(n):
+        r = subprocess.run(["perf", "stat", "-x,", "-e", "page-faults,minor-faults,major-faults", sys.executable, "-c", code],
+                           capture_output=True, text=True)
+        for line in r.stderr.splitlines():
+            parts = line.split(",")
+            if len(parts) > 2 and parts[0].replace(".", "").isdigit():
+                vals.setdefault(parts[2], []).append(float(parts[0]))
+    return {k: statistics.median(v) for k, v in vals.items()}
+
+
 def wall(n: int) -> dict[str, list[float]]:
     times: dict[str, list[float]] = {k: [] for k in CELLS}
     for _ in range(n):
@@ -72,6 +86,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--wall", type=int, default=30)
     ap.add_argument("--no-callgrind", action="store_true")
+    ap.add_argument("--faults", action="store_true")
     ap.add_argument("-o")
     a = ap.parse_args()
     out: dict[str, object] = {"python": sys.version}
@@ -80,7 +95,7 @@ def main() -> None:
         base = cg["pass"]["total"]
         print("callgrind (whole process, Ir):")
         for k, v in cg.items():
-            print(f"  {k:8s} {v['total']:>14,d}  {v['total'] / base:.3f}")
+            print(f"  {k:12s} {v['total']:>14,d}  {v['total'] / base:.3f}")
         out["callgrind"] = cg
     if a.wall:
         w = wall(a.wall)
@@ -88,8 +103,14 @@ def main() -> None:
         print(f"wall ({a.wall} interleaved runs, ms):")
         for k, v in w.items():
             q = statistics.quantiles(v, n=10)
-            print(f"  {k:8s} {statistics.median(v):7.2f}  ({q[0]:.2f}–{q[-1]:.2f})  {statistics.median(v) / base:.3f}")
+            print(f"  {k:12s} {statistics.median(v):7.2f}  ({q[0]:.2f}–{q[-1]:.2f})  {statistics.median(v) / base:.3f}")
         out["wall"] = w
+    if a.faults:
+        f = {k: faults(code) for k, code in CELLS.items()}
+        print("perf stat (median of 5):")
+        for k, v in f.items():
+            print(f"  {k:12s} " + "  ".join(f"{e}={n:.0f}" for e, n in v.items()))
+        out["faults"] = f
     if a.o:
         with open(a.o, "w") as f:
             json.dump(out, f, indent=1)
