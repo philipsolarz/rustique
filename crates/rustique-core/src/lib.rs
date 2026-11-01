@@ -8,6 +8,7 @@
 //! Nothing in this crate links against Python; the `rustique-py` crate adds the bindings.
 
 pub mod column;
+pub mod datetime;
 pub mod dtype;
 pub mod expr;
 pub mod float_repr;
