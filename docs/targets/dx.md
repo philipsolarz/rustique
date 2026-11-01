@@ -291,7 +291,52 @@ reference, FAQ, troubleshooting.
 
 ## 7. Real projects
 
-⟨filled from benches/dx/real_projects.sh runs below⟩
+`benches/dx/real_projects.sh` (re-run it at integration with all targets merged): for each
+project a fresh venv of python-build-standalone 3.15.1, `pip install` of the rustique wheel
+(so the startup `.pth` is there, as for users), the project at its default-branch HEAD
+(shallow clone; commit recorded) installed editable with its test dependencies, one warm-up
+run (compiles the `.pyc` files), then `pytest` plain, `RUSTIQUE=1 pytest`,
+`pytest --rustique` and `python -m rustique diff -- pytest`. 13 wave-0 targets (containers,
+builtins) — the stdlib targets were not merged yet. Dev box, shared, 2 CPUs (wall times are
+indicative only; **M**).
+
+| project (commit) | tests | plain | `RUSTIQUE=1` | `--rustique` | `diff` |
+|---|---|---:|---:|---:|---|
+| attrs (c8bb9bf, 2026-10-24) | 1413 | 6.96 s | 7.09 s | 7.14 s | identical (1413 outcomes), 7.58 vs 7.62 s (1.006) |
+| rich (9d8f9a3, 2026-06-23) | 981 | 3.78 s | 3.79 s | 3.79 s | identical (981 outcomes), 4.19 vs 4.18 s (0.998) |
+| sqlglot (6de2df3, 2026-10-31) | 1452 (+22,683 subtests) | 70.91 s | 69.41 s | 69.19 s | identical (1452 outcomes; 8 processes reported), 72.39 vs 70.52 s (0.974) |
+
+Same pass/fail sets in every mode. attrs fails 2 packaging-metadata tests, rich 14 and
+sqlglot 21 tests in the *plain* runs as well (editable install / 3.15 environment); `diff` reports
+"identical" and exits 0 — it compares, it does not judge.
+
+What the experience surfaced, and what changed:
+
+1. **False alarm, fixed**: under `RUSTIQUE=1` every pytest run printed two
+   `PytestAssertRewriteWarning: Module already imported so cannot be rewritten; rustique`
+   (and `_rustique_startup`). pytest marks every top-level module of a distribution that
+   has a `pytest11` entry point for assertion rewriting and warns when one is already
+   imported — and the startup switch imports both before pytest starts. `diff` flagged it
+   on attrs and rich (stdout and the warnings count differed). Fix: `PYTEST_DONT_REWRITE`
+   in both module docstrings (pytest's documented opt-out), and the `.pth` line no longer
+   imports the hook under `RUSTIQUE=0`. The wheel smoke test now checks that
+   `RUSTIQUE=1 pytest` adds no warning and that `pytest --rustique` loads through the entry
+   point.
+2. **Timing skew, fixed in the runner**: the first run of a fresh checkout compiles every
+   `.pyc` (attrs: 11.4 s vs 7.0 s). The runner does a warm-up run; `diff --repeat N`
+   interleaves pairs for users.
+3. **Project quirks, not Rustique**: attrs needs `-p no:mypy-plugins` without mypy; sqlglot's
+   `tests/test_sqlglotc.py` needs the compiled `sqlglotc` extension (ignored) and its other
+   tests need `pytz`, `duckdb`, `pandas`.
+4. **Signals for accel-core** from the reports (counters on): in attrs `builtins.min` took
+   35,968 fast paths and **27,425 `deopt` restarts** (43% of calls start in Rust and restart
+   in CPython); `tuple.__contains__` falls back on 39% of calls (`args`); in rich
+   `builtins.sum` falls back on 85% (`args`, 14,196 of 16,707); in sqlglot
+   `tuple.__contains__` falls back on **86%** of 1.88M calls (1,245,390 `args`, **375,948
+   `deopt`**) and `builtins.sum` on 89%. Restarts cost time; these are the
+   inputs to look at.
+5. No friction with the switches themselves: `RUSTIQUE=1` reached pytest through the `.pth`
+   in every project, `--rustique` printed the report, `diff` needed no `--ignore`.
 
 ## 8. Tests
 

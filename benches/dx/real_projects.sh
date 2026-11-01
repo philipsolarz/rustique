@@ -37,7 +37,7 @@ declare -A DEPS=(
 declare -A ARGS=(
     [attrs]="tests --ignore=tests/test_mypy.yml -p no:mypy-plugins"
     [rich]="tests"
-    [sqlglot]="tests"
+    [sqlglot]="tests --ignore=tests/test_sqlglotc.py"
     [requests]="tests"
     [networkx]="networkx"
 )
