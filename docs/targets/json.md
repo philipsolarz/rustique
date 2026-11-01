@@ -28,7 +28,8 @@ fallback cells stay ≤ 1.05 (below). `JSONEncoder.encode` called directly, `jso
   `check_circular`, `allow_nan`, `sort_keys` with exact `bool`/`int`/`None` values (their
   truthiness runs no code), `indent` (`None`, an exact `int` in −4096..4096 — `' ' * n`,
   so ≤ 0 is an empty indent with newlines — or an exact `str`), `separators` (`None`, or
-  an exact 2-tuple / 2-list of exact `str`), `cls=None`, `default=None`. Under
+  an exact 2-tuple of exact `str`; a list falls back: on free-threaded builds another thread
+  could drop its items mid-call), `cls=None`, `default=None`. Under
   `ensure_ascii`, separators and indent must be ASCII. Anything else (`default=`, `cls=`,
   unknown keywords, other types) → the original (`fallback.args`).
 - Objects: `None`/`True`/`False`; `str` and its subclasses (the C encoder reads their
@@ -255,6 +256,28 @@ pair (the programs' outputs are byte-for-byte CPython's):
 Measured on the shared box (wall time; pairs interleaved). `default=` callers (json_api,
 logging, Flask/FastAPI-style providers) need a kernel behind `_json.make_encoder.tp_call`
 that calls `default` at the C encoder's points: the next step for this group.
+
+## Install cost (`benches/targets/json_install_cost.py`, 3.15.1, callgrind region)
+
+Budget: ≤ 0.1M Ir per group at `enable()`, lazy install ≤ 5% of the module's import.
+
+| cell | Ir |
+|---|---:|
+| `rustique.enable(only=["float"])` whole call | 549,047 |
+| — of which `float.repr` `prepare` (layout, slot and wrapper checks, fingerprint, self-test) | **45,388** |
+| — of which the registry for the group (`registry::enable`) | 56,927 |
+| — the rest: the Python `enable()` wrapper and the `status()` it returns | ~490,000 |
+| `rustique.enable(only=["json"])` before `import json` (targets pending) | 528,428 |
+| `import json` plain | 4,378,080 |
+| `import json` with the targets pending (installs both) | 5,429,667 (**+1,051,587, +24%**) |
+| — `Prepare::fingerprint_code` (8 code fingerprints, accel) | 541,073 |
+| — `Prepare::vectorcall` (2 sites; accel's `function_vectorcall` evaluates Python each time) | 141,253 |
+| — the targets' own `prepare` code (pins, layout checks, self-tests ~70k) | ~290,000 |
+
+`float` is within budget. `json` is not: most of its lazy install is the framework's
+fingerprinting and site declaration (being made cheaper by accel-core); the group's own
+part was trimmed (snapshot pins of `json.encoder`/`json.decoder` instead of per-name pins,
+no `JSONDecoder.__init__` fingerprint, smaller self-tests) and is ~6.6% of `import json`.
 
 ## Versions
 

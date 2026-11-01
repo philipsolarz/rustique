@@ -5,7 +5,6 @@ Each cell is a fresh process under callgrind; only the region is instrumented:
   enable float            `rustique.enable(only=["float"])`
   enable json (pending)   `rustique.enable(only=["json"])` before `json` is imported
   enable json (installed) `rustique.enable(only=["json"])` after `import json`
-  enable none             `rustique.enable(only=["_none"])`: the registry's fixed cost
   import json plain       `import json` without Rustique enabled
   import json lazy        `import json` with the json targets pending (installs them)
 
@@ -24,7 +23,6 @@ import tempfile
 # No `json` import at module level: the worker measures `import json` itself.
 
 CELLS = {
-    "enable none": ("import rustique", "rustique.enable(only=['_none'])"),
     "enable float": ("import rustique", "rustique.enable(only=['float'])"),
     "enable json (pending)": ("import rustique", "rustique.enable(only=['json'])"),
     "enable json (installed)": ("import rustique, json", "rustique.enable(only=['json'])"),
@@ -95,8 +93,6 @@ def main() -> None:
         print(f"{name:28s} {ir:12,d} Ir")
     lazy = rows["import json lazy"] - rows["import json plain"]
     print(f"lazy install on `import json`: +{lazy:,d} Ir ({lazy / rows['import json plain']:.1%} of the import)")
-    print(f"enable float - enable none: {rows['enable float'] - rows['enable none']:,d} Ir")
-    print(f"enable json (installed) - enable none: {rows['enable json (installed)'] - rows['enable none']:,d} Ir")
     if a.o:
         with open(a.o, "w") as f:
             _json.dump({"python": sys.version, "rows": rows, "lazy_install": lazy}, f, indent=1)

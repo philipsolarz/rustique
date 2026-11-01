@@ -4,7 +4,7 @@
 //! keyword arguments among `skipkeys`, `ensure_ascii`, `check_circular`, `allow_nan`,
 //! `sort_keys` (exact `bool`/`int`/`None`: their truthiness runs no code), `indent` (`None`,
 //! an exact `int` in `-4096..=4096` or an exact `str`), `separators` (`None` or an exact
-//! 2-tuple/list of exact `str`), `cls=None`, `default=None`; under `ensure_ascii` the
+//! 2-tuple of exact `str`), `cls=None`, `default=None`; under `ensure_ascii` the
 //! separators and indent must be ASCII. Then the object tree must be in the encoder's
 //! subset ([`super::encode`]); otherwise the original runs from the start (nothing
 //! observable happened: no Python code ran, no object was mutated).
@@ -140,10 +140,10 @@ unsafe fn parse_opts(args: *const *mut ffi::PyObject, nargs: usize, kwnames: *mu
                         o.key_sep = None;
                     } else {
                         let t = ffi::Py_TYPE(v);
+                        // A tuple keeps its items alive for the call (a list could drop
+                        // them from another thread on free-threaded builds): lists fall back.
                         let (a, b) = if t == &raw mut ffi::PyTuple_Type && ffi::PyTuple_GET_SIZE(v) == 2 {
                             (ffi::PyTuple_GET_ITEM(v, 0), ffi::PyTuple_GET_ITEM(v, 1))
-                        } else if t == &raw mut ffi::PyList_Type && ffi::PyList_GET_SIZE(v) == 2 {
-                            (ffi::PyList_GET_ITEM(v, 0), ffi::PyList_GET_ITEM(v, 1))
                         } else {
                             return None;
                         };

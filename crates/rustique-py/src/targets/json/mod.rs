@@ -34,7 +34,6 @@ mod fp {
     pub const DECODE: Fingerprints = &[(3, 14, "9fd7e2cf9cb48497"), (3, 15, "6d49e790e3821789")];
     pub const RAW_DECODE: Fingerprints = &[(3, 14, "014b59b4541eabd3"), (3, 15, "947d9475a7d318ba")];
     pub const DETECT_ENCODING: Fingerprints = &[(3, 14, "c129d6cf5fd598e5"), (3, 15, "781a525e9a40c4f8")];
-    pub const DECODER_INIT: Fingerprints = &[(3, 14, "8e85cd2ceab1a759"), (3, 15, "3f37f0c4794fa6c6")];
     pub const ENCODE_BASESTRING: Fingerprints = &[(3, 14, "9b3603c10dd95cd7"), (3, 15, "a14341830caa1909")];
 }
 
@@ -98,7 +97,6 @@ fn prepare_dumps(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         ("encode_basestring_ascii", "encode_basestring_ascii", fp::ENCODE_BASESTRING_ASCII),
         ("encode_basestring", "encode_basestring", fp::ENCODE_BASESTRING),
     ] {
-        cx.pin(&eg, name, &DEPS)?;
         let v = cx.get(&eg, name)?;
         if !v.is(&cx.get(&c_json.dict(), c_name)?) {
             return Err(refuse!(Deps: "json.encoder.{name} is not _json.{c_name}"));
@@ -109,10 +107,13 @@ fn prepare_dumps(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if !make.is(&cx.get(&c_json.dict(), "make_encoder")?) {
         return Err(refuse!(Deps: "json.encoder.c_make_encoder is not _json.make_encoder"));
     }
-    cx.pin(&eg, "c_make_encoder", &DEPS)?;
+    cx.pin_dict(&eg, &DEPS)?;
     // Globals `encode`/`iterencode` read (shadowing builtins included).
-    for name in ["isinstance", "str", "list", "tuple", "float", "INFINITY"] {
-        cx.pin_global(&eg, name, &DEPS)?;
+    // Globals `encode`/`iterencode` read: one snapshot pin of `json.encoder`'s namespace
+    // (nothing adds to it at run time) plus the builtins they fall back to.
+    let builtins = cx.builtins_of(&eg)?;
+    for name in ["isinstance", "str", "list", "tuple", "float"] {
+        cx.pin(&builtins, name, &DEPS)?;
     }
 
     // The encoder class and the cached default instance.
@@ -237,14 +238,15 @@ fn prepare_loads(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     // The decoder class, its methods and the cached default instance with its C scanner.
     let dec_mod = cx.loaded_module("json.decoder")?;
     let dg = dec_mod.dict();
-    cx.pin_global(&dg, "len", &DEPS)?;
+    // `json.decoder`'s namespace (snapshot) and the builtin `len` decode reads.
+    cx.pin_dict(&dg, &DEPS)?;
+    cx.pin(&cx.builtins_of(&dg)?, "len", &DEPS)?;
     let cls = cx.get(&dg, "JSONDecoder")?;
     let cls = cls.cast_into::<PyType>().map_err(|_| refuse!(Deps: "JSONDecoder is not a class"))?;
     let decode_fn = cx.type_attr(&cls, "decode")?;
     let raw_decode_fn = cx.type_attr(&cls, "raw_decode")?;
     cx.fingerprint_code(&decode_fn, fp::DECODE)?;
     cx.fingerprint_code(&raw_decode_fn, fp::RAW_DECODE)?;
-    cx.fingerprint_code(&cx.type_attr(&cls, "__init__")?, fp::DECODER_INIT)?;
     // `decode(self, s, _w=WHITESPACE.match)`: `_w` must match `[ \t\n\r]*`.
     let w = decode_fn.getattr("__defaults__")?.get_item(0)?;
     let pat = w.getattr("__self__")?;
@@ -381,8 +383,15 @@ fn decoder_loads(py: Python<'_>, s: &Bound<'_, PyAny>) -> (bool, Py<PyAny>) {
     }
 }
 
+/// All install-time self-test texts (the install runs a subset, within its cost budget).
+#[pyfunction]
+fn selftest_all(py: Python<'_>) -> PyResult<bool> {
+    Ok(selftest::dumps_selftest_n(py, 3)? && selftest::loads_selftest(py)?)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let sub = PyModule::new(m.py(), "_t_json")?;
+    sub.add_function(wrap_pyfunction!(selftest_all, &sub)?)?;
     sub.add_function(wrap_pyfunction!(encoder_dumps, &sub)?)?;
     sub.add_function(wrap_pyfunction!(decoder_loads, &sub)?)?;
     m.add("_t_json", sub)

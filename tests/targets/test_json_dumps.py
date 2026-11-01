@@ -117,6 +117,12 @@ def test_examples(obj, kw):
     check(obj, **kw)
 
 
+def test_selftest_texts():
+    from rustique._rustique import _accel
+
+    assert _accel._t_json.selftest_all()
+
+
 def test_hits_and_identity():
     _tk.stats(reset=True)
     assert json.dumps({"a": 1}) == '{"a": 1}'
