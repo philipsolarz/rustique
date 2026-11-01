@@ -371,8 +371,9 @@ are the suites' subclasses, custom tzinfo classes and first calls per format).
 and `%n %t %D %F` are new in 3.15; 3.14 warns and 3.15 raises for `%d` without a year): the
 matcher follows the running minor. CPython 3.16 merges a C fast path for numeric
 `strptime` formats; formats with names (`%b`, `%a`, `%p`) and `%z` stay interpreted there,
-and 3.14/3.15 keep the full gain. On 3.16 the target refuses (PyO3 0.30 does not build for
-it).
+and 3.14/3.15 keep the full gain. On 3.16 the targets refuse (version not validated: the
+extension builds there with PyO3 0.30.1's experimental support, docs/atlas/phase0.md, but
+the grammar and fingerprints were recorded for 3.14 and 3.15 only).
 
 ## 9. Reproduce
 

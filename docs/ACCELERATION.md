@@ -1,6 +1,8 @@
-STATUS: contract for wave 1 (2026-11-01). Every accelerated target follows it. Evidence for
-each rule: `docs/atlas/mechanisms.md` (cited as M§n) and `docs/TAKEOVER.md` (T§n).
-Changing a rule needs a measurement and an entry in `docs/DECISIONS.md`.
+STATUS: contract for wave 1 (2026-11-01), amended at integration with the rulings made
+while the targets were built (§3.8, §3.12–14, §4.5, §5.5–8, §8; reasons in `docs/DECISIONS.md` §5).
+Every accelerated target follows it. Evidence for each rule: `docs/atlas/mechanisms.md`
+(cited as M§n) and `docs/TAKEOVER.md` (T§n). Changing a rule needs a measurement and an
+entry in `docs/DECISIONS.md`.
 
 # The acceleration contract
 
@@ -104,7 +106,9 @@ discovered becomes a guard (the input falls back) or a bug.
    `__dict__` entries (M§0: captured references, pickling, introspection break).
 8. **JIT**: after installing or uninstalling any `ml_meth` site, call
    `sys._clear_internal_caches()` (3.15's tier 2 copies `ml_meth` into traces, M§4). This
-   applies to the existing list/tuple/builtins kernels too.
+   applies to the existing list/tuple/builtins kernels too. A target that cannot meet §5.2
+   under the JIT (vectorcall fallbacks cost +250–350 Ir there) declares `jit_safe: false`
+   and refuses with reason `"jit"` when the JIT is enabled in the process.
 9. **Uninstall** restores each pointer (CAS) and, for Python functions, the specializer
    version (`_PyFunction_SetVersion(f, code->co_version)`, exported for external JITs;
    if absent, leave it despecialized — correct, slower).
@@ -118,6 +122,25 @@ discovered becomes a guard (the input falls back) or a bug.
     the interpreter (+30 Ir) and fall back. Kernel code and static data live as long as the
     process (they may be called after `disable()`). Per-interpreter targets (Python
     functions, heap types) are accelerated in the main interpreter only.
+12. **Install budget** (restated during wave 1; whole-process cells count, not only
+    microbenchmarks): enabling a group whose module is already imported costs ≤ 0.1M Ir;
+    a lazy install (at the end of the module's import) costs ≤ max(5% of that module's
+    import, 0.1M Ir); and `RUSTIQUE=1 python -c pass` stays within §5.2 of plain
+    `python -c pass` (wave 1 misses this by 1–3%: an accepted, documented overage,
+    `docs/DECISIONS.md` §5). Overages are accepted only by an entry in `docs/DECISIONS.md`.
+    Shared declarations (a module's pins and fingerprints used by several targets) go in
+    one `GroupSpec`, prepared once.
+13. **Exit**: at interpreter exit the registry restores every site, drops every pin and
+    stops its watchers before modules are cleared; each target's `release` hook then drops
+    the target's own references to Python objects (verified functions, cached callables,
+    types), so finalization frees what CPython would free. A kernel reached after its
+    release (a daemon thread) declines and calls the original.
+14. **Internal symbols and layouts.** A target may use an exported but non-public symbol of
+    the interpreter (`_PyObject_GetMethod`, `_PyDict*`, `_PyUnicode_Is*`) through
+    `Prepare::symbol`, which refuses the target when the symbol is missing, and may read
+    internal struct fields only through a layout calibrated at install for the running
+    minor version (refuse on mismatch). One dict watcher id and one type watcher id serve
+    every target.
 
 ## 4. Guard
 
@@ -138,7 +161,8 @@ Decide the exact subset **before anything observable happens**, cheaply:
    (M§8: 38 Ir for all guards of `posixpath.join`).
 4. **Recursion**: a recursive kernel counts depth like CPython (`Py_EnterRecursiveCall`
    semantics) or falls back before recursing past the point where CPython would raise.
-5. **Budget**: all guards together ≤ 40 Ir per call.
+5. **Budget**: all guards together ≤ 40 Ir per call, or ≤ 1% of the original's cost when
+   that is larger.
 
 ## 5. Fallback and "never slower"
 
@@ -163,6 +187,31 @@ Decide the exact subset **before anything observable happens**, cheaply:
    uniquely referenced float result in place).
 4. Kernels read PEP 393 buffers directly; never call `PyUnicode_AsUTF8` on a caller's
    string (it attaches a UTF-8 cache: `sys.getsizeof` changes).
+5. **User code from native code** (ruling 15): a kernel never calls user code (hooks,
+   overridden methods, `default=`, `__deepcopy__`, `__format__`) at a point where the
+   original would have run Python frames in between, because tracebacks, tools, recursion
+   depth and the order of side effects would differ. Where the original is Python, the
+   kernel restarts in the original *before* anything observable happens when it meets such
+   a call (`copy.deepcopy` meeting a `__deepcopy__`). Where the original is C and itself
+   calls user code at that point (`_json` calling `default=`), the kernel may do the same.
+6. **Net benefit of vectorcall targets.** A vectorcall fallback costs the caller its
+   inlined frame push (§5.2), so a target that mostly falls back must stop. Each hit
+   credits a score by `hit_credit`, each fallback (other than a dependency change) debits
+   `fallback_debit`; at `−64 × fallback_debit` the registry suspends the target (its
+   original vectorcall is restored) until the next `enable()`. Defaults 4 / 1: a target
+   stays installed while ≥ 20% of its calls hit; a target sets its own ratio from its
+   measured savings and penalty. A changed dependency (§4.2) suspends a vectorcall target
+   at once and resumes it when every pin re-arms. Consequence for measurement: the first
+   64 calls of an all-fallback stream pay the fallback cost; cells that exceed §5.2 only
+   there are listed in the target's doc and in `docs/DECISIONS.md`.
+7. **Degraded**: a validation a target can only do lazily (after install, at first use)
+   that fails marks the target `degraded` in `status()` (with the reason) and its kernels
+   fall back until it is disabled.
+8. **Outside the contract** (not observable through a documented API, or nondeterministic
+   in CPython itself): the timing of garbage collection and allocation counts; a tool
+   attached by another thread while a kernel runs (the call in flight completes natively);
+   the exact C-stack depth at which `RecursionError` is raised for deeply nested input
+   (the Python-recursion limit is honoured); private state (§2.4).
 
 ## 6. Report
 
@@ -201,13 +250,18 @@ Decide the exact subset **before anything observable happens**, cheaply:
 
 ## 8. User-facing switches (owned by the DX layer; listed here so targets agree)
 
-- Turn on with no code change: environment variable `RUSTIQUE=1` read at startup (a PEP 829
-  `.start` entry point on 3.15+, a `.pth` line on 3.14), or `python -m rustique app.py`,
-  or `rustique.enable()` in code.
-- Turn off instantly: `RUSTIQUE=0` makes every enable path a no-op; `rustique.disable()`.
+- Turn on with no code change: environment variable `RUSTIQUE=1` read at startup by a
+  `.pth` line (`_rustique_startup.pth`, on 3.14 and 3.15: a PEP 829 `.start` entry point
+  measured 1.72× startup because `site` then imports `pkgutil` and `re`), or
+  `python -m rustique app.py`, or `rustique.enable()` in code. With `RUSTIQUE` unset the
+  `.pth` line imports nothing; with `RUSTIQUE=1` it loads only the extension.
+- Turn off instantly: `RUSTIQUE=0` (also `off`/`false`/`no`/empty) makes every enable path
+  a no-op without loading the extension; `rustique.disable()`.
 - Fine-grained: `RUSTIQUE_ONLY=json,copy`, `RUSTIQUE_EXCLUDE=re` (groups or target names);
   same as `enable(only=..., exclude=...)`.
-- Visibility: `RUSTIQUE_STATS=1`, `RUSTIQUE_REPORT=1` (report at exit), `rustique.status()`.
+- Visibility: `RUSTIQUE_STATS=1`, `RUSTIQUE_REPORT=1` (report at exit), `rustique.status()`,
+  `python -m rustique status|report|diff`; `RUSTIQUE_CHECK=1` runs CPython's original next
+  to every fast path of a checkable target and compares (CI).
 
 ## 9. Code layout
 
@@ -224,25 +278,30 @@ Decide the exact subset **before anything observable happens**, cheaply:
 
 ### Target registration (Rust interface, implemented by accel-core)
 
+The authoritative definition is `crates/rustique-py/src/accel/spec.rs` (`TargetSpec`,
+`GroupSpec`) and `prepare.rs` (`Prepare`). In short:
+
 ```rust
 pub struct TargetSpec {
     pub name: &'static str,              // "json.dumps"
-    pub group: &'static str,             // "json"
+    pub group: &'static str,             // "json"; "_x" groups are hidden (tests only)
     pub module: Option<&'static str>,    // import that triggers install; None = at enable()
     pub versions: &'static [(u8, u8)],   // validated minors, e.g. &[(3, 14), (3, 15)]
     pub free_threaded: bool,             // validated on free-threaded builds too
     pub counters: &'static Counters,
-    /// Validate (fingerprints, layouts, self-test) and declare the sites; the registry
-    /// swaps them all-or-nothing after this returns Ok.
-    pub prepare: fn(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal>,
+    pub prepare: PrepareFn,              // validate and declare the sites (all-or-nothing)
+    pub jit_safe: bool,                  // §3.8; default true
+    pub checkable: bool,                 // check mode may re-run the original; default false
+    pub shared: Option<&'static GroupSpec>, // declarations prepared once per module (§3.12)
+    pub hit_credit: u8, pub fallback_debit: u8, // §5.6; defaults 4 / 1
+    pub release: Option<fn(Python<'_>)>, // §3.13
 }
-// `Prepare` offers: module(), ml_meth(obj, kernel), slot(ty, slot, kernel),
-// vectorcall(func, kernel), pin(dict, key) / pin_attr(ty, name) -> &'static DepFlag,
-// fingerprint_code(func, expected), fingerprint_c(obj, expected), self_test(...).
-// Kernels read their originals from statics the registry fills (`Original<F>`), use
-// `tools_quiet(code)` and the target's `DepFlag`s, and count via `counters`.
+// `Prepare` offers: module()/loaded_module()/module_attr()/type_attr(), ml_meth(), slot(),
+// vectorcall(), pin()/pin_s()/pin_global()/pin_attr()/pin_dict()/pin_absent() -> DepFlag,
+// fingerprint_code()/fingerprint_c(), self_test(), symbol(), memo().
+// Kernels read their originals from statics the registry fills, use `tools_quiet(code)`
+// and the target's `DepFlag`s, and count via `counters`.
 ```
 
-Targets register by adding their specs to `targets::ALL`. Until accel-core lands the
-registry, a target workstream may install its sites in tests through the prototype
-`accel::site::Patch` and switch to `TargetSpec` when the registry is merged.
+Targets register by adding their specs to `targets::ALL` (`crates/rustique-py/src/targets/
+mod.rs`).

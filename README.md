@@ -30,11 +30,11 @@ shipped targets replace them in Phase 3.
 | area | entry points | where it shows | atlas (time vs CPython) | measured |
 |---|---|---|---|---|
 | JSON | `json.dumps`, `json.loads` | API services, config, ETL | exact Rust prototype 0.31 small, 0.60 large (M) | ⟨Phase 3⟩ |
-| copying | `copy.deepcopy`, `copy.copy`, `dataclasses.asdict/astuple/replace` | state snapshots, isort (44% of its time) | an exact C deepcopy: 0.11–0.18 (M) | ⟨Phase 3⟩ |
+| copying | `copy.deepcopy`, `copy.copy`, `dataclasses.asdict/astuple` | state snapshots, isort (44% of its time) | an exact C deepcopy: 0.11–0.18 (M) | ⟨Phase 3⟩ |
 | paths | `os.path`/`posixpath`, `pathlib` pure paths, `fnmatch` | file inventories, build tools | `posixpath.join` kernel 0.29 (M) | ⟨Phase 3⟩ |
-| date and time text | `strptime`, `strftime`, `isoformat`, `fromisoformat` | log analytics, ETL | `strptime` is 3.7 µs of interpreted Python (M) | ⟨Phase 3⟩ |
+| date and time text | `strptime`, `strftime`, `isoformat` (datetime, date, time; `time.strptime/strftime`) | log analytics, ETL | `strptime` is 3.7 µs of interpreted Python (M) | ⟨Phase 3⟩ |
 | logging | `LogRecord`, `Formatter.format`/`formatTime` | services (66% of a logging-heavy one) | ≤ 0.5 inferred | ⟨Phase 3⟩ |
-| utilities | `random` glue, `textwrap`, `urllib.parse`, `statistics`, `ipaddress` | scripts, web | 0.1–0.35 (M, per call) | ⟨Phase 3⟩ |
+| utilities | `random` glue, `textwrap`, `urllib.parse`, `statistics` | scripts, web | 0.1–0.35 (M, per call) | ⟨Phase 3⟩ |
 | containers, builtins | `list.sort`, `index`/`count`/`in` on lists and tuples; `sum`, `min`, `max`, `sorted`, `any`, `all` | sorting, searching, aggregating | 1M elements: `max(floats)` 0.13, `min(ints)` 0.17, `ints.sort()` 0.18, `x in ints` 0.26 (M) | ⟨Phase 3⟩ |
 
 Whole programs (atlas, inferred from where their time goes):

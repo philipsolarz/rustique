@@ -100,7 +100,7 @@ between processes (`test_urlparse` parametrizes with function reprs).
 | `mean(iterator)` | 125992 | 126349 | 1.003 | | | |
 | `variance(floats, xbar)` | 187697 | 188212 | 1.003 | | | |
 
-Every original costs ≥ 49k Ir, far above the vectorcall fallback threshold: the group is
+Every original costs ≥ 48k Ir, far above the vectorcall fallback threshold: the group is
 `jit_safe`.
 
 ### Wall time, large inputs (pyperf)

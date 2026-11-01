@@ -78,9 +78,9 @@ callgrind, Ir per call, region-instrumented, fresh process per cell
 Under the JIT (`PYTHON_JIT=1`, warmed 30 000 iterations; release build): fast paths
 0.29–0.81; fallbacks `o in mixed` 1.044, `ints.index(7, 1)` 1.021, `objs.count(o)` 1.042,
 `sort(key=len)` 1.020, `max(ints, key=abs)` 1.026, `sorted(small)` 1.010, `any(d)` 1.028,
-`sum(range(3))` 1.035, and **`tobjs.count(o)` 1.062** (2-element tuple of objects: the JIT
-makes CPython's call 305 Ir, so the kernel's needle-type check, counter and extra call
-level, 19 Ir, exceed 5%). The release build's plain-interpreter table matches the one above
+`sum(range(3))` 1.035, and `tobjs.count(o)` 1.049 (2-element tuple of objects: the JIT
+makes CPython's call 305 Ir; it was 1.062 until the count kernels learned to reject
+heap-type needles with one flag test, f189e6c). The release build's plain-interpreter table matches the one above
 within ±1 Ir on fallbacks.
 
 Large inputs (wall time): docs/TAKEOVER.md §3.4 (unchanged kernels).

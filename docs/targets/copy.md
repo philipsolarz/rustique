@@ -180,9 +180,9 @@ per-test outcomes plain vs enabled on 3.15.1, 3.15.1t, 3.14.9, 3.14.9t (3.15: te
 pass, test_copyreg 6, test_dataclasses 284 + 1 skip; 3.14: 81 / 6 / 279 + 1 skip), 0
 differences. Full pytest on the four builds (after merging wave1 b162e61): all pass except
 `tests/test_expr.py::test_filter_matches_python`, a Hypothesis case of the expression
-engine, unrelated to these targets: `X + ((X / X) == (6.123233995736766e-17+1j))` is built
-as `(X + False)`, so `List([0]).filter(...)` returns `[]` where Python raises
-`ZeroDivisionError` (deterministic; reproduces without Hypothesis).
+engine, unrelated to these targets (comparing an `X` expression with a complex number built
+`(X + False)` instead of raising); fixed on wave1 in 672009b (the comparison now raises
+`TypeError`, as Python does), after which the full suites pass on all four builds.
 
 ## 5. Measurements
 

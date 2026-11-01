@@ -16,8 +16,9 @@ Floats are formatted by the group `float` core (`rustique_core::float_repr`, exa
 Entry point choice (measured, `benches/targets/json_cg.py`, 3.15.1): taking over the C
 encoder only (`_json.make_encoder.tp_call`) leaves CPython's Python glue, 30% of a
 small `dumps` (the C part alone is 0.70 of the call, headroom-text §3.2), so it cannot
-beat ~0.70; the vectorcall on `json.dumps` reaches 0.13–0.29 on small documents, and its
-fallback cells stay ≤ 1.05 (below). `JSONEncoder.encode` called directly, `json.dump`
+beat ~0.70; the vectorcall on `json.dumps` reaches 0.06–0.29 on small documents, and its
+steady-state fallback cells stay ≤ 1.05 (below; the first 64 calls of an all-invalid
+`loads` stream are 1.092 until the target suspends, an accepted cell). `JSONEncoder.encode` called directly, `json.dump`
 (chunks to `fp.write` are observable) and calls with `default=`/`cls=` stay on CPython.
 
 ## Exact subset
