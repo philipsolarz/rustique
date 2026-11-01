@@ -76,7 +76,8 @@ See `DECISIONS.md` for the decisions and `BENCHMARKS.md` for the numbers.
 **Wave 2** (ranked, with evidence: `DECISIONS.md` §9): startup and install cost (engine
 split, precompiled loader, deferred fingerprints); json `default=`/`cls=`; class-needle
 membership and `key=` fast paths; HTTP header/e-mail parsing; `re`; deeper coverage of the
-wave-1 targets (copy restarts, pathlib subclasses); bulk text kernels, `xml.etree`,
+wave-1 targets (copy restarts, pathlib subclasses); platform coverage (Windows symbol
+lookup, `datetime` text on macOS/musl); bulk text kernels, `xml.etree`,
 `tokenize`, `csv`, `ipaddress`, `uuid`.
 
 Carried over from the parity program, ranked by expected gain and risk (details and

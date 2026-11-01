@@ -85,8 +85,9 @@ To see what your own program hits, run `python -m rustique report -- python app.
 - **Supported interpreters: CPython 3.14 and 3.15, including free-threaded (3.14t, 3.15t).**
   - Platforms: Linux x86_64/aarch64 (glibc and musl), macOS arm64/x86_64, Windows x64
     (arm64 experimental).
-  - Each target installs only on the CPython versions it was validated on, and reports
-    "refused" elsewhere.
+  - Each target installs only on the CPython versions and platforms it was validated on,
+    and reports "refused" elsewhere: all 84 on Linux/glibc with 3.15; 74 on macOS and musl
+    (no `datetime` text); 30 on Windows ([details](docs/USAGE.md#install)).
   - PyPy, GraalPy and CPython 3.16: `pip` refuses to install.
 - **Turning it off.**
   - `RUSTIQUE=0` disables everything without a deploy, including `rustique.enable()`

@@ -383,6 +383,12 @@ fallback, and why each exists:
   `urllib.parse.urlsplit`'s wrapper (its `lru_cache` statistics are public), pathlib
   properties on 3.14 (the 3.14 specializer inlines property getters without checking the
   function version), `ipaddress` (deferred to wave 2).
+- **Platforms**: every wheel (8 platforms × 3.14/3.14t/3.15/3.15t) installs and runs
+  correctly, but targets install only where validated: all 84 on Linux/glibc (3.15), 74 on
+  macOS and musl (the `datetime` text targets rely on glibc's locale and `strftime`
+  behaviour), 30 on Windows (POSIX-only paths groups; no run-time lookup of CPython
+  symbols such as `_PyObject_GetMethod`; the free-threaded build's string layout under
+  MSVC). Category `platform` in `status()`; wave 2 widens it.
 - **Where the time is not**: two thirds of typical CPU time (interpreter, allocation, GC,
   dict operations) is out of reach of any in-place kernel (IMPACT_ATLAS §3).
 
@@ -412,8 +418,12 @@ workloads fall back on (`docs/atlas/phase3.md` §4.2), discounted by risk:
 6. **Deeper coverage of wave-1 targets**: `copy.deepcopy` restarts on 12–22% of calls in
    `sqlglot_transpile`, `json_api` and `fastapi_pydantic` (reductors and `__deepcopy__` met
    mid-copy); plain pathlib subclasses; `json.loads` restarts in `asyncio_http`.
-7. **Bulk text kernels** behind a length guard (`str`/`bytes` find/split/replace), the
+7. **Platform coverage**: run-time lookup of CPython symbols on Windows
+   (`GetProcAddress` on the Python DLL), a layout-independent read of `PyASCIIObject.state`
+   (json on free-threaded Windows), and validating the `datetime` text targets on macOS and
+   musl libc (74 → 84 targets there; 30 → ~70 on Windows).
+8. **Bulk text kernels** behind a length guard (`str`/`bytes` find/split/replace), the
    `xml.etree` serializer, `tokenize`, the `csv` writer, `ipaddress`, `uuid` (3.14/3.15).
-8. **zlib/crc32** only if the upstream Rust zlib (3.16) slips.
-9. **Upstream reports**: PEP 829 `.start` files cost 1.72× startup (`site` imports `pkgutil`
+9. **zlib/crc32** only if the upstream Rust zlib (3.16) slips.
+10. **Upstream reports**: PEP 829 `.start` files cost 1.72× startup (`site` imports `pkgutil`
    and `re`); `copy.deepcopy` is 2–4× slower on free-threaded 3.15.1t than on the GIL build.

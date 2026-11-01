@@ -31,7 +31,18 @@ Prebuilt wheels cover CPython 3.14 and 3.15, both the default and the free-threa
 - macOS arm64 and x86_64;
 - Windows x64. Windows arm64 is experimental.
 
-No Rust toolchain is needed. On other interpreters, such as PyPy, GraalPy or CPython 3.16
+No Rust toolchain is needed. Every wheel installs and runs correctly on every listed
+platform, but not every target is validated everywhere: the others refuse (category
+`platform` in `python -m rustique status`) and CPython's own code runs (measured from the
+wheel smoke tests of the CI's wheel workflow):
+
+| platform | targets on (of 84), 3.15 | what refuses, and why |
+|---|---|---|
+| Linux x86_64/aarch64, glibc | 84 (3.14: 79) | 3.14 only: five `pathlib` properties (3.14's specializer inlines property getters) |
+| Linux musl, macOS | 74 (3.14: 69) | the 10 `datetime`/`time` text targets (their locale and `strftime` behaviour is validated on glibc only) |
+| Windows | 30 (free-threaded: 28) | paths groups (POSIX path semantics only); `datetime`; groups that resolve a CPython symbol at run time (`copy`, `logging`, `random`, `textwrap`; no run-time symbol lookup on Windows yet); `json` on the free-threaded build (string layout under MSVC). Containers, builtins, `float`, `json`, `statistics`, `urllib.parse` and `dataclasses` are on |
+
+On other interpreters, such as PyPy, GraalPy or CPython 3.16
 pre-releases, `pip` refuses to install Rustique with a "requires a different Python" message
 (`requires-python = ">=3.14,<3.16"`). Rustique never guesses on an interpreter nobody has
 validated it on.
