@@ -14,76 +14,43 @@ pub mod rt;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 
-use pyo3::exceptions::PyValueError;
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyCFunction, PyDict, PyList, PyString, PyTuple};
+use pyo3::types::{PyDict, PyString};
 
 use rustique_core::paths::posix::{self, JoinArg, Joined, Piece};
 
-use crate::accel::stats::Reason;
+use crate::accel::{self, DepFlag, Fingerprints, Prepare, Reason, Refusal, TargetSpec};
+use crate::refuse;
 use rt::{
-    O, Rt, Spec, StrView, Text, Unit, bytes_view, exact_bytes, exact_str, nargs, new_str, str_from_units, str_view,
-    substr, subbytes, write_text,
+    O, Rt, StrView, Text, Unit, bytes_view, exact_bytes, exact_str, nargs, new_str, str_from_units, str_view, subbytes,
+    substr, write_text,
 };
 
 // ---------------------------------------------------------------------------------------
-// Fingerprints (rt::fingerprint of `code`), per minor version. Identical on GIL and
-// free-threaded builds. Regenerate with `_t_posixpath.fingerprints()`.
+// Targets
 // ---------------------------------------------------------------------------------------
 
-const FP_JOIN: &[(u8, u64)] = &[(14, 0xcc0eb7d00d3613ea), (15, 0x2003f3d325eefa6c)];
-const FP_SPLIT: &[(u8, u64)] = &[(14, 0x540a18c3408c818d), (15, 0x7ae1a36ec06c322a)];
-const FP_SPLITEXT: &[(u8, u64)] = &[(14, 0x778ac20d1b1ed7d9), (15, 0xa590050a418594fb)];
-const FP_BASENAME: &[(u8, u64)] = &[(14, 0x6dfcae9b901fee66), (15, 0xb00bc3d9e18ffbcd)];
-const FP_DIRNAME: &[(u8, u64)] = &[(14, 0xef8bc136ffc92fb8), (15, 0x89e042619898d0b6)];
-const FP_ISABS: &[(u8, u64)] = &[(14, 0x7e334ef5f49f7308), (15, 0x057c59e7f1201cdb)];
-const FP_RELPATH: &[(u8, u64)] = &[(14, 0x2bd7160528c0c177), (15, 0x1eb57c45e04d7f89)];
-const FP_ABSPATH: &[(u8, u64)] = &[(14, 0x38eae2ba221fff7b), (15, 0x6c8cbb7e6289b750)];
-
-const PINS_SEP: &[(&str, &str)] = &[
-    ("posixpath", "os"),
-    ("os", "fspath"),
-    ("posixpath", "_get_sep"),
-    ("builtins", "isinstance"),
-    ("builtins", "bytes"),
-];
-const PINS_SPLITEXT: &[(&str, &str)] = &[
-    ("posixpath", "os"),
-    ("os", "fspath"),
-    ("builtins", "isinstance"),
-    ("builtins", "bytes"),
-    ("posixpath", "genericpath"),
-    ("genericpath", "_splitext"),
-];
-const PINS_ABSPATH: &[(&str, &str)] = &[
-    ("posixpath", "os"),
-    ("os", "fspath"),
-    ("os", "getcwd"),
-    ("os", "getcwdb"),
-    ("posixpath", "join"),
-    ("posixpath", "_get_sep"),
-    ("posixpath", "normpath"),
-    ("builtins", "isinstance"),
-    ("builtins", "bytes"),
-];
-const PINS_RELPATH: &[(&str, &str)] = &[
-    ("posixpath", "os"),
-    ("os", "fspath"),
-    ("os", "getcwd"),
-    ("os", "getcwdb"),
-    ("posixpath", "abspath"),
-    ("posixpath", "join"),
-    ("posixpath", "_get_sep"),
-    ("posixpath", "normpath"),
-    ("posixpath", "genericpath"),
-    ("posixpath", "commonprefix"),
-    ("builtins", "isinstance"),
-    ("builtins", "bytes"),
-    ("builtins", "len"),
-    ("builtins", "min"),
-    ("builtins", "max"),
-    ("builtins", "enumerate"),
+/// Fingerprints of every original the kernels reproduce or call, recorded per minor version
+/// with `rustique._rustique._accel.fingerprint(obj)` (identical on GIL and free-threaded
+/// builds).
+pub(crate) const FPS: &[(&str, Fingerprints)] = &[
+    ("posixpath.join", &[(3, 14, "c5f7726e246711cc"), (3, 15, "1736eec0807db5fe")]),
+    ("posixpath.split", &[(3, 14, "2a92a09f804e7f66"), (3, 15, "5b80ccd4010f9f07")]),
+    ("posixpath.splitext", &[(3, 14, "57e4fff4ed5744e9"), (3, 15, "7b7f2fd89ce939cb")]),
+    ("posixpath.basename", &[(3, 14, "9697ad6c31eb4ec6"), (3, 15, "14820d2e64ed72c1")]),
+    ("posixpath.dirname", &[(3, 14, "0ed8402af932b639"), (3, 15, "9d669ca8789e07b1")]),
+    ("posixpath.isabs", &[(3, 14, "eaad47df6dd6ed8b"), (3, 15, "135e5f019a3002ee")]),
+    ("posixpath.relpath", &[(3, 14, "939e80226b486d55"), (3, 15, "7c09617a3d61fa23")]),
+    ("posixpath.abspath", &[(3, 14, "5f8527ce7332a273"), (3, 15, "38577b59918fb8de")]),
+    ("posixpath._get_sep", &[(3, 14, "6b0a736a3526f1ed"), (3, 15, "ec659b080301f8d1")]),
+    ("genericpath._splitext", &[(3, 14, "2e130b2724074482"), (3, 15, "426bad07995314f0")]),
+    ("genericpath.commonprefix", &[(3, 14, "60e08a2eb749cf79"), (3, 15, "48abda7c1b3bb7da")]),
+    ("genericpath._commonprefix", &[(3, 15, "87fd0ffea61fdb85")]),
+    ("os.fspath", &[(3, 14, "2dbb12933adb6fd8"), (3, 15, "2dbb12933adb6fd8")]),
+    ("os.getcwd", &[(3, 14, "c9812d1c05053b8c"), (3, 15, "c9812d1c05053b8c")]),
+    ("os.getcwdb", &[(3, 14, "2604f34e97fb5a20"), (3, 15, "2604f34e97fb5a20")]),
+    ("posixpath.normpath", &[(3, 14, "9bc564ed2ef2fde6"), (3, 15, "9bc564ed2ef2fde6")]),
 ];
 
 static RT_JOIN: Rt = Rt::new();
@@ -95,105 +62,115 @@ static RT_ISABS: Rt = Rt::new();
 static RT_RELPATH: Rt = Rt::new();
 static RT_ABSPATH: Rt = Rt::new();
 
-pub static SPECS: &[Spec] = &[
-    Spec {
-        name: "posixpath.join",
-        func: "posixpath.join",
-        kernel: k_join,
-        rt: &RT_JOIN,
-        code: &["posixpath.join", "posixpath._get_sep"],
-        expected: FP_JOIN,
-        pins: PINS_SEP,
-        jit_safe: false,
-        prepare: None,
-    },
-    Spec {
-        name: "posixpath.split",
-        func: "posixpath.split",
-        kernel: k_split,
-        rt: &RT_SPLIT,
-        code: &["posixpath.split", "posixpath._get_sep"],
-        expected: FP_SPLIT,
-        pins: PINS_SEP,
-        jit_safe: false,
-        prepare: None,
-    },
-    Spec {
-        name: "posixpath.splitext",
-        func: "posixpath.splitext",
-        kernel: k_splitext,
-        rt: &RT_SPLITEXT,
-        code: &["posixpath.splitext", "genericpath._splitext"],
-        expected: FP_SPLITEXT,
-        pins: PINS_SPLITEXT,
-        jit_safe: false,
-        prepare: None,
-    },
-    Spec {
-        name: "posixpath.basename",
-        func: "posixpath.basename",
-        kernel: k_basename,
-        rt: &RT_BASENAME,
-        code: &["posixpath.basename", "posixpath._get_sep"],
-        expected: FP_BASENAME,
-        pins: PINS_SEP,
-        jit_safe: false,
-        prepare: None,
-    },
-    Spec {
-        name: "posixpath.dirname",
-        func: "posixpath.dirname",
-        kernel: k_dirname,
-        rt: &RT_DIRNAME,
-        code: &["posixpath.dirname", "posixpath._get_sep"],
-        expected: FP_DIRNAME,
-        pins: PINS_SEP,
-        jit_safe: false,
-        prepare: None,
-    },
-    Spec {
-        name: "posixpath.isabs",
-        func: "posixpath.isabs",
-        kernel: k_isabs,
-        rt: &RT_ISABS,
-        code: &["posixpath.isabs", "posixpath._get_sep"],
-        expected: FP_ISABS,
-        pins: PINS_SEP,
-        jit_safe: false,
-        prepare: None,
-    },
-    Spec {
-        name: "posixpath.relpath",
-        func: "posixpath.relpath",
-        kernel: k_relpath,
-        rt: &RT_RELPATH,
-        code: &[
-            "posixpath.relpath",
-            "posixpath.abspath",
-            "posixpath.join",
-            "posixpath._get_sep",
-            "genericpath.commonprefix",
-            "genericpath._commonprefix",
-        ],
-        expected: FP_RELPATH,
-        pins: PINS_RELPATH,
-        jit_safe: false,
-        prepare: Some(prepare_relpath),
-    },
-    Spec {
-        name: "posixpath.abspath",
-        func: "posixpath.abspath",
-        kernel: k_abspath,
-        rt: &RT_ABSPATH,
-        code: &["posixpath.abspath", "posixpath.join", "posixpath._get_sep"],
-        expected: FP_ABSPATH,
-        pins: PINS_ABSPATH,
-        jit_safe: false,
-        prepare: Some(prepare_abspath),
-    },
-];
+macro_rules! target {
+    ($stat:ident, $name:literal, $rt:ident, $prep:ident) => {
+        pub static $stat: TargetSpec = TargetSpec {
+            name: $name,
+            group: "posixpath",
+            module: Some("posixpath"),
+            versions: &[(3, 14), (3, 15)],
+            free_threaded: true,
+            counters: &$rt.counters,
+            prepare: $prep,
+            jit_safe: false,
+            ..TargetSpec::DEFAULT
+        };
+    };
+}
 
-pub static GROUP: rt::Group = rt::Group::new("posixpath", SPECS);
+target!(JOIN, "posixpath.join", RT_JOIN, prep_join);
+target!(SPLIT, "posixpath.split", RT_SPLIT, prep_split);
+target!(SPLITEXT, "posixpath.splitext", RT_SPLITEXT, prep_splitext);
+target!(BASENAME, "posixpath.basename", RT_BASENAME, prep_basename);
+target!(DIRNAME, "posixpath.dirname", RT_DIRNAME, prep_dirname);
+target!(ISABS, "posixpath.isabs", RT_ISABS, prep_isabs);
+target!(RELPATH, "posixpath.relpath", RT_RELPATH, prep_relpath);
+target!(ABSPATH, "posixpath.abspath", RT_ABSPATH, prep_abspath);
+
+/// The group's targets, in install order.
+pub static TARGETS: &[&TargetSpec] = &[&JOIN, &SPLIT, &SPLITEXT, &BASENAME, &DIRNAME, &ISABS, &RELPATH, &ABSPATH];
+
+/// `posixpath.<attr>`: fingerprint it and return it.
+fn func<'py>(cx: &mut Prepare<'py>, g: &Bound<'py, PyDict>, attr: &str) -> Result<Bound<'py, PyAny>, Refusal> {
+    let f = cx.get(g, attr)?;
+    rt::check_fp(cx, FPS, &format!("posixpath.{attr}"), &f)?;
+    Ok(f)
+}
+
+/// `os.fspath` as `posixpath` reads it: `posixpath.os` (the os module) and `os.fspath`
+/// (the C function), both pinned.
+fn pin_fspath(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, deps: &'static DepFlag) -> Result<(), Refusal> {
+    let os = cx.get(g, "os")?;
+    let osm = cx.loaded_module("os")?;
+    if !os.is(&osm) {
+        return Err(refuse!("posixpath.os is not the os module"));
+    }
+    cx.pin(g, "os", deps)?;
+    let osd = osm.dict();
+    let fspath = cx.get(&osd, "fspath")?;
+    rt::check_c(cx, FPS, "os.fspath", &fspath)?;
+    cx.pin(&osd, "fspath", deps)?;
+    Ok(())
+}
+
+/// Pins shared by the functions built on `os.fspath` and `_get_sep`.
+fn pin_sep(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, deps: &'static DepFlag) -> Result<(), Refusal> {
+    pin_fspath(cx, g, deps)?;
+    let get_sep = cx.get(g, "_get_sep")?;
+    rt::check_fp(cx, FPS, "posixpath._get_sep", &get_sep)?;
+    cx.pin(g, "_get_sep", deps)?;
+    cx.pin_global(g, "isinstance", deps)?;
+    cx.pin_global(g, "bytes", deps)?;
+    Ok(())
+}
+
+fn prep_sep_fn(cx: &mut Prepare<'_>, attr: &str, rt: &'static Rt, kernel: ffi::vectorcallfunc) -> Result<(), Refusal> {
+    if !rt::init_str_layout(cx.py()) {
+        return Err(refuse!("str layout not calibrated"));
+    }
+    let g = cx.module()?.dict();
+    let f = func(cx, &g, attr)?;
+    pin_sep(cx, &g, &rt.deps)?;
+    cx.vectorcall(&f, kernel, &accel::FUNCTION_VECTORCALL)
+}
+
+fn prep_join(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    prep_sep_fn(cx, "join", &RT_JOIN, k_join)
+}
+fn prep_split(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    prep_sep_fn(cx, "split", &RT_SPLIT, k_split)
+}
+fn prep_basename(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    prep_sep_fn(cx, "basename", &RT_BASENAME, k_basename)
+}
+fn prep_dirname(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    prep_sep_fn(cx, "dirname", &RT_DIRNAME, k_dirname)
+}
+fn prep_isabs(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    prep_sep_fn(cx, "isabs", &RT_ISABS, k_isabs)
+}
+
+fn prep_splitext(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    if !rt::init_str_layout(py) {
+        return Err(refuse!("str layout not calibrated"));
+    }
+    let g = cx.module()?.dict();
+    let f = func(cx, &g, "splitext")?;
+    let deps = &RT_SPLITEXT.deps;
+    pin_fspath(cx, &g, deps)?;
+    cx.pin_global(&g, "isinstance", deps)?;
+    cx.pin_global(&g, "bytes", deps)?;
+    let gp = cx.get(&g, "genericpath")?;
+    if !gp.is(&cx.loaded_module("genericpath")?) {
+        return Err(refuse!("posixpath.genericpath is not the genericpath module"));
+    }
+    cx.pin(&g, "genericpath", deps)?;
+    let gd = cx.loaded_module("genericpath")?.dict();
+    let se = cx.get(&gd, "_splitext")?;
+    rt::check_fp(cx, FPS, "genericpath._splitext", &se)?;
+    cx.pin(&gd, "_splitext", deps)?;
+    cx.vectorcall(&f, k_splitext, &accel::FUNCTION_VECTORCALL)
+}
 
 /// Which exact type all arguments share.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -483,58 +460,100 @@ static BYTES_OK: AtomicBool = AtomicBool::new(false);
 /// Interned `"start"` (keyword of relpath).
 static KW_START: AtomicUsize = AtomicUsize::new(0);
 
-fn check_normpath(py: Python<'_>) -> PyResult<Result<(), String>> {
-    let Some(np) = rt::resolve(py, "posixpath.normpath")? else { return Ok(Err("posixpath.normpath missing".into())) };
-    let posix = py.import("sys")?.getattr("modules")?.get_item("posix")?;
-    let c_np = posix.getattr("_path_normpath")?;
+/// `posixpath.normpath` must be the C `posix._path_normpath` (pinned), behaving like the
+/// port on probe inputs; bytes are accepted only under UTF-8 + surrogateescape.
+fn check_normpath(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, deps: &'static DepFlag) -> Result<(), Refusal> {
+    let np = cx.get(g, "normpath")?;
+    let posix = cx.loaded_module("posix")?;
+    let c_np = cx.get(&posix.dict(), "_path_normpath")?;
     if !np.is(&c_np) {
-        return Ok(Err("posixpath.normpath is not posix._path_normpath".into()));
+        return Err(refuse!("posixpath.normpath is not posix._path_normpath"));
     }
-    // Behavioural self-test of the port against the C function.
-    let probes = [
-        "", "/", "//", "///", ".", "..", "./", "a/..", "a/../..", "/../a", "//x/../..", "a//b/./c/../d/", "\u{e9}/\u{4f60}/..",
-        "./../a", "../../a/b/../..", "/a/b/c/../../../../d", "a/./.b/..c/...", "\u{1F600}//./\u{1F600}",
-    ];
-    for p in probes {
-        let want: String = c_np.call1((p,))?.extract()?;
-        let cps: Vec<u32> = p.chars().map(|c| c as u32).collect();
-        let got = posix::normpath(&cps);
-        let got: String = if got.is_empty() { ".".into() } else { got.iter().map(|&c| char::from_u32(c).unwrap_or('?')).collect() };
-        if got != want {
-            return Ok(Err(format!("normpath self-test failed on {p:?}")));
+    rt::check_c(cx, FPS, "posixpath.normpath", &np)?;
+    cx.pin(g, "normpath", deps)?;
+    cx.self_test("normpath port", |_py| {
+        let probes = [
+            "", "/", "//", "///", ".", "..", "./", "a/..", "a/../..", "/../a", "//x/../..", "a//b/./c/../d/",
+            "\u{e9}/\u{4f60}/..", "./../a", "../../a/b/../..", "/a/b/c/../../../../d", "a/./.b/..c/...",
+            "\u{1F600}//./\u{1F600}", "\0/x/../\0",
+        ];
+        for p in probes {
+            let want: String = c_np.call1((p,))?.extract()?;
+            let cps: Vec<u32> = p.chars().map(|c| c as u32).collect();
+            let got = posix::normpath(&cps);
+            let got: String =
+                if got.is_empty() { ".".into() } else { got.iter().filter_map(|&c| char::from_u32(c)).collect() };
+            if got != want {
+                return Ok(false);
+            }
         }
-    }
-    let sys = py.import("sys")?;
+        Ok(true)
+    })?;
+    let sys = cx.loaded_module("sys")?;
     let enc: String = sys.call_method0("getfilesystemencoding")?.extract()?;
     let err: String = sys.call_method0("getfilesystemencodeerrors")?.extract()?;
     BYTES_OK.store(enc == "utf-8" && err == "surrogateescape", Relaxed);
-    Ok(Ok(()))
+    Ok(())
 }
 
-fn prepare_cwd(py: Python<'_>) -> PyResult<Result<(), String>> {
-    let os = py.import("sys")?.getattr("modules")?.get_item("os")?;
-    let d = os.getattr("__dict__")?.cast_into::<PyDict>()?;
+/// What `abspath` reads: `os.fspath`, `os.getcwd(b)`, `join`, `_get_sep`, `normpath`.
+fn prep_abs_common<'py>(cx: &mut Prepare<'py>, g: &Bound<'py, PyDict>, deps: &'static DepFlag) -> Result<(), Refusal> {
+    if !rt::init_str_layout(cx.py()) {
+        return Err(refuse!("str layout not calibrated"));
+    }
+    pin_sep(cx, g, deps)?;
+    let osd = cx.loaded_module("os")?.dict();
     for (key, cell) in [("getcwd", &GETCWD), ("getcwdb", &GETCWDB)] {
-        let Some(f) = d.get_item(key)? else { return Ok(Err(format!("os.{key} missing"))) };
-        if !f.is_instance_of::<PyCFunction>() {
-            return Ok(Err(format!("os.{key} is not the builtin")));
-        }
+        let f = cx.get(&osd, key)?;
+        rt::check_c(cx, FPS, &format!("os.{key}"), &f)?;
+        cx.pin(&osd, key, deps)?;
         if cell.load(Relaxed) != f.as_ptr() as usize {
             cell.store(rt::leak(&f), Relaxed);
         }
     }
-    check_normpath(py)
+    func(cx, g, "join")?;
+    cx.pin(g, "join", deps)?;
+    check_normpath(cx, g, deps)
 }
 
-fn prepare_abspath(py: Python<'_>) -> PyResult<Result<(), String>> {
-    prepare_cwd(py)
+fn prep_abspath(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let g = cx.module()?.dict();
+    let f = func(cx, &g, "abspath")?;
+    prep_abs_common(cx, &g, &RT_ABSPATH.deps)?;
+    cx.vectorcall(&f, k_abspath, &accel::FUNCTION_VECTORCALL)
 }
 
-fn prepare_relpath(py: Python<'_>) -> PyResult<Result<(), String>> {
-    if let Err(why) = prepare_cwd(py)? {
-        return Ok(Err(why));
+fn prep_relpath(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let g = cx.module()?.dict();
+    let f = func(cx, &g, "relpath")?;
+    let deps = &RT_RELPATH.deps;
+    prep_abs_common(cx, &g, deps)?;
+    func(cx, &g, "abspath")?;
+    cx.pin(&g, "abspath", deps)?;
+    cx.pin_global(&g, "len", deps)?;
+    // `_commonprefix([start_list, path_list])` (3.15: `genericpath._commonprefix`; 3.14:
+    // the module-level `commonprefix` imported from genericpath).
+    let gp = cx.loaded_module("genericpath")?;
+    let gd = gp.dict();
+    let cp = if cx.version() >= (3, 15) {
+        if !cx.get(&g, "genericpath")?.is(&gp) {
+            return Err(refuse!("posixpath.genericpath is not the genericpath module"));
+        }
+        cx.pin(&g, "genericpath", deps)?;
+        let cp = cx.get(&gd, "_commonprefix")?;
+        rt::check_fp(cx, FPS, "genericpath._commonprefix", &cp)?;
+        cx.pin(&gd, "_commonprefix", deps)?;
+        cp
+    } else {
+        let cp = cx.get(&g, "commonprefix")?;
+        rt::check_fp(cx, FPS, "genericpath.commonprefix", &cp)?;
+        cx.pin(&g, "commonprefix", deps)?;
+        cp
+    };
+    let _ = cp;
+    for name in ["isinstance", "list", "tuple", "min", "max", "enumerate"] {
+        cx.pin_global(&gd, name, deps)?;
     }
-    let Some(relpath) = rt::resolve(py, "posixpath.relpath")? else { return Ok(Err("relpath missing".into())) };
     let values = [
         PyString::new(py, ".").into_any(),
         PyString::new(py, "..").into_any(),
@@ -542,20 +561,17 @@ fn prepare_relpath(py: Python<'_>) -> PyResult<Result<(), String>> {
         pyo3::types::PyBytes::new(py, b"..").into_any(),
     ];
     for (k, v) in values.iter().enumerate() {
-        let Some(c) = rt::code_const(&relpath, v)? else { return Ok(Err("relpath constants differ".into())) };
-        REL_CONSTS[k].store(rt::leak(&c), Relaxed);
-    }
-    KW_START.store(rt::leak(PyString::intern(py, "start").as_any()), Relaxed);
-    // 3.15 reads genericpath._commonprefix, 3.14 the module-level commonprefix (pinned).
-    if py.version_info().minor >= 15 {
-        let g = rt::resolve(py, "genericpath")?.ok_or_else(|| PyValueError::new_err("genericpath"))?;
-        let gd = g.getattr("__dict__")?.cast_into::<PyDict>()?;
-        if gd.get_item("_commonprefix")?.is_none() {
-            return Ok(Err("genericpath._commonprefix missing".into()));
+        let Some(c) = rt::code_const(&f, v)? else { return Err(refuse!("relpath constants differ")) };
+        if REL_CONSTS[k].load(Relaxed) == 0 {
+            REL_CONSTS[k].store(rt::leak(&c), Relaxed);
+        } else if REL_CONSTS[k].load(Relaxed) != c.as_ptr() as usize {
+            return Err(refuse!("relpath constants changed"));
         }
-        crate::accel::guard::pin(&gd, "_commonprefix", &RT_RELPATH.deps)?;
     }
-    Ok(Ok(()))
+    if KW_START.load(Relaxed) == 0 {
+        KW_START.store(rt::leak(PyString::intern(py, "start").as_any()), Relaxed);
+    }
+    cx.vectorcall(&f, k_relpath, &accel::FUNCTION_VECTORCALL)
 }
 
 /// The current directory through the pinned `os.getcwd`/`os.getcwdb` (a C function: no
@@ -772,13 +788,14 @@ unsafe fn relpath_bytes(p: O, s: Option<O>) -> O {
 }
 
 // ---------------------------------------------------------------------------------------
-// Python module `rustique._rustique._t_posixpath`
+// Test helpers on `rustique._rustique._accel`
 // ---------------------------------------------------------------------------------------
 
 /// The C normpath port, for differential tests.
 #[pyfunction]
-fn _normpath(py: Python<'_>, p: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+fn _paths_normpath(py: Python<'_>, p: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     if let Ok(s) = p.cast::<PyString>() {
+        rt::init_str_layout(py);
         // SAFETY: a live str.
         let v = to_u32(unsafe { str_view(s.as_ptr()) }.text);
         let r = posix::normpath(&v);
@@ -793,85 +810,7 @@ fn _normpath(py: Python<'_>, p: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     Ok(pyo3::types::PyBytes::new(py, if r.is_empty() { b"." } else { &r }).into_any().unbind())
 }
 
-pub fn register_group<'py>(m: &Bound<'py, PyModule>, group: &'static rt::Group, modname: &str) -> PyResult<Bound<'py, PyModule>> {
-    let py = m.py();
-    let sub = PyModule::new(py, modname)?;
-    sub.add_function(PyCFunction::new_closure(
-        py,
-        Some(c"install"),
-        Some(c"install(names=None, force_jit=False): install the group's targets; returns [(name, state, reason)]"),
-        move |a: &Bound<'_, PyTuple>, k: Option<&Bound<'_, PyDict>>| -> PyResult<Py<PyAny>> {
-            let py = a.py();
-            let mut names: Option<Vec<String>> = None;
-            let mut force_jit = false;
-            if let Some(x) = a.get_item(0).ok().filter(|x| !x.is_none()) {
-                names = Some(x.extract()?);
-            }
-            if let Some(k) = k {
-                if let Some(x) = k.get_item("names")?.filter(|x| !x.is_none()) {
-                    names = Some(x.extract()?);
-                }
-                if let Some(x) = k.get_item("force_jit")? {
-                    force_jit = x.extract()?;
-                }
-            }
-            Ok(group.install(py, names, force_jit)?.into_pyobject(py)?.into_any().unbind())
-        },
-    )?)?;
-    sub.add_function(PyCFunction::new_closure(
-        py,
-        Some(c"uninstall"),
-        None,
-        move |_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>| -> PyResult<()> { group.uninstall() },
-    )?)?;
-    sub.add_function(PyCFunction::new_closure(
-        py,
-        Some(c"status"),
-        None,
-        move |a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>| -> PyResult<Py<PyList>> {
-            Ok(group.status(a.py())?.unbind())
-        },
-    )?)?;
-    sub.add_function(PyCFunction::new_closure(
-        py,
-        Some(c"counters"),
-        None,
-        move |a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>| -> PyResult<Py<PyDict>> {
-            Ok(group.counters(a.py())?.unbind())
-        },
-    )?)?;
-    sub.add_function(PyCFunction::new_closure(
-        py,
-        Some(c"reset_counters"),
-        None,
-        move |_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>| -> PyResult<()> {
-            group.reset_counters();
-            Ok(())
-        },
-    )?)?;
-    sub.add_function(PyCFunction::new_closure(
-        py,
-        Some(c"fingerprints"),
-        None,
-        move |a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>| -> PyResult<Py<PyDict>> {
-            Ok(group.fingerprints(a.py())?.unbind())
-        },
-    )?)?;
-    sub.add_function(PyCFunction::new_closure(
-        py,
-        Some(c"stats"),
-        None,
-        move |a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>| -> PyResult<()> {
-            rt::set_stats(a.get_item(0)?.extract()?);
-            Ok(())
-        },
-    )?)?;
-    m.add(modname, &sub)?;
-    Ok(sub)
-}
-
-pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    let sub = register_group(m, &GROUP, "_t_posixpath")?;
-    sub.add_function(wrap_pyfunction!(_normpath, &sub)?)?;
+pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {
+    accel.add_function(wrap_pyfunction!(_paths_normpath, accel)?)?;
     Ok(())
 }

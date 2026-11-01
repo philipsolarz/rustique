@@ -96,11 +96,22 @@ fnmatch_ = fnmatch.fnmatch; fnmatchcase = fnmatch.fnmatchcase; ffilter = fnmatch
 names = ['main.py', 'utils_3.txt', 'config.json', 'models.pyc', 'README', 'index.html', 'a.tmp', 'b.bak'] * 4
 """
 
-RS = {
-    "posixpath": "from rustique._rustique import _t_posixpath as _T; _T.install(force_jit=True)",
-    "fnmatch": "from rustique._rustique import _t_fnmatch as _T; _T.install(force_jit=True)",
-    "pathlib": "from rustique._rustique import _t_pathlib as _T; _T.install(force_jit=True)",
-}
+# `rs`: rustique.enable(only=[group]). The registry refuses `jit_safe: false` targets when
+# the JIT is on; to *measure* them under PYTHON_JIT=1 the worker hides `sys._jit` while
+# enabling (bench only: the shipped behaviour is the refusal).
+RS = """
+import rustique
+_jit = sys.__dict__.get('_jit')
+class _NoJit:
+    @staticmethod
+    def is_enabled(): return False
+if _jit is not None: sys._jit = _NoJit
+rustique.enable(only=[{group!r}])
+if _jit is not None: sys._jit = _jit
+from rustique._takeover import status as _status
+_bad = [t for t in _status()['targets'] if t['group'] == {group!r} and t['state'] != 'installed']
+assert not _bad, _bad
+"""
 
 PATCH_FSPATH = "_of = os.fspath; os.fspath = lambda x: _of(x)"
 PATCH_GETSEP = "posixpath._get_sep = types.FunctionType(posixpath._get_sep.__code__, posixpath.__dict__)"
@@ -211,7 +222,7 @@ def worker(idx, only):
     ns: dict = {}
     exec(COMMON, ns)
     if v == "rs":
-        exec(RS[group], ns)
+        exec(RS.format(group=group), ns)
     tools = extra == TOOLS
     if extra and not tools:
         exec(extra, ns)

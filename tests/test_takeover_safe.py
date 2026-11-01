@@ -96,7 +96,15 @@ def fresh(items):
 def test_install_is_idempotent_and_reversible():
     sort_before = list.sort
     names = K.install()
-    assert set(names) == {"list.sort", "list.index", "list.count", "tuple.index", "tuple.count", "x in list", "x in tuple"}
+    assert set(names) == {
+        "list.sort",
+        "list.index",
+        "list.count",
+        "tuple.index",
+        "tuple.count",
+        "list.__contains__",
+        "tuple.__contains__",
+    }
     assert K.install() == names
     assert list.sort is sort_before  # descriptors keep their identity
     K.uninstall()
@@ -104,12 +112,16 @@ def test_install_is_idempotent_and_reversible():
     assert K.installed() == []
 
 
+def installed_names(st_):
+    return {t["name"] for t in st_["targets"] if t["state"] == "installed"}
+
+
 def test_enable_disable_status():
     st_ = rs.enable()
-    assert st_["safe"] and "list.sort" in st_["kernels"]
+    assert st_["process"]["enabled"] and "list.sort" in installed_names(st_)
     assert type([]) is list and type({}) is dict  # objects stay exact builtins
     st_ = rs.disable()
-    assert not st_["safe"] and st_["kernels"] == []
+    assert not st_["process"]["enabled"] and not installed_names(st_)
 
 
 def test_identity_repr_doc_pickle_of_patched_callables():

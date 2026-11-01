@@ -1,22 +1,16 @@
 //! Runtime shared by the `posixpath`, `fnmatch` and `pathlib` groups: inline access to
-//! `str`/`bytes` buffers, result builders that keep CPython's identity rules, code
-//! fingerprints, and the per-target vectorcall plumbing (guards, counters, fallback,
-//! install/uninstall) until accel-core's `TargetSpec` registry lands.
+//! `str`/`bytes` buffers, result builders that keep CPython's identity rules, and the
+//! per-target vectorcall plumbing (guards, counters, fallback) on top of `crate::accel`.
 
 use std::ffi::c_void;
-use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyFrozenSet, PyList, PyString, PyTuple};
+use pyo3::types::{PyDict, PyString, PyTuple};
 
-use crate::accel::guard::{self, DepFlag, Tools};
-use crate::accel::site::Site;
-use crate::accel::stats::{self, Counters, Reason};
-use crate::accel::version;
+use crate::accel::{self, Counters, DepFlag, Fingerprints, Prepare, Reason, Refusal, Tools};
+use crate::refuse;
 pub use rustique_core::paths::Unit;
 
 pub type O = *mut ffi::PyObject;
@@ -312,167 +306,30 @@ pub unsafe fn str_from_units<T: Unit>(units: &[T]) -> O {
 }
 
 // ---------------------------------------------------------------------------------------
-// Code fingerprints (path- and line-independent)
+// Per-target run-time state, guards and fallback
 // ---------------------------------------------------------------------------------------
 
-struct Fnv(u64);
-
-impl Fnv {
-    fn new() -> Self {
-        Fnv(0xcbf2_9ce4_8422_2325)
-    }
-    fn bytes(&mut self, b: &[u8]) {
-        for &x in b {
-            self.0 ^= u64::from(x);
-            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    fn u64(&mut self, v: u64) {
-        self.bytes(&v.to_le_bytes());
-    }
-    fn tag(&mut self, t: u8) {
-        self.bytes(&[t]);
-    }
-}
-
-fn feed_str(h: &mut Fnv, s: &Bound<'_, PyString>) -> PyResult<()> {
-    let enc = s.call_method1("encode", ("utf-8", "surrogatepass"))?;
-    let b = enc.cast::<PyBytes>()?.as_bytes();
-    h.u64(b.len() as u64);
-    h.bytes(b);
-    Ok(())
-}
-
-fn feed_obj(h: &mut Fnv, o: &Bound<'_, PyAny>) -> PyResult<()> {
-    let py = o.py();
-    if o.is_none() {
-        h.tag(0);
-    } else if o.is(&*pyo3::types::PyBool::new(py, true)) {
-        h.tag(1);
-    } else if o.is(&*pyo3::types::PyBool::new(py, false)) {
-        h.tag(2);
-    } else if let Ok(s) = o.cast::<PyString>() {
-        h.tag(3);
-        feed_str(h, s)?;
-    } else if let Ok(b) = o.cast::<PyBytes>() {
-        h.tag(4);
-        h.u64(b.as_bytes().len() as u64);
-        h.bytes(b.as_bytes());
-    } else if let Ok(t) = o.cast::<PyTuple>() {
-        h.tag(5);
-        h.u64(t.len() as u64);
-        for x in t.iter() {
-            feed_obj(h, &x)?;
-        }
-    } else if let Ok(fs) = o.cast::<PyFrozenSet>() {
-        // Iteration order depends on string hashes: fingerprint the sorted item hashes.
-        h.tag(6);
-        let mut items = Vec::new();
-        for x in fs.iter() {
-            let mut sub = Fnv::new();
-            feed_obj(&mut sub, &x)?;
-            items.push(sub.0);
-        }
-        items.sort_unstable();
-        h.u64(items.len() as u64);
-        for v in items {
-            h.u64(v);
-        }
-    } else if o.hasattr("co_code")? {
-        h.tag(7);
-        feed_code(h, o)?;
-    } else {
-        // int, float, complex, Ellipsis, ...: type name and repr.
-        h.tag(8);
-        feed_str(h, &o.get_type().name()?.cast_into::<PyString>()?)?;
-        feed_str(h, &o.repr()?)?;
-    }
-    Ok(())
-}
-
-fn feed_code(h: &mut Fnv, code: &Bound<'_, PyAny>) -> PyResult<()> {
-    for attr in ["co_code", "co_exceptiontable"] {
-        let b = code.getattr(attr)?;
-        let b = b.cast::<PyBytes>()?.as_bytes();
-        h.u64(b.len() as u64);
-        h.bytes(b);
-    }
-    for attr in ["co_argcount", "co_posonlyargcount", "co_kwonlyargcount", "co_flags"] {
-        h.u64(code.getattr(attr)?.extract::<i64>()? as u64);
-    }
-    for attr in ["co_names", "co_varnames", "co_cellvars", "co_freevars", "co_consts"] {
-        feed_obj(h, &code.getattr(attr)?)?;
-    }
-    Ok(())
-}
-
-/// Resolve a dotted path `module.attr[.attr...]` from `sys.modules` (no import).
-pub fn resolve<'py>(py: Python<'py>, path: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
-    let mut it = path.split('.');
-    let module = it.next().unwrap_or_default();
-    let modules = py.import("sys")?.getattr("modules")?;
-    let Ok(mut obj) = modules.get_item(module) else { return Ok(None) };
-    for (k, attr) in it.enumerate() {
-        // Module attributes come from the module dict (no `__getattr__` hooks).
-        obj = if k == 0 {
-            match obj.getattr("__dict__")?.cast_into::<PyDict>()?.get_item(attr)? {
-                Some(v) => v,
-                None => return Ok(None),
-            }
-        } else {
-            obj.getattr(attr)?
-        };
-    }
-    Ok(Some(obj))
-}
-
-/// Fingerprint of the code of the functions named by `paths` (each a dotted path to a
-/// function, or to an object with `__wrapped__`).
-pub fn fingerprint(py: Python<'_>, paths: &[&str]) -> PyResult<Option<u64>> {
-    let mut h = Fnv::new();
-    let mut any = false;
-    for p in paths {
-        // A function absent on this version (e.g. 3.15's `genericpath._commonprefix` on
-        // 3.14) hashes as a marker: the fingerprint stays per-version deterministic.
-        let Some(f) = resolve(py, p)? else {
-            h.tag(10);
-            continue;
-        };
-        any = true;
-        let f = if f.hasattr("__code__")? { f } else { f.getattr("__wrapped__")? };
-        h.tag(9);
-        feed_code(&mut h, &f.getattr("__code__")?)?;
-    }
-    Ok(any.then_some(h.0))
-}
-
-// ---------------------------------------------------------------------------------------
-// Targets: vectorcall kernels with guards and fallback
-// ---------------------------------------------------------------------------------------
-
-/// Run-time state of one target, read by its kernel.
+/// Run-time state of one vectorcall target, read by its kernel.
 pub struct Rt {
     pub counters: Counters,
     pub tools: Tools,
     pub deps: DepFlag,
-    /// The function's vectorcall before install (`_PyFunction_Vectorcall`).
-    pub orig: AtomicUsize,
 }
 
 impl Rt {
     pub const fn new() -> Self {
-        Rt { counters: Counters::new(), tools: Tools::new(), deps: DepFlag::new(), orig: AtomicUsize::new(0) }
+        Rt { counters: Counters::new(), tools: Tools::new(), deps: DepFlag::new() }
     }
 
-    /// Call the original with the unchanged arguments.
+    /// Call the original (`_PyFunction_Vectorcall`) with the unchanged arguments.
     ///
     /// # Safety
     /// Vectorcall arguments as received by the kernel.
     #[inline(always)]
     pub unsafe fn fallback(&self, why: Reason, func: O, args: *const O, nargsf: usize, kw: O) -> O {
         self.counters.fallback(why);
-        // SAFETY: `orig` holds the function's former vectorcall (set before install).
-        unsafe { std::mem::transmute::<usize, ffi::vectorcallfunc>(self.orig.load(Relaxed))(func, args, nargsf, kw) }
+        // SAFETY: set by the registry before any kernel is reachable.
+        unsafe { accel::FUNCTION_VECTORCALL.get()(func, args, nargsf, kw) }
     }
 
     /// Dependencies intact and no tool listening (globally or on this function's code).
@@ -485,10 +342,8 @@ impl Rt {
             return Err(Reason::Deps);
         }
         // SAFETY: attached thread; `func` is a function object.
-        unsafe {
-            if !self.tools.quiet() || !guard::code_locally_quiet((*func.cast::<ffi::PyFunctionObject>()).func_code) {
-                return Err(Reason::Tools);
-            }
+        if unsafe { !accel::tools_quiet(&self.tools, func) } {
+            return Err(Reason::Tools);
         }
         Ok(())
     }
@@ -505,211 +360,12 @@ pub fn nargs(nargsf: usize) -> usize {
     nargsf & !ffi::PY_VECTORCALL_ARGUMENTS_OFFSET
 }
 
-/// Static description of one target.
-pub struct Spec {
-    pub name: &'static str,
-    /// Dotted path of the patched function (`posixpath.join`, `pathlib.PurePath.__str__`).
-    pub func: &'static str,
-    pub kernel: ffi::vectorcallfunc,
-    pub rt: &'static Rt,
-    /// Functions whose code the kernel reproduces (the patched one first).
-    pub code: &'static [&'static str],
-    /// Expected fingerprint per minor version.
-    pub expected: &'static [(u8, u64)],
-    /// Module-dict entries the original reads at call time: (module, key).
-    pub pins: &'static [(&'static str, &'static str)],
-    /// Measured within 1.05 under `PYTHON_JIT=1` too.
-    pub jit_safe: bool,
-    /// Extra validation and setup (constants, C dependencies, self-tests).
-    pub prepare: Option<fn(Python<'_>) -> PyResult<Result<(), String>>>,
-}
-
-pub struct Installed {
-    pub name: &'static str,
-    pub site: Site,
-}
-
-/// Per-group registry: installed sites and the last status of each target.
-pub struct Group {
-    pub name: &'static str,
-    pub specs: &'static [Spec],
-    pub installed: Mutex<Vec<Installed>>,
-    pub status: Mutex<Vec<(&'static str, String, Option<String>)>>,
-}
-
-fn jit_enabled(py: Python<'_>) -> PyResult<bool> {
-    let sys = py.import("sys")?;
-    match sys.getattr("_jit") {
-        Ok(j) => j.call_method0("is_enabled")?.extract(),
-        Err(_) => Ok(false),
-    }
-}
-
-impl Group {
-    pub const fn new(name: &'static str, specs: &'static [Spec]) -> Self {
-        Group { name, specs, installed: Mutex::new(Vec::new()), status: Mutex::new(Vec::new()) }
-    }
-
-    fn validate<'py>(&self, py: Python<'py>, spec: &Spec, force_jit: bool) -> PyResult<Result<Bound<'py, PyAny>, String>> {
-        if let Err(why) = version::supported(py, &[14, 15])? {
-            return Ok(Err(why));
-        }
-        if !force_jit && !spec.jit_safe && jit_enabled(py)? {
-            return Ok(Err("jit".into()));
-        }
-        let Some(func) = resolve(py, spec.func)? else {
-            return Ok(Err("pending-import".into()));
-        };
-        // SAFETY: type check only.
-        if unsafe { ffi::Py_TYPE(func.as_ptr()) } != &raw mut ffi::PyFunction_Type {
-            return Ok(Err(format!("{} is not a pure-Python function", spec.func)));
-        }
-        let minor = py.version_info().minor;
-        let Some(fp) = fingerprint(py, spec.code)? else {
-            return Ok(Err("dependency missing".into()));
-        };
-        match spec.expected.iter().find(|(m, _)| *m == minor) {
-            Some((_, want)) if *want == fp => {}
-            Some(_) => return Ok(Err(format!("code fingerprint differs ({fp:#018x})"))),
-            None => return Ok(Err(format!("CPython 3.{minor} not validated"))),
-        }
-        if !init_str_layout(py) {
-            return Ok(Err("str layout not calibrated".into()));
-        }
-        if let Some(prep) = spec.prepare
-            && let Err(why) = prep(py)?
-        {
-            return Ok(Err(why));
-        }
-        for (module, key) in spec.pins {
-            let Some(m) = resolve(py, module)? else {
-                return Ok(Err(format!("dependency module {module} not imported")));
-            };
-            let d = m.getattr("__dict__")?.cast_into::<PyDict>()?;
-            if d.get_item(*key)?.is_none() {
-                return Ok(Err(format!("dependency {module}.{key} missing")));
-            }
-        }
-        Ok(Ok(func))
-    }
-
-    /// Install the named targets (all of the group when `names` is None). Each target is
-    /// all-or-nothing; a refused target does not affect the others.
-    pub fn install(&self, py: Python<'_>, names: Option<Vec<String>>, force_jit: bool) -> PyResult<Vec<(String, String, Option<String>)>> {
-        guard::set_main_interpreter();
-        let mut installed = self.installed.lock().map_err(|_| PyRuntimeError::new_err("poisoned"))?;
-        let mut status = self.status.lock().map_err(|_| PyRuntimeError::new_err("poisoned"))?;
-        for spec in self.specs {
-            if names.as_ref().is_some_and(|n| !n.iter().any(|x| x == spec.name)) {
-                continue;
-            }
-            if installed.iter().any(|i| i.name == spec.name) {
-                continue;
-            }
-            status.retain(|(n, _, _)| *n != spec.name);
-            match self.validate(py, spec, force_jit)? {
-                Err(why) => {
-                    let state = if why == "pending-import" { "pending-import" } else { "refused" };
-                    status.push((spec.name, state.into(), Some(why)));
-                }
-                Ok(func) => {
-                    for (module, key) in spec.pins {
-                        let d = resolve(py, module)?.expect("validated").getattr("__dict__")?.cast_into::<PyDict>()?;
-                        guard::pin(&d, key, &spec.rt.deps)?;
-                    }
-                    let mut site = Site::vectorcall(&func, spec.kernel as usize)?;
-                    spec.rt.orig.store(site.original, Relaxed);
-                    match site.install() {
-                        Ok(()) => {
-                            installed.push(Installed { name: spec.name, site });
-                            status.push((spec.name, "installed".into(), None));
-                        }
-                        Err(e) => {
-                            site.release();
-                            status.push((spec.name, "refused".into(), Some(e.to_string())));
-                        }
-                    }
-                }
-            }
-        }
-        Ok(status.iter().map(|(n, s, r)| ((*n).to_owned(), s.clone(), r.clone())).collect())
-    }
-
-    pub fn uninstall(&self) -> PyResult<()> {
-        let mut installed = self.installed.lock().map_err(|_| PyRuntimeError::new_err("poisoned"))?;
-        for mut i in installed.drain(..).rev() {
-            i.site.uninstall(true);
-            i.site.release();
-        }
-        let mut status = self.status.lock().map_err(|_| PyRuntimeError::new_err("poisoned"))?;
-        for s in status.iter_mut() {
-            if s.1 == "installed" {
-                s.1 = "disabled".into();
-            }
-        }
-        Ok(())
-    }
-
-    pub fn status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let status = self.status.lock().map_err(|_| PyRuntimeError::new_err("poisoned"))?;
-        let out = PyList::empty(py);
-        for spec in self.specs {
-            let d = PyDict::new(py);
-            d.set_item("name", spec.name)?;
-            d.set_item("group", self.name)?;
-            let (state, reason) = match status.iter().find(|(n, _, _)| *n == spec.name) {
-                Some((_, s, r)) => (s.clone(), r.clone()),
-                None => ("disabled".to_owned(), None),
-            };
-            d.set_item("state", state)?;
-            d.set_item("reason", reason)?;
-            d.set_item("sites", vec![spec.func])?;
-            d.set_item("versions", spec.expected.iter().map(|(m, _)| format!("3.{m}")).collect::<Vec<_>>())?;
-            d.set_item("jit_safe", spec.jit_safe)?;
-            out.append(d)?;
-        }
-        Ok(out)
-    }
-
-    pub fn counters<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let out = PyDict::new(py);
-        for spec in self.specs {
-            let (hits, fb) = spec.rt.counters.snapshot();
-            let d = PyDict::new(py);
-            d.set_item("hits", hits)?;
-            for (k, v) in fb {
-                d.set_item(k, v)?;
-            }
-            out.set_item(spec.name, d)?;
-        }
-        Ok(out)
-    }
-
-    pub fn reset_counters(&self) {
-        for spec in self.specs {
-            spec.rt.counters.reset();
-        }
-    }
-
-    pub fn fingerprints<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let out = PyDict::new(py);
-        for spec in self.specs {
-            out.set_item(spec.name, fingerprint(py, spec.code)?.map(|v| format!("{v:#018x}")))?;
-        }
-        Ok(out)
-    }
-}
-
-pub fn set_stats(on: bool) {
-    stats::ON.store(on, Relaxed);
-}
-
 /// Strong reference kept for the life of the process (constants returned by identity).
 pub fn leak(o: &Bound<'_, PyAny>) -> usize {
     o.clone().into_ptr() as usize
 }
 
-/// The constant of `code.co_consts` equal to `value` with exactly `value`'s type.
+/// The constant of `func.__code__.co_consts` equal to `value` with exactly `value`'s type.
 pub fn code_const<'py>(func: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, PyAny>>> {
     let consts = func.getattr("__code__")?.getattr("co_consts")?;
     for c in consts.cast_into::<PyTuple>()?.iter() {
@@ -718,4 +374,31 @@ pub fn code_const<'py>(func: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> P
         }
     }
     Ok(None)
+}
+
+/// Require the recorded fingerprint of `obj` (named `name` in `table`).
+pub fn check_fp(
+    cx: &mut Prepare<'_>,
+    table: &[(&str, Fingerprints)],
+    name: &str,
+    obj: &Bound<'_, PyAny>,
+) -> Result<(), Refusal> {
+    let fps = table.iter().find(|(n, _)| *n == name).map(|(_, f)| *f).ok_or_else(|| refuse!("{name}: no fingerprint table"))?;
+    cx.fingerprint_code(obj, fps)
+}
+
+/// The module dict of an already imported module (never imports).
+pub fn module_dict<'py>(cx: &Prepare<'py>, name: &str) -> Result<Bound<'py, PyDict>, Refusal> {
+    Ok(cx.loaded_module(name)?.dict())
+}
+
+/// Require the recorded `ml_name`/`ml_flags`/`ml_doc` fingerprint of a C function.
+pub fn check_c(
+    cx: &mut Prepare<'_>,
+    table: &[(&str, Fingerprints)],
+    name: &str,
+    obj: &Bound<'_, PyAny>,
+) -> Result<(), Refusal> {
+    let fps = table.iter().find(|(n, _)| *n == name).map(|(_, f)| *f).ok_or_else(|| refuse!("{name}: no fingerprint table"))?;
+    cx.fingerprint_c(obj, fps)
 }

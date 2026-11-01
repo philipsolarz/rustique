@@ -63,7 +63,7 @@ use std::ffi::{CStr, c_int};
 use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering as Atomic};
+use std::sync::atomic::{AtomicPtr, Ordering as Atomic};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::ffi;
@@ -74,12 +74,13 @@ use pyo3::types::PyString;
 use rustique_core::kernels::{self, Sum};
 use rustique_core::{Column, with_column};
 
+use crate::accel::{self, Counters, Original, Prepare, Reason, Refusal, TargetSpec};
 use crate::convert::{self, ToPython};
 use crate::dict::{Dict, DictKeysRef};
 use crate::frozenset::FrozenSet;
 use crate::list::List;
 use crate::objsort;
-use crate::patch::writable;
+use crate::refuse;
 use crate::set::{Set, SetElements};
 use crate::storage::Storage;
 use crate::tuple::Tuple;
@@ -1599,9 +1600,31 @@ const NAMES: [&CStr; 6] = [c"sum", c"min", c"max", c"sorted", c"any", c"all"];
 const FASTCALL_KW: c_int = ffi::METH_FASTCALL | ffi::METH_KEYWORDS;
 const FLAGS: [c_int; 6] = [FASTCALL_KW, FASTCALL_KW, FASTCALL_KW, FASTCALL_KW, ffi::METH_O, ffi::METH_O];
 
-/// The original C entry points (`ml_meth`) of the six builtins, saved when first captured.
+/// The original C entry points (`ml_meth`) of the six builtins, captured by the registry.
 /// The patched `PyMethodDef`s point to the kernels, so fallbacks call these directly.
-static ORIG_METH: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
+static ORIG_FASTKW: [Original<ffi::PyCFunctionFastWithKeywords>; 4] = [const { Original::new() }; 4];
+static ORIG_O: [Original<ffi::PyCFunction>; 2] = [const { Original::new() }; 2];
+
+/// Counters per builtin (`hits`: calls that entered a fast path; `deopt`: of those, the
+/// ones that restarted in or continued with the original; `args`: direct fallbacks).
+static C_SUM: Counters = Counters::new();
+static C_MIN: Counters = Counters::new();
+static C_MAX: Counters = Counters::new();
+static C_SORTED: Counters = Counters::new();
+static C_ANY: Counters = Counters::new();
+static C_ALL: Counters = Counters::new();
+
+#[inline(always)]
+fn counters(which: Which) -> &'static Counters {
+    match which {
+        Which::Sum => &C_SUM,
+        Which::Min => &C_MIN,
+        Which::Max => &C_MAX,
+        Which::Sorted => &C_SORTED,
+        Which::Any => &C_ANY,
+        Which::All => &C_ALL,
+    }
+}
 /// `self` of the builtins: the `builtins` module.
 static BUILTINS_MODULE: AtomicPtr<ffi::PyObject> = AtomicPtr::new(ptr::null_mut());
 /// Interned keyword names: `key`, `default`, `start`, `reverse`.
@@ -1628,13 +1651,10 @@ unsafe fn original_fastkw(
     nargs: ffi::Py_ssize_t,
     kwnames: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
+    counters(which).fallback(Reason::Deopt);
     // SAFETY: the saved pointer is the original C function of a METH_FASTCALL|METH_KEYWORDS
     // builtin (flags checked at capture), called as CPython would.
-    unsafe {
-        let meth: ffi::PyCFunctionFastWithKeywords =
-            std::mem::transmute(ORIG_METH[which as usize].load(Atomic::Relaxed));
-        meth(BUILTINS_MODULE.load(Atomic::Relaxed), args, nargs, kwnames)
-    }
+    unsafe { ORIG_FASTKW[which as usize].get()(BUILTINS_MODULE.load(Atomic::Relaxed), args, nargs, kwnames) }
 }
 
 /// Call the original METH_O builtin.
@@ -1643,11 +1663,36 @@ unsafe fn original_fastkw(
 /// As [`original_fastkw`].
 #[inline(always)]
 unsafe fn original_o(which: Which, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    counters(which).fallback(Reason::Deopt);
     // SAFETY: as above, for a METH_O builtin.
-    unsafe {
-        let meth: ffi::PyCFunction = std::mem::transmute(ORIG_METH[which as usize].load(Atomic::Relaxed));
-        meth(BUILTINS_MODULE.load(Atomic::Relaxed), arg)
-    }
+    unsafe { ORIG_O[which as usize - 4].get()(BUILTINS_MODULE.load(Atomic::Relaxed), arg) }
+}
+
+/// Direct fallback of a kernel (argument shape outside every fast path).
+///
+/// # Safety
+/// As [`original_fastkw`].
+#[inline(always)]
+unsafe fn fallback_fastkw(
+    which: Which,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> *mut ffi::PyObject {
+    counters(which).fallback(Reason::Args);
+    // SAFETY: per the caller.
+    unsafe { ORIG_FASTKW[which as usize].get()(BUILTINS_MODULE.load(Atomic::Relaxed), args, nargs, kwnames) }
+}
+
+/// Direct fallback of a METH_O kernel.
+///
+/// # Safety
+/// As [`original_o`].
+#[inline(always)]
+unsafe fn fallback_o(which: Which, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    counters(which).fallback(Reason::Args);
+    // SAFETY: per the caller.
+    unsafe { ORIG_O[which as usize - 4].get()(BUILTINS_MODULE.load(Atomic::Relaxed), arg) }
 }
 
 /// Whether a keyword name equals one of the interned names.
@@ -1864,9 +1909,10 @@ unsafe extern "C" fn rq_sum(
     // SAFETY: called by CPython with vectorcall arguments on an attached thread.
     unsafe {
         if nargs >= 1 && candidate(type_of(*args)) {
+            C_SUM.hit();
             sum_entry(slf, args, nargs, kwnames)
         } else {
-            original_fastkw(Which::Sum, args, nargs, kwnames)
+            fallback_fastkw(Which::Sum, args, nargs, kwnames)
         }
     }
 }
@@ -2031,9 +2077,10 @@ unsafe extern "C" fn rq_min(
     // SAFETY: vectorcall arguments from CPython.
     unsafe {
         if nargs > 1 || (nargs == 1 && candidate(type_of(*args))) {
+            C_MIN.hit();
             minmax_entry(slf, args, nargs, kwnames, Which::Min)
         } else {
-            original_fastkw(Which::Min, args, nargs, kwnames)
+            fallback_fastkw(Which::Min, args, nargs, kwnames)
         }
     }
 }
@@ -2047,9 +2094,10 @@ unsafe extern "C" fn rq_max(
     // SAFETY: vectorcall arguments from CPython.
     unsafe {
         if nargs > 1 || (nargs == 1 && candidate(type_of(*args))) {
+            C_MAX.hit();
             minmax_entry(slf, args, nargs, kwnames, Which::Max)
         } else {
-            original_fastkw(Which::Max, args, nargs, kwnames)
+            fallback_fastkw(Which::Max, args, nargs, kwnames)
         }
     }
 }
@@ -2280,11 +2328,12 @@ unsafe extern "C" fn rq_sorted(
     // SAFETY: vectorcall arguments from CPython.
     unsafe {
         if nargs == 1 && is_rustique(type_of(*args)) {
+            C_SORTED.hit();
             return trampoline::fastcall_cfunction_with_keywords::<RsSorted>(slf, args, nargs, kwnames);
         }
         // Builtin inputs: `sorted` copies and calls `list.sort` (itself accelerated by the
-        // takeover tier when enabled).
-        original_fastkw(Which::Sorted, args, nargs, kwnames)
+        // `containers` group when enabled).
+        fallback_fastkw(Which::Sorted, args, nargs, kwnames)
     }
 }
 
@@ -2383,16 +2432,24 @@ unsafe extern "C" fn rq_any(slf: *mut ffi::PyObject, arg: *mut ffi::PyObject) ->
     unsafe {
         let t = type_of(arg);
         if candidate(t) && !is_rustique_hashed(t) && t != &raw mut ffi::PyDict_Type {
+            C_ANY.hit();
             truth_entry(slf, arg, Which::Any)
         } else {
-            original_o(Which::Any, arg)
+            fallback_o(Which::Any, arg)
         }
     }
 }
 
 unsafe extern "C" fn rq_all(slf: *mut ffi::PyObject, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: METH_O call from CPython.
-    unsafe { if candidate(type_of(arg)) { truth_entry(slf, arg, Which::All) } else { original_o(Which::All, arg) } }
+    unsafe {
+        if candidate(type_of(arg)) {
+            C_ALL.hit();
+            truth_entry(slf, arg, Which::All)
+        } else {
+            fallback_o(Which::All, arg)
+        }
+    }
 }
 
 /// # Safety
@@ -2542,20 +2599,11 @@ const ALL: [Which; 6] = [Which::Sum, Which::Min, Which::Max, Which::Sorted, Whic
 /// The builtins' method table entries, captured once: `None` per entry not recognised.
 struct Captured {
     defs: [Option<usize>; 6],
-    /// Standalone function objects running the kernels (see [`replacement`]).
+    /// Standalone function objects running the kernels (see [`make_replacement`]).
     replacements: [Option<Py<PyAny>>; 6],
 }
 
 static STATE: Mutex<Option<Captured>> = Mutex::new(None);
-
-/// The `ml_meth` field of a method table entry, as an atomic.
-///
-/// # Safety
-/// `def` is a live, writable `PyMethodDef`.
-unsafe fn meth_slot(def: usize) -> &'static AtomicUsize {
-    // SAFETY: `ml_meth` is a pointer-sized, pointer-aligned field.
-    unsafe { &*(&raw mut (*(def as *mut ffi::PyMethodDef)).ml_meth).cast::<AtomicUsize>() }
-}
 
 /// Verify the object layouts the kernels read directly.
 fn check_layouts(py: Python<'_>) -> PyResult<()> {
@@ -2592,8 +2640,7 @@ fn check_layouts(py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 
-/// Find the six entries in the `builtins` method table and save their original entry
-/// points (once per process).
+/// Find the six entries in the `builtins` method table (once per process).
 fn capture<'a>(py: Python<'_>, state: &'a mut Option<Captured>) -> PyResult<&'a mut Captured> {
     if let Some(captured) = state {
         return Ok(captured);
@@ -2611,13 +2658,8 @@ fn capture<'a>(py: Python<'_>, state: &'a mut Option<Captured>) -> PyResult<&'a 
             let name = CStr::from_ptr((*def).ml_name);
             if let Some(which) = ALL.into_iter().find(|&w| NAMES[w as usize] == name)
                 && (*def).ml_flags == FLAGS[which as usize]
-                && writable(def as usize, size_of::<ffi::PyMethodDef>())
             {
-                let original = meth_slot(def as usize).load(Atomic::Acquire);
-                if original != 0 && original != kernel(which) {
-                    ORIG_METH[which as usize].store(original, Atomic::Release);
-                    defs[which as usize] = Some(def as usize);
-                }
+                defs[which as usize] = Some(def as usize);
             }
             def = def.add(1);
         }
@@ -2673,68 +2715,126 @@ fn lock_state() -> PyResult<std::sync::MutexGuard<'static, Option<Captured>>> {
     STATE.lock().map_err(|_| PyRuntimeError::new_err("rustique builtins: state poisoned"))
 }
 
-/// Names whose method table entry currently points to the kernel.
-fn active(captured: &Captured) -> Vec<&'static str> {
+// ---------------------------------------------------------------------------------------
+// Targets (docs/ACCELERATION.md §9): group `builtins`.
+// ---------------------------------------------------------------------------------------
+
+fn prepare(py: Python<'_>, cx: &mut Prepare<'_>, which: Which) -> Result<(), Refusal> {
+    let def = {
+        let mut state = lock_state()?;
+        capture(py, &mut state)?.defs[which as usize]
+    };
+    let name = NAMES[which as usize].to_str().unwrap_or_default();
+    let def = def.ok_or_else(|| refuse!("builtins.{name}: method table entry not found"))?;
+    let what = format!("builtins.{name}");
+    let def = def as *mut ffi::PyMethodDef;
+    // SAFETY: a live entry of the static `builtins` method table.
+    unsafe {
+        match which {
+            Which::Any | Which::All => {
+                let k = kernel(which);
+                let k = std::mem::transmute::<usize, ffi::PyCFunction>(k);
+                cx.ml_meth_def(&what, def, k, &ORIG_O[which as usize - 4])
+            }
+            _ => {
+                let k = std::mem::transmute::<usize, ffi::PyCFunctionFastWithKeywords>(kernel(which));
+                cx.ml_meth_def(&what, def, k, &ORIG_FASTKW[which as usize])
+            }
+        }
+    }
+}
+
+fn prepare_sum(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    prepare(py, cx, Which::Sum)
+}
+fn prepare_min(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    prepare(py, cx, Which::Min)
+}
+fn prepare_max(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    prepare(py, cx, Which::Max)
+}
+fn prepare_sorted(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    prepare(py, cx, Which::Sorted)
+}
+fn prepare_any(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    prepare(py, cx, Which::Any)
+}
+fn prepare_all(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    prepare(py, cx, Which::All)
+}
+
+macro_rules! target {
+    ($id:ident, $name:literal, $counters:ident, $prepare:ident) => {
+        pub static $id: TargetSpec = TargetSpec {
+            name: $name,
+            group: "builtins",
+            module: None,
+            versions: &[(3, 14), (3, 15)],
+            free_threaded: true,
+            counters: &$counters,
+            prepare: $prepare,
+            ..TargetSpec::DEFAULT
+        };
+    };
+}
+
+target!(SUM, "builtins.sum", C_SUM, prepare_sum);
+target!(MIN, "builtins.min", C_MIN, prepare_min);
+target!(MAX, "builtins.max", C_MAX, prepare_max);
+target!(SORTED, "builtins.sorted", C_SORTED, prepare_sorted);
+target!(ANY, "builtins.any", C_ANY, prepare_any);
+target!(ALL_, "builtins.all", C_ALL, prepare_all);
+
+/// The `builtins` group.
+pub static TARGETS: &[&TargetSpec] = &[&SUM, &MIN, &MAX, &SORTED, &ANY, &ALL_];
+
+fn group() -> Vec<String> {
+    vec!["builtins".to_owned()]
+}
+
+fn short(names: Vec<&'static str>) -> Vec<&'static str> {
+    // Keep `REPLACED` order.
     ALL.into_iter()
-        .filter(|&w| {
-            // SAFETY: captured entries are live, writable method table entries.
-            captured.defs[w as usize].is_some_and(|def| unsafe { meth_slot(def) }.load(Atomic::Acquire) == kernel(w))
-        })
         .map(|w| NAMES[w as usize].to_str().expect("ASCII names"))
+        .filter(|n| names.iter().any(|m| m.strip_prefix("builtins.") == Some(*n)))
         .collect()
 }
 
-/// Accelerate `sum`, `min`, `max`, `sorted`, `any` and `all` in place (the builtin function
-/// objects keep their identity). Idempotent; returns the names now accelerated. An entry
-/// whose entry point was changed by someone else since it was captured is left alone.
+/// Accelerate `sum`, `min`, `max`, `sorted`, `any` and `all` in place (the `builtins` group;
+/// `rustique.enable()` is the API). Idempotent; returns the names now accelerated.
 #[pyfunction]
 fn install(py: Python<'_>) -> PyResult<Vec<&'static str>> {
-    let mut state = lock_state()?;
-    let captured = capture(py, &mut state)?;
-    for which in ALL {
-        if let Some(def) = captured.defs[which as usize] {
-            // SAFETY: a captured, writable method table entry.
-            let slot = unsafe { meth_slot(def) };
-            let original = ORIG_METH[which as usize].load(Atomic::Relaxed);
-            let _ = slot.compare_exchange(original, kernel(which), Atomic::AcqRel, Atomic::Acquire);
-        }
-    }
-    Ok(active(captured))
+    accel::registry::enable(py, Some(group()), Vec::new())?;
+    Ok(short(accel::registry::installed(py, Some(&group()))?))
 }
 
-/// Restore the original entry points (where the kernels are still installed).
+/// Restore the original entry points.
 #[pyfunction]
 fn uninstall(py: Python<'_>) -> PyResult<()> {
-    let mut state = lock_state()?;
-    let captured = capture(py, &mut state)?;
-    for which in ALL {
-        if let Some(def) = captured.defs[which as usize] {
-            // SAFETY: a captured, writable method table entry.
-            let slot = unsafe { meth_slot(def) };
-            let original = ORIG_METH[which as usize].load(Atomic::Relaxed);
-            let _ = slot.compare_exchange(kernel(which), original, Atomic::AcqRel, Atomic::Acquire);
-        }
-    }
-    Ok(())
+    accel::registry::disable(py, Some(group()))
 }
 
 /// Names of the builtins currently accelerated.
 #[pyfunction]
 fn installed(py: Python<'_>) -> PyResult<Vec<&'static str>> {
-    let mut state = lock_state()?;
-    Ok(active(capture(py, &mut state)?))
+    Ok(short(accel::registry::installed(py, Some(&group()))?))
 }
 
 /// A standalone function running the kernel of builtin `name` (installed or not). For tests
-/// and benchmarks.
+/// and benchmarks. Captures the originals (through the registry's `prepare` in record
+/// mode) if nothing did yet.
 #[pyfunction]
 fn replacement(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
-    let mut state = lock_state()?;
-    let captured = capture(py, &mut state)?;
     let i = NAMES
         .iter()
         .position(|n| n.to_str() == Ok(name))
         .ok_or_else(|| PyValueError::new_err(format!("not an accelerated builtin: {name:?}")))?;
+    if !(ORIG_FASTKW.iter().all(Original::is_set) && ORIG_O.iter().all(Original::is_set)) {
+        // The kernels need their originals: capture them without installing.
+        let _ = accel::registry::fingerprint_report(py, Some(group()))?;
+    }
+    let mut state = lock_state()?;
+    let captured = capture(py, &mut state)?;
     captured.replacements[i]
         .as_ref()
         .map(|r| r.clone_ref(py))
