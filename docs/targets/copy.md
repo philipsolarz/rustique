@@ -218,6 +218,12 @@ Full `pytest -q`: 4126 passed (3.15.1, 3.14.9), 4129 passed (3.15.1t, 3.14.9t).
 
 Every cell is ≤ 1.05 (`asdict(..., dict_factory=f)`, a whole-call fallback, is 1.004 / 0.995: noise floor ±15 Ir).
 
+Free-threaded 3.15.1t (same script): every cell ≤ 1.0 — deepcopy int 0.666, record 0.208,
+list of 5 records 0.216, tuple 0.124, small dataclass 0.275, plain object 0.279,
+frozenset 0.209, enum 0.564, `__deepcopy__` hook 0.556, explicit `{}` memo 0.395;
+`copy.copy` plain object 0.380, list100 0.834; asdict 0.429, replace 0.790; whole-call
+fallbacks 0.999 / 1.000; pairs 0.431 / 0.995 / 0.760.
+
 ### 7.2 Under the JIT (3.15.1, `PYTHON_JIT=1`, warmed 30,000 iterations; subset)
 
 | cell | CPython | Rustique | ratio |
