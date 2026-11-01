@@ -19,6 +19,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _callgrind import per_call  # noqa: E402
 
 SETUP = r"""
+import sys
+# 3.14's dataclasses looks the defining module up in sys.modules.
+sys.modules.setdefault(__name__, type(sys)(__name__))
 import copy, copyreg, dataclasses, datetime, decimal, enum, uuid, collections
 from copy import deepcopy
 class E(enum.Enum):

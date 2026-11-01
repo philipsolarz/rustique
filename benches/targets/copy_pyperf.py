@@ -15,6 +15,8 @@ import sys
 import tempfile
 
 SETUP = r"""
+import sys
+sys.modules.setdefault(__name__, type(sys)(__name__))
 import copy, dataclasses, datetime, enum
 class E(enum.Enum):
     A = 1

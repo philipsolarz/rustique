@@ -38,9 +38,13 @@ captured reference (`from copy import deepcopy`, `partial`, default arguments, t
   hook, a copier registered in `copy._deepcopy_dispatch`, or CPython's own `_reconstruct`.
   At that moment it materialises the dict with exactly CPython's contents, insertion order
   (the keep-alive list under `id(memo)` at the position of the first `_keep_alive`) and
-  keep-alive list growth; from then on, and whenever the caller passes a memo dict, every
-  memo operation is the dict operation `copy.py` performs (so entries hooks add, change or
-  delete are honoured). The native memo releases its references in the order the dict's
+  keep-alive list growth; from then on, and whenever the caller passes a memo, every memo
+  operation is the one `copy.py` performs (so entries hooks add, change or delete are
+  honoured). A memo that is not an exact dict (`OrderedDict`, a dict subclass, any mapping)
+  gets `copy.py`'s generic operations — `d in memo` then `memo[d]` (3.15) or
+  `memo.get(d, _nil)` with `deepcopy`'s own `_nil` (3.14), `memo[k] = v`, `memo[id(memo)]`
+  with `except KeyError` — so its methods run with the same arguments in the same order
+  (tested with a memo that logs every call), and nested calls never fall back. The native memo releases its references in the order the dict's
   deallocation would.
 - **Same operations, same order.** `y[deepcopy(k)] = deepcopy(v)` copies the value first;
   lists are built by appends and dicts by inserts (same `sys.getsizeof`); source lists are
@@ -78,8 +82,7 @@ captured reference (`from copy import deepcopy`, `partial`, default arguments, t
 | a `copy.py` helper whose code, defaults or local monitoring changed | that helper is called (as a registered copier would be) |
 
 Whole-call fallback (the original function runs; `stats()` reason):
-- `args`: a memo that is not `None` or an exact `dict`, a keyword other than `memo`,
-  3.14's `_nil` argument; `copy.copy` with keywords; `asdict(..., dict_factory=f)` /
+- `args`: a keyword other than `memo`, 3.14's `_nil` argument; `copy.copy` with keywords; `asdict(..., dict_factory=f)` /
   `astuple(..., tuple_factory=f)` with a non-default factory.
 - `deps`: a pinned dependency was replaced (deopt-while-unpinned then restores the original
   vectorcall until it is put back): `copy.deepcopy`, `_reconstruct`, `_keep_alive`,
