@@ -1031,13 +1031,24 @@ struct StaticStatus {
 fn static_status(py: Python<'_>) -> &'static [StaticStatus] {
     static CELL: pyo3::sync::PyOnceLock<Vec<StaticStatus>> = pyo3::sync::PyOnceLock::new();
     CELL.get_or_init(py, || {
+        // Groups, modules and version strings repeat across targets: one str object each
+        // (this runs inside the public `enable()`, which returns the status; startup cell).
+        let mut shared: Vec<(String, Py<pyo3::types::PyString>)> = Vec::new();
+        let mut text = |t: &str| -> Py<pyo3::types::PyString> {
+            if let Some((_, o)) = shared.iter().find(|(k, _)| k == t) {
+                return o.clone_ref(py);
+            }
+            let o = pyo3::types::PyString::new(py, t).unbind();
+            shared.push((t.to_owned(), o.clone_ref(py)));
+            o
+        };
         all_specs()
             .iter()
             .map(|s| StaticStatus {
-                name: pyo3::types::PyString::intern(py, s.name).unbind(),
-                group: pyo3::types::PyString::intern(py, s.group).unbind(),
-                module: s.module.map(|m| pyo3::types::PyString::intern(py, m).unbind()),
-                versions: versions_of(s).iter().map(|v| pyo3::types::PyString::new(py, v).unbind()).collect(),
+                name: pyo3::types::PyString::new(py, s.name).unbind(),
+                group: text(s.group),
+                module: s.module.map(&mut text),
+                versions: versions_of(s).iter().map(|v| text(v)).collect(),
             })
             .collect()
     })
