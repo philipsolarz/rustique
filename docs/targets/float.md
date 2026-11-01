@@ -55,9 +55,9 @@ Identity with CPython (all **measured**):
   20 M decimal strings, 100 M consecutive bit patterns across 1e16, 1e-4, 1e-5, 1e15, 1.0,
   2^53, the smallest subnormals, the smallest normal and the largest finite value);
   23.2 M values on each of 3.14.9, 3.15.1t, 3.14.9t, 0 mismatches.
-- Install-time self-test: 44 probe values (both signs) through the core vs
-  `PyOS_double_to_string` and the original `float.__format__('')`; any mismatch refuses
-  the target.
+- Install-time self-test (kept minimal, install budget): 8 probe values covering the
+  layout cut-offs, a sign and an extreme through the core vs `PyOS_double_to_string`, and one
+  through the original `float.__format__('')`; any mismatch refuses the target.
 
 ## Guards and install
 
@@ -98,6 +98,12 @@ float`), plain → installed:
 | `f'{x:.2f}'` (fallback: spec) | 1,824 | 1,827 | 1.002 |
 | `repr(inf)` (fallback: value) | 794 | 798 | 1.005 |
 | `repr(F(1.5))` (subclass: not reached) | 1,914 | 1,900 | 0.993 |
+
+## Install cost
+
+`float.repr`'s `prepare` costs 45,388 Ir at `enable()` (callgrind region,
+`benches/targets/json_install_cost.py`; budget 0.1M per group); the registry's own work for
+the group adds 56,927 Ir.
 
 ## Versions
 
