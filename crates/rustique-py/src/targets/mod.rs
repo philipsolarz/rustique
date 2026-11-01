@@ -18,6 +18,9 @@ pub mod statistics;
 pub mod textwrap;
 pub mod urllib;
 pub mod utils_kit;
+pub mod fnmatch;
+pub mod pathlib;
+pub mod posixpath;
 
 /// Every group's targets, in install order.
 pub static ALL: &[&[&TargetSpec]] = &[
@@ -30,6 +33,9 @@ pub static ALL: &[&[&TargetSpec]] = &[
     statistics::TARGETS,
     textwrap::TARGETS,
     urllib::TARGETS,
+    posixpath::TARGETS,
+    fnmatch::TARGETS,
+    pathlib::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,
@@ -41,5 +47,7 @@ pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {
     json::register(accel)?;
     _selftest::register(accel)?;
     logging::register(accel)?;
+    posixpath::register(accel)?;
+    fnmatch::register(accel)?;
     Ok(())
 }

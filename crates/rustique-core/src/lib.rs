@@ -15,6 +15,7 @@ pub mod index;
 pub mod json;
 pub mod kernels;
 pub mod logging;
+pub mod paths;
 pub mod pyfmt;
 pub mod pyhash;
 pub mod random;
