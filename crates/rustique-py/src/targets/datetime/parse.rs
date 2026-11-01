@@ -435,7 +435,7 @@ unsafe fn run(kind: Kind, cls: *mut ffi::PyObject, s: *mut ffi::PyObject, fmt: *
             c.fallback(Reason::Args);
             return None;
         };
-        let Some(p) = program(fb).and_then(|prog| prog.parse(sb)) else {
+        let Some(p) = program(fb).and_then(|prog| prog.parse(sb, kind == Kind::TimeFn)) else {
             c.fallback(Reason::Args);
             return None;
         };

@@ -107,44 +107,181 @@ pub struct TzText<'a> {
     pub name: &'a [u8],
 }
 
-#[inline]
-fn num(out: &mut Vec<u8>, v: u64, width: usize, pad: u8) {
-    let mut buf = [0u8; 20];
-    let mut i = buf.len();
-    let mut v = v;
-    loop {
-        i -= 1;
-        buf[i] = b'0' + (v % 10) as u8;
-        v /= 10;
-        if v == 0 {
-            break;
-        }
+/// "00" .. "99".
+const DIGITS2: [u8; 200] = {
+    let mut t = [0u8; 200];
+    let mut i = 0;
+    while i < 100 {
+        t[2 * i] = b'0' + (i / 10) as u8;
+        t[2 * i + 1] = b'0' + (i % 10) as u8;
+        i += 1;
     }
-    for _ in (buf.len() - i)..width {
-        out.push(pad);
-    }
-    out.extend_from_slice(&buf[i..]);
+    t
+};
+
+/// Output buffer of bounded size: rendering reports overflow (the caller falls back).
+pub struct Out {
+    buf: [u8; Out::CAP],
+    len: usize,
+    overflow: bool,
 }
 
-/// Render a format that [`scan`] accepted. `micro` is the microsecond field for `%f`.
-pub fn render(fmt: &[u8], tm: &Tm, micro: u32, tz: &TzText<'_>, out: &mut Vec<u8>) {
-    let mut i = 0;
-    while i < fmt.len() {
-        let c = fmt[i];
-        i += 1;
-        if c != b'%' {
-            out.push(c);
-            continue;
-        }
-        let d = fmt[i];
-        i += 1;
-        if d == b':' {
-            i += 1; // %:z
-            out.extend_from_slice(tz.colon_z);
-            continue;
-        }
-        directive(d, tm, micro, tz, out);
+impl Out {
+    pub const CAP: usize = 256;
+
+    #[inline(always)]
+    pub fn new() -> Self {
+        Out { buf: [0; Out::CAP], len: 0, overflow: false }
     }
+
+    /// The rendered bytes, `None` if they did not fit.
+    pub fn bytes(&self) -> Option<&[u8]> {
+        (!self.overflow).then(|| &self.buf[..self.len])
+    }
+
+    #[inline(always)]
+    fn put(&mut self, b: u8) {
+        if self.len < Out::CAP {
+            self.buf[self.len] = b;
+            self.len += 1;
+        } else {
+            self.overflow = true;
+        }
+    }
+
+    #[inline(always)]
+    fn extend(&mut self, b: &[u8]) {
+        if self.len + b.len() <= Out::CAP {
+            self.buf[self.len..self.len + b.len()].copy_from_slice(b);
+            self.len += b.len();
+        } else {
+            self.overflow = true;
+        }
+    }
+
+    /// `v` in decimal, padded to `width` with `pad`.
+    #[inline(always)]
+    fn num(&mut self, v: u64, width: usize, pad: u8) {
+        if v < 100 && width == 2 {
+            let i = 2 * v as usize;
+            let mut two = [DIGITS2[i], DIGITS2[i + 1]];
+            if v < 10 {
+                two[0] = pad;
+            }
+            self.extend(&two);
+            return;
+        }
+        if v < 10_000 && width == 4 {
+            let d = v as u16;
+            self.put(b'0' + (d / 1000) as u8);
+            self.put(b'0' + (d / 100 % 10) as u8);
+            self.put(b'0' + (d / 10 % 10) as u8);
+            self.put(b'0' + (d % 10) as u8);
+            return;
+        }
+        self.num_slow(v, width, pad);
+    }
+
+    /// The general case, out of line (keeps the hot directives small: LLVM otherwise
+    /// hoists every division of an unrolled digit loop to the function entry).
+    #[inline(never)]
+    fn num_slow(&mut self, v: u64, width: usize, pad: u8) {
+        let mut tmp = [0u8; 20];
+        let mut i = tmp.len();
+        let mut v = v;
+        loop {
+            i -= 1;
+            tmp[i] = b'0' + (v % 10) as u8;
+            v /= 10;
+            if v == 0 {
+                break;
+            }
+        }
+        for _ in (tmp.len() - i)..width {
+            self.put(pad);
+        }
+        self.extend(&tmp[i..]);
+    }
+}
+
+impl Default for Out {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A format checked by [`scan`], split into literal runs and directives.
+#[derive(Clone, Debug)]
+pub struct Compiled {
+    fmt: Box<[u8]>,
+    /// (start, end) of a literal run, or (directive byte, [`DIRECTIVE`]).
+    toks: Vec<(u16, u16)>,
+    pub needs: Needs,
+}
+
+const DIRECTIVE: u16 = u16::MAX;
+
+/// [`scan`] and split `fmt` into tokens for [`render_compiled`].
+pub fn compile(fmt: &[u8], wrapped: bool) -> Option<Compiled> {
+    if fmt.len() > 1024 {
+        return None;
+    }
+    let needs = scan(fmt, wrapped)?;
+    let mut toks = Vec::new();
+    let mut i = 0;
+    let mut lit = 0;
+    while i < fmt.len() {
+        if fmt[i] != b'%' {
+            i += 1;
+            continue;
+        }
+        if lit < i {
+            toks.push((lit as u16, i as u16));
+        }
+        let d = fmt[i + 1];
+        if d == b':' {
+            toks.push((u16::from(b':'), DIRECTIVE));
+            i += 3;
+        } else {
+            toks.push((u16::from(d), DIRECTIVE));
+            i += 2;
+        }
+        lit = i;
+    }
+    if lit < fmt.len() {
+        toks.push((lit as u16, fmt.len() as u16));
+    }
+    Some(Compiled { fmt: fmt.into(), toks, needs })
+}
+
+impl Compiled {
+    /// The format this was compiled from.
+    pub fn format(&self) -> &[u8] {
+        &self.fmt
+    }
+}
+
+/// Render a compiled format. `micro` is the microsecond field for `%f`.
+pub fn render_compiled(c: &Compiled, tm: &Tm, micro: u32, tz: &TzText<'_>, out: &mut Out) {
+    for &(a, b) in &c.toks {
+        if b == DIRECTIVE {
+            if a == u16::from(b':') {
+                out.extend(tz.colon_z);
+            } else {
+                directive(a as u8, tm, micro, tz, out);
+            }
+        } else {
+            out.extend(&c.fmt[a as usize..b as usize]);
+        }
+    }
+}
+
+/// Render a format that [`scan`] accepted (convenience for tests).
+pub fn render(fmt: &[u8], tm: &Tm, micro: u32, tz: &TzText<'_>, out: &mut Vec<u8>) {
+    let c = compile(fmt, true).or_else(|| compile(fmt, false)).expect("scanned format");
+    let mut o = Out::new();
+    render_compiled(&c, tm, micro, tz, &mut o);
+    out.extend_from_slice(o.bytes().expect("fits"));
 }
 
 fn hour12(h: u32) -> u64 {
@@ -152,80 +289,79 @@ fn hour12(h: u32) -> u64 {
     u64::from(if h == 0 { 12 } else { h })
 }
 
-fn directive(d: u8, tm: &Tm, micro: u32, tz: &TzText<'_>, out: &mut Vec<u8>) {
-    let y = tm.year as u64;
+fn directive(d: u8, tm: &Tm, micro: u32, tz: &TzText<'_>, out: &mut Out) {
+    let y = || tm.year as u64;
     match d {
-        b'Y' => num(out, y, 4, b'0'),
-        b'y' => num(out, y % 100, 2, b'0'),
-        b'C' => num(out, y / 100, 2, b'0'),
-        b'm' => num(out, u64::from(tm.month), 2, b'0'),
-        b'd' => num(out, u64::from(tm.mday), 2, b'0'),
-        b'e' => num(out, u64::from(tm.mday), 2, b' '),
-        b'H' => num(out, u64::from(tm.hour), 2, b'0'),
-        b'I' => num(out, hour12(tm.hour), 2, b'0'),
-        b'M' => num(out, u64::from(tm.minute), 2, b'0'),
-        b'S' => num(out, u64::from(tm.second), 2, b'0'),
-        b'j' => num(out, u64::from(tm.yday), 3, b'0'),
-        b'u' => num(out, u64::from((tm.wday + 6) % 7 + 1), 1, b'0'),
-        b'w' => num(out, u64::from(tm.wday), 1, b'0'),
-        b'f' => num(out, u64::from(micro), 6, b'0'),
-        b'p' => out.extend_from_slice(if tm.hour < 12 { b"AM" } else { b"PM" }),
-        b'a' => out.extend_from_slice(A_WEEKDAY[tm.wday as usize]),
-        b'A' => out.extend_from_slice(F_WEEKDAY[tm.wday as usize]),
-        b'b' | b'h' => out.extend_from_slice(A_MONTH[tm.month as usize - 1]),
-        b'B' => out.extend_from_slice(F_MONTH[tm.month as usize - 1]),
-        b'n' => out.push(b'\n'),
-        b't' => out.push(b'\t'),
-        b'%' => out.push(b'%'),
-        b'z' => out.extend_from_slice(tz.z),
-        b'Z' => out.extend_from_slice(tz.name),
+        b'Y' => out.num(y(), 4, b'0'),
+        b'y' => out.num(y() % 100, 2, b'0'),
+        b'C' => out.num(y() / 100, 2, b'0'),
+        b'm' => out.num(u64::from(tm.month), 2, b'0'),
+        b'd' => out.num(u64::from(tm.mday), 2, b'0'),
+        b'e' => out.num(u64::from(tm.mday), 2, b' '),
+        b'H' => out.num(u64::from(tm.hour), 2, b'0'),
+        b'I' => out.num(hour12(tm.hour), 2, b'0'),
+        b'M' => out.num(u64::from(tm.minute), 2, b'0'),
+        b'S' => out.num(u64::from(tm.second), 2, b'0'),
+        b'j' => out.num(u64::from(tm.yday), 3, b'0'),
+        b'u' => out.num(u64::from((tm.wday + 6) % 7 + 1), 1, b'0'),
+        b'w' => out.num(u64::from(tm.wday), 1, b'0'),
+        b'f' => out.num(u64::from(micro), 6, b'0'),
+        b'p' => out.extend(if tm.hour < 12 { b"AM" } else { b"PM" }),
+        b'a' => out.extend(A_WEEKDAY[tm.wday as usize]),
+        b'A' => out.extend(F_WEEKDAY[tm.wday as usize]),
+        b'b' | b'h' => out.extend(A_MONTH[tm.month as usize - 1]),
+        b'B' => out.extend(F_MONTH[tm.month as usize - 1]),
+        b'n' => out.put(b'\n'),
+        b't' => out.put(b'\t'),
+        b'%' => out.put(b'%'),
+        b'z' => out.extend(tz.z),
+        b'Z' => out.extend(tz.name),
         b'F' => {
-            num(out, y, 4, b'0');
-            out.push(b'-');
+            out.num(y(), 4, b'0');
+            out.put(b'-');
             directive(b'm', tm, micro, tz, out);
-            out.push(b'-');
+            out.put(b'-');
             directive(b'd', tm, micro, tz, out);
         }
         b'T' | b'X' => {
-            for (k, s) in [b'H', b'M', b'S'].into_iter().enumerate() {
-                if k > 0 {
-                    out.push(b':');
-                }
-                directive(s, tm, micro, tz, out);
-            }
+            directive(b'H', tm, micro, tz, out);
+            out.put(b':');
+            directive(b'M', tm, micro, tz, out);
+            out.put(b':');
+            directive(b'S', tm, micro, tz, out);
         }
         b'R' => {
             directive(b'H', tm, micro, tz, out);
-            out.push(b':');
+            out.put(b':');
             directive(b'M', tm, micro, tz, out);
         }
         b'D' | b'x' => {
             directive(b'm', tm, micro, tz, out);
-            out.push(b'/');
+            out.put(b'/');
             directive(b'd', tm, micro, tz, out);
-            out.push(b'/');
+            out.put(b'/');
             directive(b'y', tm, micro, tz, out);
         }
         b'r' => {
             directive(b'I', tm, micro, tz, out);
-            out.push(b':');
+            out.put(b':');
             directive(b'M', tm, micro, tz, out);
-            out.push(b':');
+            out.put(b':');
             directive(b'S', tm, micro, tz, out);
-            out.push(b' ');
+            out.put(b' ');
             directive(b'p', tm, micro, tz, out);
         }
         b'c' => {
-            // C locale d_t_fmt: "%a %b %e %H:%M:%S %Y"
+            // C locale d_t_fmt: "%a %b %e %H:%M:%S %Y" (glibc's %Y: no padding)
             directive(b'a', tm, micro, tz, out);
-            out.push(b' ');
+            out.put(b' ');
             directive(b'b', tm, micro, tz, out);
-            out.push(b' ');
+            out.put(b' ');
             directive(b'e', tm, micro, tz, out);
-            out.push(b' ');
+            out.put(b' ');
             directive(b'T', tm, micro, tz, out);
-            out.push(b' ');
-            num(out, y, 1, b'0');
+            out.put(b' ');
+            out.num_slow(y(), 1, b'0');
         }
         _ => unreachable!("scan() accepted only the directives above"),
     }
@@ -234,6 +370,11 @@ fn directive(d: u8, tm: &Tm, micro: u32, tz: &TzText<'_>, out: &mut Vec<u8>) {
 /// `format_utcoffset` text for an offset of `seconds` + `micros` (normalized timedelta:
 /// `days` in {-1, 0}), with `sep` between the fields.
 pub fn utcoffset_text(days: i32, seconds: i32, micros: i32, sep: &[u8], out: &mut Vec<u8>) {
+    let num = |out: &mut Vec<u8>, v: u64, width: usize, pad: u8| {
+        let s = format!("{v:0>width$}");
+        let _ = pad;
+        out.extend_from_slice(s.as_bytes());
+    };
     // offset = days * 86400 + seconds (+ micros); negative iff days < 0.
     let (sign, secs, us) = if days < 0 {
         // -(offset): CPython calls delta_negative and reads the normalized fields.

@@ -16,7 +16,8 @@
 //!   and `time.struct_time` are the originals (a monkeypatched `time.strftime` is honoured
 //!   by falling back).
 
-use std::ffi::c_int;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use pyo3::ffi;
@@ -24,7 +25,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString};
 
 use rustique_core::datetime::cal;
-use rustique_core::datetime::strftime::{self, Needs, Tm, TzText};
+use rustique_core::datetime::strftime::{self, Compiled, Needs, Out, Tm, TzText};
 
 use super::env::{self, Env, item, obj};
 use super::{capi, ustr, watch};
@@ -294,6 +295,26 @@ enum Recv {
     Time,
 }
 
+thread_local! {
+    static FORMATS: RefCell<Vec<(bool, Box<[u8]>, Option<Rc<Compiled>>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The compiled format (per thread; negative results cached too).
+fn compiled(fmt: &[u8], wrapped: bool) -> Option<Rc<Compiled>> {
+    FORMATS.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some((_, _, p)) = c.iter().find(|(w, f, _)| *w == wrapped && &**f == fmt) {
+            return p.clone();
+        }
+        let p = strftime::compile(fmt, wrapped).map(Rc::new);
+        if c.len() >= 16 {
+            c.clear();
+        }
+        c.push((wrapped, fmt.into(), p.clone()));
+        p
+    })
+}
+
 #[inline]
 unsafe fn result(buf: &[u8]) -> O {
     // SAFETY: ASCII bytes.
@@ -325,10 +346,15 @@ unsafe fn method(this: O, fmt: O, time_method: bool) -> Option<O> {
             c.fallback(Reason::Args);
             return None;
         };
-        let Some(fb) = ustr::ascii(fmt).filter(|_| ffi::PyUnicode_CheckExact(fmt) != 0) else {
+        if ffi::PyUnicode_CheckExact(fmt) == 0 {
+            c.fallback(Reason::Args);
+            return None;
+        }
+        let Some(cf) = ustr::ascii(fmt).and_then(|fb| compiled(fb, true)).filter(|cf| names_ok(&cf.needs)) else {
             c.fallback(Reason::Args);
             return None;
         };
+        let needs = cf.needs;
         let Some(e) = env::env() else { return None };
         if !env::frame_ok(e) {
             c.fallback(Reason::Interp);
@@ -339,10 +365,6 @@ unsafe fn method(this: O, fmt: O, time_method: bool) -> Option<O> {
             c.fallback(Reason::Deps);
             return None;
         }
-        let Some(needs) = strftime::scan(fb, true).filter(names_ok) else {
-            c.fallback(Reason::Args);
-            return None;
-        };
         let (tm, micro, tzinfo) = match recv {
             Recv::DateTime | Recv::Date => {
                 let (y, m, d) = (
@@ -397,9 +419,13 @@ unsafe fn method(this: O, fmt: O, time_method: bool) -> Option<O> {
             c.fallback(Reason::Args);
             return None;
         };
-        let mut buf = Vec::with_capacity(fb.len() + 32);
-        strftime::render(fb, &tm, micro, &TzText { z: &tz.z, colon_z: &tz.colon_z, name: &tz.name }, &mut buf);
-        Some(result(&buf))
+        let mut out = Out::new();
+        strftime::render_compiled(&cf, &tm, micro, &TzText { z: &tz.z, colon_z: &tz.colon_z, name: &tz.name }, &mut out);
+        let Some(bytes) = out.bytes() else {
+            c.fallback(Reason::Args);
+            return None;
+        };
+        Some(result(bytes))
     }
 }
 
@@ -447,20 +473,15 @@ macro_rules! method_kernels {
 method_kernels!(date_fast, date_var, false, C_DATE, ORIG_DATE_FAST, ORIG_DATE_VAR, super::DATE_STRFTIME);
 method_kernels!(time_fast, time_var, true, C_TIME, ORIG_TIME_FAST, ORIG_TIME_VAR, super::TIME_STRFTIME);
 
-/// An exact int that fits a C int.
+/// An exact int that fits a C int (compact ints read inline).
+#[inline(always)]
 unsafe fn small_int(o: O) -> Option<i32> {
     // SAFETY: attached thread; live object.
     unsafe {
         if ffi::PyLong_CheckExact(o) == 0 {
             return None;
         }
-        let mut overflow: c_int = 0;
-        let v = ffi::PyLong_AsLongAndOverflow(o, &mut overflow);
-        if overflow != 0 || v == -1 && !ffi::PyErr_Occurred().is_null() {
-            ffi::PyErr_Clear();
-            return None;
-        }
-        i32::try_from(v).ok()
+        crate::convert::exact_int_i64(o).and_then(|v| i32::try_from(v).ok())
     }
 }
 
@@ -477,7 +498,7 @@ unsafe fn function(module: O, args: O) -> Option<O> {
         if ffi::PyUnicode_CheckExact(fmt) == 0 {
             return None;
         }
-        let fb = ustr::ascii(fmt)?;
+        let cf = ustr::ascii(fmt).and_then(|fb| compiled(fb, false)).filter(|cf| names_ok(&cf.needs))?;
         // struct_time: 9 visible items plus tm_zone and tm_gmtoff stored after them.
         let is_st = ffi::Py_TYPE(tup) as usize == e.struct_time;
         if !(ffi::PyTuple_CheckExact(tup) != 0 || is_st) || ffi::PyTuple_GET_SIZE(tup) != 9 {
@@ -486,22 +507,6 @@ unsafe fn function(module: O, args: O) -> Option<O> {
         let mut v = [0i32; 9];
         for (i, x) in v.iter_mut().enumerate() {
             *x = small_int(ffi::PyTuple_GET_ITEM(tup, i as ffi::Py_ssize_t))?;
-        }
-        if is_st {
-            // gettmarg also reads tm_zone (PyUnicode_AsUTF8) and tm_gmtoff (PyLong_AsLong).
-            let zone = ffi::PyTuple_GET_ITEM(tup, 9);
-            let gmtoff = ffi::PyTuple_GET_ITEM(tup, 10);
-            let zone_ok = zone == ffi::Py_None() || ffi::PyUnicode_CheckExact(zone) != 0 && ustr::ascii(zone).is_some();
-            let off_ok = gmtoff == ffi::Py_None() || {
-                let mut ovf: c_int = 0;
-                ffi::PyLong_CheckExact(gmtoff) != 0 && {
-                    let _ = ffi::PyLong_AsLongAndOverflow(gmtoff, &mut ovf);
-                    ovf == 0
-                }
-            };
-            if !zone_ok || !off_ok {
-                return None;
-            }
         }
         let [y, mon, mday, hour, min, sec, wday, yday, _isdst] = v;
         if !((1000..=9999).contains(&y)
@@ -515,7 +520,17 @@ unsafe fn function(module: O, args: O) -> Option<O> {
         {
             return None;
         }
-        let needs = strftime::scan(fb, false).filter(names_ok)?;
+        if is_st {
+            // gettmarg also reads tm_zone (PyUnicode_AsUTF8) and tm_gmtoff (PyLong_AsLong).
+            let zone = ffi::PyTuple_GET_ITEM(tup, 9);
+            let gmtoff = ffi::PyTuple_GET_ITEM(tup, 10);
+            let zone_ok = zone == ffi::Py_None() || ffi::PyUnicode_CheckExact(zone) != 0 && ustr::ascii(zone).is_some();
+            let off_ok = gmtoff == ffi::Py_None()
+                || ffi::PyLong_CheckExact(gmtoff) != 0 && crate::convert::exact_int_i64(gmtoff).is_some();
+            if !zone_ok || !off_ok {
+                return None;
+            }
+        }
         let tm = Tm {
             year: i64::from(y),
             month: mon as u32,
@@ -526,10 +541,9 @@ unsafe fn function(module: O, args: O) -> Option<O> {
             wday: ((wday + 1) % 7) as u32,
             yday: yday as u32,
         };
-        let _ = needs;
-        let mut buf = Vec::with_capacity(fb.len() + 32);
-        strftime::render(fb, &tm, 0, &TzText::default(), &mut buf);
-        Some(result(&buf))
+        let mut out = Out::new();
+        strftime::render_compiled(&cf, &tm, 0, &TzText::default(), &mut out);
+        Some(result(out.bytes()?))
     }
 }
 

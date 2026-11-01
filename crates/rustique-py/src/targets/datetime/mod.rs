@@ -66,6 +66,7 @@ fn common(cx: &Prepare<'_>) -> Result<&'static env::Env, Refusal> {
     }
     let e = env::capture(cx)?;
     load_capi(cx)?;
+    ustr::calibrate(cx.py());
     if TZ_CALIBRATED.load(Ordering::Relaxed) == 0 {
         let ok = format::calibrate_timezone(cx.py())?;
         TZ_CALIBRATED.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
