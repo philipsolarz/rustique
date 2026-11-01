@@ -187,8 +187,9 @@ pytest --rustique --rustique-allow-refused datetime # accept that datetime refus
 The plugin turns Rustique and its counters on before collection, and prints the
 per-target report in the terminal summary. It **fails the session** (exit 1) if a selected
 target was refused for an unexpected reason: a fingerprint mismatch, a site patched by
-someone else, or a failed self-test. Version refusals are expected and never fail the
-session, because "this target is not validated on CPython 3.14" is normal on a matrix. Under
+someone else, or a failed self-test. Version, build, JIT and platform refusals are expected
+and never fail the session, because "this target is not validated on CPython 3.14" or "only
+validated on Linux/glibc" is normal on a matrix. Under
 `pytest-xdist` every worker is accelerated and the summary adds up their counters. If
 plugin autoloading is off (`PYTEST_DISABLE_PLUGIN_AUTOLOAD`), use `-p rustique.pytest_plugin`.
 

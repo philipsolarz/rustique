@@ -445,6 +445,13 @@ fn prepare_record(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 // ---------------------------------------------------------------------------------------
 
 fn prepare_format_time(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    if !cfg!(unix) {
+        // The kernel converts with `localtime_r`/`gmtime_r` (Unix only): it would always fall back.
+        return Err(Refusal::with(
+            crate::accel::spec::Category::Platform,
+            "localtime_r/gmtime_r: only validated on Unix",
+        ));
+    }
     let fmt = ty(cx.module_attr("Formatter")?)?;
     let ft = cx.type_attr(&fmt, "formatTime")?;
     function(cx, &ft, fp::FORMAT_TIME, &format::TIME_CODES[0])?;

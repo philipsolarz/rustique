@@ -71,7 +71,10 @@ fn load_capi(cx: &Prepare<'_>) -> Result<(), Refusal> {
 /// What every datetime target needs.
 fn common_base(cx: &Prepare<'_>) -> Result<&'static env::TimeEnv, Refusal> {
     if !cfg!(all(target_os = "linux", target_env = "gnu")) {
-        return Err(Refusal::new("glibc strftime/locale behaviour only validated on Linux/glibc"));
+        return Err(Refusal::with(
+            crate::accel::spec::Category::Platform,
+            "glibc strftime/locale behaviour only validated on Linux/glibc",
+        ));
     }
     let t = env::capture_time(cx)?;
     ustr::calibrate(cx.py());

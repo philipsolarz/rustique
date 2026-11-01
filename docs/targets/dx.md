@@ -327,7 +327,7 @@ twice (pluggy would raise "Plugin already registered under a different name");
 - `--rustique`: counters on, `enable()` in `pytest_configure` (before collection).
 - Terminal summary: `=== rustique ===` section with the report (`--rustique-report-limit`).
 - Session fails (exit 1, if it would otherwise pass) when a selected target is refused with
-  a category other than `version`/`build`/`jit` (accel-core's `refusal` field), unless
+  a category other than `version`/`build`/`jit`/`platform` (accel-core's `refusal` field), unless
   `--rustique-allow-refused NAMES|all`; or when check mode found a mismatch.
 - `--rustique-only` / `--rustique-exclude`; `--rustique-check` / `--rustique-check-raise`.
 - xdist: each worker enables Rustique (the option is forwarded) and returns its record via

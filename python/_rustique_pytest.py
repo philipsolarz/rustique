@@ -11,8 +11,8 @@ With ``--rustique`` the plugin enables Rustique (and its counters) before collec
 the code under test is accelerated from its first import; at the end it prints the
 per-target report (hits, fallbacks by reason, refusals) and **fails the session if a
 selected target was refused unexpectedly**: refused for another reason than "this
-interpreter is not one the target is validated for" (refusal category ``version``,
-``build`` or ``jit``), e.g. a fingerprint mismatch, a site patched by someone else, a failed
+interpreter or platform is not one the target is validated for" (refusal category
+``version``, ``build``, ``jit`` or ``platform``), e.g. a fingerprint mismatch, a site patched by someone else, a failed
 self-test. ``--rustique-allow-refused NAMES`` accepts those too. ``--rustique-check``
 turns check mode on (every fast path of a checkable target is compared with CPython's
 original); any mismatch fails the session. Under ``pytest-xdist`` each worker enables Rustique and the controller adds up
@@ -30,7 +30,7 @@ import pytest
 
 # Refusal categories (status()["targets"][i]["refusal"]) that only say "not validated for this
 # interpreter or configuration": expected on a test matrix, never fatal.
-EXPECTED_REFUSALS = ("version", "build", "jit")
+EXPECTED_REFUSALS = ("version", "build", "jit", "platform")
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

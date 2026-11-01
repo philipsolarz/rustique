@@ -133,6 +133,9 @@ pub enum Category {
     Build,
     /// The JIT is on and the target is not `jit_safe`.
     Jit,
+    /// Operating system or C library not validated (e.g. glibc-only behaviour on macOS,
+    /// musl or Windows; no runtime symbol lookup on Windows).
+    Platform,
     /// An original's fingerprint differs from the recorded one.
     Fingerprint,
     /// An object layout the kernel reads differs.
@@ -155,6 +158,7 @@ impl Category {
             Category::Version => "version",
             Category::Build => "build",
             Category::Jit => "jit",
+            Category::Platform => "platform",
             Category::Fingerprint => "fingerprint",
             Category::Layout => "layout",
             Category::Conflict => "conflict",

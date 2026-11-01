@@ -629,6 +629,12 @@ impl<'py> Prepare<'py> {
     /// The caller is responsible for the signature `F` (validate per minor version).
     pub fn symbol<F: FnPtr>(&mut self, name: &CStr, cell: &'static Original<F>) -> Result<F, Refusal> {
         let addr = dlsym_default(name);
+        if addr == 0 && !cfg!(unix) {
+            return Err(Refusal::with(
+                Category::Platform,
+                format!("symbol {}: no runtime symbol lookup on this platform", name.to_string_lossy()),
+            ));
+        }
         if addr == 0 {
             return Err(Refusal::with(
                 Category::Symbol,
