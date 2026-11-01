@@ -12,7 +12,7 @@
 //! - small exact-type helpers (ints, critical sections, keyword binding).
 
 use std::ffi::{CStr, c_int};
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering, Ordering::Relaxed};
 
 use pyo3::ffi;
 use pyo3::prelude::*;
@@ -102,11 +102,11 @@ impl Guard {
                 || (*f).func_kwdefaults != self.kwdefaults.load(Relaxed)
                 || !self.deps.ok()
             {
-                self.counters.fallback(Reason::Deps);
+                self.counters.fallback_streak(Reason::Deps);
                 return false;
             }
             if !accel::tools_quiet(&self.tools, func) {
-                self.counters.fallback(Reason::Tools);
+                self.counters.fallback_streak(Reason::Tools);
                 return false;
             }
             true
@@ -349,6 +349,98 @@ impl InstLayout {
             let dictp = obj.cast::<u8>().offset(self.dict_off.load(Relaxed)).cast::<O>();
             std::ptr::read_volatile(values.add(3)) == 1 && std::ptr::read_volatile(dictp).is_null()
         }
+    }
+}
+
+impl InstLayout {
+    /// Is `obj` free of instance attributes named like the names that were absent from
+    /// its type's shared keys `keys` when they had `nentries` entries (`keys == 0`: never)?
+    ///
+    /// # Safety
+    /// Live object whose type gave `keys` (via [`InstLayout::shared_keys`]).
+    #[inline(always)]
+    pub unsafe fn clean(&self, obj: O, keys: usize, nentries: usize) -> bool {
+        // SAFETY: per the caller.
+        unsafe {
+            keys != 0
+                && (*ffi::Py_TYPE(obj).cast::<ffi::PyHeapTypeObject>()).ht_cached_keys as usize == keys
+                && self.nentries(keys as *mut u8) == nentries
+                && self.inline_only(obj)
+        }
+    }
+}
+
+/// `tp_version_tag` (0: none assigned; changes whenever the type or a base is modified).
+///
+/// # Safety
+/// Live type.
+#[inline(always)]
+pub unsafe fn version_tag(tp: *mut ffi::PyTypeObject) -> u32 {
+    // SAFETY: a u32 field CPython updates atomically.
+    unsafe { std::ptr::read_volatile(&raw const (*tp).tp_version_tag) }
+}
+
+/// One-entry cache of a per-type classification `(info, shared keys, nentries)` keyed by
+/// (type, `tp_version_tag`): a seqlock (readers never block; a writer that loses a race
+/// does not cache).
+pub struct TypeCache {
+    seq: AtomicU64,
+    tp: AtomicUsize,
+    ver: AtomicU32,
+    info: AtomicU32,
+    keys: AtomicUsize,
+    nentries: AtomicUsize,
+}
+
+impl TypeCache {
+    pub const fn new() -> Self {
+        TypeCache {
+            seq: AtomicU64::new(0),
+            tp: AtomicUsize::new(0),
+            ver: AtomicU32::new(0),
+            info: AtomicU32::new(0),
+            keys: AtomicUsize::new(0),
+            nentries: AtomicUsize::new(0),
+        }
+    }
+
+    #[inline(always)]
+    pub fn get(&self, tp: usize, ver: u32) -> Option<(u32, usize, usize)> {
+        let s1 = self.seq.load(Ordering::Acquire);
+        if s1 & 1 != 0 {
+            return None;
+        }
+        let (t, v, info, keys, nentries) = (
+            self.tp.load(Relaxed),
+            self.ver.load(Relaxed),
+            self.info.load(Relaxed),
+            self.keys.load(Relaxed),
+            self.nentries.load(Relaxed),
+        );
+        std::sync::atomic::fence(Ordering::Acquire);
+        if self.seq.load(Relaxed) != s1 || t != tp || v != ver {
+            return None;
+        }
+        Some((info, keys, nentries))
+    }
+
+    pub fn put(&self, tp: usize, ver: u32, info: u32, keys: usize, nentries: usize) {
+        let s = self.seq.load(Relaxed);
+        if s & 1 != 0 || self.seq.compare_exchange(s, s + 1, Ordering::Acquire, Relaxed).is_err() {
+            return;
+        }
+        self.tp.store(tp, Relaxed);
+        self.ver.store(ver, Relaxed);
+        self.info.store(info, Relaxed);
+        self.keys.store(keys, Relaxed);
+        self.nentries.store(nentries, Relaxed);
+        self.seq.store(s + 2, Ordering::Release);
+    }
+}
+
+impl Default for TypeCache {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

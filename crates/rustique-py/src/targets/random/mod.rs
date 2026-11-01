@@ -30,7 +30,7 @@
 //! (CPython's `getrandbits`/`random` are `@critical_section`), together with the list for
 //! list arguments; nothing that can run Python code (or GC) happens inside it.
 
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use pyo3::ffi;
 use pyo3::prelude::*;
@@ -39,7 +39,7 @@ use rustique_core::random::{Mt, N};
 
 use crate::accel::{self, Prepare, Reason, Refusal, TargetSpec};
 use crate::targets::utils_kit::{
-    _PyType_Lookup, Guard, INST, O, bind, call_original, generic_getattro, int_value, interned, is_type, keep,
+    _PyType_Lookup, Guard, INST, O, TypeCache, version_tag, bind, call_original, generic_getattro, int_value, interned, is_type, keep,
     long_from_i128, nargs, pin_globals, prepare_symbols, unshadowed, with_cs, with_cs2,
 };
 
@@ -55,6 +55,9 @@ static RB_WITH: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
 static C_GETRANDBITS: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
 static C_RANDOM: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
 static ONE: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
+/// `random._floor` / `random._bisect` as pinned by `choices` (called on generic paths).
+static FLOOR: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
+static BISECT: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
 static SLOT_SQ_LENGTH: AtomicUsize = AtomicUsize::new(0);
 static SLOT_MP_LENGTH: AtomicUsize = AtomicUsize::new(0);
 static SLOT_SQ_ITEM: AtomicUsize = AtomicUsize::new(0);
@@ -140,73 +143,32 @@ enum Below {
 
 #[derive(Clone, Copy, Debug)]
 struct Class {
+    /// `None`: the class has no `_randbelow` (CPython raises: fall back).
     below: Option<Below>,
     random_native: bool,
+    random_present: bool,
     /// Shared keys of the type when they lacked our three names at `nentries` entries.
     keys: usize,
     nentries: usize,
 }
 
-/// One-entry cache of [`Class`] by (type, `tp_version_tag`), a seqlock (readers never
-/// block; a writer that loses a race just does not cache).
-struct TypeCache {
-    seq: AtomicU64,
-    tp: AtomicUsize,
-    ver: AtomicU32,
-    info: AtomicU32,
-    keys: AtomicUsize,
-    nentries: AtomicUsize,
-}
+static CACHE: TypeCache = TypeCache::new();
 
-static CACHE: TypeCache = TypeCache {
-    seq: AtomicU64::new(0),
-    tp: AtomicUsize::new(0),
-    ver: AtomicU32::new(0),
-    info: AtomicU32::new(0),
-    keys: AtomicUsize::new(0),
-    nentries: AtomicUsize::new(0),
-};
-
-impl TypeCache {
-    #[inline(always)]
-    fn get(&self, tp: usize, ver: u32) -> Option<Class> {
-        let s1 = self.seq.load(Ordering::Acquire);
-        if s1 & 1 != 0 {
-            return None;
-        }
-        let (t, v, info, keys, nentries) =
-            (self.tp.load(R), self.ver.load(R), self.info.load(R), self.keys.load(R), self.nentries.load(R));
-        std::sync::atomic::fence(Ordering::Acquire);
-        if self.seq.load(R) != s1 || t != tp || v != ver {
-            return None;
-        }
+impl Class {
+    fn pack(&self) -> u32 {
+        self.below.map_or(0, |b| b as u32)
+            | if self.random_native { 0x100 } else { 0 }
+            | if self.random_present { 0x200 } else { 0 }
+    }
+    fn unpack(info: u32, keys: usize, nentries: usize) -> Class {
         let below = match info & 0xff {
             1 => Some(Below::Native),
             2 => Some(Below::GenericBits),
             3 => Some(Below::Call),
             _ => None,
         };
-        Some(Class { below, random_native: info & 0x100 != 0, keys, nentries })
+        Class { below, random_native: info & 0x100 != 0, random_present: info & 0x200 != 0, keys, nentries }
     }
-
-    fn put(&self, tp: usize, ver: u32, c: &Class) {
-        let s = self.seq.load(R);
-        if s & 1 != 0 || self.seq.compare_exchange(s, s + 1, Ordering::Acquire, R).is_err() {
-            return;
-        }
-        self.tp.store(tp, R);
-        self.ver.store(ver, R);
-        self.info.store(c.below.map_or(0, |b| b as u32) | if c.random_native { 0x100 } else { 0 }, R);
-        self.keys.store(c.keys, R);
-        self.nentries.store(c.nentries, R);
-        self.seq.store(s + 2, Ordering::Release);
-    }
-}
-
-#[inline(always)]
-unsafe fn version_tag(tp: *mut ffi::PyTypeObject) -> u32 {
-    // SAFETY: live type; a plain u32 field CPython updates atomically.
-    unsafe { std::ptr::read_volatile(&raw const (*tp).tp_version_tag) }
 }
 
 /// Classify `tp` (pure: MRO dict lookups). `None` when attribute lookup is not the generic
@@ -217,9 +179,9 @@ unsafe fn class_of(tp: *mut ffi::PyTypeObject) -> Option<Class> {
     unsafe {
         let ver = version_tag(tp);
         if ver != 0
-            && let Some(c) = CACHE.get(tp as usize, ver)
+            && let Some((info, keys, nentries)) = CACHE.get(tp as usize, ver)
         {
-            return Some(c);
+            return Some(Class::unpack(info, keys, nentries));
         }
         if !generic_getattro(tp) {
             return None;
@@ -231,22 +193,15 @@ unsafe fn class_of(tp: *mut ffi::PyTypeObject) -> Option<Class> {
         let gb = _PyType_Lookup(tp, ld(&S.getrandbits));
         let rr = _PyType_Lookup(tp, ld(&S.random));
         let sub = ffi::PyType_IsSubtype(tp, ld(&RND_BASE).cast()) != 0;
-        let is_fn = |o: O| !o.is_null() && is_type(o, &raw mut ffi::PyFunction_Type);
-        let below = if rb == ld(&RB_WITH) {
-            if gb == ld(&C_GETRANDBITS) && sub {
-                Some(Below::Native)
-            } else if is_fn(gb) {
-                Some(Below::GenericBits)
-            } else {
-                None
-            }
-        } else if is_fn(rb) {
-            Some(Below::Call)
-        } else {
+        let below = if rb.is_null() {
             None
+        } else if rb == ld(&RB_WITH) {
+            Some(if gb == ld(&C_GETRANDBITS) && sub { Below::Native } else { Below::GenericBits })
+        } else {
+            Some(Below::Call)
         };
         let random_native = rr == ld(&C_RANDOM) && sub;
-        let mut c = Class { below, random_native, keys: 0, nentries: 0 };
+        let mut c = Class { below, random_native, random_present: !rr.is_null(), keys: 0, nentries: 0 };
         let keys = INST.shared_keys(tp);
         if !keys.is_null() {
             let n = INST.nentries(keys);
@@ -259,7 +214,7 @@ unsafe fn class_of(tp: *mut ffi::PyTypeObject) -> Option<Class> {
             }
         }
         if v0 != 0 && version_tag(tp) == v0 {
-            CACHE.put(tp as usize, v0, &c);
+            CACHE.put(tp as usize, v0, c.pack(), c.keys, c.nentries);
         }
         Some(c)
     }
@@ -271,49 +226,55 @@ unsafe fn class_of(tp: *mut ffi::PyTypeObject) -> Option<Class> {
 unsafe fn instance_clean(slf: O, c: &Class) -> bool {
     // SAFETY: live object; `c` classified its type.
     unsafe {
-        c.keys != 0
-            && (*ffi::Py_TYPE(slf).cast::<ffi::PyHeapTypeObject>()).ht_cached_keys as usize == c.keys
-            && INST.nentries(c.keys as *mut u8) == c.nentries
-            && INST.inline_only(slf)
+        INST.clean(slf, c.keys, c.nentries)
     }
 }
 
-/// How `self._randbelow(n)` runs, decided without side effects; `None`: fall back.
+/// Does the instance have `name` in its `__dict__` (where the class attribute is
+/// `class_attr`, a function or method descriptor)? Exact and pure.
 #[inline]
-unsafe fn below_mode(slf: O, allow_generic: bool) -> Option<Below> {
+unsafe fn inst_has(slf: O, name: O, class_attr: O) -> bool {
+    // SAFETY: attached thread.
+    unsafe {
+        match INST.has_attr(slf, name) {
+            Some(b) => b,
+            None => !unshadowed(slf, name, class_attr),
+        }
+    }
+}
+
+/// How `self._randbelow(n)` runs, decided without side effects; `None`: fall back
+/// (`self` has no `_randbelow`, or attribute lookup runs Python code).
+#[inline]
+unsafe fn below_mode(slf: O) -> Option<Below> {
     // SAFETY: attached thread; pure lookups.
     unsafe {
-        let tp = ffi::Py_TYPE(slf);
-        let c = class_of(tp)?;
+        let c = class_of(ffi::Py_TYPE(slf))?;
         let b = c.below?;
-        if !allow_generic && b != Below::Native {
-            return None;
-        }
-        if instance_clean(slf, &c) {
+        if b == Below::Call || instance_clean(slf, &c) {
             return Some(b);
         }
-        let ok = match b {
-            Below::Native => {
-                unshadowed(slf, ld(&S.randbelow), ld(&RB_WITH))
-                    && unshadowed(slf, ld(&S.getrandbits), ld(&C_GETRANDBITS))
-            }
-            Below::GenericBits => {
-                unshadowed(slf, ld(&S.randbelow), ld(&RB_WITH))
-                    && unshadowed(slf, ld(&S.getrandbits), _PyType_Lookup(tp, ld(&S.getrandbits)))
-            }
-            Below::Call => unshadowed(slf, ld(&S.randbelow), _PyType_Lookup(tp, ld(&S.randbelow))),
-        };
-        ok.then_some(b)
+        if inst_has(slf, ld(&S.randbelow), ld(&RB_WITH)) {
+            return Some(Below::Call);
+        }
+        if b == Below::Native && inst_has(slf, ld(&S.getrandbits), ld(&C_GETRANDBITS)) {
+            return Some(Below::GenericBits);
+        }
+        Some(b)
     }
 }
 
-/// Is `self.random` the C `random()` of `_random.Random`?
+/// Is `self.random` the C `random()` of `_random.Random` (`Some(true)`), something else
+/// (`Some(false)`: call it), or absent / not decidable without running code (`None`)?
 #[inline]
-unsafe fn native_random(slf: O) -> bool {
+unsafe fn random_mode(slf: O) -> Option<bool> {
     // SAFETY: as `below_mode`.
     unsafe {
-        let Some(c) = class_of(ffi::Py_TYPE(slf)) else { return false };
-        c.random_native && (instance_clean(slf, &c) || unshadowed(slf, ld(&S.random), ld(&C_RANDOM)))
+        let c = class_of(ffi::Py_TYPE(slf))?;
+        if !c.random_present {
+            return None;
+        }
+        Some(c.random_native && (instance_clean(slf, &c) || !inst_has(slf, ld(&S.random), ld(&C_RANDOM))))
     }
 }
 
@@ -459,7 +420,7 @@ static G_CHOICES: Guard = Guard::new();
 unsafe fn ranged(slf: O, start: Option<(O, i128)>, mult: Option<(O, i128)>, n: u128) -> Option<O> {
     // SAFETY: attached thread.
     unsafe {
-        let mode = below_mode(slf, true)?;
+        let mode = below_mode(slf)?;
         if mode == Below::Native {
             let r = with_cs(slf, || mt(slf).randbelow128(n));
             let s = start.map_or(0, |(_, v)| v);
@@ -518,11 +479,11 @@ unsafe extern "C" fn vc_randint(func: O, args: *const O, nargsf: usize, kw: O) -
                 return call_original(func, args, nargsf, kw);
             }
             if let Some(r) = ranged(slf, Some((ao, a)), None, (b - a + 1) as u128) {
-                g.counters.hit();
+                g.counters.hit_streak();
                 return r;
             }
         }
-        g.counters.fallback(Reason::Args);
+        g.counters.fallback_streak(Reason::Args);
         call_original(func, args, nargsf, kw)
     }
 }
@@ -572,12 +533,12 @@ unsafe extern "C" fn vc_randrange(func: O, args: *const O, nargsf: usize, kw: O)
                     return call_original(func, args, nargsf, kw);
                 }
                 if let Some(r) = ranged(slf, base, mult, cnt) {
-                    g.counters.hit();
+                    g.counters.hit_streak();
                     return r;
                 }
             }
         }
-        g.counters.fallback(Reason::Args);
+        g.counters.fallback_streak(Reason::Args);
         call_original(func, args, nargsf, kw)
     }
 }
@@ -703,14 +664,14 @@ unsafe fn choice(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
             Some((slf, seq, kind))
         })();
         let Some((slf, seq, kind)) = parsed else {
-            g.counters.fallback(Reason::Args);
+            g.counters.fallback_streak(Reason::Args);
             return None;
         };
         if !g.ready(func) {
             return None;
         }
-        let Some(mode) = below_mode(slf, true) else {
-            g.counters.fallback(Reason::Args);
+        let Some(mode) = below_mode(slf) else {
+            g.counters.fallback_streak(Reason::Args);
             return None;
         };
         if mode == Below::Native && kind != Seq::CSeq {
@@ -723,18 +684,18 @@ unsafe fn choice(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
                 Some(seq_item(seq, kind, i))
             });
             if r.is_none() {
-                g.counters.fallback(Reason::Args);
+                g.counters.fallback_streak(Reason::Args);
             } else {
-                g.counters.hit();
+                g.counters.hit_streak();
             }
             return r;
         }
         // `if not len(seq): raise IndexError(...)`; `return seq[self._randbelow(len(seq))]`
         let Some(n) = seq_len(seq, kind).filter(|n| *n > 0) else {
-            g.counters.fallback(Reason::Args);
+            g.counters.fallback_streak(Reason::Args);
             return None;
         };
-        g.counters.hit();
+        g.counters.hit_streak();
         let n2 = if kind == Seq::CSeq {
             // The second `len(seq)`: CPython calls it, so do we.
             let m = ffi::PyObject_Size(seq);
@@ -774,7 +735,66 @@ unsafe fn choice(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
     }
 }
 
-/// `Random.shuffle(self, x)` for an exact list and CPython's own generator.
+/// `randbelow = self._randbelow` as used by `shuffle`/`sample` (looked up once).
+enum RbFn {
+    /// `_randbelow_with_getrandbits` + C `getrandbits`.
+    Native,
+    /// `_randbelow_with_getrandbits` + another `getrandbits`: the body inlined.
+    Inline,
+    /// Anything else: the bound attribute, called (owned reference).
+    Bound(O),
+}
+
+impl RbFn {
+    /// From `below_mode`; `Bound` does the `self._randbelow` lookup (NULL: error set).
+    unsafe fn new(slf: O, mode: Below) -> Result<RbFn, ()> {
+        // SAFETY: attached thread.
+        unsafe {
+            Ok(match mode {
+                Below::Native => RbFn::Native,
+                Below::GenericBits => RbFn::Inline,
+                Below::Call => {
+                    let b = ffi::PyObject_GetAttr(slf, ld(&S.randbelow));
+                    if b.is_null() {
+                        return Err(());
+                    }
+                    RbFn::Bound(b)
+                }
+            })
+        }
+    }
+
+    /// `randbelow(n)` → a new reference (an int for `Native`), NULL with an error.
+    unsafe fn call(&self, slf: O, n: usize) -> O {
+        // SAFETY: attached thread.
+        unsafe {
+            if let RbFn::Native = self {
+                return ffi::PyLong_FromUnsignedLongLong(with_cs(slf, || mt(slf).randbelow(n as u64)));
+            }
+            let nobj = ffi::PyLong_FromSize_t(n);
+            if nobj.is_null() {
+                return nobj;
+            }
+            let r = match self {
+                RbFn::Bound(b) => ffi::PyObject_CallOneArg(*b, nobj),
+                _ => randbelow_obj(slf, nobj, bit_length(n as u128), Below::GenericBits),
+            };
+            ffi::Py_DECREF(nobj);
+            r
+        }
+    }
+}
+
+impl Drop for RbFn {
+    fn drop(&mut self) {
+        if let RbFn::Bound(b) = *self {
+            // SAFETY: our reference (attached thread: kernels run attached).
+            unsafe { ffi::Py_DECREF(b) };
+        }
+    }
+}
+
+/// `Random.shuffle(self, x)` for an exact list.
 unsafe extern "C" fn vc_shuffle(func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments.
     unsafe {
@@ -787,23 +807,54 @@ unsafe extern "C" fn vc_shuffle(func: O, args: *const O, nargsf: usize, kw: O) -
             if !g.ready(func) {
                 return call_original(func, args, nargsf, kw);
             }
-            if below_mode(slf, false) == Some(Below::Native) {
-                with_cs2(slf, x, || {
-                    let n = ffi::PyList_GET_SIZE(x) as usize;
-                    let items = (*x.cast::<ffi::PyListObject>()).ob_item;
-                    mt(slf).shuffle_swaps(n, |i, j| {
-                        let (pi, pj) = (items.add(i), items.add(j));
-                        let (a, b) = (*pi, *pj);
-                        store_item(pi, b);
-                        store_item(pj, a);
+            if let Some(mode) = below_mode(slf) {
+                g.counters.hit_streak();
+                if mode == Below::Native {
+                    with_cs2(slf, x, || {
+                        let n = ffi::PyList_GET_SIZE(x) as usize;
+                        let items = (*x.cast::<ffi::PyListObject>()).ob_item;
+                        mt(slf).shuffle_swaps(n, |i, j| {
+                            let (pi, pj) = (items.add(i), items.add(j));
+                            let (a, b) = (*pi, *pj);
+                            store_item(pi, b);
+                            store_item(pj, a);
+                        });
                     });
-                });
-                g.counters.hit();
-                return ffi::Py_NewRef(ffi::Py_None());
+                    return ffi::Py_NewRef(ffi::Py_None());
+                }
+                return shuffle_generic(slf, x, mode);
             }
         }
-        g.counters.fallback(Reason::Args);
+        g.counters.fallback_streak(Reason::Args);
         call_original(func, args, nargsf, kw)
+    }
+}
+
+/// `randbelow = self._randbelow; for i in reversed(range(1, len(x))): j = randbelow(i + 1);
+/// x[i], x[j] = x[j], x[i]` with the generic protocol (`j` is whatever `randbelow` returns).
+unsafe fn shuffle_generic(slf: O, x: O, mode: Below) -> O {
+    // SAFETY: attached thread; owned references handled explicitly.
+    unsafe {
+        let Ok(rb) = RbFn::new(slf, mode) else { return std::ptr::null_mut() };
+        let n = ffi::PyList_GET_SIZE(x) as usize;
+        for i in (1..n).rev() {
+            let j = rb.call(slf, i + 1);
+            if j.is_null() {
+                return j;
+            }
+            let io = ffi::PyLong_FromSize_t(i);
+            let xj = if io.is_null() { io } else { ffi::PyObject_GetItem(x, j) };
+            let xi = if xj.is_null() { xj } else { ffi::PyObject_GetItem(x, io) };
+            let ok = !xi.is_null() && ffi::PyObject_SetItem(x, io, xj) == 0 && ffi::PyObject_SetItem(x, j, xi) == 0;
+            ffi::Py_XDECREF(xi);
+            ffi::Py_XDECREF(xj);
+            ffi::Py_XDECREF(io);
+            ffi::Py_DECREF(j);
+            if !ok {
+                return std::ptr::null_mut();
+            }
+        }
+        ffi::Py_NewRef(ffi::Py_None())
     }
 }
 
@@ -865,18 +916,23 @@ unsafe fn sample(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
             }
             let kind = seq_kind(pop)?;
             let k = int_value(k_obj)?;
-            (0..1 << 40).contains(&k).then_some((slf, pop, kind, k as usize))
+            let n = seq_len(pop, kind)?; // pure; re-read under the lock below
+            (0..=n as i64).contains(&k).then_some((slf, pop, kind, k as usize))
         })();
         let Some((slf, pop, kind, k)) = parsed else {
-            g.counters.fallback(Reason::Args);
+            g.counters.fallback_streak(Reason::Args);
             return None;
         };
         if !g.ready(func) {
             return None;
         }
-        if below_mode(slf, false) != Some(Below::Native) {
-            g.counters.fallback(Reason::Args);
+        let Some(mode) = below_mode(slf) else {
+            g.counters.fallback_streak(Reason::Args);
             return None;
+        };
+        if mode != Below::Native {
+            g.counters.hit_streak();
+            return Some(sample_generic(slf, pop, k, mode));
         }
         // Allocate first: nothing after this can run Python code (no GC-tracked allocation).
         let out = ffi::PyList_New(k as ffi::Py_ssize_t);
@@ -887,12 +943,100 @@ unsafe fn sample(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
         let ok = with_cs2(slf, lock_of(pop, kind), || {
             let n = seq_len(pop, kind)?;
             if k > n {
-                return None; // ValueError
+                return None; // ValueError (the list shrank on another thread)
             }
             let idx = mt(slf).sample_indices(n, k);
             Some(fill(out, pop, kind, idx))
         });
         finish_list(g, out, ok)
+    }
+}
+
+/// `Random.sample` with a Python `_randbelow`/`getrandbits`: CPython's loops, with the
+/// generic protocol on whatever `randbelow` returns (`0 <= k <= len(pop)` checked).
+unsafe fn sample_generic(slf: O, pop: O, k: usize, mode: Below) -> O {
+    // SAFETY: attached thread; owned references handled explicitly.
+    unsafe {
+        let n = ffi::PyObject_Size(pop);
+        if n < 0 {
+            return std::ptr::null_mut();
+        }
+        let n = n as usize;
+        let Ok(rb) = RbFn::new(slf, mode) else { return std::ptr::null_mut() };
+        let result = ffi::PyList_New(k as ffi::Py_ssize_t);
+        if result.is_null() {
+            return result;
+        }
+        for i in 0..k {
+            ffi::PyList_SET_ITEM(result, i as ffi::Py_ssize_t, ffi::Py_NewRef(ffi::Py_None()));
+        }
+        let fail = |extra: O| {
+            ffi::Py_XDECREF(extra);
+            ffi::Py_DECREF(result);
+            std::ptr::null_mut()
+        };
+        if rustique_core::random::sample_uses_pool(n, k) {
+            let pool = ffi::PySequence_List(pop);
+            if pool.is_null() {
+                return fail(std::ptr::null_mut());
+            }
+            for i in 0..k {
+                let j = rb.call(slf, n - i);
+                if j.is_null() {
+                    return fail(pool);
+                }
+                let item = ffi::PyObject_GetItem(pool, j);
+                let ok = !item.is_null() && {
+                    let old = ffi::PyList_GET_ITEM(result, i as ffi::Py_ssize_t);
+                    ffi::PyList_SET_ITEM(result, i as ffi::Py_ssize_t, item);
+                    ffi::Py_DECREF(old);
+                    // pool[j] = pool[n - i - 1]
+                    let last = ffi::PyList_GetItemRef(pool, (n - i - 1) as ffi::Py_ssize_t);
+                    let r = !last.is_null() && ffi::PyObject_SetItem(pool, j, last) == 0;
+                    ffi::Py_XDECREF(last);
+                    r
+                };
+                ffi::Py_DECREF(j);
+                if !ok {
+                    return fail(pool);
+                }
+            }
+            ffi::Py_DECREF(pool);
+        } else {
+            let selected = ffi::PySet_New(std::ptr::null_mut());
+            if selected.is_null() {
+                return fail(std::ptr::null_mut());
+            }
+            for i in 0..k {
+                let mut j = rb.call(slf, n);
+                loop {
+                    if j.is_null() {
+                        return fail(selected);
+                    }
+                    match ffi::PySet_Contains(selected, j) {
+                        0 => break,
+                        1 => {
+                            ffi::Py_DECREF(j);
+                            j = rb.call(slf, n);
+                        }
+                        _ => {
+                            ffi::Py_DECREF(j);
+                            return fail(selected);
+                        }
+                    }
+                }
+                let item = if ffi::PySet_Add(selected, j) < 0 { std::ptr::null_mut() } else { ffi::PyObject_GetItem(pop, j) };
+                ffi::Py_DECREF(j);
+                if item.is_null() {
+                    return fail(selected);
+                }
+                let old = ffi::PyList_GET_ITEM(result, i as ffi::Py_ssize_t);
+                ffi::PyList_SET_ITEM(result, i as ffi::Py_ssize_t, item);
+                ffi::Py_DECREF(old);
+            }
+            ffi::Py_DECREF(selected);
+        }
+        result
     }
 }
 
@@ -904,11 +1048,11 @@ unsafe fn finish_list(g: &Guard, out: O, ok: Option<bool>) -> Option<O> {
         match ok {
             None => {
                 ffi::Py_DECREF(out);
-                g.counters.fallback(Reason::Args);
+                g.counters.fallback_streak(Reason::Args);
                 None
             }
             Some(true) => {
-                g.counters.hit();
+                g.counters.hit_streak();
                 Some(out)
             }
             Some(false) => {
@@ -1061,7 +1205,14 @@ unsafe fn choices(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
                 return None;
             }
             let kind = seq_kind(pop)?;
+            let n = seq_len(pop, kind)?;
+            if n == 0 || n as u64 >= 1 << 53 {
+                return None; // IndexError (or out of the exact range)
+            }
             let cum = cumulative(weights, cum_weights)?;
+            if cum.as_ref().is_some_and(|c| c.len() != n) {
+                return None; // ValueError
+            }
             if let Some(c) = &cum {
                 // ValueError: total <= 0 or not finite (also: empty -> IndexError).
                 let total = c.last().copied().unwrap_or(f64::NAN) + 0.0;
@@ -1072,15 +1223,19 @@ unsafe fn choices(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
             Some((slf, pop, kind, k, cum))
         })();
         let Some((slf, pop, kind, k, cum)) = parsed else {
-            g.counters.fallback(Reason::Args);
+            g.counters.fallback_streak(Reason::Args);
             return None;
         };
         if !g.ready(func) {
             return None;
         }
-        if !native_random(slf) {
-            g.counters.fallback(Reason::Args);
+        let Some(native) = random_mode(slf) else {
+            g.counters.fallback_streak(Reason::Args);
             return None;
+        };
+        if !native {
+            g.counters.hit_streak();
+            return Some(choices_generic(slf, pop, kind, k, weights_of(args, nargsf, kw), cum.as_deref()));
         }
         let kk = k.max(0) as usize;
         let out = ffi::PyList_New(kk as ffi::Py_ssize_t);
@@ -1110,6 +1265,144 @@ unsafe fn choices(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
             }
         });
         finish_list(g, out, ok)
+    }
+}
+
+/// The `weights` / `cum_weights` argument objects of a `choices` call.
+unsafe fn weights_of(args: *const O, nargsf: usize, kw: O) -> (O, O) {
+    // SAFETY: already bound successfully once.
+    unsafe {
+        let names = [std::ptr::null_mut(), ld(&S.population), ld(&S.weights), ld(&S.cum_weights), ld(&S.k)];
+        let [_, _, w, cw, _] = bind(args, nargs(nargsf), kw, names).unwrap_or_default();
+        (w, cw)
+    }
+}
+
+/// `choices` with a Python `random()`: CPython's comprehension with the generic protocol
+/// (`random = self.random` looked up once, `_floor`/`_bisect` called when `random()` does
+/// not return an exact float). Arguments were validated by the caller (`n > 0`, weights
+/// exact and consistent); `cum` holds the cumulative weights as exact floats.
+unsafe fn choices_generic(slf: O, pop: O, kind: Seq, k: i64, (w, cw): (O, O), cum: Option<&[f64]>) -> O {
+    // SAFETY: attached thread; owned references handled explicitly.
+    unsafe {
+        let random = ffi::PyObject_GetAttr(slf, ld(&S.random));
+        if random.is_null() {
+            return random;
+        }
+        let Some(n) = seq_len(pop, kind).filter(|n| *n > 0) else {
+            // Unreachable (checked by the caller); keep CPython's error.
+            ffi::Py_DECREF(random);
+            return ffi::PySequence_GetItem(pop, 0);
+        };
+        // The cumulative list CPython builds (for `_bisect` on non-float draws), lazily.
+        let mut cum_list: O = std::ptr::null_mut();
+        let total = cum.map(|c| c[n - 1] + 0.0);
+        let kk = k.max(0) as usize;
+        let out = ffi::PyList_New(kk as ffi::Py_ssize_t);
+        let mut err = out.is_null();
+        let nf = n as f64;
+        for i in 0..kk {
+            if err {
+                break;
+            }
+            let r = ffi::PyObject_CallNoArgs(random);
+            if r.is_null() {
+                err = true;
+                break;
+            }
+            let exact = is_type(r, &raw mut ffi::PyFloat_Type);
+            let idx: O = match (total, exact) {
+                (None, true) => {
+                    let x = (ffi::PyFloat_AS_DOUBLE(r) * nf).floor();
+                    ffi::PyLong_FromDouble(x)
+                }
+                (None, false) => {
+                    let nfo = ffi::PyFloat_FromDouble(nf);
+                    let p = if nfo.is_null() { nfo } else { ffi::PyNumber_Multiply(r, nfo) };
+                    ffi::Py_XDECREF(nfo);
+                    let v = if p.is_null() { p } else { ffi::PyObject_CallOneArg(ld(&FLOOR), p) };
+                    ffi::Py_XDECREF(p);
+                    v
+                }
+                (Some(t), true) => {
+                    let c = cum.unwrap_or(&[]);
+                    ffi::PyLong_FromSize_t(bisect_right(c, ffi::PyFloat_AS_DOUBLE(r) * t, n - 1))
+                }
+                (Some(t), false) => {
+                    if cum_list.is_null() {
+                        cum_list = cum_objects(w, cw);
+                    }
+                    let to = ffi::PyFloat_FromDouble(t);
+                    let x = if to.is_null() || cum_list.is_null() { std::ptr::null_mut() } else { ffi::PyNumber_Multiply(r, to) };
+                    ffi::Py_XDECREF(to);
+                    let v = if x.is_null() {
+                        x
+                    } else {
+                        let lo = ffi::PyLong_FromLong(0);
+                        let hi = ffi::PyLong_FromSize_t(n - 1);
+                        let mut buf = [std::ptr::null_mut(), cum_list, x, lo, hi];
+                        let v = if lo.is_null() || hi.is_null() {
+                            std::ptr::null_mut()
+                        } else {
+                            ffi::PyObject_Vectorcall(
+                                ld(&BISECT),
+                                buf.as_mut_ptr().add(1),
+                                4 | ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
+                                std::ptr::null_mut(),
+                            )
+                        };
+                        ffi::Py_XDECREF(lo);
+                        ffi::Py_XDECREF(hi);
+                        ffi::Py_DECREF(x);
+                        v
+                    };
+                    v
+                }
+            };
+            ffi::Py_DECREF(r);
+            let item = if idx.is_null() { idx } else { ffi::PyObject_GetItem(pop, idx) };
+            ffi::Py_XDECREF(idx);
+            if item.is_null() {
+                err = true;
+                break;
+            }
+            ffi::PyList_SET_ITEM(out, i as ffi::Py_ssize_t, item);
+        }
+        ffi::Py_XDECREF(cum_list);
+        ffi::Py_DECREF(random);
+        if err {
+            ffi::Py_XDECREF(out);
+            return std::ptr::null_mut();
+        }
+        out
+    }
+}
+
+/// The list `choices` bisects: `list(_accumulate(weights))` (the first element is the
+/// weight object itself, the rest new sums) or `cum_weights` itself.
+unsafe fn cum_objects(w: O, cw: O) -> O {
+    // SAFETY: exact list/tuple of exact ints/floats (validated by the caller).
+    unsafe {
+        let none = ffi::Py_None();
+        if !(cw.is_null() || cw == none) {
+            return ffi::Py_NewRef(cw);
+        }
+        let seq = ffi::PySequence_List(w);
+        if seq.is_null() {
+            return seq;
+        }
+        let n = ffi::PyList_GET_SIZE(seq);
+        for i in 1..n {
+            let prev = ffi::PyList_GET_ITEM(seq, i - 1);
+            let cur = ffi::PyList_GET_ITEM(seq, i);
+            let s = ffi::PyNumber_Add(prev, cur);
+            if s.is_null() {
+                ffi::Py_DECREF(seq);
+                return s;
+            }
+            ffi::PyList_SetItem(seq, i, s);
+        }
+        seq
     }
 }
 
@@ -1149,6 +1442,8 @@ fn prepare_common<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<Bound<'
     keep(&C_GETRANDBITS, &c_getrandbits);
     keep(&C_RANDOM, &c_random);
     keep(&ONE, &one);
+    keep(&FLOOR, &cx.module_attr("_floor")?);
+    keep(&BISECT, &cx.module_attr("_bisect")?);
     for (slot, s) in [
         (&S.randbelow, "_randbelow"),
         (&S.getrandbits, "getrandbits"),

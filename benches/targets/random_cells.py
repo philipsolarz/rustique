@@ -29,6 +29,8 @@ class OwnBits(random.Random):
     def getrandbits(self, k):
         return super().getrandbits(k)
 own_bits = OwnBits(9)
+FW = [Fraction(1)] * 6
+LD = collections.UserList(L6)
 """
 
 INSTALL = """
@@ -56,19 +58,23 @@ CELLS = {
     # generic paths / fallbacks
     "own.randint(1, 6) [random() overridden]": "own.randint(1, 6)",
     "own.choice(L6) [random() overridden]": "own.choice(L6)",
-    "sysr.randint(1, 6) [SystemRandom]": "sysr.randint(1, 6)",
-    "secrets.choice(L6) [SystemRandom]": "secrets.choice(L6)",
-    "secrets.randbelow(100)": "secrets.randbelow(100)",
-    "rng.randint(True, 6) [bool: fallback]": "rng.randint(True, 6)",
-    "rng.randint(1, 2**70) [big: fallback]": "rng.randint(1, 1180591620717411303424)",
+    "own_bits.randint(1, 6) [Python getrandbits]": "own_bits.randint(1, 6)",
+    "own_bits.choice(L6) [Python getrandbits]": "own_bits.choice(L6)",
+    "own_bits.shuffle(L6) [Python getrandbits]": "own_bits.shuffle(L6)",
+    "own_bits.choices(L6) [Python getrandbits]": "own_bits.choices(L6)",
+    "own.choices(L6) [Python random]": "own.choices(L6)",
+    "own.sample(L100, 2) [Python random]": "own.sample(L100, 2)",
+    "rng.randint(True, 6) [bool]": "rng.randint(True, 6)",
+    "rng.randint(1, 2**70) [big]": "rng.randint(1, 1180591620717411303424)",
     "rng.choice('abcdef') [str]": "rng.choice('abcdef')",
     "rng.choice(range(10))": "rng.choice(range(10))",
     "rng.randint(a=1, b=6) [kwargs]": "rng.randint(a=1, b=6)",
     "rng.randint(0, 2**64)": "rng.randint(0, 18446744073709551616)",
     "rng.choice(deque6) [C sequence]": "rng.choice(deque6)",
     "shadow.choice(L6) [instance attr shadows getrandbits]": "shadow.choice(L6)",
-    "rng.sample(L6, 2) [subclass with getrandbits: fallback]": "own_bits.sample(L6, 2)",
-    "rng.choices(L6, k=3) [Fraction weights: fallback]": "rng.choices(L6, [Fraction(1)]*6, k=3)",
+    "own_bits.sample(L6, 2) [Python getrandbits]": "own_bits.sample(L6, 2)",
+    "rng.choices(L6, k=3) [Fraction weights: fallback]": "rng.choices(L6, FW, k=3)",
+    "rng.choice(UserList) [Python sequence: fallback]": "rng.choice(LD)",
     "rng.sample(L6, k=2, counts=[1]*6) [fallback]": "rng.sample(L6, k=2, counts=[1, 1, 1, 1, 1, 1])",
     "rng.choices(L6, cum_weights=[1,2,3,4,5,6])": "rng.choices(L6, cum_weights=[1, 2, 3, 4, 5, 6])",
 }

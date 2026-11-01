@@ -16,6 +16,7 @@ pub mod pyfmt;
 pub mod pyhash;
 pub mod random;
 pub mod slice;
+pub mod textwrap;
 
 pub use column::{Column, ColumnError, Element, Value};
 pub use compact_str::CompactString;
