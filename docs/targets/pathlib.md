@@ -11,6 +11,8 @@ builders shared with `posixpath`, `rt.rs`). Tests: `tests/targets/test_pathlib.p
 
 | target | reached through | exact subset |
 |---|---|---|
+| `pathlib.PurePath.__new__`, `pathlib.Path.__new__` | `PurePosixPath(...)`, `Path(...)` (`slot_tp_new`: fallback +3 Ir) | `cls` is `PurePath`/`Path` (→ the POSIX class: `os.name` pinned to 'posix') or exactly `PurePosixPath`/`PosixPath`; no keywords |
+| `pathlib.PurePath.__init__` | the same calls (`slot_tp_init`) | receiver of those classes; arguments exact str or exact POSIX paths (their `_raw_paths` are extended, as `isinstance(arg, PurePath)` with the same parser does) |
 | `pathlib.PurePath.__str__` (3.15: also `__fspath__`, `__vfspath__`, the same function) | `str(p)`, f-strings, `os.fspath(p)` (slot / C callers: fallback +3 Ir) | receiver exactly `PurePosixPath` or `PosixPath` |
 | `pathlib.PurePath.__truediv__` | `p / x` (slot) | key an exact `str` or an exact path of those two classes |
 | `pathlib.PurePath.__eq__`, `__hash__` | `==`, `hash()`, dict/set (slots) | both operands of those classes |
@@ -31,9 +33,9 @@ under the object's critical section on free-threaded builds):
   the tail is `[x for x in rel.split('/') if x and x != '.']`);
 - `_str` (`_format_parsed_parts(...) or '.'`), `_str_normcase_cached` (the `_str` object
   itself on POSIX), `_hash` (`hash(_str_normcase)`);
-- new objects (`p / x`, `parent`, `relative_to`) are created as `type(self)(...)` creates
-  them (`object.__new__(cls)`, then the slots `__init__` / `_from_parsed_parts` /
-  `_from_parsed_string` set): `_raw_paths` (which `pickle`/`copy` expose through
+- new objects (`Path(...)`, `p / x`, `parent`, `relative_to`) are created as
+  `type(self)(...)` creates them (`object.__new__(cls)`, then the slots `__init__` /
+  `_from_parsed_parts` / `_from_parsed_string` set): `_raw_paths` (which `pickle`/`copy` expose through
   `__reduce__`), and for derived paths `_str`, `_drv`, `_root`, `_tail_cached`.
 
 Object sharing is reproduced where CPython shares: `_str` is the single tail item of a
@@ -56,7 +58,7 @@ classes (`pin_attr`: `__new__`, `__init__`, `with_segments`, `parser`, `_parse_p
 targets. Also pinned: `posixpath.sep/altsep/join/splitroot/splitdrive/_get_sep`, the
 pathlib globals the code reads (`os`, `posixpath`, `PurePath`, `chain`, `_PathParents`)
 and its builtins. Fingerprints: all 29 functions involved (per minor; checked once per set
-of function objects, since the ten targets share them).
+of function objects, since the thirteen targets share them).
 
 Subclasses (including any overriding `with_segments`, `__init__` or `parser`),
 `PureWindowsPath`, and all other inputs run CPython's code.

@@ -242,6 +242,33 @@ def test_patched_class_attribute_falls_back():
     on()
 
 
+def test_patched_fspath_is_called_by_init():
+    import os
+
+    seen = []
+    real = os.fspath
+
+    def spy(x):
+        seen.append(x)
+        return real(x)
+
+    def go():
+        seen.clear()
+        with mock.patch("os.fspath", spy):
+            for _ in range(2000):
+                pass
+            assert str(PurePosixPath("a", "b")) == "a/b"
+        return list(seen)
+
+    got = go()
+    off()
+    try:
+        want = go()
+    finally:
+        on()
+    assert got == want and got[:2] == ["a", "b"]
+
+
 def test_threads_share_objects():
     paths = [PosixPath(f"/srv/data/{i}/file{i}.tar.gz") for i in range(32)]
     want = [(str(p), hash(p), p.name, p.parent.name, p.stem, p.suffix) for p in [PosixPath(str(x)) for x in paths]]

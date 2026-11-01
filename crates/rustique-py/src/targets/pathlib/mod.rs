@@ -647,6 +647,10 @@ fn prep(
         return Err(refuse!("os.name is not 'posix'"));
     }
     cx.pin(&osd, "name", &rt.deps)?;
+    // `__init__` calls `os.fspath(arg)` on every non-path argument.
+    let fspath = cx.get(&osd, "fspath")?;
+    rt::check_c(cx, crate::targets::posixpath::FPS, "os.fspath", &fspath)?;
+    cx.pin(&osd, "fspath", &rt.deps)?;
     for key in ["PurePosixPath", "PosixPath", "Path", "PureWindowsPath", "WindowsPath"] {
         cx.pin(&g, key, &rt.deps)?;
     }
