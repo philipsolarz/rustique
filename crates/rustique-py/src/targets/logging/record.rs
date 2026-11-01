@@ -52,8 +52,10 @@ pub static AIO_TASK: Cap = Cap::new();
 /// _get_sep.
 pub static CODES: [FnGuard; 8] = [const { FnGuard::new() }; 8];
 
-pub static RECORDS: TypeCache = TypeCache::new(validate_record);
-static THREADS: TypeCache = TypeCache::new(validate_thread);
+/// Reads `created`, `msecs` (formatTime).
+pub static RECORDS: TypeCache<2> = TypeCache::new(validate_record);
+/// Reads `_initialized`, `_name`.
+pub static THREADS: TypeCache<2> = TypeCache::new(validate_thread);
 
 /// The record attributes `__init__` stores, in CPython's order.
 pub const ATTRS: usize = 21;
@@ -254,13 +256,14 @@ unsafe fn thread_name(ident: O) -> Option<O> {
             ffi::PyErr_Clear();
             return None;
         }
-        let ok = THREADS.ok(ffi::Py_TYPE(t)) && {
-            let init = get(t, o(n().t_initialized));
+        let e = THREADS.entry(ffi::Py_TYPE(t));
+        let ok = e.is_some() && {
+            let init = THREADS.read(e.unwrap_unchecked(), t, 0);
             let ok = init == ffi::Py_True();
             ffi::Py_XDECREF(init);
             ok
         };
-        let r = if ok { get(t, o(n().t_name)) } else { std::ptr::null_mut() };
+        let r = if ok { THREADS.read(e.unwrap_unchecked(), t, 1) } else { std::ptr::null_mut() };
         ffi::Py_DECREF(t);
         (!r.is_null()).then_some(r)
     }
@@ -415,14 +418,9 @@ unsafe fn init(me: O, a: *const O, n_args: usize) -> Outcome {
             ffi::PyErr_Clear();
             return Outcome::Fallback(Reason::Deopt);
         }
-        let created = ct as f64 / 1e9;
-        let mut msecs = (ct.rem_euclid(1_000_000_000) / 1_000_000) as f64;
-        if msecs == 999.0 && created.trunc() as i64 != ct.div_euclid(1_000_000_000) {
-            msecs = 0.0;
-        }
-        let start = START_TIME.load(Relaxed) as i64;
-        let Some(diff) = ct.checked_sub(start) else { return Outcome::Fallback(Reason::Deopt) };
-        let relative = diff as f64 / 1e6;
+        let Some((created, msecs, relative)) = record_times(ct, START_TIME.load(Relaxed) as i64) else {
+            return Outcome::Fallback(Reason::Deopt);
+        };
         own.0[3] = ffi::PyFloat_FromDouble(created);
         own.0[4] = ffi::PyFloat_FromDouble(msecs);
         own.0[5] = ffi::PyFloat_FromDouble(relative);
@@ -527,6 +525,20 @@ unsafe extern "C" {
     fn getpid() -> i32;
 }
 
+/// `created`, `msecs`, `relativeCreated` from `ct = time.time_ns()` as `__init__` computes
+/// them: `ct / 1e9` (int → double, correctly rounded, as `PyLong_AsDouble`),
+/// `(ct % 10**9) // 10**6 + 0.0` (floor semantics) reset to 0.0 when the seconds rounded up
+/// (gh-89047), `(ct - _startTime) / 1e6`.
+pub fn record_times(ct: i64, start: i64) -> Option<(f64, f64, f64)> {
+    let created = ct as f64 / 1e9;
+    let mut msecs = (ct.rem_euclid(1_000_000_000) / 1_000_000) as f64;
+    if msecs == 999.0 && created.trunc() as i64 != ct.div_euclid(1_000_000_000) {
+        msecs = 0.0;
+    }
+    let diff = ct.checked_sub(start)?;
+    Some((created, msecs, diff as f64 / 1e6))
+}
+
 /// `LogRecord.__init__(self, name, level, pathname, lineno, msg, args, exc_info,
 /// func=None, sinfo=None, **kwargs)`.
 pub unsafe extern "C" fn vc_record_init(func: O, args: *const O, nargsf: usize, kw: O) -> O {
@@ -549,12 +561,12 @@ pub unsafe extern "C" fn vc_record_init(func: O, args: *const O, nargsf: usize, 
             }
             match init(me, args, n) {
                 Outcome::Done => {
-                    STATS.hit();
+                    STATS.hit_streak();
                     return ffi::Py_NewRef(ffi::Py_None());
                 }
                 Outcome::Fallback(r) => r,
                 Outcome::Learn(slot, tok) => {
-                    STATS.fallback(Reason::Deopt);
+                    STATS.fallback_streak(Reason::Deopt);
                     let r = original(func, args, nargsf, kw);
                     if !r.is_null() {
                         learn(me, *args.add(6), slot, tok);
@@ -563,7 +575,7 @@ pub unsafe extern "C" fn vc_record_init(func: O, args: *const O, nargsf: usize, 
                 }
             }
         };
-        STATS.fallback(why);
+        STATS.fallback_streak(why);
         original(func, args, nargsf, kw)
     }
 }

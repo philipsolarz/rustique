@@ -50,10 +50,13 @@ pub static TIME_CODES: [FnGuard; 1] = [const { FnGuard::new() }; 1];
 /// getMessage.
 pub static FORMAT_CODES: [FnGuard; 8] = [const { FnGuard::new() }; 8];
 
-static TIME_FORMATTERS: TypeCache = TypeCache::new(validate_time_formatter);
-static FORMATTERS: TypeCache = TypeCache::new(validate_formatter);
-static STYLES: TypeCache = TypeCache::new(validate_style);
-static FMT_RECORDS: TypeCache = TypeCache::new(validate_fmt_record);
+/// Reads converter, default_time_format, default_msec_format.
+pub static TIME_FORMATTERS: TypeCache<3> = TypeCache::new(validate_time_formatter);
+/// Reads converter, default_time_format, default_msec_format, _style, datefmt.
+pub static FORMATTERS: TypeCache<5> = TypeCache::new(validate_formatter);
+/// Reads _fmt, asctime_search, _defaults.
+pub static STYLES: TypeCache<3> = TypeCache::new(validate_style);
+pub static FMT_RECORDS: TypeCache<0> = TypeCache::new(validate_fmt_record);
 
 /// `converter`, `default_time_format`, `default_msec_format` are plain values.
 unsafe fn validate_time_formatter(t: Tp) -> bool {
@@ -200,13 +203,13 @@ unsafe fn strftime_generic(conv: O, created_obj: O, fmt: O) -> Option<O> {
 ///
 /// # Safety
 /// Attached thread; `me`/`record` of validated types (time formatter, record).
-pub unsafe fn format_time(me: O, record: O, datefmt: O) -> Option<O> {
+pub unsafe fn format_time(fe: usize, me: O, re: usize, record: O, datefmt: O) -> Option<O> {
     // SAFETY: per the caller.
     unsafe {
         format_time_with(
-            me,
-            &|name| {
-                let v = get(record, name);
+            &|k| TIME_FORMATTERS.read(fe, me, k),
+            &|k| {
+                let v = RECORDS.read(re, record, k);
                 (!v.is_null()).then_some(v)
             },
             datefmt,
@@ -214,15 +217,17 @@ pub unsafe fn format_time(me: O, record: O, datefmt: O) -> Option<O> {
     }
 }
 
-/// [`format_time`] reading the record's `created`/`msecs` through `rec` (new references).
+/// [`format_time`] reading the formatter's converter / default_time_format /
+/// default_msec_format through `me` (0, 1, 2; new references or NULL) and the record's
+/// created / msecs through `rec` (0, 1).
 ///
 /// # Safety
 /// As [`format_time`].
-unsafe fn format_time_with(me: O, rec: &dyn Fn(O) -> Option<O>, datefmt: O) -> Option<O> {
+unsafe fn format_time_with(me: &dyn Fn(usize) -> O, rec: &dyn Fn(usize) -> Option<O>, datefmt: O) -> Option<O> {
     // SAFETY: per the caller; every call below is a plain read or a C function.
     unsafe {
         let n = n();
-        let conv = get(me, o(n.converter));
+        let conv = me(0);
         if conv.is_null() {
             return None;
         }
@@ -234,7 +239,7 @@ unsafe fn format_time_with(me: O, rec: &dyn Fn(O) -> Option<O>, datefmt: O) -> O
         } else {
             return None;
         };
-        let created_obj = rec(o(n.created))?;
+        let created_obj = rec(0)?;
         let created_g = Owned1(created_obj);
         if !is_type(created_obj, &raw mut ffi::PyFloat_Type) {
             return None;
@@ -254,12 +259,12 @@ unsafe fn format_time_with(me: O, rec: &dyn Fn(O) -> Option<O>, datefmt: O) -> O
             }
             return strftime_generic(conv, created_g.0, datefmt);
         }
-        let fmt = get(me, o(n.default_time_format));
+        let fmt = me(1);
         if fmt.is_null() {
             return None;
         }
         let fmt = Owned1(fmt);
-        let msf = get(me, o(n.default_msec_format));
+        let msf = me(2);
         if msf.is_null() {
             return None;
         }
@@ -273,7 +278,7 @@ unsafe fn format_time_with(me: O, rec: &dyn Fn(O) -> Option<O>, datefmt: O) -> O
             _ => return None,
         };
         let msecs = if with_msecs {
-            Owned1(rec(o(n.msecs))?)
+            Owned1(rec(1)?)
         } else {
             Owned1(std::ptr::null_mut())
         };
@@ -356,20 +361,24 @@ pub unsafe extern "C" fn vc_format_time(func: O, args: *const O, nargsf: usize, 
                 break 'fb Reason::Deps;
             }
             let (me, record) = (*args, *args.add(1));
-            if !TIME_FORMATTERS.ok(ffi::Py_TYPE(me)) || !RECORDS.ok(ffi::Py_TYPE(record)) {
+            let (Some(fe), Some(re)) = (TIME_FORMATTERS.entry(ffi::Py_TYPE(me)), RECORDS.entry(ffi::Py_TYPE(record)))
+            else {
                 break 'fb Reason::Args;
-            }
+            };
             if !TOOLS.quiet() || !fns_ok(&TIME_CODES) {
                 break 'fb Reason::Tools;
             }
             let datefmt = if nargs == 3 { *args.add(2) } else { ffi::Py_None() };
-            if let Some(s) = format_time(me, record, datefmt) {
-                TIME_STATS.hit();
+            if let Some(s) = format_time(fe, me, re, record, datefmt) {
+                if TIME_STATS.hit_check_streak() {
+                    let a = std::slice::from_raw_parts(args, nargs);
+                    return crate::accel::check::verify(&super::FORMAT_TIME, s, a, || original(func, args, nargsf, kw));
+                }
                 return s;
             }
             Reason::Args
         };
-        TIME_STATS.fallback(why);
+        TIME_STATS.fallback_streak(why);
         original(func, args, nargsf, kw)
     }
 }
@@ -648,7 +657,7 @@ unsafe fn dget(d: O, key: O) -> Option<O> {
     }
 }
 
-unsafe fn format(me: O, record: O) -> Fmt {
+unsafe fn format(fe: usize, me: O, record: O) -> Fmt {
     // SAFETY: attached thread; `me`, `record` of validated types.
     unsafe {
         let n = n();
@@ -686,13 +695,13 @@ unsafe fn format(me: O, record: O) -> Fmt {
                 fb!(Reason::Args);
             }
         }
-        let style = get(me, o(n.style));
+        let style = FORMATTERS.read(fe, me, 3);
         if style.is_null() {
             fb!(Reason::Args);
         }
         let style = Owned1(style);
-        if !STYLES.ok(ffi::Py_TYPE(style.0))
-            || !bound_to(style.0, o(n.uses_time), S_USES_TIME.get())
+        let Some(se) = STYLES.entry(ffi::Py_TYPE(style.0)) else { fb!(Reason::Args) };
+        if !bound_to(style.0, o(n.uses_time), S_USES_TIME.get())
             || !bound_to(style.0, o(n.format), S_FORMAT.get())
             || !bound_to(style.0, o(n.format_), S_FORMAT_.get())
         {
@@ -705,12 +714,12 @@ unsafe fn format(me: O, record: O) -> Fmt {
         let Some(message) = message(msg_o.0, args_o.0) else { fb!(Reason::Args) };
         let message = Owned1(message);
         // usesTime: self._style._fmt.find(self._style.asctime_search) >= 0
-        let sfmt = get(style.0, o(n.fmt));
+        let sfmt = STYLES.read(se, style.0, 0);
         if sfmt.is_null() {
             fb!(Reason::Args);
         }
         let sfmt = Owned1(sfmt);
-        let search = get(style.0, o(n.asctime_search));
+        let search = STYLES.read(se, style.0, 1);
         if search.is_null() {
             fb!(Reason::Args);
         }
@@ -725,18 +734,21 @@ unsafe fn format(me: O, record: O) -> Fmt {
         }
         let uses_time = pos >= 0;
         let asctime = if uses_time {
-            let datefmt = get(me, o(n.datefmt));
+            let datefmt = FORMATTERS.read(fe, me, 4);
             if datefmt.is_null() {
                 fb!(Reason::Args);
             }
             let datefmt = Owned1(datefmt);
-            let Some(a) = format_time_with(me, &|name| dget(d.0, name), datefmt.0) else { fb!(Reason::Args) };
+            let rnames = [n.created, n.msecs];
+            let Some(a) = format_time_with(&|k| FORMATTERS.read(fe, me, k), &|k| dget(d.0, o(rnames[k])), datefmt.0) else {
+                fb!(Reason::Args)
+            };
             Owned1(a)
         } else {
             Owned1(std::ptr::null_mut())
         };
         // values = defaults | record.__dict__ if defaults else record.__dict__
-        let defaults = get(style.0, o(n.defaults));
+        let defaults = STYLES.read(se, style.0, 2);
         if defaults.is_null() {
             fb!(Reason::Args);
         }
@@ -794,21 +806,22 @@ pub unsafe extern "C" fn vc_format(func: O, args: *const O, nargsf: usize, kw: O
                 break 'fb Reason::Deps;
             }
             let (me, record) = (*args, *args.add(1));
-            if !FORMATTERS.ok(ffi::Py_TYPE(me)) || !FMT_RECORDS.ok(ffi::Py_TYPE(record)) {
+            let Some(fe) = FORMATTERS.entry(ffi::Py_TYPE(me)) else { break 'fb Reason::Args };
+            if !FMT_RECORDS.ok(ffi::Py_TYPE(record)) {
                 break 'fb Reason::Args;
             }
             if !TOOLS.quiet() || !fns_ok(&FORMAT_CODES) {
                 break 'fb Reason::Tools;
             }
-            match format(me, record) {
+            match format(fe, me, record) {
                 Fmt::Done(s) => {
-                    FORMAT_STATS.hit();
+                    FORMAT_STATS.hit_streak();
                     return s;
                 }
                 Fmt::Fallback(r) => r,
             }
         };
-        FORMAT_STATS.fallback(why);
+        FORMAT_STATS.fallback_streak(why);
         original(func, args, nargsf, kw)
     }
 }

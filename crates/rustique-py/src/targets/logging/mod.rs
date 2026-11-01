@@ -116,7 +116,11 @@ fn prepare_level(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     }
     cx.pin_global(&g, "isinstance", &level::DEPS)?;
     cx.pin_global(&g, "int", &level::DEPS)?;
-    level::LOGGERS.clear();
+    {
+        let n = common::names();
+        level::LOGGERS.set_names([n.disabled, n.cache]);
+    }
+    calibrate(cx)?;
     let methods: [(&str, fp::F, Vc); 6] = [
         ("debug", fp::DEBUG, level::vc_debug),
         ("info", fp::INFO, level::vc_info),
@@ -176,6 +180,14 @@ fn prepare_caller(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     caller::IMPORTLIB.set(pyo3::types::PyString::intern(py, "importlib").as_ptr());
     caller::BOOTSTRAP.set(pyo3::types::PyString::intern(py, "_bootstrap").as_ptr());
     cx.vectorcall(&fc, caller::vc_find_caller, &accel::FUNCTION_VECTORCALL)
+}
+
+/// Calibrate the inline-values reads on `logging.root` (a RootLogger: generic attributes,
+/// no descriptors for these names). A failed calibration only disables the fast reads.
+fn calibrate(cx: &Prepare<'_>) -> Result<(), Refusal> {
+    let root = cx.module_attr("root")?;
+    common::calibrate_inline(cx.py(), &root, &["name", "level", "parent", "propagate", "handlers", "disabled", "_cache"]);
+    Ok(())
 }
 
 /// `logging.os` is `os`, `os.path` is `posixpath` (and `posixpath.os` is `os`): the dicts
@@ -332,7 +344,12 @@ fn prepare_record(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         Ok(tok) => record::ABC_TOKEN.set(tok.as_ptr()),
         Err(_) => record::ABC_TOKEN.set(std::ptr::null_mut()),
     }
-    record::RECORDS.clear();
+    {
+        let n = common::names();
+        record::RECORDS.set_names([n.created, n.msecs]);
+        record::THREADS.set_names([n.t_initialized, n.t_name]);
+    }
+    calibrate(cx)?;
     record::reset_mapping_cache();
     cx.vectorcall(&init, record::vc_record_init, &accel::FUNCTION_VECTORCALL)
 }
@@ -377,6 +394,15 @@ fn prepare_format_time(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refu
 
 /// The record classes the formatting kernels read (`RECORDS` validation needs the names).
 fn prepare_record_types(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    {
+        let n = common::names();
+        record::RECORDS.set_names([n.created, n.msecs]);
+        format::TIME_FORMATTERS.set_names([n.converter, n.default_time_format, n.default_msec_format]);
+        format::FORMATTERS.set_names([n.converter, n.default_time_format, n.default_msec_format, n.style, n.datefmt]);
+        format::STYLES.set_names([n.fmt, n.asctime_search, n.defaults]);
+        format::FMT_RECORDS.set_names([]);
+    }
+    calibrate(cx)?;
     let lr = ty(cx.module_attr("LogRecord")?)?;
     let gm = cx.type_attr(&lr, "getMessage")?;
     format::R_GET_MESSAGE.set(gm.as_ptr());
@@ -428,7 +454,7 @@ fn prepare_format(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 // ---------------------------------------------------------------------------------------
 
 macro_rules! target {
-    ($id:ident, $name:literal, $counters:expr, $prepare:ident) => {
+    ($id:ident, $name:literal, $counters:expr, $prepare:ident, $checkable:expr) => {
         pub static $id: TargetSpec = TargetSpec {
             name: $name,
             group: "logging",
@@ -437,16 +463,20 @@ macro_rules! target {
             free_threaded: true,
             counters: $counters,
             prepare: $prepare,
+            checkable: $checkable,
             ..TargetSpec::DEFAULT
         };
     };
 }
 
-target!(LEVEL, "logging.Logger.level", &level::STATS, prepare_level);
-target!(FIND_CALLER, "logging.Logger.findCaller", &caller::STATS, prepare_caller);
-target!(RECORD_INIT, "logging.LogRecord.__init__", &record::STATS, prepare_record);
-target!(FORMAT_TIME, "logging.Formatter.formatTime", &format::TIME_STATS, prepare_format_time);
-target!(FORMAT, "logging.Formatter.format", &format::FORMAT_STATS, prepare_format);
+// Checkable: the kernel's exact subset has no side effects (a disabled level call, a
+// cache hit of isEnabledFor, the frame walk, formatTime). `format` and `__init__` store
+// into the record.
+target!(LEVEL, "logging.Logger.level", &level::STATS, prepare_level, true);
+target!(FIND_CALLER, "logging.Logger.findCaller", &caller::STATS, prepare_caller, true);
+target!(RECORD_INIT, "logging.LogRecord.__init__", &record::STATS, prepare_record, false);
+target!(FORMAT_TIME, "logging.Formatter.formatTime", &format::TIME_STATS, prepare_format_time, true);
+target!(FORMAT, "logging.Formatter.format", &format::FORMAT_STATS, prepare_format, false);
 
 pub static TARGETS: &[&TargetSpec] = &[&LEVEL, &FIND_CALLER, &RECORD_INIT, &FORMAT_TIME, &FORMAT];
 
@@ -456,10 +486,18 @@ pub static TARGETS: &[&TargetSpec] = &[&LEVEL, &FIND_CALLER, &RECORD_INIT, &FORM
 fn _logging_reset_caches() {
     level::LOGGERS.clear();
     record::RECORDS.clear();
+    record::THREADS.clear();
     record::reset_mapping_cache();
     format::clear_type_caches();
 }
 
+/// Test helper: the kernel's `(created, msecs, relativeCreated)` for `ct` nanoseconds.
+#[pyfunction]
+fn _logging_times(ct: i64) -> Option<(f64, f64, f64)> {
+    record::record_times(ct, record::START_TIME.load(std::sync::atomic::Ordering::Relaxed) as i64)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(_logging_reset_caches, m)?)
+    m.add_function(wrap_pyfunction!(_logging_reset_caches, m)?)?;
+    m.add_function(wrap_pyfunction!(_logging_times, m)?)
 }

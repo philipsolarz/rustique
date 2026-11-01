@@ -7,7 +7,7 @@
 use std::cell::UnsafeCell;
 use std::ffi::c_int;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering::Relaxed};
 
 use pyo3::prelude::*;
 
@@ -213,33 +213,62 @@ pub unsafe fn fns_ok(g: &[FnGuard]) -> bool {
 /// tags are never reused within an interpreter, so a matching pair proves the class-level
 /// lookups the validator checked still hold. Torn reads on free-threaded builds can only
 /// produce false negatives (each tag belongs to one type).
-pub struct TypeCache {
+///
+/// Each entry also remembers where the `N` attributes `names` live in the instances'
+/// inline values (GIL builds; see [`TypeCache::read`]).
+pub struct TypeCache<const N: usize> {
     ty: [AtomicUsize; 4],
     tag: [AtomicU32; 4],
     next: AtomicUsize,
     validate: unsafe fn(Tp) -> bool,
+    names: [AtomicUsize; N],
+    /// Per entry and name: index in the type's shared keys, or -1.
+    ix: [[AtomicI32; N]; 4],
+    /// Per entry and name: `dk_nentries` of the shared keys when an index was not found.
+    seen: [[AtomicI32; N]; 4],
 }
 
-impl TypeCache {
+impl<const N: usize> TypeCache<N> {
     pub const fn new(validate: unsafe fn(Tp) -> bool) -> Self {
         TypeCache {
             ty: [const { AtomicUsize::new(0) }; 4],
             tag: [const { AtomicU32::new(0) }; 4],
             next: AtomicUsize::new(0),
             validate,
+            names: [const { AtomicUsize::new(0) }; N],
+            ix: [const { [const { AtomicI32::new(-1) }; N] }; 4],
+            seen: [const { [const { AtomicI32::new(-1) }; N] }; 4],
         }
+    }
+
+    /// The attribute names [`Self::read`] serves (interned, kept alive by `Names`).
+    pub fn set_names(&self, names: [usize; N]) {
+        for (c, n) in self.names.iter().zip(names) {
+            c.store(n, Relaxed);
+        }
+        self.clear();
     }
 
     /// # Safety
     /// `t` is a live type; attached thread.
     #[inline(always)]
     pub unsafe fn ok(&self, t: Tp) -> bool {
+        // SAFETY: per the caller.
+        unsafe { self.entry(t).is_some() }
+    }
+
+    /// The cache entry of a validated type.
+    ///
+    /// # Safety
+    /// `t` is a live type; attached thread.
+    #[inline(always)]
+    pub unsafe fn entry(&self, t: Tp) -> Option<usize> {
         // SAFETY: field read of a live type (atomic on free-threaded builds).
         let tag = unsafe { version_tag(t) };
         if tag != 0 {
             for i in 0..4 {
                 if self.tag[i].load(Relaxed) == tag && self.ty[i].load(Relaxed) == t as usize {
-                    return true;
+                    return Some(i);
                 }
             }
         }
@@ -248,21 +277,27 @@ impl TypeCache {
     }
 
     #[cold]
-    unsafe fn slow(&self, t: Tp) -> bool {
+    unsafe fn slow(&self, t: Tp) -> Option<usize> {
         // SAFETY: attached thread, live type.
         unsafe {
             let assigned = PyUnstable_Type_AssignVersionTag(t);
             let tag0 = version_tag(t);
             if !(self.validate)(t) {
-                return false;
+                return None;
             }
             if assigned == 1 && tag0 != 0 && version_tag(t) == tag0 {
                 let i = self.next.fetch_add(1, Relaxed) % 4;
                 self.tag[i].store(0, Relaxed);
                 self.ty[i].store(t as usize, Relaxed);
+                for k in 0..N {
+                    self.ix[i][k].store(-1, Relaxed);
+                    self.seen[i][k].store(-1, Relaxed);
+                }
                 self.tag[i].store(tag0, Relaxed);
+                return Some(i);
             }
-            true
+            // Validated now but not cacheable: entry 4 = "read through getattr".
+            Some(4)
         }
     }
 
@@ -271,6 +306,161 @@ impl TypeCache {
             self.tag[i].store(0, Relaxed);
             self.ty[i].store(0, Relaxed);
         }
+    }
+
+    /// `obj.names[k]` (new reference) or NULL (absent: the caller falls back), for `obj` of
+    /// the type of entry `e`. GIL builds with a calibrated layout read the instance's
+    /// inline values directly, as `_PyObject_TryGetInstanceAttribute` does (index in the
+    /// type's shared keys), and the class attribute when the instance has none (the
+    /// validator made sure it is a plain value); everything else goes through
+    /// `PyObject_GenericGetAttr`.
+    ///
+    /// # Safety
+    /// Attached thread; `obj` of the entry's type; `e` from [`Self::entry`].
+    #[inline(always)]
+    pub unsafe fn read(&self, e: usize, obj: O, k: usize) -> O {
+        // SAFETY: per the caller.
+        unsafe {
+            let name = self.names[k].load(Relaxed) as O;
+            #[cfg(not(Py_GIL_DISABLED))]
+            if e < 4
+                && INLINE_OK.load(Relaxed)
+                && let Some(v) = self.read_inline(e, obj, k, name)
+            {
+                return v;
+            }
+            let _ = e;
+            get(obj, name)
+        }
+    }
+
+    #[cfg(not(Py_GIL_DISABLED))]
+    #[inline(always)]
+    unsafe fn read_inline(&self, e: usize, obj: O, k: usize, name: O) -> Option<O> {
+        // SAFETY: GIL held (no concurrent mutation); layout calibrated (`INLINE_OK`).
+        unsafe {
+            let t = ffi::Py_TYPE(obj);
+            let vals = inline_values(obj, t)?;
+            let mut ix = self.ix[e][k].load(Relaxed);
+            if ix < 0 {
+                let keys = cached_keys(t)?;
+                let n = keys_nentries(keys) as i32;
+                if self.seen[e][k].load(Relaxed) != n {
+                    ix = key_index(keys, name);
+                    self.ix[e][k].store(ix, Relaxed);
+                    self.seen[e][k].store(n, Relaxed);
+                }
+            }
+            if ix >= 0 {
+                if ix as usize >= *vals as usize {
+                    return None;
+                }
+                let v = *vals.add(8).cast::<O>().add(ix as usize);
+                if !v.is_null() {
+                    return Some(ffi::Py_NewRef(v));
+                }
+            }
+            // Not an instance attribute: the class's plain value, if any.
+            Some(_PyType_LookupRef(t, name))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Inline values (GIL builds): pycore_dict.h / pycore_object.h layouts of 3.14 and 3.15,
+// calibrated at install against `PyObject_GenericGetAttr` on `logging.root`.
+// ---------------------------------------------------------------------------------------
+
+static INLINE_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const TPFLAGS_INLINE_VALUES: std::ffi::c_ulong = 1 << 2;
+
+/// `_PyObject_InlineValues(obj)` when the type has inline values and they are valid.
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline(always)]
+unsafe fn inline_values(obj: O, t: Tp) -> Option<*const u8> {
+    // SAFETY: live object and type; struct _dictvalues {capacity, size, embedded, valid, values[]}.
+    unsafe {
+        if (*t).tp_flags & TPFLAGS_INLINE_VALUES == 0 {
+            return None;
+        }
+        let vals = obj.cast::<u8>().add((*t).tp_basicsize as usize).cast_const();
+        (*vals.add(3) != 0).then_some(vals)
+    }
+}
+
+/// `((PyHeapTypeObject *)t)->ht_cached_keys`.
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline(always)]
+unsafe fn cached_keys(t: Tp) -> Option<*const u8> {
+    // SAFETY: a heap type (inline values imply it).
+    unsafe {
+        let k = (*t.cast::<ffi::PyHeapTypeObject>()).ht_cached_keys.cast::<u8>().cast_const();
+        (!k.is_null()).then_some(k)
+    }
+}
+
+/// `dk_nentries` (offset 24 on GIL builds: refcnt, log2_size, log2_index_bytes, kind,
+/// version, usable).
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline(always)]
+unsafe fn keys_nentries(keys: *const u8) -> isize {
+    // SAFETY: a live PyDictKeysObject.
+    unsafe { *keys.add(24).cast::<isize>() }
+}
+
+/// Index of `name` (by identity: attribute names are interned) among the shared keys'
+/// unicode entries (`dk_indices` at 32, then `1 << dk_log2_index_bytes` index bytes, then
+/// `{me_key, me_value}` entries), or -1.
+#[cfg(not(Py_GIL_DISABLED))]
+unsafe fn key_index(keys: *const u8, name: O) -> i32 {
+    // SAFETY: a live split PyDictKeysObject.
+    unsafe {
+        let n = keys_nentries(keys);
+        if !(0..=1024).contains(&n) {
+            return -1;
+        }
+        let entries = keys.add(32 + (1usize << *keys.add(9))).cast::<[O; 2]>();
+        (0..n as usize).find(|&i| (*entries.add(i))[0] == name).map_or(-1, |i| i as i32)
+    }
+}
+
+/// Check the inline-values layout on `obj` (an instance whose class has the generic
+/// attribute protocol and no descriptors for `names`): every name read through the inline
+/// values must give exactly what `PyObject_GenericGetAttr` gives.
+pub fn calibrate_inline(py: Python<'_>, obj: &Bound<'_, PyAny>, names: &[&str]) -> bool {
+    #[cfg(Py_GIL_DISABLED)]
+    {
+        let _ = (py, obj, names);
+        false
+    }
+    #[cfg(not(Py_GIL_DISABLED))]
+    // SAFETY: attached thread; reads of a live object's layout, cross-checked.
+    unsafe {
+        let o = obj.as_ptr();
+        let t = ffi::Py_TYPE(o);
+        let ok = (|| {
+            let vals = inline_values(o, t)?;
+            let keys = cached_keys(t)?;
+            let mut found = 0;
+            for name in names {
+                let nm = pyo3::types::PyString::intern(py, name);
+                let ix = key_index(keys, nm.as_ptr());
+                let r = ffi::PyObject_GenericGetAttr(o, nm.as_ptr());
+                if r.is_null() {
+                    ffi::PyErr_Clear();
+                    return None;
+                }
+                ffi::Py_DECREF(r);
+                if ix < 0 || ix as usize >= *vals as usize || *vals.add(8).cast::<O>().add(ix as usize) != r {
+                    return None;
+                }
+                found += 1;
+            }
+            (found == names.len() && found >= 4).then_some(())
+        })()
+        .is_some();
+        INLINE_OK.store(ok, Relaxed);
+        ok
     }
 }
 
@@ -514,26 +704,38 @@ pub unsafe fn int_keyed_get(d: O, key: O) -> Result<Option<O>, ()> {
         if ffi::PyDict_Size(d) > 32 {
             return Err(());
         }
-        let mut ov: c_int = 0;
-        let kv = ffi::PyLong_AsLongLongAndOverflow(key, &mut ov);
-        if ov != 0 {
-            return Err(());
-        }
+        // The key's value, computed only if some stored key is a different int object.
+        let mut kv: Option<i64> = None;
         let mut found: O = std::ptr::null_mut();
-        let all_int = dict_all(d, |k, v| {
+        let mut bad = false;
+        dict_all(d, |k, v| {
             if !exact_int(k) {
+                bad = true;
                 return false;
             }
-            if found.is_null() && (k == key || {
-                let mut o2: c_int = 0;
-                let x = ffi::PyLong_AsLongLongAndOverflow(k, &mut o2);
-                o2 == 0 && x == kv
-            }) {
-                found = ffi::Py_NewRef(v);
+            if found.is_null() {
+                let eq = k == key || {
+                    let want = *kv.get_or_insert_with(|| {
+                        let mut ov: c_int = 0;
+                        let x = ffi::PyLong_AsLongLongAndOverflow(key, &mut ov);
+                        if ov != 0 { i64::MIN } else { x }
+                    });
+                    let mut o2: c_int = 0;
+                    let x = ffi::PyLong_AsLongLongAndOverflow(k, &mut o2);
+                    if o2 != 0 || want == i64::MIN {
+                        // big ints: compare exactly (int == int runs no Python code)
+                        ffi::PyObject_RichCompareBool(k, key, ffi::Py_EQ) == 1
+                    } else {
+                        x == want
+                    }
+                };
+                if eq {
+                    found = ffi::Py_NewRef(v);
+                }
             }
             true
         });
-        if !all_int {
+        if bad {
             if !found.is_null() {
                 ffi::Py_DECREF(found);
             }
@@ -660,6 +862,11 @@ pub fn init_names() {
 pub unsafe fn n() -> &'static Names {
     // SAFETY: per the caller.
     unsafe { NAMES.get().unwrap_unchecked() }
+}
+
+/// The names (after `init_names`), for install-time code.
+pub fn names() -> &'static Names {
+    NAMES.get_or_init(Names::new)
 }
 
 /// A name as an object pointer.

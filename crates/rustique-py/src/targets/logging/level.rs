@@ -23,7 +23,8 @@ pub static LEVELS: [Cap; 5] = [const { Cap::new() }; 5];
 /// critical, log.
 pub static CODES: [FnGuard; 7] = [const { FnGuard::new() }; 7];
 
-pub static LOGGERS: TypeCache = TypeCache::new(validate_logger);
+/// Reads `disabled`, `_cache`.
+pub static LOGGERS: TypeCache<2> = TypeCache::new(validate_logger);
 
 /// A logger class whose `isEnabledFor` is CPython's and whose `disabled`/`_cache` are plain
 /// instance attributes (no descriptors), with the generic attribute protocol.
@@ -45,11 +46,10 @@ unsafe fn validate_logger(t: Tp) -> bool {
 /// # Safety
 /// Attached thread; `me` of a validated logger type.
 #[inline(always)]
-unsafe fn decide(me: O, level: O) -> Option<O> {
+unsafe fn decide(e: usize, me: O, level: O) -> Option<O> {
     // SAFETY: per the caller.
     unsafe {
-        let n = n();
-        let d = get(me, o(n.disabled));
+        let d = LOGGERS.read(e, me, 0);
         if d.is_null() {
             return None;
         }
@@ -60,7 +60,7 @@ unsafe fn decide(me: O, level: O) -> Option<O> {
             Some(false) => {}
             None => return None,
         }
-        let c = get(me, o(n.cache));
+        let c = LOGGERS.read(e, me, 1);
         if c.is_null() {
             return None;
         }
@@ -112,22 +112,26 @@ pub unsafe extern "C" fn vc_is_enabled_for(func: O, args: *const O, nargsf: usiz
                 break 'fb Reason::Args;
             }
             let (me, level) = (*args, *args.add(1));
-            if !exact_int(level) || !LOGGERS.ok(ffi::Py_TYPE(me)) {
+            if !exact_int(level) {
                 break 'fb Reason::Args;
             }
+            let Some(e) = LOGGERS.entry(ffi::Py_TYPE(me)) else { break 'fb Reason::Args };
             if !DEPS.ok() {
                 break 'fb Reason::Deps;
             }
             if !TOOLS.quiet() || !CODES[0].ok() {
                 break 'fb Reason::Tools;
             }
-            if let Some(v) = decide(me, level) {
-                STATS.hit();
+            if let Some(v) = decide(e, me, level) {
+                if STATS.hit_check_streak() {
+                    let a = std::slice::from_raw_parts(args, 2);
+                    return crate::accel::check::verify(&super::LEVEL, v, a, || original(func, args, nargsf, kw));
+                }
                 return v;
             }
             Reason::Deopt
         };
-        STATS.fallback(why);
+        STATS.fallback_streak(why);
         original(func, args, nargsf, kw)
     }
 }
@@ -142,9 +146,10 @@ unsafe fn level_call(func: O, args: *const O, nargsf: usize, kw: O, level: O, co
                 break 'fb Reason::Args;
             }
             let me = *args;
-            if !exact_int(level) || !LOGGERS.ok(ffi::Py_TYPE(me)) {
+            if !exact_int(level) {
                 break 'fb Reason::Args;
             }
+            let Some(e) = LOGGERS.entry(ffi::Py_TYPE(me)) else { break 'fb Reason::Args };
             if !DEPS.ok() {
                 break 'fb Reason::Deps;
             }
@@ -157,18 +162,22 @@ unsafe fn level_call(func: O, args: *const O, nargsf: usize, kw: O, level: O, co
             if !bound_to(me, o(n().is_enabled_for), IS_ENABLED_FOR.get()) {
                 break 'fb Reason::Args;
             }
-            if let Some(v) = decide(me, level) {
+            if let Some(v) = decide(e, me, level) {
                 let t = pure_truth(v);
                 ffi::Py_DECREF(v);
                 if t == Some(false) {
-                    STATS.hit();
-                    return ffi::Py_NewRef(ffi::Py_None());
+                    let r = ffi::Py_NewRef(ffi::Py_None());
+                    if STATS.hit_check_streak() {
+                        let a = std::slice::from_raw_parts(args, nargs(nargsf));
+                        return crate::accel::check::verify(&super::LEVEL, r, a, || original(func, args, nargsf, kw));
+                    }
+                    return r;
                 }
             }
             // Enabled (or undecided): CPython's own frames run the record path.
             Reason::Deopt
         };
-        STATS.fallback(why);
+        STATS.fallback_streak(why);
         original(func, args, nargsf, kw)
     }
 }
@@ -195,7 +204,7 @@ pub unsafe extern "C" fn vc_log(func: O, args: *const O, nargsf: usize, kw: O) -
         if nargs(nargsf) >= 3 {
             return level_call(func, args, nargsf, kw, *args.add(1), 6, 2);
         }
-        STATS.fallback(Reason::Args);
+        STATS.fallback_streak(Reason::Args);
         original(func, args, nargsf, kw)
     }
 }
