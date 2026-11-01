@@ -3,7 +3,7 @@
 //!
 //! `_asdict_inner` / `_astuple_inner` run natively for atomic values, dataclass instances
 //! (`fields(obj)` over `Field` objects, `getattr(obj, f.name)` on plain attributes, slots
-//! or class defaults), exact `list`/`dict`/`tuple` (`astuple`: `tuple`/`dict`), and leaves
+//! or class defaults), exact `list`/`dict`/`tuple`, and leaves
 //! through the copy group's `deepcopy` engine. Anything that would run user code — a
 //! property, a subclass constructor (namedtuple, defaultdict), a leaf whose copy needs a
 //! hook, a lazily imported `copy` still to be imported, a key with a user `__hash__` — or
@@ -647,8 +647,28 @@ impl Cx {
                     }
                 }
                 out.into_raw()
-            } else if t == &raw mut ffi::PyList_Type || Self::builtin_subclass(t) {
-                // `list(genexpr)` (its allocation pattern) and subclass constructors.
+            } else if t == &raw mut ffi::PyList_Type {
+                // `list(_astuple_inner(v) for v in obj)`: the generator's frames as for
+                // tuples; the list is built as `list(map(copies.__getitem__, range(n)))`,
+                // whose length hint is a generator's (none: the default 8), so `list_extend`
+                // allocates it exactly as CPython does.
+                self.touch()?;
+                let copies = Own::new(ffi::PyList_New(0))?;
+                let mut i = 0;
+                while let Some(v) = list_item(obj, i) {
+                    i += 1;
+                    let v = Own(v);
+                    self.push()?;
+                    let c = Own::new(self.astuple_inner(v.get(), level + 1)?)?;
+                    self.pop();
+                    if ffi::PyList_Append(copies.get(), c.get()) < 0 {
+                        return Err(());
+                    }
+                }
+                self.touch()?;
+                list_like_genexpr(copies.get())?
+            } else if Self::builtin_subclass(t) {
+                // Subclass constructors may be user code.
                 return Err(());
             } else {
                 self.deepcopy(obj)?
@@ -656,6 +676,24 @@ impl Cx {
             self.pop();
             Ok(r)
         }
+    }
+}
+
+/// `list(<generator yielding the items of copies>)`, with the same allocation: `map` has no
+/// length hint either, and `list.__getitem__` over `range(n)` runs no Python code.
+unsafe fn list_like_genexpr(copies: O) -> R<O> {
+    // SAFETY: an exact list; C callables only.
+    unsafe {
+        let getitem = Own::new(ffi::PyObject_GetAttrString(copies, c"__getitem__".as_ptr()))?;
+        let n = Own::new(ffi::PyLong_FromSsize_t(ffi::PyList_GET_SIZE(copies)))?;
+        let r = Own::new(ffi::PyObject_CallOneArg((&raw mut ffi::PyRange_Type).cast(), n.get()))?;
+        let m = Own::new(ffi::PyObject_CallFunctionObjArgs(
+            (&raw mut ffi::PyMap_Type).cast(),
+            getitem.get(),
+            r.get(),
+            std::ptr::null_mut::<ffi::PyObject>(),
+        ))?;
+        nn(ffi::PySequence_List(m.get()))
     }
 }
 

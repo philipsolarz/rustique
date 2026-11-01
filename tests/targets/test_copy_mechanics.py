@@ -522,3 +522,9 @@ def test_mutable_container_set_314():
     copy.copy(big)
     copy.copy(5)
     assert hits("copy.copy") == h + 2
+
+
+def test_astuple_lists_native():
+    h = hits("dataclasses.astuple")
+    assert dataclasses.astuple(P(1, [2, [3]])) == (1, [2, [3]])
+    assert hits("dataclasses.astuple") == h + 1 and fallbacks("dataclasses.astuple") == {}

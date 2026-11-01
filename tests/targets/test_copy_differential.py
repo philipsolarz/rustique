@@ -958,3 +958,14 @@ def test_stdlib_c_types(which, fn):
         return root, {"x": x, **v}
 
     S.compare(fn, source)
+
+
+@pytest.mark.parametrize("n", list(range(0, 21)) + [33, 100])
+def test_astuple_list_sizes(n):
+    """`list(genexpr)` in `_astuple_inner`: the native list has CPython's allocation."""
+
+    def source():
+        x = DC([list(range(n)), [[i] for i in range(n)]])
+        return x, {"x": x}
+
+    S.compare(astuple_root, source)
