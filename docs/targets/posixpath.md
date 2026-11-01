@@ -220,6 +220,13 @@ Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `py
 the four builds.
 
 
+## Startup
+
+`benches/targets/paths_startup.py` (callgrind regions, fresh processes, 3.15.1):
+`rustique.enable(only=["posixpath"])` with `posixpath` imported (it always is) costs
+2.0M Ir (≈ 0.5 ms): fingerprints (each shared helper hashed once), pins, the str layout
+calibration and the normpath self-test. Nothing is imported.
+
 ## Version coverage
 
 3.14 and 3.15 (fingerprints recorded for both; identical on GIL and free-threaded builds).

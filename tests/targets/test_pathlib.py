@@ -24,6 +24,9 @@ SLOTS = ["_raw_paths", "_drv", "_root", "_tail_cached", "_str", "_str_normcase_c
 MISSING = object()
 
 
+PROPERTIES = ["parent", "name", "suffix", "stem", "parts"]
+
+
 def on():
     rt.enable(only="pathlib")
     for _ in range(2000):
@@ -37,7 +40,9 @@ def off():
 @pytest.fixture(scope="module", autouse=True)
 def enabled():
     on()
-    bad = [t for t in rt.status()["targets"] if t["group"] == "pathlib" and t["state"] != "installed"]
+    props_refused = sys.version_info < (3, 15)  # see PROPERTY_VERSIONS in pathlib/mod.rs
+    bad = [t for t in rt.status()["targets"] if t["group"] == "pathlib" and t["state"] != "installed"
+           and not (props_refused and t["name"].rsplit(".", 1)[1] in PROPERTIES)]
     assert not bad, bad
     rt.stats(True)
     yield
@@ -190,7 +195,10 @@ def test_kernels_hit():
     PurePosixPath("a", PurePosixPath("b"))
     s = rt.stats()
     assert s["pathlib.Path.__new__"]["hits"] >= 1
-    for name in ["__new__", "__init__", "__str__", "__truediv__", "parent", "name", "suffix", "stem", "parts", "relative_to", "__hash__", "__eq__"]:
+    names = ["__new__", "__init__", "__str__", "__truediv__", "relative_to", "__hash__", "__eq__"]
+    if sys.version_info >= (3, 15):
+        names += PROPERTIES
+    for name in names:
         assert s[f"pathlib.PurePath.{name}"]["hits"] >= 1, name
 
 
@@ -296,7 +304,8 @@ def test_shared_mechanics():
     off()
     try:
         p = PosixPath("/srv/a/b.txt")
-        M.assert_tools_see_original("pathlib.PurePath.name", PurePath.name.fget, lambda: p.name)
+        if sys.version_info >= (3, 15):
+            M.assert_tools_see_original("pathlib.PurePath.name", PurePath.name.fget, lambda: p.name)
         M.assert_tools_see_original("pathlib.PurePath.relative_to", PurePath.relative_to,
                                     lambda: p.relative_to("/srv"))
         M.assert_introspection_unchanged(PurePath.relative_to, "pathlib.PurePath.relative_to")

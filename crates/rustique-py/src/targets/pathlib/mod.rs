@@ -467,9 +467,12 @@ static RT_INIT: Rt = Rt::new();
 
 macro_rules! target {
     ($stat:ident, $prep:ident, $name:literal, $rt:ident, $attr:literal, $kernel:ident) => {
-        target!($stat, $prep, $name, $rt, "PurePath", $attr, $kernel);
+        target!($stat, $prep, $name, $rt, "PurePath", $attr, $kernel, &[(3, 14), (3, 15)]);
     };
     ($stat:ident, $prep:ident, $name:literal, $rt:ident, $owner:literal, $attr:literal, $kernel:ident) => {
+        target!($stat, $prep, $name, $rt, $owner, $attr, $kernel, &[(3, 14), (3, 15)]);
+    };
+    ($stat:ident, $prep:ident, $name:literal, $rt:ident, $owner:literal, $attr:literal, $kernel:ident, $versions:expr) => {
         fn $prep(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
             prep(cx, $owner, $attr, &$rt, $kernel)
         }
@@ -479,7 +482,7 @@ macro_rules! target {
             name: $name,
             group: "pathlib",
             module: Some("pathlib"),
-            versions: &[(3, 14), (3, 15)],
+            versions: $versions,
             free_threaded: true,
             counters: &$rt.counters,
             prepare: $prep,
@@ -493,11 +496,11 @@ macro_rules! target {
 
 target!(STR_T, prep_str, "pathlib.PurePath.__str__", RT_STR, "__str__", k_str);
 target!(TRUEDIV_T, prep_truediv, "pathlib.PurePath.__truediv__", RT_TRUEDIV, "__truediv__", k_truediv);
-target!(PARENT_T, prep_parent, "pathlib.PurePath.parent", RT_PARENT, "parent", k_parent);
-target!(NAME_T, prep_name, "pathlib.PurePath.name", RT_NAME, "name", k_name);
-target!(SUFFIX_T, prep_suffix, "pathlib.PurePath.suffix", RT_SUFFIX, "suffix", k_suffix);
-target!(STEM_T, prep_stem, "pathlib.PurePath.stem", RT_STEM, "stem", k_stem);
-target!(PARTS_T, prep_parts, "pathlib.PurePath.parts", RT_PARTS, "parts", k_parts);
+target!(PARENT_T, prep_parent, "pathlib.PurePath.parent", RT_PARENT, "PurePath", "parent", k_parent, PROPERTY_VERSIONS);
+target!(NAME_T, prep_name, "pathlib.PurePath.name", RT_NAME, "PurePath", "name", k_name, PROPERTY_VERSIONS);
+target!(SUFFIX_T, prep_suffix, "pathlib.PurePath.suffix", RT_SUFFIX, "PurePath", "suffix", k_suffix, PROPERTY_VERSIONS);
+target!(STEM_T, prep_stem, "pathlib.PurePath.stem", RT_STEM, "PurePath", "stem", k_stem, PROPERTY_VERSIONS);
+target!(PARTS_T, prep_parts, "pathlib.PurePath.parts", RT_PARTS, "PurePath", "parts", k_parts, PROPERTY_VERSIONS);
 target!(RELATIVE_TO_T, prep_relative_to, "pathlib.PurePath.relative_to", RT_RELATIVE_TO, "relative_to", k_relative_to);
 target!(EQ_T, prep_eq, "pathlib.PurePath.__eq__", RT_EQ, "__eq__", k_eq);
 target!(HASH_T, prep_hash, "pathlib.PurePath.__hash__", RT_HASH, "__hash__", k_hash);
@@ -505,6 +508,11 @@ target!(HASH_T, prep_hash, "pathlib.PurePath.__hash__", RT_HASH, "__hash__", k_h
 target!(NEW_PURE_T, prep_new_pure, "pathlib.PurePath.__new__", RT_NEW_PURE, "PurePath", "__new__", k_new_pure);
 target!(NEW_PATH_T, prep_new_path, "pathlib.Path.__new__", RT_NEW_PATH, "Path", "__new__", k_new_path);
 target!(INIT_T, prep_init, "pathlib.PurePath.__init__", RT_INIT, "__init__", k_init);
+
+/// Properties: 3.15 only. On 3.14 `LOAD_ATTR_PROPERTY` caches the fget object and pushes
+/// its frame inline without checking `func_version` (3.15 checks it), so a property access
+/// site specializes to the original and never reaches the kernel: no gain to have.
+const PROPERTY_VERSIONS: &[(u8, u8)] = &[(3, 15)];
 
 pub static TARGETS: &[&TargetSpec] = &[
     &NEW_PURE_T,

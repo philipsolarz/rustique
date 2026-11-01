@@ -17,7 +17,7 @@ builders shared with `posixpath`, `rt.rs`). Tests: `tests/targets/test_pathlib.p
 | `pathlib.PurePath.__truediv__` | `p / x` (slot) | key an exact `str` or an exact path of those two classes |
 | `pathlib.PurePath.__eq__`, `__hash__` | `==`, `hash()`, dict/set (slots) | both operands of those classes |
 | `pathlib.PurePath.relative_to` | method call | `other` an exact str or path of those classes; no `walk_up` |
-| `pathlib.PurePath.parent`, `name`, `suffix`, `stem`, `parts` | properties | receiver of those classes |
+| `pathlib.PurePath.parent`, `name`, `suffix`, `stem`, `parts` (3.15 only) | properties | receiver of those classes |
 
 Common to all: the receiver's private slots hold what pathlib itself stores (`_raw_paths`
 an exact list of exact str; parsed slots exact str / list; `_drv` empty), else fallback.
@@ -165,9 +165,30 @@ Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `py
 the four builds.
 
 
+## Startup
+
+`pathlib` is not imported by `enable()`: its thirteen targets install when it is imported
+(lazy activation). `benches/targets/paths_startup.py` (callgrind regions, 3.15.1):
+
+| region | Ir |
+|---|---:|
+| `import pathlib`, plain | 7.57M |
+| `import pathlib` after `enable(only=["pathlib"])` | STARTUP_PATHLIB_PENDING |
+| `enable(only=["pathlib"])` with pathlib imported | STARTUP_PATHLIB_ENABLE |
+
+The install work is the fingerprints (29 functions, hashed once), and per target the pins
+of the attributes, module globals and builtins its original reaches (`pin_attr` through
+`PosixPath`'s MRO). A group-level pin (one flag shared by the thirteen targets) would cut
+most of the rest; see the report.
+
 ## Version coverage
 
-3.14 and 3.15: the PurePath core is the same except `__fspath__` (3.15: alias of
+3.14 and 3.15, except the five property targets: 3.15 only. On 3.14 `LOAD_ATTR_PROPERTY`
+caches the getter function object and pushes its frame inline without checking
+`func_version` (3.15's `_LOAD_ATTR_PROPERTY_FRAME` checks it, and the specializer refuses a
+function whose version `PyFunction_SetVectorcall` cleared), so every specialized `p.name`
+site would run the original and never reach the kernel; they refuse with reason "version"
+there. The PurePath core is otherwise the same in both versions except `__fspath__` (3.15: alias of
 `__str__`, accelerated with it; 3.14: its own function calling `str(self)`, which reaches
 the `__str__` kernel) and `relative_to`'s loop (same result without `walk_up`).
 `jit_safe: true` (see Measurements: under `PYTHON_JIT=1` the steady-state cells, fallbacks included, stay within 1.05; a fallback before suspension costs +250–350 Ir, inferred from docs/atlas/mechanisms.md §1.3).

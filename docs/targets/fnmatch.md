@@ -128,6 +128,13 @@ Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `py
 the four builds.
 
 
+## Startup
+
+`rustique.enable(only=["fnmatch"])` with `fnmatch` imported: 1.9M Ir (≈ 0.5 ms; most of it
+the fingerprints of `fnmatch`, `re` and `re._parser` functions, each hashed once); when
+`fnmatch` is imported after `enable()`, the same work runs at its import
+(`benches/targets/paths_startup.py`).
+
 ## Version coverage
 
 3.14 and 3.15 (`fnmatch.py` is identical in both; fingerprints recorded per minor).
