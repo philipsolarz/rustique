@@ -167,7 +167,7 @@ and the class is not abstract (whose error CPython raises).
 | 3.14.9t | 81 pass | 6 pass | 279 pass, 1 skip | 0 |
 
 Same pass/fail/skip sets with and without Rustique; every target asserted `installed`.
-Full `pytest -q`: 4126 passed (3.15.1, 3.14.9), 4129 passed (3.15.1t, 3.14.9t).
+Full `pytest -q`: 4140 passed, 11 skipped (3.15.1, 3.14.9); 4143 passed, 8 skipped (3.15.1t, 3.14.9t).
 
 ## 7. Measurements
 
