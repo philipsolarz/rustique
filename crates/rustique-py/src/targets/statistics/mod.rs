@@ -198,7 +198,7 @@ unsafe fn float_sqrt_of_frac(o: &mut Owned, num: O, den: O) -> Option<O> {
                 ffi::PyErr_Clear();
                 return None;
             }
-            let bit = o.k(ffi::PyLong_FromLong(ne.into()))?;
+            let bit = o.k(ffi::PyLong_FromLong(std::ffi::c_long::from(ne != 0)))?;
             o.k(ffi::PyNumber_Or(a, bit))
         };
         let (numer, denom) = if q >= 0 {

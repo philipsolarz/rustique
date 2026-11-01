@@ -15,7 +15,9 @@
 //! - Dependencies (module globals, builtins, `sys.modules` entries) are watched by
 //!   [`super::watch`] and re-validated by value whenever the generation moves.
 
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::CStr;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+use std::ffi::{c_char, c_int, c_void};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

@@ -289,7 +289,9 @@ impl<const N: usize> TypeCache<N> {
 // calibrated at install against `PyObject_GenericGetAttr` on `logging.root`.
 // ---------------------------------------------------------------------------------------
 
+#[cfg(not(Py_GIL_DISABLED))]
 static INLINE_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(not(Py_GIL_DISABLED))]
 const TPFLAGS_INLINE_VALUES: std::ffi::c_ulong = 1 << 2;
 
 /// `_PyObject_InlineValues(obj)` when the type has inline values and they are valid.
