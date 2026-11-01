@@ -48,15 +48,14 @@ def enable(
     variables (the switches of docs/ACCELERATION.md §8 are the DX layer's). Returns
     :func:`status`.
     """
-    st = _accel.enable(only, exclude, builtins, quiet=bool(native))
+    _accel.enable(only, exclude, builtins)
     if native:
         from rustique._takeover import _hook
 
         patterns = (native,) if isinstance(native, str) else tuple(native)
         _hook.install(patterns)
         _accel._set_native(list(_hook.patterns()))
-        st = _accel.status()
-    return st
+    return _accel.status()
 
 
 def disable() -> dict[str, object]:
@@ -65,7 +64,8 @@ def disable() -> dict[str, object]:
     if "rustique._takeover._hook" in sys.modules:
         sys.modules["rustique._takeover._hook"].uninstall()
     _accel._set_native([])
-    return _accel.disable()
+    _accel.disable()
+    return _accel.status()
 
 
 def status() -> dict[str, object]:
