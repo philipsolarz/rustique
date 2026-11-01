@@ -1,63 +1,43 @@
-//! Plumbing shared by the utils groups (`random`, `textwrap`, `urllib`, `statistics`,
-//! `ipaddress`): pure-Python function targets installed with `PyFunction_SetVectorcall`
-//! (docs/ACCELERATION.md §3.7), their per-call guards (§4) and a private install/uninstall
-//! used until accel-core's `TargetSpec` registry lands (then `prepare` maps onto it).
+//! Helpers shared by the utils groups (`random`, `textwrap`, `urllib`, `statistics`,
+//! `ipaddress`): pure-Python function targets on top of the accel registry.
 //!
 //! OWNER: utils workstream.
 //!
-//! A [`FnTarget`] names one function (`random.Random.randint`), its kernel, the minors it is
-//! validated on with the fingerprint of the original's code per minor, and the module
-//! globals/builtins the original reads at call time (pinned through `accel::guard::pin`).
-//! Install, per target and all-or-nothing: version gate, exact `function` object found in
-//! the module or class `__dict__` (never through `getattr`), fingerprint, the original
-//! vectorcall is `_PyFunction_Vectorcall`, target-specific preparation and self-test,
-//! dependency pins, then the site swap.
-//!
-//! Per call a kernel checks, before anything observable: its own argument subset, then
-//! [`Guard::ready`]: the function still has the code/defaults/kwdefaults it was validated
-//! with (assignments to `__code__`/`__defaults__` keep the patched vectorcall), the pinned
-//! dependencies are intact, and no tool listens (global `PY_START` or local events on the
-//! code), so tools see CPython's frames. Otherwise it calls the saved original with the
-//! unchanged arguments.
+//! - [`Guard`]: per-target counters, dependency flag, tools scope, plus the identity of the
+//!   patched function's code/defaults/kwdefaults (assigning `__code__` or `__defaults__`
+//!   keeps the patched vectorcall, so the kernel checks it still runs the validated code).
+//! - [`InstLayout`]: a calibrated, side-effect-free "may this instance have attribute
+//!   `name` in its `__dict__`?" for objects with inline values (CPython 3.13+ layout),
+//!   used to decide `self.method` lookups without `_PyObject_GetMethod`'s cost.
+//! - small exact-type helpers (ints, critical sections, keyword binding).
 
-use std::ffi::c_int;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::Relaxed};
+use std::ffi::{CStr, c_int};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicUsize, Ordering::Relaxed};
 
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyFrozenSet, PyList, PyString, PyTuple};
+use pyo3::types::PyString;
 
-use crate::accel::guard::{self, DepFlag, Tools};
-use crate::accel::site::Site;
-use crate::accel::stats::{self, Counters, Reason};
-use crate::accel::version;
+use crate::accel::{self, Counters, DepFlag, Original, Prepare, Reason, Refusal, Tools};
 
 pub type O = *mut ffi::PyObject;
 
+/// `_PyObject_GetMethod(obj, name, &method)` (`PyAPI_FUNC`, internal headers, 3.14/3.15):
+/// the lookup behind `LOAD_ATTR` for a method call. 1 + the unbound descriptor when the
+/// type provides a method descriptor that the instance does not shadow; else 0 and the
+/// attribute (or NULL with an error).
+pub type GetMethodFn = unsafe extern "C" fn(O, O, *mut O) -> c_int;
+pub static GET_METHOD: Original<GetMethodFn> = Original::new();
+
 unsafe extern "C" {
-    /// `PyAPI_FUNC` in `Include/internal/pycore_object.h` (3.14, 3.15): the lookup behind
-    /// `LOAD_ATTR` for a method call. Returns 1 and the unbound descriptor when the type
-    /// provides a method descriptor that the instance does not shadow, else 0 and the
-    /// attribute (or NULL with an error).
-    pub fn _PyObject_GetMethod(obj: O, name: O, method: *mut O) -> c_int;
     /// `PyAPI_FUNC` in `Include/cpython/object.h`: MRO lookup, borrowed (compare only).
     pub fn _PyType_Lookup(tp: *mut ffi::PyTypeObject, name: O) -> O;
 }
 
-/// `_PyFunction_Vectorcall`, read from the first function patched (every other site must
-/// hold the same pointer before it is patched).
-static PYFUNC_VC: AtomicUsize = AtomicUsize::new(0);
-
-/// Call the saved original with the unchanged arguments.
-///
-/// # Safety
-/// Vectorcall arguments as received by a kernel installed by [`install_group`].
-#[inline(always)]
-pub unsafe fn call_original(func: O, args: *const O, nargsf: usize, kw: O) -> O {
-    // SAFETY: the saved `_PyFunction_Vectorcall` (set before any kernel is installed).
-    unsafe { std::mem::transmute::<usize, ffi::vectorcallfunc>(PYFUNC_VC.load(Relaxed))(func, args, nargsf, kw) }
+/// Resolve the internal-but-exported symbols the utils kernels call.
+pub fn prepare_symbols(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    cx.symbol(c"_PyObject_GetMethod", &GET_METHOD)?;
+    Ok(())
 }
 
 #[inline(always)]
@@ -65,18 +45,31 @@ pub fn nargs(nargsf: usize) -> usize {
     nargsf & !ffi::PY_VECTORCALL_ARGUMENTS_OFFSET
 }
 
+/// # Safety
+/// Live object.
 #[inline(always)]
 pub unsafe fn is_type(o: O, t: *mut ffi::PyTypeObject) -> bool {
-    // SAFETY: live object.
+    // SAFETY: per the caller.
     unsafe { ffi::Py_TYPE(o) == t }
 }
 
-/// Per-call guard state of one target.
+/// Fall back: CPython's `_PyFunction_Vectorcall` with the unchanged arguments.
+///
+/// # Safety
+/// Vectorcall arguments as received by a kernel installed through
+/// `cx.vectorcall(.., &accel::FUNCTION_VECTORCALL)`.
+#[inline(always)]
+pub unsafe fn call_original(func: O, args: *const O, nargsf: usize, kw: O) -> O {
+    // SAFETY: per the caller.
+    unsafe { accel::FUNCTION_VECTORCALL.get()(func, args, nargsf, kw) }
+}
+
+/// Per-target guard state.
 pub struct Guard {
     code: AtomicPtr<ffi::PyObject>,
     defaults: AtomicPtr<ffi::PyObject>,
     kwdefaults: AtomicPtr<ffi::PyObject>,
-    tools: Tools,
+    pub tools: Tools,
     pub deps: DepFlag,
     pub counters: Counters,
 }
@@ -93,8 +86,9 @@ impl Guard {
         }
     }
 
-    /// Everything but the argument subset: the function is the one validated, the pinned
-    /// dependencies are intact, no tool listens. Counts the reason when it says no.
+    /// Everything but the argument subset: the function still has the validated
+    /// code/defaults/kwdefaults, the pinned dependencies are intact, no tool listens.
+    /// Counts the reason when it says no.
     ///
     /// # Safety
     /// `func` is the patched function object (attached thread).
@@ -111,7 +105,7 @@ impl Guard {
                 self.counters.fallback(Reason::Deps);
                 return false;
             }
-            if !self.tools.quiet() || !guard::code_locally_quiet((*f).func_code) {
+            if !accel::tools_quiet(&self.tools, func) {
                 self.counters.fallback(Reason::Tools);
                 return false;
             }
@@ -119,9 +113,10 @@ impl Guard {
         }
     }
 
-    fn capture(&self, func: &Bound<'_, PyAny>) {
+    /// Record the identity of `func`'s code and defaults (compared by address only).
+    pub fn capture(&self, func: &Bound<'_, PyAny>) {
         let f = func.as_ptr().cast::<ffi::PyFunctionObject>();
-        // SAFETY: exact function object (checked by the caller).
+        // SAFETY: exact function object (the caller declares a vectorcall site on it).
         unsafe {
             self.code.store((*f).func_code, Relaxed);
             self.defaults.store((*f).func_defaults, Relaxed);
@@ -136,300 +131,229 @@ impl Default for Guard {
     }
 }
 
-/// Target-specific preparation: fill the kernel's statics, run the self-test. `Ok(Err)` is
-/// a refusal (reason), `Err` an unexpected Python error (also a refusal).
-pub type Prepare = fn(Python<'_>, &Bound<'_, PyModule>) -> PyResult<Result<(), String>>;
-
-/// One pure-Python function target.
-pub struct FnTarget {
-    /// Dotted target name, e.g. `random.randint`.
-    pub name: &'static str,
-    pub group: &'static str,
-    /// Module that defines the function (must already be imported).
-    pub module: &'static str,
-    /// Attribute path inside the module, through `__dict__`s: `["Random", "randint"]`.
-    pub path: &'static [&'static str],
-    pub kernel: ffi::vectorcallfunc,
-    /// `(minor, fingerprint of the original's code)` for each validated 3.x minor.
-    pub fingerprints: &'static [(u8, u64)],
-    /// Validated on free-threaded builds too.
-    pub free_threaded: bool,
-    /// `(module, global)` pairs the original reads at call time, pinned to their objects.
-    pub deps: &'static [(&'static str, &'static str)],
-    pub guard: &'static Guard,
-    pub prepare: Option<Prepare>,
+/// Pin what `LOAD_GLOBAL name` resolves to in `globals`, for each name.
+pub fn pin_globals(
+    cx: &mut Prepare<'_>,
+    globals: &Bound<'_, pyo3::types::PyDict>,
+    names: &[&str],
+    flag: &'static DepFlag,
+) -> Result<(), Refusal> {
+    for n in names {
+        cx.pin_global(globals, n, flag)?;
+    }
+    Ok(())
 }
 
-/// Install state of one target (what `status()` reports).
-#[derive(Debug)]
-pub struct Entry {
-    pub name: &'static str,
-    pub group: &'static str,
-    pub state: &'static str,
-    pub reason: Option<String>,
-    pub site: Option<Site>,
-    pub versions: Vec<u8>,
+// ---------------------------------------------------------------------------------------
+// Instance attribute check (inline values).
+// ---------------------------------------------------------------------------------------
+
+/// Calibrated layout of objects whose type has `Py_TPFLAGS_INLINE_VALUES` (3.13+): the
+/// managed `__dict__` pointer before the object and the inline values after
+/// `tp_basicsize` (`struct _dictvalues { u8 capacity, size, embedded, valid; values[] }`),
+/// plus `dk_nentries` of the type's shared keys (`ht_cached_keys`).
+///
+/// Invariant used (CPython 3.13–3.15, `Objects/dictobject.c`): while an object's inline
+/// values are `valid` and no dict was materialized for it, its attributes are exactly the
+/// shared keys with a non-NULL value; shared keys only ever grow (`dk_nentries` counts
+/// insertions). So if `name` was absent from the shared keys when they had `n` entries
+/// and they still have `n`, no such object has `name` in its `__dict__`.
+pub struct InstLayout {
+    ok: AtomicBool,
+    dict_off: AtomicIsize,
+    lookup: AtomicUsize,
 }
 
-/// The install state of a group (one per group, a static).
-pub type GroupState = Mutex<Vec<Entry>>;
+pub static INST: InstLayout =
+    InstLayout { ok: AtomicBool::new(false), dict_off: AtomicIsize::new(0), lookup: AtomicUsize::new(0) };
 
-fn sys_module<'py>(py: Python<'py>, name: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
-    let modules = py.import("sys")?.getattr("modules")?;
-    let m = modules.cast::<PyDict>()?.get_item(name)?;
-    Ok(m)
+/// `Py_TPFLAGS_INLINE_VALUES` (object.h, 3.13+).
+const TPFLAGS_INLINE_VALUES: std::ffi::c_ulong = 1 << 2;
+const DK_NENTRIES_OFF: usize = 24;
+
+type StringLookupFn = unsafe extern "C" fn(*mut u8, O) -> ffi::Py_ssize_t;
+
+#[cfg(unix)]
+fn dlsym(name: &CStr) -> usize {
+    unsafe extern "C" {
+        fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    }
+    #[cfg(target_os = "macos")]
+    let handle = -2isize as *mut std::ffi::c_void;
+    #[cfg(not(target_os = "macos"))]
+    let handle = std::ptr::null_mut();
+    // SAFETY: NUL-terminated name.
+    unsafe { dlsym(handle, name.as_ptr()) as usize }
 }
 
-/// The object at `path` inside module `m`, through `__dict__` lookups only.
-fn resolve<'py>(m: &Bound<'py, PyAny>, path: &[&str]) -> PyResult<Option<Bound<'py, PyAny>>> {
-    let mut cur = m.clone();
-    for part in path {
-        let d = cur.getattr("__dict__")?;
-        let next = if let Ok(d) = d.cast::<PyDict>() {
-            d.get_item(*part)?
-        } else {
-            // mappingproxy of a class
-            match d.get_item(*part) {
-                Ok(v) => Some(v),
-                Err(e) if e.is_instance_of::<pyo3::exceptions::PyKeyError>(m.py()) => None,
-                Err(e) => return Err(e),
+#[cfg(not(unix))]
+fn dlsym(_name: &CStr) -> usize {
+    0
+}
+
+impl InstLayout {
+    /// Calibrate once (no Python code runs: a class is created by calling `type`, an
+    /// instance's attributes set and its dict materialized through the generic C paths).
+    /// On any mismatch the fast check stays off and kernels use `_PyObject_GetMethod`
+    /// (exact, slower).
+    pub fn calibrate(&self, py: Python<'_>) -> PyResult<bool> {
+        if self.ok.load(Relaxed) {
+            return Ok(true);
+        }
+        let lookup = dlsym(c"_PyDictKeys_StringLookup");
+        if lookup == 0 {
+            return Ok(false);
+        }
+        let dict_off: isize = if cfg!(Py_GIL_DISABLED) { -8 } else { -24 };
+        // SAFETY: C-level object creation and layout reads on probe objects we own.
+        let ok = unsafe {
+            let ty = ffi::PyObject_CallFunction(
+                (&raw mut ffi::PyType_Type).cast(),
+                c"s()N".as_ptr(),
+                c"_rustique_inline_probe".as_ptr(),
+                ffi::PyDict_New(),
+            );
+            if ty.is_null() {
+                return Err(PyErr::fetch(py));
             }
+            let ty = Bound::from_owned_ptr(py, ty);
+            let tp = ty.as_ptr().cast::<ffi::PyTypeObject>();
+            if (*tp).tp_flags & TPFLAGS_INLINE_VALUES == 0 {
+                return Ok(false);
+            }
+            let obj = Bound::from_owned_ptr_or_err(py, ffi::PyObject_CallNoArgs(ty.as_ptr()))?;
+            let o = obj.as_ptr();
+            let sentinel = PyString::new(py, "sentinel");
+            let name_a = PyString::intern(py, "a");
+            let name_b = PyString::intern(py, "b");
+            if ffi::PyObject_SetAttr(o, name_a.as_ptr(), sentinel.as_ptr()) < 0 {
+                return Err(PyErr::fetch(py));
+            }
+            let values = o.cast::<u8>().add((*tp).tp_basicsize as usize);
+            let keys = (*tp.cast::<ffi::PyHeapTypeObject>()).ht_cached_keys.cast::<u8>();
+            let dictp = o.cast::<u8>().offset(dict_off).cast::<O>();
+            let f = std::mem::transmute::<usize, StringLookupFn>(lookup);
+            let mut ok = !keys.is_null()
+                && *values.add(3) == 1
+                && *values.add(8).cast::<O>() == sentinel.as_ptr()
+                && (*dictp).is_null()
+                && *keys.add(DK_NENTRIES_OFF).cast::<usize>() == 1
+                && f(keys, name_a.as_ptr()) == 0
+                && f(keys, name_b.as_ptr()) < 0;
+            if ok {
+                if ffi::PyObject_SetAttr(o, name_b.as_ptr(), sentinel.as_ptr()) < 0 {
+                    return Err(PyErr::fetch(py));
+                }
+                ok = *keys.add(DK_NENTRIES_OFF).cast::<usize>() == 2 && f(keys, name_b.as_ptr()) == 1;
+            }
+            if ok {
+                // Materialize the dict: the pointer must appear where we read it.
+                let d = ffi::PyObject_GenericGetDict(o, std::ptr::null_mut());
+                if d.is_null() {
+                    return Err(PyErr::fetch(py));
+                }
+                ok = *dictp == d;
+                ffi::Py_DECREF(d);
+            }
+            ok
         };
-        match next {
-            Some(n) => cur = n,
-            None => return Ok(None),
+        if ok {
+            self.dict_off.store(dict_off, Relaxed);
+            self.lookup.store(lookup, Relaxed);
+            self.ok.store(true, Relaxed);
+        }
+        Ok(ok)
+    }
+
+    #[inline(always)]
+    pub fn enabled(&self) -> bool {
+        self.ok.load(Relaxed)
+    }
+
+    /// The shared keys of `tp` (NULL when it has none, does not use inline values, or the
+    /// layout is not calibrated).
+    ///
+    /// # Safety
+    /// Live type.
+    #[inline(always)]
+    pub unsafe fn shared_keys(&self, tp: *mut ffi::PyTypeObject) -> *mut u8 {
+        // SAFETY: heap type field read after the flag checks.
+        unsafe {
+            if !self.enabled()
+                || (*tp).tp_flags & TPFLAGS_INLINE_VALUES == 0
+                || (*tp).tp_flags & ffi::Py_TPFLAGS_HEAPTYPE == 0
+            {
+                return std::ptr::null_mut();
+            }
+            (*tp.cast::<ffi::PyHeapTypeObject>()).ht_cached_keys.cast()
         }
     }
-    Ok(Some(cur))
-}
 
-/// Install every target of a group that is not installed yet; returns nothing — the
-/// outcome of each target is in `state` (and `status()`).
-pub fn install_group(py: Python<'_>, targets: &[FnTarget], state: &GroupState) -> PyResult<()> {
-    guard::set_main_interpreter();
-    let mut entries = state.lock().map_err(|_| PyRuntimeError::new_err("poisoned"))?;
-    for t in targets {
-        let pos = entries.iter().position(|e| e.name == t.name);
-        if let Some(p) = pos
-            && entries[p].state == "installed"
-        {
-            continue;
-        }
-        let versions: Vec<u8> = t.fingerprints.iter().map(|(m, _)| *m).collect();
-        let (st, reason, site) = match install_one(py, t, &versions) {
-            Ok(Ok(site)) => ("installed", None, Some(site)),
-            Ok(Err((st, why))) => (st, Some(why), None),
-            Err(e) => ("refused", Some(format!("error: {e}")), None),
-        };
-        let entry = Entry { name: t.name, group: t.group, state: st, reason, site, versions };
-        match pos {
-            Some(p) => entries[p] = entry,
-            None => entries.push(entry),
-        }
+    /// Entries of shared keys.
+    ///
+    /// # Safety
+    /// Keys from [`Self::shared_keys`].
+    #[inline(always)]
+    pub unsafe fn nentries(&self, keys: *mut u8) -> usize {
+        // SAFETY: calibrated offset.
+        unsafe { std::ptr::read_volatile(keys.add(DK_NENTRIES_OFF).cast::<usize>()) }
     }
-    Ok(())
-}
 
-type Refusal = (&'static str, String);
+    /// Is `name` absent from these shared keys?
+    ///
+    /// # Safety
+    /// Keys from [`Self::shared_keys`]; `name` an exact str.
+    pub unsafe fn absent(&self, keys: *mut u8, name: O) -> bool {
+        // SAFETY: calibrated symbol.
+        unsafe { std::mem::transmute::<usize, StringLookupFn>(self.lookup.load(Relaxed))(keys, name) < 0 }
+    }
 
-fn install_one(py: Python<'_>, t: &FnTarget, versions: &[u8]) -> PyResult<Result<Site, Refusal>> {
-    if let Err(why) = version::supported(py, versions)? {
-        return Ok(Err(("refused", why)));
-    }
-    if cfg!(Py_GIL_DISABLED) && !t.free_threaded {
-        return Ok(Err(("refused", "not validated on free-threaded builds".into())));
-    }
-    let Some(module) = sys_module(py, t.module)? else {
-        return Ok(Err(("pending-import", format!("{} not imported", t.module))));
-    };
-    let Some(func) = resolve(&module, t.path)? else {
-        return Ok(Err(("refused", format!("{}.{} not found", t.module, t.path.join(".")))));
-    };
-    // SAFETY: type check of a live object.
-    if unsafe { !is_type(func.as_ptr(), &raw mut ffi::PyFunction_Type) } {
-        return Ok(Err(("refused", "not a pure-Python function".into())));
-    }
-    let minor = version::compiled_minor();
-    let fp = code_fingerprint(&func.getattr("__code__")?)?;
-    match t.fingerprints.iter().find(|(m, _)| *m == minor) {
-        Some((_, want)) if *want == fp => {}
-        _ => return Ok(Err(("refused", format!("fingerprint {fp:#018x} not validated")))),
-    }
-    // SAFETY: exact function object.
-    let vc = unsafe { (*func.as_ptr().cast::<ffi::PyFunctionObject>()).vectorcall.map_or(0, |f| f as usize) };
-    let saved = PYFUNC_VC.load(Relaxed);
-    if saved == 0 {
-        if vc == 0 {
-            return Ok(Err(("refused", "function has no vectorcall".into())));
-        }
-        PYFUNC_VC.store(vc, Relaxed);
-    } else if saved != vc {
-        return Ok(Err(("refused", "vectorcall is not _PyFunction_Vectorcall (already patched?)".into())));
-    }
-    if let Some(prep) = t.prepare {
-        match prep(py, module.cast::<PyModule>()?) {
-            Ok(Ok(())) => {}
-            Ok(Err(why)) => return Ok(Err(("refused", why))),
-            Err(e) => return Ok(Err(("refused", format!("self-test error: {e}")))),
+    /// Does `obj` (of an inline-values type) use only its inline values (valid, no
+    /// materialized dict)?
+    ///
+    /// # Safety
+    /// Live object of an inline-values type; layout calibrated.
+    #[inline(always)]
+    pub unsafe fn inline_only(&self, obj: O) -> bool {
+        // SAFETY: calibrated offsets.
+        unsafe {
+            let tp = ffi::Py_TYPE(obj);
+            let values = obj.cast::<u8>().add((*tp).tp_basicsize as usize);
+            let dictp = obj.cast::<u8>().offset(self.dict_off.load(Relaxed)).cast::<O>();
+            std::ptr::read_volatile(values.add(3)) == 1 && std::ptr::read_volatile(dictp).is_null()
         }
     }
-    for (m, key) in t.deps {
-        let Some(dm) = sys_module(py, m)? else {
-            return Ok(Err(("refused", format!("dependency module {m} not imported"))));
-        };
-        let d = dm.getattr("__dict__")?;
-        guard::pin(d.cast::<PyDict>()?, key, &t.guard.deps)
-            .map_err(|e| PyRuntimeError::new_err(format!("pin {m}.{key}: {e}")))?;
-    }
-    t.guard.capture(&func);
-    let mut site = Site::vectorcall(&func, t.kernel as usize)?;
-    if let Err(e) = site.install() {
-        let why = e.to_string();
-        site.release();
-        return Ok(Err(("refused", why)));
-    }
-    Ok(Ok(site))
 }
 
-/// Restore every installed target of a group (and the functions' specializer versions).
-pub fn uninstall_group(state: &GroupState) -> PyResult<()> {
-    let mut entries = state.lock().map_err(|_| PyRuntimeError::new_err("poisoned"))?;
-    for e in entries.iter_mut() {
-        if let Some(mut site) = e.site.take() {
-            site.uninstall(true);
-            site.release();
+/// Does `self.<name>` resolve to the class attribute `expect` (not shadowed by the
+/// instance)? Exact `LOAD_ATTR` semantics through `_PyObject_GetMethod`; pure when
+/// `expect` is a function or method descriptor (no `__get__` runs) and the type's
+/// `tp_getattro` is the generic one (callers check).
+///
+/// # Safety
+/// Attached thread; symbols prepared.
+#[inline]
+pub unsafe fn unshadowed(slf: O, name: O, expect: O) -> bool {
+    // SAFETY: GetMethod returns a new reference or NULL with an error.
+    unsafe {
+        let mut m: O = std::ptr::null_mut();
+        let found = GET_METHOD.get()(slf, name, &mut m);
+        if m.is_null() {
+            ffi::PyErr_Clear();
+            return false;
         }
-        e.state = "disabled";
-        e.reason = None;
-    }
-    Ok(())
-}
-
-/// `rustique.status()`-shaped entries of a group.
-pub fn status_list<'py>(py: Python<'py>, state: &GroupState) -> PyResult<Bound<'py, PyList>> {
-    let entries = state.lock().map_err(|_| PyRuntimeError::new_err("poisoned"))?;
-    let out = PyList::empty(py);
-    for e in entries.iter() {
-        let d = PyDict::new(py);
-        d.set_item("name", e.name)?;
-        d.set_item("group", e.group)?;
-        d.set_item("state", e.state)?;
-        d.set_item("reason", e.reason.as_deref())?;
-        let sites: Vec<String> = e.site.iter().map(|s| format!("vectorcall:{}", s.name)).collect();
-        d.set_item("sites", sites)?;
-        d.set_item("versions", e.versions.iter().map(|m| format!("3.{m}")).collect::<Vec<_>>())?;
-        out.append(d)?;
-    }
-    Ok(out)
-}
-
-/// Counters of the targets of a group: `{name: {"hits": n, "args": n, ...}}`.
-pub fn counters_dict<'py>(py: Python<'py>, targets: &[FnTarget]) -> PyResult<Bound<'py, PyDict>> {
-    let out = PyDict::new(py);
-    for t in targets {
-        let (hits, fb) = t.guard.counters.snapshot();
-        let d = PyDict::new(py);
-        d.set_item("hits", hits)?;
-        for (k, v) in fb {
-            d.set_item(k, v)?;
-        }
-        out.set_item(t.name, d)?;
-    }
-    Ok(out)
-}
-
-pub fn reset_counters(targets: &[FnTarget]) {
-    for t in targets {
-        t.guard.counters.reset();
+        let ok = found == 1 && m == expect;
+        ffi::Py_DECREF(m);
+        ok
     }
 }
 
-pub fn set_stats(on: bool) {
-    stats::ON.store(on, Relaxed);
-}
-
-// ---------------------------------------------------------------------------------------
-// Code fingerprint (contract §3.2): path- and line-independent hash of a code object.
-// ---------------------------------------------------------------------------------------
-
-struct Fnv(u64);
-
-impl Fnv {
-    fn bytes(&mut self, b: &[u8]) {
-        for &x in b {
-            self.0 ^= u64::from(x);
-            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        self.0 ^= b.len() as u64;
-        self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    fn tag(&mut self, t: &str) {
-        self.bytes(t.as_bytes());
-    }
-}
-
-fn hash_const(h: &mut Fnv, c: &Bound<'_, PyAny>) -> PyResult<()> {
-    // SAFETY: type pointer comparison.
-    if unsafe { is_type(c.as_ptr(), &raw mut ffi::PyCode_Type) } {
-        h.tag("code");
-        return hash_code(h, c);
-    }
-    if let Ok(t) = c.cast::<PyTuple>() {
-        h.tag("tuple");
-        h.bytes(&(t.len() as u64).to_le_bytes());
-        for x in t.iter() {
-            hash_const(h, &x)?;
-        }
-        return Ok(());
-    }
-    if let Ok(fs) = c.cast::<PyFrozenSet>() {
-        h.tag("frozenset");
-        let mut reprs: Vec<String> = fs.iter().map(|x| x.repr().map(|r| r.to_string())).collect::<PyResult<_>>()?;
-        reprs.sort();
-        for r in reprs {
-            h.tag(&r);
-        }
-        return Ok(());
-    }
-    h.tag(&c.get_type().name()?.to_string());
-    h.tag(&c.repr()?.to_string());
-    Ok(())
-}
-
-fn hash_code(h: &mut Fnv, code: &Bound<'_, PyAny>) -> PyResult<()> {
-    for attr in ["co_argcount", "co_posonlyargcount", "co_kwonlyargcount", "co_flags"] {
-        h.bytes(&code.getattr(attr)?.extract::<i64>()?.to_le_bytes());
-    }
-    h.tag(&code.getattr("co_name")?.extract::<String>()?);
-    h.bytes(code.getattr("co_code")?.cast::<PyBytes>()?.as_bytes());
-    h.bytes(code.getattr("co_exceptiontable")?.cast::<PyBytes>()?.as_bytes());
-    for attr in ["co_names", "co_varnames", "co_freevars", "co_cellvars"] {
-        let t = code.getattr(attr)?;
-        let t = t.cast::<PyTuple>()?;
-        h.tag(attr);
-        for s in t.iter() {
-            h.tag(&s.cast::<PyString>()?.to_cow()?);
-        }
-    }
-    h.tag("consts");
-    for c in code.getattr("co_consts")?.cast::<PyTuple>()?.iter() {
-        hash_const(h, &c)?;
-    }
-    Ok(())
-}
-
-/// Canonical fingerprint of a code object: bytecode, exception table, names, argument
-/// counts, flags and constants (recursively); independent of file name and line numbers.
-pub fn code_fingerprint(code: &Bound<'_, PyAny>) -> PyResult<u64> {
-    let mut h = Fnv(0xcbf2_9ce4_8422_2325);
-    hash_code(&mut h, code)?;
-    Ok(h.0)
-}
-
-/// `code_fingerprint(func.__code__)` for Python (used to record fingerprints per build).
-#[pyfunction]
-pub fn fingerprint(func: &Bound<'_, PyAny>) -> PyResult<u64> {
-    code_fingerprint(&func.getattr("__code__")?)
+/// # Safety
+/// Live type.
+#[inline(always)]
+pub unsafe fn generic_getattro(tp: *mut ffi::PyTypeObject) -> bool {
+    // SAFETY: per the caller.
+    unsafe { (*tp).tp_getattro.map(|f| f as usize) == Some(ffi::PyObject_GenericGetAttr as *const () as usize) }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -447,27 +371,28 @@ pub fn keep(slot: &AtomicPtr<ffi::PyObject>, obj: &Bound<'_, PyAny>) {
     slot.store(obj.clone().into_ptr(), Relaxed);
 }
 
-/// Value of an exact `int` (or `bool`) that fits an `i64`, without side effects.
+/// Value of an `int` (any subclass, e.g. `bool`, `IntEnum`: read without calling Python
+/// code, as `operator.index` does) that fits an `i64`.
 ///
 /// # Safety
 /// Live object; attached thread.
 #[inline(always)]
 pub unsafe fn int_value(o: O) -> Option<i64> {
-    // SAFETY: type-checked conversions; overflow reported through the flag (no error set).
+    // SAFETY: int objects only; overflow reported through the flag (no error set).
     unsafe {
-        let t = ffi::Py_TYPE(o);
-        if t == &raw mut ffi::PyLong_Type {
-            let mut overflow: c_int = 0;
-            let v = ffi::PyLong_AsLongLongAndOverflow(o, &mut overflow);
-            if overflow == 0 && !(v == -1 && !ffi::PyErr_Occurred().is_null()) {
-                return Some(v);
-            }
-            None
-        } else if t == &raw mut ffi::PyBool_Type {
-            Some(i64::from(o == ffi::Py_True()))
-        } else {
-            None
+        if ffi::PyLong_Check(o) == 0 {
+            return None;
         }
+        let mut overflow: c_int = 0;
+        let v = ffi::PyLong_AsLongLongAndOverflow(o, &mut overflow);
+        if overflow != 0 {
+            return None;
+        }
+        if v == -1 && !ffi::PyErr_Occurred().is_null() {
+            ffi::PyErr_Clear();
+            return None;
+        }
+        Some(v)
     }
 }
 
@@ -540,12 +465,34 @@ pub unsafe fn with_cs2<R>(a: O, b: O, f: impl FnOnce() -> R) -> R {
     }
 }
 
-/// Is `kw` (a kwnames tuple entry) the interned name `name`? Exact str only.
+/// Bind a vectorcall's arguments to parameters: positional ones first, then keywords by
+/// name. `None`: an unknown keyword, a duplicate, or too many positionals (the original
+/// raises). Slots of unbound parameters are NULL.
 ///
 /// # Safety
-/// Live str objects.
-#[inline(always)]
-pub unsafe fn name_is(kw: O, name: O) -> bool {
-    // SAFETY: both str.
-    unsafe { kw == name || (is_type(kw, &raw mut ffi::PyUnicode_Type) && ffi::PyUnicode_Compare(kw, name) == 0) }
+/// Vectorcall arguments; `names` are interned str.
+#[inline]
+pub unsafe fn bind<const K: usize>(args: *const O, npos: usize, kw: O, names: [O; K]) -> Option<[O; K]> {
+    // SAFETY: kwnames tuple of str and its values after the positional arguments.
+    unsafe {
+        if npos > K {
+            return None;
+        }
+        let mut out = [std::ptr::null_mut(); K];
+        for (i, slot) in out.iter_mut().enumerate().take(npos) {
+            *slot = *args.add(i);
+        }
+        if kw.is_null() {
+            return Some(out);
+        }
+        for i in 0..ffi::PyTuple_GET_SIZE(kw) as usize {
+            let k = ffi::PyTuple_GET_ITEM(kw, i as ffi::Py_ssize_t);
+            let slot = (0..K).find(|&j| k == names[j] || ffi::PyUnicode_Compare(k, names[j]) == 0)?;
+            if !out[slot].is_null() {
+                return None;
+            }
+            out[slot] = *args.add(npos + i);
+        }
+        Some(out)
+    }
 }

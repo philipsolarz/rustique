@@ -148,3 +148,82 @@ pub fn supported(py: Python<'_>, validated: &[u8]) -> PyResult<Result<(), String
     }
     Ok(Ok(()))
 }
+
+// ---------------------------------------------------------------------------------------
+// The registry's gate (docs/ACCELERATION.md §3.2).
+// ---------------------------------------------------------------------------------------
+
+/// Running `(major, minor)`.
+pub fn running() -> (u8, u8) {
+    let v = runtime_version();
+    (((v >> 24) & 0xff) as u8, ((v >> 16) & 0xff) as u8)
+}
+
+/// Running on a free-threaded build (this extension is compiled per ABI, so compile time
+/// tells).
+pub const FREE_THREADED: bool = cfg!(Py_GIL_DISABLED);
+
+static PROCESS: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+
+/// Facts every target needs: a final release, not a debug build, the minor this extension
+/// was compiled for. Computed once, without importing anything.
+pub fn process_gate() -> Result<(), String> {
+    PROCESS
+        .get_or_init(|| {
+            let v = runtime_version();
+            let (major, minor, level) = ((v >> 24) & 0xff, (v >> 16) & 0xff, (v >> 4) & 0xf);
+            if major != 3 || minor as u8 != compiled_minor() {
+                return Err(format!("CPython {major}.{minor}: extension compiled for 3.{}", compiled_minor()));
+            }
+            if level != 0xf {
+                return Err(format!("CPython {major}.{minor} pre-release ({v:#x})"));
+            }
+            // SAFETY: attached thread (callers hold the registry lock); borrowed lookup in
+            // the sys module dict, no import.
+            if !unsafe { ffi::PySys_GetObject(c"gettotalrefcount".as_ptr()) }.is_null() {
+                return Err("debug build".into());
+            }
+            // SAFETY: static type object read.
+            let vc_off = unsafe { ffi::PyFunction_Type.tp_vectorcall_offset } as usize;
+            if vc_off != std::mem::offset_of!(ffi::PyFunctionObject, vectorcall) {
+                return Err("PyFunctionObject layout differs".into());
+            }
+            Ok(())
+        })
+        .clone()
+}
+
+/// Per-target part of the gate: validated minor and free-threading.
+pub fn target_gate(versions: &[(u8, u8)], free_threaded: bool) -> Result<(), String> {
+    process_gate()?;
+    let (major, minor) = running();
+    if !versions.contains(&(major, minor)) {
+        return Err(format!("CPython {major}.{minor} not validated for this target"));
+    }
+    if FREE_THREADED && !free_threaded {
+        return Err("not validated on free-threaded builds".into());
+    }
+    Ok(())
+}
+
+/// Check [`RawCode`] against the attributes CPython reports for `code` itself (no probe
+/// compilation, no Python code: safe inside the `sys.modules` watcher). The pointer fields
+/// make this a strong check even when the argument counts are all zero.
+pub fn code_layout_ok_for(code: &Bound<'_, PyAny>) -> PyResult<bool> {
+    if code.cast::<pyo3::types::PyCode>().is_err() {
+        return Ok(false);
+    }
+    // SAFETY: a live code object; reads within the documented prefix.
+    let raw = unsafe { &*code.as_ptr().cast::<RawCode>() };
+    Ok(raw.co_argcount == code.getattr("co_argcount")?.extract::<i32>()?
+        && raw.co_posonlyargcount == code.getattr("co_posonlyargcount")?.extract::<i32>()?
+        && raw.co_kwonlyargcount == code.getattr("co_kwonlyargcount")?.extract::<i32>()?
+        && raw.co_flags == code.getattr("co_flags")?.extract::<i32>()?
+        && raw.co_firstlineno == code.getattr("co_firstlineno")?.extract::<i32>()?
+        && raw.co_nlocals == code.getattr("co_nlocals")?.extract::<i32>()?
+        && raw.co_consts == code.getattr("co_consts")?.as_ptr()
+        && raw.co_names == code.getattr("co_names")?.as_ptr()
+        && raw.co_filename == code.getattr("co_filename")?.as_ptr()
+        && raw.co_name == code.getattr("co_name")?.as_ptr()
+        && raw.co_qualname == code.getattr("co_qualname")?.as_ptr())
+}

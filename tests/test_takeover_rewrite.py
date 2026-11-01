@@ -471,13 +471,13 @@ def test_rewritten_bytecode_cache_is_separate(pkg):
 def test_enable_native_and_disable(pkg):
     st = rs.enable(native="opted.*")
     try:
-        assert st["native"] == ("opted.*",) and st["safe"]
+        assert st["process"]["native"] == ("opted.*",) and st["process"]["enabled"]
         assert type(importlib.import_module("opted.mod").make()[0]) is L
     finally:
         rs.disable()
     from rustique._takeover import status
 
-    assert status()["native"] == () and not status()["safe"]
+    assert status()["process"]["native"] == () and not status()["process"]["enabled"]
 
 
 # --- runner ----------------------------------------------------------------------------------

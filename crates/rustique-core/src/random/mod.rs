@@ -68,6 +68,41 @@ impl Mt<'_> {
         lo | hi << 32
     }
 
+    /// `getrandbits(k)` for `1 <= k <= 128` (same word order as [`Self::getrandbits`]).
+    #[inline]
+    pub fn getrandbits128(&mut self, k: u32) -> u128 {
+        debug_assert!((1..=128).contains(&k));
+        let mut out: u128 = 0;
+        let mut rem = k;
+        let mut shift = 0;
+        while rem > 0 {
+            let mut r = self.next_u32();
+            if rem < 32 {
+                r >>= 32 - rem;
+            }
+            out |= u128::from(r) << shift;
+            shift += 32;
+            rem = rem.saturating_sub(32);
+        }
+        out
+    }
+
+    /// `_randbelow_with_getrandbits(n)` for `1 <= n < 2**128`.
+    #[inline]
+    pub fn randbelow128(&mut self, n: u128) -> u128 {
+        debug_assert!(n >= 1);
+        if let Ok(n64) = u64::try_from(n) {
+            return u128::from(self.randbelow(n64));
+        }
+        let k = 128 - n.leading_zeros();
+        loop {
+            let r = self.getrandbits128(k);
+            if r < n {
+                return r;
+            }
+        }
+    }
+
     /// `random()` (genrand_res53).
     #[inline]
     pub fn random(&mut self) -> f64 {
@@ -200,6 +235,36 @@ mod tests {
         let lo = u64::from(gb.next_u32());
         let hi = u64::from(gb.next_u32());
         assert_eq!(ga.getrandbits(64), lo | hi << 32);
+    }
+
+    #[test]
+    fn getrandbits128_matches_word_order() {
+        let (mut a, mut ia) = seeded(3);
+        let (mut b, mut ib) = seeded(3);
+        let mut ga = Mt { index: &mut ia, mt: &mut a };
+        let mut gb = Mt { index: &mut ib, mt: &mut b };
+        for k in [1u32, 31, 32, 33, 63, 64, 65, 96, 100, 127, 128] {
+            let mut want: u128 = 0;
+            let words = k.div_ceil(32);
+            let mut rem = k;
+            for i in 0..words {
+                let mut r = gb.next_u32();
+                if rem < 32 {
+                    r >>= 32 - rem;
+                }
+                want |= u128::from(r) << (32 * i);
+                rem = rem.saturating_sub(32);
+            }
+            assert_eq!(ga.getrandbits128(k), want, "k={k}");
+            if k <= 64 {
+                // and the 64-bit variant consumes the same
+                let (mut c, mut ic) = seeded(9);
+                let (mut d, mut id) = seeded(9);
+                let x = Mt { index: &mut ic, mt: &mut c }.getrandbits(k);
+                let y = Mt { index: &mut id, mt: &mut d }.getrandbits128(k);
+                assert_eq!(u128::from(x), y);
+            }
+        }
     }
 
     #[test]
