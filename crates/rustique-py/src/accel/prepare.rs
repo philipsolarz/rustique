@@ -103,9 +103,18 @@ impl<'py> Prepare<'py> {
     /// `dict[key]` or `None` (exact dict read).
     pub fn get_opt(&self, dict: &Bound<'_, PyDict>, key: &str) -> Result<Option<Bound<'py, PyAny>>, Refusal> {
         let k = interned(self.py, key);
+        self.get_opt_s(dict, &k)
+    }
+
+    /// [`Self::get_opt`] with a pre-interned key.
+    pub fn get_opt_s(
+        &self,
+        dict: &Bound<'_, PyDict>,
+        key: &Bound<'_, PyString>,
+    ) -> Result<Option<Bound<'py, PyAny>>, Refusal> {
         let mut out: *mut ffi::PyObject = std::ptr::null_mut();
         // SAFETY: attached thread; exact dict and str key: no Python code runs.
-        let r = unsafe { ffi::PyDict_GetItemRef(dict.as_ptr(), k.as_ptr(), &mut out) };
+        let r = unsafe { ffi::PyDict_GetItemRef(dict.as_ptr(), key.as_ptr(), &mut out) };
         if r < 0 {
             return Err(PyErr::fetch(self.py).into());
         }
@@ -160,14 +169,24 @@ impl<'py> Prepare<'py> {
     // Fingerprints and self-tests.
     // -----------------------------------------------------------------------------------
 
-    fn check_fingerprint(&mut self, what: String, observed: String, expected: Fingerprints) -> Result<(), Refusal> {
+    /// `what` (a readable name) is only built for a refusal or in record mode.
+    fn check_fingerprint(
+        &mut self,
+        what: impl FnOnce() -> String,
+        observed: String,
+        expected: Fingerprints,
+    ) -> Result<(), Refusal> {
         let (major, minor) = version::running();
         let want = fingerprint::expected_for(expected, major, minor);
         let ok = want == Some(observed.as_str());
         if self.record {
-            self.records.push(FingerprintRecord { what, observed, expected: want });
+            self.records.push(FingerprintRecord { what: what(), observed, expected: want });
             return Ok(());
         }
+        if ok {
+            return Ok(());
+        }
+        let what = what();
         match want {
             _ if ok => Ok(()),
             None => Err(Refusal::with(
@@ -188,14 +207,14 @@ impl<'py> Prepare<'py> {
         } else {
             fingerprint::code(func)?
         };
-        self.check_fingerprint(describe(func), observed, expected)
+        self.check_fingerprint(|| describe(func), observed, expected)
     }
 
     /// Require the `ml_name`/`ml_flags`/`ml_doc` fingerprint of a C function or method
     /// descriptor to be the one recorded for the running minor version.
     pub fn fingerprint_c(&mut self, obj: &Bound<'_, PyAny>, expected: Fingerprints) -> Result<(), Refusal> {
         let observed = fingerprint::c_object(obj)?;
-        self.check_fingerprint(describe(obj), observed, expected)
+        self.check_fingerprint(|| describe(obj), observed, expected)
     }
 
     /// Same as [`Self::fingerprint_c`] for a method table entry found directly.
@@ -210,7 +229,7 @@ impl<'py> Prepare<'py> {
     ) -> Result<(), Refusal> {
         // SAFETY: per the caller.
         let observed = unsafe { fingerprint::method_def(def) };
-        self.check_fingerprint(what.to_owned(), observed, expected)
+        self.check_fingerprint(|| what.to_owned(), observed, expected)
     }
 
     /// The canonical code fingerprint of `obj` (function, code object, or C function):
@@ -388,7 +407,9 @@ impl<'py> Prepare<'py> {
         // SAFETY: an exact function object: its code is a live code object.
         let code =
             unsafe { Bound::from_borrowed_ptr(self.py, (*func.as_ptr().cast::<ffi::PyFunctionObject>()).func_code) };
-        if version::monitoring_layout_ok() != Some(true) {
+        // The local-monitoring layout the tools guard reads: calibrated on the first
+        // vectorcall site of the process (a probe code object; C calls only).
+        if !version::calibrate_monitoring(self.py) {
             return Err(Refusal::with(Category::Layout, format!("{}: local monitoring layout not calibrated", what())));
         }
         if !version::code_layout_cached(&code)? {
@@ -435,11 +456,33 @@ impl<'py> Prepare<'py> {
         key: &str,
         flag: &'static DepFlag,
     ) -> Result<&'static DepFlag, Refusal> {
-        let value = self.get(dict, key)?;
+        let k = interned(self.py, key);
+        self.pin_s(dict, &k, flag)
+    }
+
+    /// [`Self::pin`] with a pre-interned key (e.g. `pyo3::intern!(py, "fspath")`): no key
+    /// lookup in the interning cache.
+    pub fn pin_s(
+        &mut self,
+        dict: &Bound<'_, PyDict>,
+        key: &Bound<'_, PyString>,
+        flag: &'static DepFlag,
+    ) -> Result<&'static DepFlag, Refusal> {
+        let mut out: *mut ffi::PyObject = std::ptr::null_mut();
+        // SAFETY: attached thread; exact dict and str key: no Python code runs.
+        let r = unsafe { ffi::PyDict_GetItemRef(dict.as_ptr(), key.as_ptr(), &mut out) };
+        if r < 0 {
+            return Err(PyErr::fetch(self.py).into());
+        }
+        if out.is_null() {
+            return Err(refuse_missing(&key.to_string_lossy()));
+        }
+        // SAFETY: the new reference returned by PyDict_GetItemRef.
+        let value = unsafe { Bound::from_owned_ptr(self.py, out) }.unbind();
         self.pins.push(PendingPin::Key {
             dict: dict.clone().unbind(),
-            key: interned(self.py, key).unbind(),
-            expected: Some(value.unbind()),
+            key: key.clone().unbind(),
+            expected: Some(value),
             flag,
             ty: None,
         });
@@ -454,12 +497,18 @@ impl<'py> Prepare<'py> {
         key: &str,
         flag: &'static DepFlag,
     ) -> Result<&'static DepFlag, Refusal> {
-        if self.get_opt(dict, key)?.is_some() {
+        let k = interned(self.py, key);
+        // SAFETY: attached thread; exact dict and str key: no Python code runs.
+        let r = unsafe { ffi::PyDict_Contains(dict.as_ptr(), k.as_ptr()) };
+        if r < 0 {
+            return Err(PyErr::fetch(self.py).into());
+        }
+        if r == 1 {
             return Err(Refusal::with(Category::Deps, format!("{key} is present (expected absent)")));
         }
         self.pins.push(PendingPin::Key {
             dict: dict.clone().unbind(),
-            key: interned(self.py, key).unbind(),
+            key: k.unbind(),
             expected: None,
             flag,
             ty: None,
@@ -476,14 +525,43 @@ impl<'py> Prepare<'py> {
         name: &str,
         flag: &'static DepFlag,
     ) -> Result<Bound<'py, PyAny>, Refusal> {
-        if let Some(v) = self.get_opt(globals, name)? {
-            self.pin(globals, name, flag)?;
+        let k = interned(self.py, name);
+        self.pin_global_s(globals, &k, flag)
+    }
+
+    /// [`Self::pin_global`] with a pre-interned name.
+    pub fn pin_global_s(
+        &mut self,
+        globals: &Bound<'_, PyDict>,
+        name: &Bound<'_, PyString>,
+        flag: &'static DepFlag,
+    ) -> Result<Bound<'py, PyAny>, Refusal> {
+        if let Some(v) = self.get_opt_s(globals, name)? {
+            self.pins.push(PendingPin::Key {
+                dict: globals.clone().unbind(),
+                key: name.clone().unbind(),
+                expected: Some(v.clone().unbind()),
+                flag,
+                ty: None,
+            });
             return Ok(v);
         }
         let builtins = self.builtins_of(globals)?;
-        let v = self.get(&builtins, name)?;
-        self.pin_absent(globals, name, flag)?;
-        self.pin(&builtins, name, flag)?;
+        let v = self.get_opt_s(&builtins, name)?.ok_or_else(|| refuse_missing(&name.to_string_lossy()))?;
+        self.pins.push(PendingPin::Key {
+            dict: globals.clone().unbind(),
+            key: name.clone().unbind(),
+            expected: None,
+            flag,
+            ty: None,
+        });
+        self.pins.push(PendingPin::Key {
+            dict: builtins.unbind(),
+            key: name.clone().unbind(),
+            expected: Some(v.clone().unbind()),
+            flag,
+            ty: None,
+        });
         Ok(v)
     }
 
@@ -609,14 +687,14 @@ fn memo_put(key: &'static str, r: Result<(), Refusal>) {
     }
 }
 
-/// Start/end of a registry pass: forget memoized validations and the loaded objects'
-/// segments (code fingerprints are cached for the process: the cache keeps the code objects
-/// alive, so an address is never reused).
+/// Start/end of a registry pass: forget memoized validations (code fingerprints are cached
+/// for the process: the cache keeps the code objects alive, so an address is never reused;
+/// the loaded objects' segments are kept while the loader's counters stay the same).
 pub(crate) fn clear_pass_caches() {
     if let Ok(mut m) = MEMO.lock() {
         m.clear();
     }
-    crate::patch::clear_snapshot();
+    crate::patch::new_pass();
 }
 
 fn refuse_missing(key: &str) -> Refusal {

@@ -33,6 +33,14 @@ SOURCE = textwrap.dedent(
     def ident2(x):
         return ("orig", x)
 
+    SEP = "/"
+
+    def same_a(x):
+        return x
+
+    def same_b(x):
+        return x
+
     class K:
         attr = 1000
 
@@ -335,32 +343,66 @@ def test_persistent_fallback_suspends_until_next_enable(selftest_module):
     m = importlib.import_module(MOD)
     rt.enable(only=["_selftest.vectorcall"])
     A.stats(True, True)
-    for _ in range(1000):  # alternating hit / fallback never suspends
-        m.ident(1)
-        m.ident(x=1)
-    settle()
-    assert A._selftest_vectorcall(m.ident) == "kernel"
-    m.ident(1)  # a hit ends the streak
     for _ in range(63):
         assert m.ident(x=1) == ("orig", 1)  # keyword argument: outside the subset
     settle()
     assert A._selftest_vectorcall(m.ident) == "kernel"
-    m.ident(x=1)  # the 64th consecutive fallback
+    m.ident(x=1)  # the 64th consecutive fallback from a fresh install
     settle()
     assert A._selftest_vectorcall(m.ident) == "original"
     assert A.func_version(m.ident) >= 2
     t = target("_selftest.vectorcall")
     assert t["state"] == "installed" and t["suspended"] == "fallback"
     st = A.stats()["_selftest.vectorcall"]
-    assert st["suspensions"] == 1 and st["fallback"]["args"] == 1000 + 64
-    assert st["hits"] == 1001
+    assert st["suspensions"] == 1 and st["fallback"]["args"] == 64 and st["hits"] == 0
     for _ in range(1000):  # suspended: CPython's own call path, no kernel
         assert m.ident(1) == ("orig", 1)
-    assert A.stats()["_selftest.vectorcall"]["hits"] == 1001
-    rt.enable(only=["_selftest.vectorcall"])  # re-arms
+    assert A.stats()["_selftest.vectorcall"]["hits"] == 0
+    rt.enable(only=["_selftest.vectorcall"])  # re-arms, with a fresh score
     assert A._selftest_vectorcall(m.ident) == "kernel"
     assert "suspended" not in target("_selftest.vectorcall")
     assert m.ident(1) == ("kernel", 1)
+    for _ in range(63):
+        m.ident(x=1)
+    settle()
+    assert A._selftest_vectorcall(m.ident) == "kernel"
+
+
+def _mixed(m, every, calls):
+    """One hit, then `every - 1` fallbacks, repeated for `calls` calls."""
+    for n in range(calls):
+        if n % every == 0:
+            m.ident(1)
+        else:
+            m.ident(x=1)
+    settle()
+
+
+@pytest.mark.parametrize("every", [2, 5])
+def test_mixed_traffic_that_pays_off_never_suspends(selftest_module, every):
+    # 1:1 alternation, and 20% hits (the break-even of the default 4 / 1 policy).
+    m = importlib.import_module(MOD)
+    rt.enable(only=["_selftest.vectorcall"])
+    _mixed(m, every, 5000)
+    assert A._selftest_vectorcall(m.ident) == "kernel"
+    assert "suspended" not in target("_selftest.vectorcall")
+
+
+@pytest.mark.parametrize(("every", "still_on"), [(10, 500), (100, 200)])
+def test_mostly_fallback_traffic_suspends(selftest_module, every, still_on):
+    # Starting from the ceiling (a long run of hits), with hits interleaved so that
+    # (for every=10) no run of fallbacks is anywhere near 64 long.
+    m = importlib.import_module(MOD)
+    rt.enable(only=["_selftest.vectorcall"])
+    A.stats(True, True)
+    for _ in range(200):
+        m.ident(1)
+    _mixed(m, every, still_on)
+    assert A._selftest_vectorcall(m.ident) == "kernel"  # still paying off its credit
+    _mixed(m, every, 1000)
+    assert A._selftest_vectorcall(m.ident) == "original"
+    assert target("_selftest.vectorcall")["suspended"] == "fallback"
+    assert A.stats()["_selftest.vectorcall"]["suspensions"] == 1
 
 
 def test_override_verdict_cache():
@@ -406,3 +448,48 @@ def test_whole_dict_generation_watch():
     assert A._selftest_watch_dict(d) == g + 3
     d.clear()
     assert A._selftest_watch_dict(d) == g + 4
+
+
+def test_shared_group_declarations(selftest_module):
+    m = importlib.import_module(MOD)
+    rt.enable(only=["_selftest.shared_a", "_selftest.shared_b"])
+    a, b = target("_selftest.shared_a"), target("_selftest.shared_b")
+    assert a["state"] == b["state"] == "installed", (a, b)
+    assert a["shared"] == b["shared"] == "_selftest.shared" and a["deps_intact"]
+    assert A._selftest_vectorcall(m.same_a) == "other" or not A.vectorcall_is_original(m.same_a)
+    sep = m.SEP
+    m.SEP = "\\"  # the shared pin guards both targets
+    assert not A._selftest_shared_ok()
+    m.SEP = sep
+    assert A._selftest_shared_ok()
+    A.disable(["_selftest.shared_a"])  # the other user keeps the shared pins
+    assert A.vectorcall_is_original(m.same_a) and not A.vectorcall_is_original(m.same_b)
+    m.SEP = "\\"
+    assert not A._selftest_shared_ok()
+    m.SEP = sep
+    A.disable(["_selftest.shared_b"])  # the last user releases them
+    m.SEP = "\\"
+    assert A._selftest_shared_ok()  # a flag without pins is true: nothing watches SEP now
+    m.SEP = sep
+
+
+def test_shared_group_refusal_refuses_every_user(selftest_module):
+    m = importlib.import_module(MOD)
+    m.REFUSE_SHARED = True
+    rt.enable(only=["_selftest.shared_a", "_selftest.shared_b"])
+    for n in ("_selftest.shared_a", "_selftest.shared_b"):
+        st, reason = state(n)
+        assert st == "refused" and reason == "shared refusal"
+    assert A.vectorcall_is_original(m.same_a) and A.vectorcall_is_original(m.same_b)
+
+
+def test_degrade_annotates_status():
+    rt.enable(only=["_selftest.meth"])
+    assert "degraded" not in target("_selftest.meth")
+    A._selftest_degrade("_selftest.meth", "lazy fingerprint mismatch")
+    A._selftest_degrade("_selftest.meth", "second reason")  # idempotent: the first stays
+    t = target("_selftest.meth")
+    assert t["state"] == "installed" and t["degraded"] == "lazy fingerprint mismatch"
+    A.disable(["_selftest.meth"])
+    rt.enable(only=["_selftest.meth"])
+    assert "degraded" not in target("_selftest.meth")
