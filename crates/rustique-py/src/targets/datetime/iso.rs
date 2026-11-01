@@ -22,37 +22,40 @@ pub static ORIG_DATE: Original<NoArgs> = Original::new();
 pub static ORIG_TIME_FAST: Original<FastKw> = Original::new();
 pub static ORIG_TIME_VAR: Original<VarKw> = Original::new();
 
+/// Interned "hours", "minutes", "seconds", "milliseconds", "microseconds", "auto" (filled at
+/// install). `timespec` values are matched by identity only: call sites pass literals
+/// (interned); any other object, including unknown values (a `ValueError`), falls back
+/// after a few pointer compares.
+pub static TIMESPECS: [std::sync::atomic::AtomicUsize; 6] = [const { std::sync::atomic::AtomicUsize::new(0) }; 6];
+pub const TIMESPEC_NAMES: [&str; 6] = ["hours", "minutes", "seconds", "milliseconds", "microseconds", "auto"];
+
 /// `timespec`: 0 hours, 1 minutes, 2 seconds, 3 milliseconds, 4 microseconds.
-fn spec(ts: Option<&[u8]>, us: u32) -> Option<u8> {
-    Some(match ts {
-        None | Some(b"auto") => {
-            if us == 0 {
-                2
-            } else {
-                4
-            }
-        }
-        Some(b"hours") => 0,
-        Some(b"minutes") => 1,
-        Some(b"seconds") => 2,
-        Some(b"milliseconds") => 3,
-        Some(b"microseconds") => 4,
-        _ => return None, // ValueError("Unknown timespec value")
-    })
+#[inline(always)]
+fn spec(ts: O, us: u32) -> Option<u8> {
+    let auto = if us == 0 { 2 } else { 4 };
+    if ts.is_null() {
+        return Some(auto);
+    }
+    let i = TIMESPECS.iter().position(|t| t.load(std::sync::atomic::Ordering::Relaxed) == ts as usize)?;
+    Some(if i == 5 { auto } else { i as u8 })
 }
 
+/// Output bytes (uninitialized storage: only the written prefix is read).
 struct Buf {
-    b: [u8; 96],
+    b: std::mem::MaybeUninit<[u8; 96]>,
     n: usize,
 }
 
 impl Buf {
+    #[inline(always)]
     fn new() -> Self {
-        Buf { b: [0; 96], n: 0 }
+        Buf { b: std::mem::MaybeUninit::uninit(), n: 0 }
     }
     #[inline(always)]
     fn push(&mut self, c: u8) {
-        self.b[self.n] = c;
+        debug_assert!(self.n < 96);
+        // SAFETY: n < 96 by construction (fixed formats of at most 32 bytes + offsets).
+        unsafe { self.b.as_mut_ptr().cast::<u8>().add(self.n).write(c) };
         self.n += 1;
     }
     #[inline(always)]
@@ -76,15 +79,16 @@ impl Buf {
         self.d3(v % 1000);
     }
     fn extend(&mut self, s: &[u8]) -> bool {
-        if self.n + s.len() > self.b.len() {
+        if self.n + s.len() > 96 {
             return false;
         }
-        self.b[self.n..self.n + s.len()].copy_from_slice(s);
+        // SAFETY: in bounds (checked).
+        unsafe { std::ptr::copy_nonoverlapping(s.as_ptr(), self.b.as_mut_ptr().cast::<u8>().add(self.n), s.len()) };
         self.n += s.len();
         true
     }
     unsafe fn finish(&self) -> O {
-        // SAFETY: ASCII bytes.
+        // SAFETY: the first n bytes are written ASCII.
         unsafe { ffi::PyUnicode_FromStringAndSize(self.b.as_ptr().cast(), self.n as ffi::Py_ssize_t) }
     }
 }
@@ -110,6 +114,7 @@ fn time_part(b: &mut Buf, h: u32, m: u32, s: u32, us: u32, spec: u8) {
 }
 
 /// An exact ASCII `str` (or NULL: absent).
+#[inline(always)]
 unsafe fn ascii_arg<'a>(o: O) -> Option<Option<&'a [u8]>> {
     // SAFETY: live object or NULL.
     unsafe {
@@ -124,6 +129,7 @@ unsafe fn ascii_arg<'a>(o: O) -> Option<Option<&'a [u8]>> {
 }
 
 /// `datetime.isoformat(sep, timespec)` with optional (NULL) arguments.
+#[inline(always)]
 unsafe fn datetime_iso(this: O, sep: O, ts: O) -> Option<O> {
     // SAFETY: attached thread; live objects; C API filled.
     unsafe {
@@ -136,7 +142,7 @@ unsafe fn datetime_iso(this: O, sep: O, ts: O) -> Option<O> {
             Some(_) => return None,
         };
         let us = ffi::PyDateTime_DATE_GET_MICROSECOND(this) as u32;
-        let spec = spec(ascii_arg(ts)?, us)?;
+        let spec = spec(ts, us)?;
         let mut b = Buf::new();
         b.d4(ffi::PyDateTime_GET_YEAR(this) as u32);
         b.push(b'-');
@@ -164,6 +170,7 @@ unsafe fn datetime_iso(this: O, sep: O, ts: O) -> Option<O> {
 }
 
 /// `time.isoformat(timespec)`.
+#[inline(always)]
 unsafe fn time_iso(this: O, ts: O) -> Option<O> {
     // SAFETY: attached thread; live objects; C API filled.
     unsafe {
@@ -171,7 +178,7 @@ unsafe fn time_iso(this: O, ts: O) -> Option<O> {
             return None;
         }
         let us = ffi::PyDateTime_TIME_GET_MICROSECOND(this) as u32;
-        let spec = spec(ascii_arg(ts)?, us)?;
+        let spec = spec(ts, us)?;
         let mut b = Buf::new();
         time_part(
             &mut b,
@@ -224,6 +231,7 @@ pub static K_TIMESPEC: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomi
 
 /// Positional/keyword arguments `(sep, timespec)` or `(timespec,)` of the FASTCALL
 /// convention; `None` for anything else (duplicates, unknown names).
+#[inline(always)]
 unsafe fn fast_args<const N: usize>(
     names: [(&std::ffi::CStr, &std::sync::atomic::AtomicUsize); N],
     args: *const O,
@@ -244,10 +252,11 @@ unsafe fn fast_args<const N: usize>(
             let nkw = ffi::PyTuple_GET_SIZE(kwnames) as usize;
             for k in 0..nkw {
                 let key = ffi::PyTuple_GET_ITEM(kwnames, k as ffi::Py_ssize_t);
-                let slot = names.iter().position(|&(n, k)| {
-                    key as usize == k.load(std::sync::atomic::Ordering::Relaxed)
-                        || ffi::PyUnicode_EqualToUTF8(key, n.as_ptr()) == 1
-                })?;
+                // Interned names by identity first, then by value.
+                let slot = names
+                    .iter()
+                    .position(|&(_, k)| key as usize == k.load(std::sync::atomic::Ordering::Relaxed))
+                    .or_else(|| names.iter().position(|&(n, _)| ffi::PyUnicode_EqualToUTF8(key, n.as_ptr()) == 1))?;
                 if !out[slot].is_null() {
                     return None;
                 }

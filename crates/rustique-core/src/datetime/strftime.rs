@@ -371,10 +371,10 @@ fn directive(d: u8, tm: &Tm, micro: u32, tz: &TzText<'_>, out: &mut Out) {
 /// `format_utcoffset` text for an offset of `seconds` + `micros` (normalized timedelta:
 /// `days` in {-1, 0}), with `sep` between the fields.
 pub fn utcoffset_text(days: i32, seconds: i32, micros: i32, sep: &[u8], out: &mut Vec<u8>) {
-    let num = |out: &mut Vec<u8>, v: u64, width: usize, pad: u8| {
-        let s = format!("{v:0>width$}");
-        let _ = pad;
-        out.extend_from_slice(s.as_bytes());
+    let num = |out: &mut Vec<u8>, v: u64, width: usize, _pad: u8| {
+        let mut o = Out::new();
+        o.num(v, width, b'0');
+        out.extend_from_slice(o.bytes().unwrap_or_default());
     };
     // offset = days * 86400 + seconds (+ micros); negative iff days < 0.
     let (sign, secs, us) = if days < 0 {

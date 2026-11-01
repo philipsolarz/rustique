@@ -361,7 +361,9 @@ fn iso_self_test(cx: &mut Prepare<'_>, which: u8) -> Result<(), Refusal> {
 fn prepare_iso(cx: &mut Prepare<'_>, which: u8) -> Result<(), Refusal> {
     common(cx)?;
     let py = cx.py();
-    for (k, cell) in [("sep", &iso::K_SEP), ("timespec", &iso::K_TIMESPEC)] {
+    let names = [("sep", &iso::K_SEP), ("timespec", &iso::K_TIMESPEC)];
+    let specs = iso::TIMESPEC_NAMES.iter().copied().zip(iso::TIMESPECS.iter());
+    for (k, cell) in names.into_iter().chain(specs) {
         if cell.load(Ordering::Relaxed) == 0 {
             cell.store(pyo3::types::PyString::intern(py, k).into_ptr() as usize, Ordering::Relaxed);
         }
@@ -561,6 +563,8 @@ fn _datetime_debug(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
     d.set_item("strftime_bad_gen", ft_bad)?;
     d.set_item("lc_time_is_c", env::lc_time_is_c())?;
     d.set_item("thread_locale_is_global", env::thread_locale_is_global())?;
+    d.set_item("k_timespec", iso::K_TIMESPEC.load(Ordering::Relaxed))?;
+    d.set_item("k_auto", iso::TIMESPECS[5].load(Ordering::Relaxed))?;
     Ok(d)
 }
 

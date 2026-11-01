@@ -386,6 +386,22 @@ def test_posix_locale_name_is_c():
         locale.setlocale(locale.LC_TIME, old)
 
 
+def test_tools_see_original_strptime_frames():
+    """The original runs `_strptime`'s Python code: under any tool (tracing, profiling,
+    sys.monitoring global or local events on that code) the kernels run the original."""
+    from _mechanics import assert_tools_see_original
+
+    rq.disable()
+    warm("%Y-%m-%d")
+    assert_tools_see_original(
+        "datetime.datetime.strptime",
+        _strptime._strptime_datetime_datetime,
+        lambda: D.datetime.strptime("2024-03-15", "%Y-%m-%d"),
+    )
+    assert_tools_see_original("time.strptime", _strptime._strptime, lambda: time.strptime("2024-03-15", "%Y-%m-%d"))
+    rq.enable(only=[GROUP])
+
+
 # ---------------------------------------------------------------------------------------
 # strftime
 # ---------------------------------------------------------------------------------------
