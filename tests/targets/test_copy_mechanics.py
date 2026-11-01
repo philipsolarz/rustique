@@ -334,3 +334,33 @@ def test_enable_disable_under_load():
 def test_tools_guard_shared(name, func, call):
     S.disable()
     assert_tools_see_original(name, func, call)
+
+
+def test_dataclasses_without_copy_imported():
+    """Fresh process: the dataclasses group installs before `copy` is imported (3.15's
+    `dataclasses` imports it lazily), and asdict's leaf `copy.deepcopy` resolves the lazy
+    import exactly as LOAD_GLOBAL does."""
+    import subprocess
+    import textwrap
+
+    code = textwrap.dedent(
+        """
+        import sys, rustique
+        rustique.enable(only=["copy", "dataclasses"])
+        import dataclasses, datetime
+        st = {t["name"]: t["state"] for t in rustique.status()["targets"]}
+        assert st["dataclasses.asdict"] == "installed", st
+        before = "copy" in sys.modules
+        @dataclasses.dataclass
+        class P:
+            when: datetime.datetime
+            tags: list
+        d = dataclasses.asdict(P(datetime.datetime(2024, 1, 2), [frozenset({"a"})]))
+        assert d == {"when": datetime.datetime(2024, 1, 2), "tags": [frozenset({"a"})]}, d
+        assert "copy" in sys.modules
+        assert type(dataclasses.__dict__["copy"]).__name__ == "module"
+        print(before, st["copy.deepcopy"])
+        """
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
