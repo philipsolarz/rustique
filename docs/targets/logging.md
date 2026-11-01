@@ -187,7 +187,45 @@ WORKLOAD
 
 ## 5. Conformance
 
-CONFORMANCE
+CPython's `test_logging`, run from the matching source tree with
+`tests/conformance/run_target_suites.py --targets logging --modules test.test_logging`
+(the five targets asserted installed), and again in-process with the targets re-enabled
+before every test (`benches/targets/logging_suite_stats.py rearm`, so targets that a broken
+pin or a fallback streak suspended in one test run again in the next):
+
+| build | tests | plain | enabled (runner) | enabled, re-armed per test | kernel hits in the re-armed run |
+|---|---:|---|---|---|---|
+| 3.15.1 | 287 | 283 pass, 4 skip | identical (0 differences) | identical | level 370, findCaller 672, `__init__` 3789, formatTime 2503, format 2035 |
+| 3.15.1t | 287 | 283 pass, 4 skip | identical | identical | same |
+| 3.14.9 | 277 | 274 pass, 3 skip | identical | identical | same |
+| 3.14.9t | 277 | 274 pass, 3 skip | identical | identical | same |
+
+`test_logging` monkeypatches heavily (`logThreads`/`logProcesses`/`logMultiprocessing`/
+`logAsyncioTasks`, `time.time_ns`, `raiseExceptions`, record factories, logger classes,
+formatter subclasses, `Formatter.converter`), which exercises every pin and fallback.
+
+Own tests (`tests/targets/test_logging.py`, `test_logging_hypothesis.py`, 245 tests, all 4
+builds): introspection and captured references; `record.__dict__` (keys in order, values)
+against the original for argument shapes, paths, levels, custom level names, threads,
+`multiprocessing` (renamed process, mocked `current_process`, `sys.modules` entry `None`),
+asyncio tasks, subclasses with and without descriptors; the time arithmetic on edge values
+(gh-89047); level methods (keyword clashes, logger hierarchies, `logging.disable`, instance
+and class overrides of `isEnabledFor`, colliding cache keys); `findCaller` (nesting,
+`stacklevel`, `stack_info`, `_srcfile` replaced, line numbers in a 350-line function);
+`formatTime` (datefmts incl. locale names and `%z`, converters, msec formats, mocked
+`strftime`) and `format` (14 formats, 22 message/argument shapes incl. errors, user
+`__str__` side effects and exceptions, `exc_info`, `stack_info`, `defaults`, `{`/`$`
+styles, subclasses, instance overrides, `_style._fmt` changed, records with a
+`getMessage` attribute or a non-str key); end to end through `StreamHandler` including the
+`handleError` report on stderr (traceback compared); tools (`sys.settrace` sees every
+logging frame); check mode; fallback-streak suspension; `python -O`; free-threaded stress
+(8 threads logging, enable/disable under load). Hypothesis (`test_logging_hypothesis.py`,
+1000 examples per run): random `%`-format strings over every record attribute with every
+flag/width/precision/conversion, datefmts, message/argument shapes (incl. NaN, big ints,
+non-Latin-1 text, dicts, lists), `defaults`, frozen times (incl. negative and year > 9999),
+converters and msec formats, random logger hierarchies/levels/`disabled`/`propagate`/
+`logging.disable` with every level method, `findCaller` depth × stacklevel, and
+`LogRecord` constructor arguments; each compared with CPython's code on the same input.
 
 ## 6. Versions
 

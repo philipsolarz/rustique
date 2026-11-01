@@ -28,46 +28,47 @@ use common::{FnGuard, init_names};
 
 const VERSIONS: &[(u8, u8)] = &[(3, 14), (3, 15)];
 
-/// Canonical code fingerprints (3.14.9 / 3.15.1; `_accel.fingerprint_report`).
+/// Canonical code fingerprints, format v2 (3.14.9 / 3.15.1;
+/// `python -m rustique._takeover._dev report --only logging --import logging`).
 mod fp {
     pub type F = &'static [(u8, u8, &'static str)];
-    pub const IS_ENABLED_FOR: F = &[(3, 14, "83bf414059d64068"), (3, 15, "8a72e8093e7e446f")];
-    pub const DEBUG: F = &[(3, 14, "980c2500c7c9e21c"), (3, 15, "3d1cb2b08e931295")];
-    pub const INFO: F = &[(3, 14, "2814e23841bbf51c"), (3, 15, "78b2eee239ad0543")];
-    pub const WARNING: F = &[(3, 14, "75301d32b2648fa8"), (3, 15, "345193e7a6dd3fbd")];
-    pub const ERROR: F = &[(3, 14, "16ed5527967367a9"), (3, 15, "58ef0e8adea81ed6")];
-    pub const CRITICAL: F = &[(3, 14, "8ba6fc57eb61d4b0"), (3, 15, "9aed1075e2120d35")];
-    pub const LOG: F = &[(3, 14, "06b05c084c7d6925"), (3, 15, "76bbe82bc787ba4e")];
-    pub const FIND_CALLER: F = &[(3, 14, "2e9992a457f30853"), (3, 15, "897161efc98826ee")];
-    pub const IS_INTERNAL_FRAME: F = &[(3, 14, "adf353af595b259a"), (3, 15, "a47e46caadd055fb")];
-    pub const CURRENTFRAME: F = &[(3, 14, "2dea0b383feafda7"), (3, 15, "aa935c576b264416")];
-    pub const NORMCASE: F = &[(3, 14, "4430685c31fdf17c"), (3, 15, "b8ae21472a1996ce")];
-    pub const RECORD_INIT: F = &[(3, 14, "2998442a9e27e16c"), (3, 15, "b5d7a51585221081")];
-    pub const GET_LEVEL_NAME: F = &[(3, 14, "1cf9a61d4b0bf8da"), (3, 15, "336df648b5d33820")];
-    pub const BASENAME: F = &[(3, 14, "9697ad6c31eb4ec6"), (3, 15, "14820d2e64ed72c1")];
-    pub const SPLITEXT: F = &[(3, 14, "57e4fff4ed5744e9"), (3, 15, "7b7f2fd89ce939cb")];
-    pub const SPLITEXT_: F = &[(3, 14, "2e130b2724074482"), (3, 15, "426bad07995314f0")];
-    pub const GET_SEP: F = &[(3, 14, "6b0a736a3526f1ed"), (3, 15, "ec659b080301f8d1")];
-    pub const CURRENT_THREAD: F = &[(3, 14, "e471a2b4760d5b18"), (3, 15, "7d11fae4c25d5278")];
-    pub const THREAD_NAME: F = &[(3, 14, "b1968a197b7d56e7"), (3, 15, "f388e87b180c5d05")];
-    pub const FORMAT_TIME: F = &[(3, 14, "3ac5eeaba13fbad3"), (3, 15, "7d15694a6571d638")];
-    pub const FORMAT: F = &[(3, 14, "ae34d46f632032a5"), (3, 15, "a166ddd08c26efd5")];
-    pub const USES_TIME: F = &[(3, 14, "905acf6461f87ddb"), (3, 15, "4d0778f480652df4")];
-    pub const FORMAT_MESSAGE: F = &[(3, 14, "86fc549352a0112a"), (3, 15, "cf5833ad08a02618")];
-    pub const STYLE_USES_TIME: F = &[(3, 14, "1efd55fb17981f37"), (3, 15, "73e7ab21d4af385f")];
-    pub const STYLE_FORMAT: F = &[(3, 14, "43e1359203ae8454"), (3, 15, "dfc26494c08a2531")];
-    pub const STYLE_FORMAT_: F = &[(3, 14, "519a62c3e0630a40"), (3, 15, "8bac2b3ab413bc6e")];
-    pub const GET_MESSAGE: F = &[(3, 14, "b0f2c5f2fda238b7"), (3, 15, "9412d473eb787d3c")];
-    pub const LOCALTIME: F = &[(3, 14, "9cb2569a8b899a9d"), (3, 15, "9cb2569a8b899a9d")];
-    pub const GMTIME: F = &[(3, 14, "1a06bd510a06a7f4"), (3, 15, "1a06bd510a06a7f4")];
-    pub const STRFTIME: F = &[(3, 14, "4aca0e0472e239e6"), (3, 15, "4aca0e0472e239e6")];
-    pub const TIME_NS: F = &[(3, 14, "ecd5528fcb9e4ab3"), (3, 15, "ecd5528fcb9e4ab3")];
-    pub const GET_IDENT: F = &[(3, 14, "a1ade4129b6dcef0"), (3, 15, "a1ade4129b6dcef0")];
-    pub const GETPID: F = &[(3, 14, "2cd2b8d54a017870"), (3, 15, "2cd2b8d54a017870")];
+    pub const IS_ENABLED_FOR: F = &[(3, 14, "4b19cbe6ef53dfdc"), (3, 15, "1feed9bbf2748015")];
+    pub const DEBUG: F = &[(3, 14, "5b37f630ccbffc87"), (3, 15, "9359039f35a6508d")];
+    pub const INFO: F = &[(3, 14, "14d34b74d3ce337d"), (3, 15, "f454321ee7257264")];
+    pub const WARNING: F = &[(3, 14, "5dd1266167632a7a"), (3, 15, "9c6f8a74b17a65f6")];
+    pub const ERROR: F = &[(3, 14, "36c727c5f18c0404"), (3, 15, "35b7db8f61d5cd21")];
+    pub const CRITICAL: F = &[(3, 14, "fdff94c7ce04c180"), (3, 15, "9ea9f7b556c2f9ae")];
+    pub const LOG: F = &[(3, 14, "03eb8d20fb00ca09"), (3, 15, "2f85c2a60c4e938b")];
+    pub const FIND_CALLER: F = &[(3, 14, "051c7d1ade195d43"), (3, 15, "90bb56ff81078d83")];
+    pub const IS_INTERNAL_FRAME: F = &[(3, 14, "74c07bd564317a01"), (3, 15, "f195365943801169")];
+    pub const CURRENTFRAME: F = &[(3, 14, "373c0ac3cd9b72b9"), (3, 15, "cb9c590d8e8dc183")];
+    pub const NORMCASE: F = &[(3, 14, "0c979efa01cde1ee"), (3, 15, "20a2c8c5e6360108")];
+    pub const RECORD_INIT: F = &[(3, 14, "a0cc2bcf443c5336"), (3, 15, "a18f791489619827")];
+    pub const GET_LEVEL_NAME: F = &[(3, 14, "d0c968d740ae41a3"), (3, 15, "9f633f561185776d")];
+    pub const BASENAME: F = &[(3, 14, "bacc0b3f6c53df7d"), (3, 15, "a7e4e60fb5d2bc37")];
+    pub const SPLITEXT: F = &[(3, 14, "73ba50ede7290757"), (3, 15, "8496dfae04f8b3f5")];
+    pub const SPLITEXT_: F = &[(3, 14, "41f984dfa9547d91"), (3, 15, "4779d796fd294850")];
+    pub const GET_SEP: F = &[(3, 14, "54be3703c91faa4c"), (3, 15, "5bc506a017985796")];
+    pub const CURRENT_THREAD: F = &[(3, 14, "21539b44e3d4b637"), (3, 15, "dd60c13386a48011")];
+    pub const THREAD_NAME: F = &[(3, 14, "0025e16a9abde810"), (3, 15, "d85e9eaeab19ac61")];
+    pub const FORMAT_TIME: F = &[(3, 14, "900c2986e5c7edb2"), (3, 15, "874dc0c46915f13a")];
+    pub const FORMAT: F = &[(3, 14, "7c604339eabb3201"), (3, 15, "55b379d32e49441d")];
+    pub const USES_TIME: F = &[(3, 14, "ec504c20ccc4b437"), (3, 15, "3ab4b749587cfa25")];
+    pub const FORMAT_MESSAGE: F = &[(3, 14, "1968b56bafd69edf"), (3, 15, "55c983ab6802468d")];
+    pub const STYLE_USES_TIME: F = &[(3, 14, "a886d2be8f7b955b"), (3, 15, "86a4567930e0f2d5")];
+    pub const STYLE_FORMAT: F = &[(3, 14, "9e9cb421d439dcef"), (3, 15, "159ae7f812f7f284")];
+    pub const STYLE_FORMAT_: F = &[(3, 14, "9cb3dc55d4d49190"), (3, 15, "61a43ff8b7fd536f")];
+    pub const GET_MESSAGE: F = &[(3, 14, "949189edb75c65ff"), (3, 15, "838cd95f22dc3a6f")];
+    pub const LOCALTIME: F = &[(3, 14, "c880d99c78680a77"), (3, 15, "c880d99c78680a77")];
+    pub const GMTIME: F = &[(3, 14, "bebb183e765c46a2"), (3, 15, "bebb183e765c46a2")];
+    pub const STRFTIME: F = &[(3, 14, "d7799c4aa3b998d3"), (3, 15, "d7799c4aa3b998d3")];
+    pub const TIME_NS: F = &[(3, 14, "cfd8cf62a2e81346"), (3, 15, "cfd8cf62a2e81346")];
+    pub const GET_IDENT: F = &[(3, 14, "aefc494fea7ff696"), (3, 15, "aefc494fea7ff696")];
+    pub const GETPID: F = &[(3, 14, "e7b51de1800a9fd6"), (3, 15, "e7b51de1800a9fd6")];
 }
 
 /// `Thread.name`'s getter compiled with `-O` (no `assert`), per minor version.
-const THREAD_NAME_O: &[(u8, &str)] = &[(14, "3eea852412c3b4a0"), (15, "8b92be079aad8b80")];
+const THREAD_NAME_O: &[(u8, &str)] = &[(14, "c8ab4ce5ca26be63"), (15, "bfd220e44371f430")];
 
 fn ty<'py>(obj: Bound<'py, PyAny>) -> Result<Bound<'py, PyType>, Refusal> {
     obj.cast_into::<PyType>().map_err(|_| Refusal::new("not a class"))

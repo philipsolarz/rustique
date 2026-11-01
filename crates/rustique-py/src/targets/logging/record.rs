@@ -344,8 +344,8 @@ static MP_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(
 /// Reads `_name`.
 pub static MP_PROCS: TypeCache<1> = TypeCache::new(validate_mp_process);
 
-const FP_CURRENT_PROCESS: &[(u8, u8, &str)] = &[(3, 14, "01900e79efcd8937"), (3, 15, "83d674bf5a867b44")];
-const FP_PROCESS_NAME: &[(u8, u8, &str)] = &[(3, 14, "2e8055fc252f98f3"), (3, 15, "2ea326cab5d76f13")];
+const FP_CURRENT_PROCESS: &[(u8, u8, &str)] = &[(3, 14, "047839c36f3adea0"), (3, 15, "1b03a89d39d6f22d")];
+const FP_PROCESS_NAME: &[(u8, u8, &str)] = &[(3, 14, "cc78b3d6131b11a9"), (3, 15, "40fb9ae6946bc8ad")];
 
 unsafe fn validate_mp_process(t: Tp) -> bool {
     // SAFETY: attached thread; live type.
