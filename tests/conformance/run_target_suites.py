@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import sysconfig
@@ -129,6 +130,22 @@ def run_child(module_name: str, targets: list[str] | None, verbose: bool) -> dic
     return out
 
 
+_ADDR = re.compile(r"0x[0-9a-fA-F]+")
+
+
+def _by_normalized_id(outcomes: dict[str, dict[str, str]]) -> dict[str, list[dict[str, str]]]:
+    """Group outcomes by test id with memory addresses replaced by `0x?`."""
+    out: dict[str, list[dict[str, str]]] = {}
+    for tid, o in outcomes.items():
+        out.setdefault(_ADDR.sub("0x?", tid), []).append(o)
+    return out
+
+
+def _merge(outs: list[dict[str, str]]) -> dict[str, str]:
+    """One record for a (possibly collided) normalized id: outcomes joined, first detail."""
+    return {"outcome": "+".join(sorted(o["outcome"] for o in outs)), "detail": outs[0].get("detail", "")}
+
+
 def _run(module: str, targets: list[str] | None, cpython_src: str, timeout: int, verbose: bool) -> dict[str, Any]:
     fd, out = tempfile.mkstemp(prefix="conf-", suffix=".json")
     os.close(fd)
@@ -180,12 +197,16 @@ def compare(
     for m in modules:
         plain = _run(m, None, src, timeout, verbose)
         enabled = _run(m, targets, src, timeout, verbose)
+        # Test ids may embed object reprs (`subTest(parse=<function urlparse at 0x...>)`),
+        # which differ between processes: compare per normalized id, as outcome multisets.
+        pa, ea = _by_normalized_id(plain["outcomes"]), _by_normalized_id(enabled["outcomes"])
         diffs = []
-        for tid in sorted(set(plain["outcomes"]) | set(enabled["outcomes"])):
-            a = plain["outcomes"].get(tid, {"outcome": "absent"})
-            b = enabled["outcomes"].get(tid, {"outcome": "absent"})
-            if a["outcome"] != b["outcome"]:
-                diffs.append({"id": tid, "plain": a, "enabled": b, "allowed": tid in allow})
+        for tid in sorted(set(pa) | set(ea)):
+            a = pa.get(tid, [{"outcome": "absent"}])
+            b = ea.get(tid, [{"outcome": "absent"}])
+            if sorted(o["outcome"] for o in a) != sorted(o["outcome"] for o in b):
+                allowed = tid in allow or any(_ADDR.sub("0x?", x) == tid for x in allow)
+                diffs.append({"id": tid, "plain": _merge(a), "enabled": _merge(b), "allowed": allowed})
         counts = {}
         for o in enabled["outcomes"].values():
             counts[o["outcome"]] = counts.get(o["outcome"], 0) + 1
