@@ -267,8 +267,9 @@ interned keyword names the kernels compare by pointer (~10k), the identity valid
 the pinned globals, the class checks. One target alone costs ~80k, each further target
 5–17k (`sample` 17k, `choices` 13k: fingerprint size). The generator self-test (~45k: seeding
 a probe and a full twist) moved to the first native use (§4), so a process that imports
-`random` without calling these methods never pays it. Reaching 100k needs cheaper
-fingerprints or pin activation in the framework, or fewer targets.
+`random` without calling these methods never pays it. **Accepted by the lead as a
+documented wave-1 overage** (+42k over 0.1M Ir): the levers are framework work for wave 2
+(cheaper fingerprints and pin activation, deferred validation), not fewer targets.
 
 Method: `python benches/targets/utils_install_cost.py` (callgrind, fresh processes; the
 module removed from `sys.modules` first, its dependencies imported; every setup ends with
