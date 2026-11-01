@@ -66,7 +66,8 @@ call (1.10) whenever an argument is not plain.
    `_PyObject_GetMethod` (what `self.x(...)` calls); an instance attribute
    (`mock.patch.object(logger, "isEnabledFor")`, `record.getMessage = ...` via `extra`)
    falls back.
-5. **Dependencies are pinned** (dict-watcher pins of the registry, `pin`/`pin_global`):
+5. **Dependencies are pinned** (dict-watcher pins of the registry; dependencies several
+   targets share are declared once in the group's `GroupSpec`):
    `logging.time/os/sys/threading/collections`, `getLevelName`, `_levelToName`,
    `_nameToLevel`, `_srcfile`, `currentframe`, `_is_internal_frame`, `_startTime`,
    `logThreads`/`logProcesses`/`logMultiprocessing`/`logAsyncioTasks`, the level constants,
@@ -76,7 +77,9 @@ call (1.10) whenever an argument is not plain.
    `collections.abc.Mapping`, and the builtins the code reads (`isinstance`, `len`,
    `hasattr`, `int`, `str`, through `pin_global`, so a shadowing module global counts).
    A replaced dependency (`mock.patch("time.time_ns")`, `logging._srcfile = None`)
-   suspends the target until it is restored. `Formatter.converter` is not pinned: it is
+   suspends the target until it is restored; one declared in the group's `GroupSpec`
+   (`logging.time/os/sys`, `os.path`, `os.fspath`, `posixpath.os`, `time.strftime`,
+   `isinstance`, `int`) suspends all five (CPython's code, 1.00). `Formatter.converter` is not pinned: it is
    read per call and accepted when it *is* `time.localtime` or `time.gmtime` (by identity),
    so `Formatter.converter = time.gmtime` stays accelerated and a custom converter falls
    back.
@@ -218,7 +221,7 @@ target never suspends (the first-64-calls cost). "[deps]": a pinned dependency r
 | info JSON formatter (subclass) | 83,513 | 48,505 | **0.581** | | | |
 | info JSON __dict__ formatter | 117,985 | 82,824 | **0.702** | | | |
 | info {-style | 79,550 | 44,293 | **0.557** | | | |
-| info, time.strftime replaced [deps] | 71,318 | 45,380 | **0.636** | | | |
+| info, time.strftime replaced [deps] (a shared pin: the whole group suspends) | 71,607 | 71,795 | **1.003** | | | |
 | info Formatter subclass [fallback] | 70,766 | 32,199 | **0.455** | | | |
 | info obj arg [fallback] | 71,260 | 47,546 | **0.667** | | | |
 | info %(message)s, obj arg [fallback] | 54,653 | 40,194 | **0.735** | 46,613 | 34,369 | 0.737 |
@@ -306,21 +309,25 @@ Free-threaded builds read attributes through `PyObject_GenericGetAttr` (no inlin
 reads: another thread may replace a value concurrently) and do not memoise line numbers,
 so the gains are smaller.
 
-### Install cost (contract item 13, callgrind regions, `benches/targets/logging_install_cost.py`)
+### Install cost (contract items 13/16, callgrind regions, `benches/targets/logging_install_cost.py`)
 
-| region | Ir |
+| region (3.15.1) | Ir |
 |---|---:|
-| `import logging`, plain | 27,947,258 |
-| `import logging` with the group pending (lazy install of the 5 targets) | 28,536,572 (**+2.1%**) |
-| `rustique.enable(only=["logging"])` with `logging` already imported | 917,225 |
-| `rustique.enable(only=["logging"])` before `import logging` (targets pending) | 1,043,713 |
+| `import logging`, plain | 27,947,128 |
+| `import logging` with the group pending (lazy install of the 5 targets) | 28,303,814 (**+1.3%**) |
+| `_accel.enable(["logging"])` (the registry call) with `logging` imported, cold process | 510,187 |
+| the same after `enable` + `disable` (warm: one-time process facts done) | **143,439** |
+| public `rustique.enable(only=["logging"])` with `logging` imported | 806,260 |
+| public `rustique.enable(only=["logging"])` before `import logging` (nothing of this group runs) | 1,092,431 |
 
-The lazy install is within the 5% budget. `enable()` is above the 0.1M budget: the
-pending-only case (no logging code runs) costs as much, so the excess is the public
-`enable()` path (selection, status) rather than this group's `prepare`s, which cost
-≈0.6M (≈0.59M measured as the lazy-install delta): 30 fingerprinted functions (the
-patched ones and every helper a kernel inlines; shared ones are checked once per
-process), 10 sites, ≈80 pins.
+The lazy install is within the 5% budget. Per group, `enable()` costs ≈0.14M warm and
+≈0.5M cold; the cold excess is one-time process work done by whichever group installs
+first (monitoring and code-layout calibration, this group's attribute-layout and dict-kind
+calibration, interning its ≈75 attribute names). What remains is 30 fingerprinted
+functions (the patched ones and every helper a kernel inlines), 10 sites and ≈55 pins; the
+module identities, `time.strftime`, the time functions and the builtins shared by several
+targets are declared once in the group's `GroupSpec`. The public `enable()` adds ≈0.3–0.6M
+of its own (inferred: the pending-only call, which runs nothing of this group, costs 1.09M).
 
 ## 5. Conformance
 
