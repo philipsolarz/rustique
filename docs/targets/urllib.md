@@ -75,3 +75,35 @@ its first call with a `%`).
 
 3.14.9 and 3.15.1 and their free-threaded builds; refused elsewhere and on fingerprint or
 constant mismatch.
+
+## 5. Measurements
+
+### 5.1 Instructions per call (callgrind)
+
+`python benches/targets/utils_cg.py urllib_cells [--jit]`, CPython 3.15.1, dev box (method:
+random.md §5.1). **M**.
+
+| cell | orig Ir | rq Ir | ratio | JIT orig | JIT rq | JIT ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| `quote('/api/v1/items/café list')` | 15368 | 3180 | 0.207 | 14225 | 3182 | 0.224 |
+| `quote('abc')` (all safe) | 4809 | 1637 | 0.340 | 3913 | 1639 | 0.419 |
+| `quote_plus('a b&c')` | 11164 | 1803 | 0.161 | 9221 | 1805 | 0.196 |
+| `unquote('a%20b%C3%A9')` | 21710 | 3703 | 0.171 | 20471 | 3622 | 0.177 |
+| `unquote('plain')` (no `%`: returns its argument) | 1365 | 831 | 0.609 | 1268 | 833 | 0.657 |
+| `unquote_plus('a+b')` | 2457 | 1407 | 0.573 | 2200 | 1409 | 0.640 |
+| `parse_qsl(5 fields)` | 38842 | 12839 | 0.331 | 33115 | 12910 | 0.390 |
+| `parse_qs(5 fields)` | 44455 | 14696 | 0.331 | 38930 | 14767 | 0.379 |
+| `urlparse(url)` (uncached; `_urlsplit` accelerated) | 27061 | 15740 | 0.582 | 23722 | 15277 | 0.644 |
+| `urlsplit(new url)` (lru_cache miss) | 25497 | 14138 | 0.554 | 22522 | 13522 | 0.600 |
+| `urlsplit(url)` (lru_cache hit: CPython's C wrapper, untouched) | 975 | 975 | 1.000 | 977 | 977 | 1.000 |
+| `_urlsplit(url)` | 18370 | 6930 | 0.377 | 16428 | 6894 | 0.420 |
+| `urljoin(base, '../x?y=1')` (two `urlparse`s inside) | 45178 | 30039 | 0.665 | 38121 | 27672 | 0.726 |
+| fallbacks (steady state): | | | | | | |
+| `quote(str subclass)` | 8422 | 8422 | 1.000 | 7522 | 7536 | 1.002 |
+| `quote(s, encoding='latin-1')` | 14737 | 14732 | 1.000 | 13639 | 13634 | 1.000 |
+| `unquote(s, encoding='latin-1')` | 16911 | 16583 | 0.981 | 15695 | 15871 | 1.011 |
+| `urlparse('http://[::1]:80/')` (brackets: `_urlsplit` falls back) | 50485 | 50620 | 1.003 | | | |
+| `parse_qsl(b'a=1&b=2')` | 23781 | 23856 | 1.003 | | | |
+
+The cheapest fallback (`quote` of a str subclass, ~7.5–8.4k Ir) is above the JIT threshold;
+every cell is ≤ 1.011, so the group is `jit_safe`.

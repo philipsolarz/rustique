@@ -38,6 +38,16 @@ CELLS = {
             "fill(100 KB)": "textwrap.fill(B, 100)",
         },
     ),
+    "statistics": (
+        "import statistics as S; F = [x / 7 for x in range(10000)]; I = list(range(10000))",
+        {
+            "mean(10k floats)": "S.mean(F)",
+            "mean(10k ints)": "S.mean(I)",
+            "variance(10k floats)": "S.variance(F)",
+            "stdev(10k floats)": "S.stdev(F)",
+            "pstdev(10k ints)": "S.pstdev(I)",
+        },
+    ),
     "urllib": (
         "import urllib.parse as up; P = 'path with spaces/and ünicode/' * 300; "
         "Q = '&'.join('key%d=value+%d%%20x' % (i, i) for i in range(500)); "
@@ -55,12 +65,13 @@ CELLS = {
 
 def run(setup: str, stmt: str, enable: str | None, fast: bool) -> float:
     s = setup if enable is None else f"import rustique; rustique.enable(only=[{enable!r}]); {setup}"
-    with tempfile.NamedTemporaryFile(suffix=".json") as f:
-        cmd = [sys.executable, "-m", "pyperf", "timeit", "-q", "-o", f.name, "-s", s, stmt]
+    with tempfile.TemporaryDirectory() as d:
+        out = d + "/r.json"  # pyperf refuses to overwrite an existing file
+        cmd = [sys.executable, "-m", "pyperf", "timeit", "-q", "-o", out, "-s", s, stmt]
         if fast:
             cmd.insert(4, "--fast")
         subprocess.run(cmd, check=True, capture_output=True)
-        data = json.load(open(f.name))
+        data = json.load(open(out))
     vals = [v for r in data["benchmarks"][0]["runs"] for v in r.get("values", [])]
     vals.sort()
     return vals[len(vals) // 2]

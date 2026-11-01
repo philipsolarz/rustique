@@ -86,3 +86,36 @@ functions would create is not created).
 
 3.14.9 and 3.15.1 and their free-threaded builds; refused elsewhere, on fingerprint
 mismatch, and when the chunking self-test fails.
+
+## 5. Measurements
+
+### 5.1 Instructions per call (callgrind)
+
+`python benches/targets/utils_cg.py textwrap_cells [--jit]`, CPython 3.15.1, dev box
+(method: random.md §5.1). **M**.
+
+| cell | orig Ir | rq Ir | ratio | JIT orig | JIT rq | JIT ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| `fill(desc ~330 chars, 88, initial/subsequent indent)` (report_render) | 500111 | 77011 | 0.154 | 468994 | 77013 | 0.164 |
+| `shorten(title, 30, placeholder='...')` (report_render) | 107876 | 17867 | 0.166 | 97302 | 17869 | 0.184 |
+| `indent(30 lines, '  ')` (report_render) | 34054 | 12476 | 0.366 | 26973 | 12478 | 0.463 |
+| `wrap(540 chars)` | 1089578 | 162015 | 0.149 | 989530 | 162017 | 0.164 |
+| `fill('hello world')` | 31932 | 7519 | 0.235 | 27857 | 7521 | 0.270 |
+| `wrap('word')` | 18719 | 5529 | 0.295 | 16240 | 5536 | 0.341 |
+| `dedent(20 lines)` | 52906 | 24686 | 0.467 | 46594 | 24688 | 0.530 |
+| `dedent('x')` | 6468 | 1017 | 0.157 | 6324 | 1019 | 0.161 |
+| `indent('x', '> ')` | 2545 | 2104 | 0.826 | 2302 | 2111 | 0.917 |
+| `TextWrapper(width=60).wrap(540 chars)` | 1086416 | 165243 | 0.152 | 987801 | 165245 | 0.167 |
+| `TextWrapper.fill(desc)` | 509272 | 80556 | 0.158 | 466870 | 80558 | 0.173 |
+| fallbacks (steady state): | | | | | | |
+| `wrap(str subclass)` | 102797 | 103336 | 1.005 | 89079 | 89079 | 1.000 |
+| subclass overriding `_split` | 214942 | 215278 | 1.002 | 170251 | 169999 | 0.999 |
+| `indent(text, prefix, predicate)` | 41735 | 41735 | 1.000 | 35526 | 35545 | 1.001 |
+| `dedent(str subclass)` | 7077 | 7077 | 1.000 | 7154 | 7140 | 0.998 |
+
+The cheapest fallback (`dedent` of a str subclass, ~7k Ir) is above the ~7k Ir JIT
+threshold; every cell is ≤ 1.005 with and without the JIT, so the group is `jit_safe`.
+
+Per-call cost of the class checks that replace pins (TextWrapper methods, `__init__`
+defaults, the translation table): one `tp_version_tag` compare for the class, two pointer
+compares for the defaults, six dict lookups for the table (~150 Ir, included above).

@@ -6,10 +6,12 @@ patches fall back and re-arm, free-threaded stress."""
 from __future__ import annotations
 
 import random
+import statistics
 import textwrap
 import urllib.parse as up
 from random import choice as captured_choice  # captured before enable()
 from random import randint as captured_randint
+from statistics import mean as captured_mean
 from textwrap import dedent as captured_dedent
 from textwrap import fill as captured_fill
 from unittest import mock
@@ -64,6 +66,16 @@ CASES = [
     ("urllib.parse.parse_qs", up.parse_qs, lambda: up.parse_qs("a=1&b=2"), references(up.parse_qs), ("a=1",)),
     ("urllib.parse._urlsplit", up._urlsplit, lambda: up._urlsplit("http://h/p?q#f"), references(up._urlsplit),
      ("http://h/p",)),
+    ("statistics.mean", statistics.mean, lambda: statistics.mean([1.5, 2.0, 4.25]),
+     {**references(statistics.mean), "from": captured_mean}, ([1, 2.5],)),
+    ("statistics.variance", statistics.variance, lambda: statistics.variance([1.5, 2.0, 4.25]),
+     references(statistics.variance), ([1, 2.5],)),
+    ("statistics.pvariance", statistics.pvariance, lambda: statistics.pvariance([1, 2, 4]),
+     references(statistics.pvariance), ([1, 2.5],)),
+    ("statistics.stdev", statistics.stdev, lambda: statistics.stdev([1.5, 2.0, 4.25]), references(statistics.stdev),
+     ([1, 2.5],)),
+    ("statistics.pstdev", statistics.pstdev, lambda: statistics.pstdev([1, 2, 4]), references(statistics.pstdev),
+     ([1, 2.5],)),
 ]
 
 IDS = [c[0] for c in CASES]
@@ -115,6 +127,9 @@ PATCHES = [
     ("urllib.parse.parse_qs", lambda: mock.patch("urllib.parse.parse_qsl", up.parse_qsl), lambda: up.parse_qs("a=1")),
     ("urllib.parse._urlsplit", lambda: mock.patch("urllib.parse._checknetloc", up._checknetloc),
      lambda: up._urlsplit("http://h/p")),
+    ("statistics.mean", lambda: mock.patch("statistics._sum", statistics._sum), lambda: statistics.mean([1.0, 2.0])),
+    ("statistics.stdev", lambda: mock.patch("math.isqrt", __import__("math").isqrt),
+     lambda: statistics.stdev([1.0, 2.0])),
 ]
 
 
@@ -171,9 +186,11 @@ def test_ft_stress_shared_generator():
     ft_stress(["random"], fn, True)
 
 
-def test_ft_stress_text_and_urls():
+def test_ft_stress_text_urls_statistics():
+    data = [x / 3 for x in range(50)]
+
     def fn():
         return (textwrap.fill(TEXT, 9), textwrap.dedent("  a\n  b"), up.quote("a b/ü"), up.parse_qs("a=1&a=2"),
-                up._urlsplit("http://x/y?z#w"))
+                up._urlsplit("http://x/y?z#w"), statistics.mean(data), statistics.stdev(data))
 
-    ft_stress(["textwrap", "urllib"], fn, fn())
+    ft_stress(["textwrap", "urllib", "statistics"], fn, fn())

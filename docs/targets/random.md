@@ -178,4 +178,15 @@ be 0.22–0.47 under the JIT.
 
 ### 5.2 Wall time, large inputs (pyperf)
 
-See the table appended by `utils_pyperf.py random` (§5.3, filled in below).
+`python benches/targets/utils_pyperf.py random --fast` (median of pyperf values, fresh
+workers; the shared dev box was busy, so only the ≥ 1.5× claims are meaningful; the lead
+re-measures on a quiet box). **M**.
+
+| cell | plain | rustique | ratio |
+|---|---:|---:|---:|
+| `rng.shuffle(list of 1000)` | 108.7 µs | 7.7 µs | 0.071 |
+| `rng.sample(range(10**6), 1000)` | 167.2 µs | 46.4 µs | 0.277 |
+| `rng.sample(list of 1000, 500)` | 59.1 µs | 5.5 µs | 0.092 |
+| `rng.choices(list of 1000, k=1000)` | 43.1 µs | 8.9 µs | 0.206 |
+| `rng.choices(list of 1000, weights, k=1000)` | 261.3 µs | 72.6 µs | 0.278 |
+| `[rng.randint(1, 6) for _ in range(1000)]` | 139.6 µs | 56.5 µs | 0.405 |
