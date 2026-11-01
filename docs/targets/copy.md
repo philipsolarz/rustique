@@ -33,12 +33,12 @@ written on success. So every hook runs under CPython's own frames (tracebacks,
 `sys._getframe`, `inspect.stack`), tools attached by a hook see the rest of the call, and
 temporaries are freed by CPython in its order.
 
-Restarts and suspension. A restart that abandoned copies extends the target's suspension
-streak (64 in a row suspend it, contract §5.3); one decided at the root itself — the object
-handed to `deepcopy` needs user code, which is what the original's helpers produce when they
-reach a hook object again — wasted nothing and is counted without extending the streak (a
-list of 100 objects with their own `__deepcopy__` must not suspend the kernel). Any native
-hit ends a streak. While a restarted call runs, the containers on the path from its root to
+Restarts and suspension (net-benefit policy, contract §5.3: hits credit the score,
+fallbacks debit it). A restart that abandoned copies always debits. Every other fallback
+debits when it is a direct call, and is only counted when it is a call the original's
+helpers (or hooks) make inside a fallback of the same target: those repeat the outer
+fallback level by level (a list of 100 objects with their own `__deepcopy__`, a profiler
+attached while a structure is copied) and must not suspend the kernel by themselves. While a restarted call runs, the containers on the path from its root to
 the node that needed user code go straight to the original when the helpers reach them again
 (each would restart at that same node, since no user code ran before it); everything else
 the helpers hand to `deepcopy` (siblings, subtrees) is copied natively. A hook at depth *d*
@@ -106,7 +106,7 @@ cannot, CPython gets to fail.
 methods), `issubclass(cls, type)`, a `return self` `__copy__` (Enum) or `Decimal`'s, plain
 objects (`object.__reduce_ex__(4)` natively, then `y.__dict__.update(x.__dict__)` when its
 keys are strings, and the slots), the `_datetime` types (`cls(*args)`). Anything else
-restarts (counted, never a streak: `copy.copy` decides before building anything).
+restarts (a direct call debits the net-benefit score; nested in a fallback of `copy`, counted only).
 
 `dataclasses.asdict`/`astuple` native: atomic values, dataclass instances (`fields(obj)` over
 `Field` objects, `getattr(obj, f.name)` when it is an instance attribute, a slot, or a class
@@ -150,9 +150,10 @@ the code objects recognised as `return self`).
 --expect-installed copy.deepcopy,copy.copy,dataclasses.asdict,dataclasses.astuple`: identical
 per-test outcomes plain vs enabled on 3.15.1, 3.15.1t, 3.14.9, 3.14.9t (3.15: test_copy 84
 pass, test_copyreg 6, test_dataclasses 284 + 1 skip; 3.14: 81 / 6 / 279 + 1 skip), 0
-differences. Full pytest on the four builds: all pass except 4 `tests/test_dx.py` tests that
-assume `containers` is the only non-builtins group (they see `copy` and `dataclasses` too;
-not ours to change).
+differences. Full pytest on the four builds (after merging wave1 b162e61): all pass except
+`tests/test_expr.py::test_filter_matches_python` on 3.15.1t, 3.14.9 and 3.14.9t, a
+Hypothesis case of the expression engine (`X + (X / X == c)` at `X = 0` loses the
+`ZeroDivisionError`), unrelated to these targets.
 
 ## 5. Measurements
 
@@ -195,8 +196,8 @@ subtrees without user code run natively, so a restarted call is still cheaper th
 | `OrderedDict` (C `__reduce__`, not recognised) | 22,489 | 1.030 | 1.020 | 1.029 |
 | pair: restart, hook at the root + deepcopy int | 14,700 | 0.709 | 0.705 | 0.753 |
 | pair: restart, hook last 4 levels deep + deepcopy int | 151,179 | 0.582 | 0.564 | 0.657 |
-| pair: `copy.copy` of a `__copy__` hook + copy int | 3,495 | 1.147 | 1.326 | 1.146 |
-| `copy.copy` of a `__copy__` hook (suspended after the streak) | 2,824 | 0.983 | 0.992 | 1.000 |
+| pair: `copy.copy` of a `__copy__` hook + copy int | 3,495 | 1.152 | 1.331 | 1.151 |
+| `copy.copy` of a `__copy__` hook (suspended by the net-benefit policy) | 2,824 | 0.983 | 0.992 | 1.000 |
 
 Fallbacks before any work: `memo=OrderedDict` 0.991 (alone; suspended) and 1.113 paired
 with a hit (every nested call of the original's helpers is a C call); `copy.copy(x, kw)`
@@ -204,30 +205,42 @@ paired 1.025; `asdict(dict_factory=...)` 0.998.
 
 ### 5.2 Install cost (`benches/targets/copy_install.py`, quiet `_accel.enable`, Ir)
 
+Each group declares its validation, state and pins once in a `GroupSpec` (`copy`,
+`dataclasses`); the targets only check the group's state and declare their vectorcall
+site. "warm": after another group's imported vectorcall target took the process's one-time
+costs (calibration), as the budget is stated.
+
 | | 3.15.1 | 3.14.9 |
 |---|---|---|
-| `enable(['copy'])` (copy imported) | 259,266 | 253,138 |
-| same with `copy` not imported (framework pass + lazy hook) | 39,463 | 35,032 |
-| group `copy`'s own | 219,803 | 218,106 |
-| group `dataclasses`'s own | 253,958 | 241,110 |
-| `import copy` plain / with lazy install | 1,334,673 / 1,593,638 (+19.4%) | 525,005 / 782,162 (+49.0%) |
-| `import dataclasses` plain / lazy install (both groups) | 5,549,503 / 5,858,113 (+5.6%) | 25,698,514 / 26,078,043 (+1.5%) |
+| `enable(['copy'])`, cold (first enable of the process) | 204,843 | 202,707 |
+| `enable(['copy'])`, warm | 161,624 | 162,768 |
+| `enable(['dataclasses'])`, warm | 162,103 | 157,220 |
+| `enable(['copy', 'dataclasses'])`, warm | 303,961 | 302,569 |
+| `import copy` plain / lazy install (warm) | 1,362,881 / 1,521,977 (+159,096, +11.7%) | 559,976 / 720,974 (+160,998, +28.8%) |
+| `import dataclasses` plain / lazy install, group `dataclasses` | 5,580,101 / 5,742,220 (+2.9%) | 25,794,376 / 25,961,927 (+0.6%) |
 
-Over the 0.1M budget. Group `copy` (profiled on 3.15.1): 11 code fingerprints of the emulated
-functions (`deepcopy`, `copy`, five `_deepcopy_*` helpers, `_keep_alive`, `_reconstruct`,
-`copyreg.__newobj__`, `copyreg._slotnames`) ≈ 69k (≈6.3k each, framework v2), pins ≈ 29k for
-the first target and 13k for the second, module/str lookups and interning ≈ 35k, vectorcall
-sites ≈ 7k, framework activation ≈ 38k plus the one-time monitoring probe ≈ 27k. Every
-fingerprint covers code the kernels execute instead of CPython; dropping any would mean
-restarting where that code is reached. Group `dataclasses`: 6 fingerprints (≈38k) and ~28
-pins per target (`pin_global` for 9-10 builtins each); a single snapshot pin of the module
-globals is not usable on 3.15, where the lazy `import copy` reifies a global on first use.
-`import copy` is a tiny module, so the framework's own lazy-install baseline (~60k) alone
-exceeds 5% of it.
+Budget: per-group enable ≤ 0.1M Ir — both groups are over (~160k). Lazy install ≤ max(5%
+of the import, 0.1M): `dataclasses` is within (162k ≤ 279k on 3.15, ≤ 1.29M on 3.14);
+`copy` is over (159k vs 100k: `import copy` is a small module). The cost is dominated by
+the code fingerprints of every function the kernels execute instead of CPython — 11 for
+`copy` (`deepcopy`, `copy`, five `_deepcopy_*` helpers, `_keep_alive`, `_reconstruct`,
+`copyreg.__newobj__`, `copyreg._slotnames`) ≈ 69k at ≈6.3k each, 6 for `dataclasses` ≈ 38k
+— then the pins (`copy`: one snapshot of the module globals plus 14 keys; `dataclasses`:
+~30 keys, since a snapshot of its globals would deviate on 3.15 when the lazy `import copy`
+reifies), module lookups and the two vectorcall sites. Reaching 0.1M would take validating
+the rarely used helpers lazily (first use, `accel::degrade` on mismatch) instead of at
+enable.
 
 ### 5.3 pyperf and workloads
 
-RESULTS_TIMING
+`benches/targets/copy_pyperf.py --fast` (3.15.1, wall time, enabled / plain): deepcopy 10k
+records 0.328, 1k dataclass orders 0.271, object tree (3^7 nodes) 0.335, config (500
+sections) 0.177; `copy.copy` of a 100k list 1.013 (noise: `list.copy` is the whole call);
+`asdict` 1k orders 0.432; `astuple` 1k orders 0.418.
+
+Workloads (`benches/workloads/run.py compare ... -n 5 -p 3 --only copy,dataclasses`,
+3.15.1, outputs identical): `data/state_snapshot` 0.654, `devtools/isort_stdlib` 0.764,
+`web/json_api` 0.960, `devtools/sqlglot_transpile` 0.971; geometric mean 0.826.
 
 
 ## 6. Tests
