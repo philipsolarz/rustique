@@ -173,6 +173,40 @@ fn func_version(func: &Bound<'_, pyo3::types::PyFunction>) -> u32 {
     unsafe { (*func.as_ptr().cast::<pyo3::ffi::PyFunctionObject>()).func_version }
 }
 
+static EXTRAS: pyo3::sync::PyOnceLock<()> = pyo3::sync::PyOnceLock::new();
+
+/// Diagnostics, the self-test targets' helpers and `RustiqueCheckError`: created on first
+/// access (startup: `import rustique; rustique.enable()` needs only the switch).
+fn add_extras(sub: &Bound<'_, PyModule>) -> PyResult<()> {
+    EXTRAS.get_or_try_init(sub.py(), || -> PyResult<()> {
+        sub.add_function(wrap_pyfunction!(targets, sub)?)?;
+        sub.add_function(wrap_pyfunction!(fingerprint, sub)?)?;
+        sub.add_function(wrap_pyfunction!(fingerprint_report, sub)?)?;
+        sub.add_function(wrap_pyfunction!(pins, sub)?)?;
+        sub.add_function(wrap_pyfunction!(func_version, sub)?)?;
+        sub.add_function(wrap_pyfunction!(vectorcall_is_original, sub)?)?;
+        sub.add("RustiqueCheckError", sub.py().get_type::<super::check::RustiqueCheckError>())?;
+        crate::targets::register(sub)
+    })?;
+    Ok(())
+}
+
+/// PEP 562 for `_accel`: the extras on first access.
+#[pyfunction]
+#[pyo3(name = "__getattr__")]
+fn accel_getattr(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
+    let sub = py.import("rustique._rustique")?.getattr("_accel")?.cast_into::<PyModule>()?;
+    if !(name.starts_with("__") && name.ends_with("__")) {
+        add_extras(&sub)?;
+        if let Some(v) = sub.dict().get_item(name)? {
+            return Ok(v.unbind());
+        }
+    }
+    Err(pyo3::exceptions::PyAttributeError::new_err(format!(
+        "module 'rustique._rustique._accel' has no attribute '{name}'"
+    )))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let sub = PyModule::new(m.py(), "_accel")?;
     sub.add_function(wrap_pyfunction!(enable, &sub)?)?;
@@ -181,16 +215,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(stats, &sub)?)?;
     sub.add_function(wrap_pyfunction!(_set_native, &sub)?)?;
     sub.add_function(wrap_pyfunction!(installed, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(targets, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(fingerprint, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(fingerprint_report, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(pins, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(func_version, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(vectorcall_is_original, &sub)?)?;
     sub.add_function(wrap_pyfunction!(check, &sub)?)?;
     sub.add_function(wrap_pyfunction!(check_mode, &sub)?)?;
-    sub.add("RustiqueCheckError", m.py().get_type::<super::check::RustiqueCheckError>())?;
+    sub.add_function(wrap_pyfunction!(accel_getattr, &sub)?)?;
     sub.add("FREE_THREADED", super::version::FREE_THREADED)?;
-    crate::targets::register(&sub)?;
     m.add("_accel", sub)
 }
