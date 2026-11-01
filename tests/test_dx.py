@@ -20,7 +20,7 @@ from rustique import _report, _switch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PYSRC = os.path.join(ROOT, "python")
-VARS = ("RUSTIQUE", "RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_STATS", "RUSTIQUE_REPORT")
+VARS = ("RUSTIQUE", "RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_STATS", "RUSTIQUE_REPORT", "RUSTIQUE_CHECK")
 
 
 def clean_env(**extra: str) -> dict[str, str]:
@@ -71,6 +71,10 @@ class FakeFramework:
     def stats(self, enabled=None, reset=False):
         self.calls.append(("stats", enabled))
         return {n: {"hits": 1, "fallback": {}} for n in self.installed}
+
+    def check(self, mode=None):
+        self.calls.append(("check", mode))
+        return "off"
 
     def counters_available(self):
         return True
@@ -185,6 +189,30 @@ def test_source_is_the_first_enable_path(fake):
     assert rustique.status()["process"]["switch"]["source"] is None
 
 
+@pytest.mark.parametrize(("value", "mode"), [("1", "warn"), ("warn", "warn"), ("RAISE", "raise"), ("0", "off"),
+                                             ("off", "off")])
+def test_check_env(fake, monkeypatch, value, mode):
+    monkeypatch.setenv("RUSTIQUE_CHECK", value)
+    rustique.enable()
+    assert ("check", mode) in fake.calls
+
+
+def test_check_env_unset_and_invalid(fake, monkeypatch, capsys):
+    rustique.enable()
+    assert not [c for c in fake.calls if c[0] == "check"]
+    monkeypatch.setenv("RUSTIQUE_CHECK", "maybe")
+    rustique.enable()
+    assert not [c for c in fake.calls if c[0] == "check"]
+    assert "ignoring RUSTIQUE_CHECK='maybe'" in capsys.readouterr().err
+
+
+def test_check_not_set_when_killed(fake, monkeypatch):
+    monkeypatch.setenv("RUSTIQUE", "0")
+    monkeypatch.setenv("RUSTIQUE_CHECK", "1")
+    rustique.enable()
+    assert fake.calls == []
+
+
 @pytest.mark.parametrize(("value", "expected"), [
     (None, None), ("", None), ("0", None), ("1", "stderr"), ("stderr", "stderr"), ("true", "stderr"),
     ("/tmp/r.json", "/tmp/r.json"),
@@ -210,7 +238,8 @@ def record(**kw):
         {"name": "json.dumps", "group": "json", "state": "installed", "reason": None},
         {"name": "copy.deepcopy", "group": "copy", "state": "installed", "reason": None},
         {"name": "logging.Formatter.format", "group": "logging", "state": "pending-import", "reason": None},
-        {"name": "re.match", "group": "re", "state": "refused", "reason": "CPython 3.14.9 is not validated (3.15)"},
+        {"name": "re.match", "group": "re", "state": "refused", "reason": "CPython 3.14.9 is not validated (3.15)",
+         "refusal": "version"},
         {"name": "uuid.uuid4", "group": "uuid", "state": "disabled", "reason": None},
     ]
     rec = {"pid": 42, "counters": True,
@@ -231,8 +260,20 @@ def test_render_sorts_by_hits_and_lists_refusals():
     assert [b[0] for b in body] == ["copy.deepcopy", "json.dumps"]
     assert body[0][2] == "2,000" and body[1][2:] == ["10", "4", "(args", "3,", "deps", "1)"]
     assert "pending import (patched when their module is imported): logging.Formatter.format" in text
-    assert "re.match  CPython 3.14.9 is not validated (3.15)" in text
+    assert "re.match  [version] CPython 3.14.9 is not validated (3.15)" in text
     assert "not selected: uuid" in text
+    assert "check mode" not in text
+
+
+def test_render_check_mode():
+    rec = record()
+    rec["status"]["process"]["check"] = "warn"
+    rec["status"]["targets"][0]["checkable"] = True
+    assert "check mode: warn (1 installed checkable targets" in _report.render(rec)
+    assert "check mismatches: none" in _report.render(rec)
+    rec["stats"]["json.dumps"]["fallback"]["check"] = 2
+    assert _report.mismatches(rec) == {"json.dumps": 2}
+    assert "CHECK MISMATCHES: 2 in json.dumps (2)" in _report.render(rec)
 
 
 def test_render_killed():
@@ -290,6 +331,18 @@ def test_real_exclude_a_group(real):
     states = {t["name"]: t["state"] for t in st["targets"] if t["group"] == "builtins"}
     assert states and all(s != "installed" for s in states.values())
     assert sum(1 for x in [1, 2] if x) == 2
+
+
+def test_real_check_env(real, monkeypatch):
+    from rustique import _takeover
+
+    monkeypatch.setenv("RUSTIQUE_CHECK", "1")
+    try:
+        st = rustique.enable()
+        assert st["process"]["check"] == "warn" and st["process"]["switch"]["check"] == "warn"
+        assert sorted([3, 1, 2]) == [1, 2, 3]
+    finally:
+        _takeover.check("off")
 
 
 def test_real_kill_switch(real, monkeypatch):

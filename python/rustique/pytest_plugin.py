@@ -10,18 +10,20 @@ With ``--rustique`` the plugin enables Rustique (and its counters) before collec
 the code under test is accelerated from its first import; at the end it prints the
 per-target report (hits, fallbacks by reason, refusals) and **fails the session if a
 selected target was refused unexpectedly**: refused for another reason than "this
-interpreter is not one the target is validated for" (a fingerprint mismatch, a site
-patched by someone else, a failed self-test). ``--rustique-allow-refused NAMES`` accepts
-those too. Under ``pytest-xdist`` each worker enables Rustique and the controller adds up
+interpreter is not one the target is validated for" (refusal category ``version``,
+``build`` or ``jit``), e.g. a fingerprint mismatch, a site patched by someone else, a failed
+self-test. ``--rustique-allow-refused NAMES`` accepts those too. ``--rustique-check``
+turns check mode on (every fast path of a checkable target is compared with CPython's
+original); any mismatch fails the session. Under ``pytest-xdist`` each worker enables Rustique and the controller adds up
 their counters. ``RUSTIQUE=0`` (kill switch) wins: the session runs plain and the summary
 says so.
 """
 
 import pytest
 
-# Refusal reasons that only say "not validated on this interpreter": expected, never fatal.
-_EXPECTED = ("version", "not validated", "free-threaded", "debug build", "pre-release", "prerelease",
-             "unsupported", "subinterpreter")
+# Refusal categories (status()["targets"][i]["refusal"]) that only say "not validated for this
+# interpreter or configuration": expected on a test matrix, never fatal.
+EXPECTED_REFUSALS = ("version", "build", "jit")
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -30,6 +32,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                 help="enable Rustique for the session and report what it accelerated")
     g.addoption("--rustique-only", metavar="G,..", default=None, help="enable only these groups or targets")
     g.addoption("--rustique-exclude", metavar="G,..", default=None, help="do not enable these groups or targets")
+    g.addoption("--rustique-check", action="store_true", default=False,
+                help="check mode: checkable targets re-run CPython's original after each fast path and "
+                     "compare; any mismatch fails the session (CPython's result is used)")
+    g.addoption("--rustique-check-raise", action="store_true", default=False,
+                help="check mode where a mismatch raises RustiqueCheckError inside the test")
     g.addoption("--rustique-allow-refused", metavar="NAMES", default="",
                 help="targets or groups whose refusal is accepted (comma-separated, or 'all')")
     g.addoption("--rustique-report-limit", type=int, default=20, metavar="N",
@@ -37,12 +44,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def expected_refusal(t: dict) -> bool:
-    """Refused only because this interpreter is not one the target is validated for."""
-    kind = t.get("refusal")  # a machine-readable category, when the framework provides one
-    if kind is not None:
-        return kind in ("version", "build")
-    reason = (t.get("reason") or "").lower()
-    return any(word in reason for word in _EXPECTED)
+    """Refused only because this interpreter (version, build, JIT) is not one the target is
+    validated for. Anything else (fingerprint, layout, conflict, selftest, symbol, deps,
+    other) means the target met a CPython it did not expect: unexpected."""
+    return t.get("refusal") in EXPECTED_REFUSALS
 
 
 class _Session:
@@ -61,9 +66,11 @@ class _Session:
 def pytest_configure(config: pytest.Config) -> None:
     if not config.getoption("rustique"):
         return
-    from rustique import _switch
+    from rustique import _framework, _switch
 
     _switch.stats(enabled=True)
+    if (config.getoption("rustique_check") or config.getoption("rustique_check_raise")) and not _switch.killed():
+        _framework.check("raise" if config.getoption("rustique_check_raise") else "warn")
     _switch.enable(only=config.getoption("rustique_only"), exclude=config.getoption("rustique_exclude"),
                    _source="pytest --rustique")
     config.stash[_KEY] = _Session(config)
@@ -78,6 +85,12 @@ def _record() -> dict:
     return _switch.record()
 
 
+def _mismatches(rec: dict) -> dict[str, int]:
+    from rustique import _report
+
+    return _report.mismatches(rec)
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     state = session.config.stash.get(_KEY, None)
@@ -90,8 +103,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
         workeroutput["rustique"] = json.dumps(rec, default=list)
         return
-    bad = state.unexpected(rec["status"])
-    if bad and session.exitstatus == 0:
+    if (state.unexpected(rec["status"]) or _mismatches(rec)) and session.exitstatus == 0:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
@@ -125,3 +137,9 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
         tr.write_line(f"rustique: {len(bad)} target(s) refused unexpectedly (session marked failed): "
                       + ", ".join(t["name"] for t in bad), red=True, bold=True)
         tr.write_line("  accept with --rustique-allow-refused=NAMES, or exclude with --rustique-exclude=NAMES")
+    bad_checks = _mismatches(rec)
+    if bad_checks:
+        tr.write_line("")
+        tr.write_line(f"rustique: check mode found {sum(bad_checks.values()):,} mismatch(es) in "
+                      + ", ".join(sorted(bad_checks)) + " (session marked failed; CPython's results were used)",
+                      red=True, bold=True)

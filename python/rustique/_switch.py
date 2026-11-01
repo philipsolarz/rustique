@@ -19,6 +19,12 @@ controls:
     ``1`` (or ``stderr``) prints a report at exit to stderr; a path appends it to that file
     (``{pid}`` in the path is replaced by the process id; a ``.json`` path gets one JSON
     object per line). Implies ``RUSTIQUE_STATS=1``.
+``RUSTIQUE_CHECK``
+    ``1`` (``warn``): check mode. Every fast path of a *checkable* target (no user code, no
+    side effects in its exact subset) also runs CPython's original and compares; a
+    mismatch counts as ``fallback["check"]`` and the original's result is returned.
+    ``raise``: a mismatch raises ``RustiqueCheckError``. About 2x per checked call: a CI
+    and debugging mode.
 
 Like ``PYTHON*`` variables, all of them are ignored under ``-E`` and ``-I``.
 """
@@ -30,7 +36,7 @@ from rustique import _framework as _fw
 
 ON = ("1", "true", "yes", "on")
 OFF = ("0", "false", "no", "off")
-VARIABLES = ("RUSTIQUE", "RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_STATS", "RUSTIQUE_REPORT")
+VARIABLES = ("RUSTIQUE", "RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_STATS", "RUSTIQUE_REPORT", "RUSTIQUE_CHECK")
 
 # How Rustique was enabled in this process, and what the last enable() selected.
 _state: dict = {"source": None, "only": None, "exclude": (), "killed_calls": 0, "report": None}
@@ -69,6 +75,21 @@ def names(value) -> tuple[str, ...] | None:
         if v and v not in out:
             out.append(v)
     return tuple(out)
+
+
+def check_mode() -> str | None:
+    """What ``RUSTIQUE_CHECK`` asks for: ``"warn"``, ``"raise"``, ``"off"`` or None (unset)."""
+    value = getenv("RUSTIQUE_CHECK")
+    if value is None or not value.strip():
+        return None
+    v = value.strip().lower()
+    if v in ("raise", "warn"):
+        return v
+    flag = _flag(v)
+    if flag is None:
+        sys.stderr.write(f"rustique: ignoring RUSTIQUE_CHECK={value!r} (expected 1, raise or 0)\n")
+        return None
+    return "warn" if flag else "off"
 
 
 def report_target() -> str | None:
@@ -133,6 +154,9 @@ def enable(*, only=None, exclude=None, native=None, builtins: bool = True, _sour
     _warn_unknown("RUSTIQUE_EXCLUDE", env_exclude)
     sel_only = _narrow(names(only), env_only)
     sel_exclude = tuple(dict.fromkeys((names(exclude) or ()) + env_exclude))
+    check = check_mode()
+    if check is not None:
+        _fw.check(check)
     if report is not None or _flag(getenv("RUSTIQUE_STATS")):
         _fw.stats(enabled=True)
     _fw.enable(only=sel_only, exclude=sel_exclude, native=native, builtins=builtins)
@@ -169,6 +193,7 @@ def status() -> dict:
         "exclude": _state["exclude"],
         "stats": bool(_flag(getenv("RUSTIQUE_STATS"))) or _state["report"] is not None,
         "report": _state["report"],
+        "check": proc.get("check"),
         "env": {k: v for k in VARIABLES if (v := getenv(k)) is not None},
     }
     return st

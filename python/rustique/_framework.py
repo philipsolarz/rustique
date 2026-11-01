@@ -29,5 +29,10 @@ def stats(enabled=None, reset=False) -> dict:
     return _fw.stats(enabled=enabled, reset=reset)
 
 
+def check(mode=None):
+    """Set the check mode (``"warn"``, ``"raise"``, ``"off"``); returns the previous one."""
+    return _fw.check(mode)
+
+
 def counters_available() -> bool:
     return True

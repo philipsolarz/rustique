@@ -150,6 +150,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--timeout", type=float, default=None, help="seconds per run")
     p.add_argument("--keep", metavar="DIR", help="save every run's stdout/stderr/report in DIR")
     p.add_argument("--quiet", "-q", action="store_true", help="no per-target report")
+    p.add_argument("--check", action="store_true",
+                   help="also run check mode in the enabled run (RUSTIQUE_CHECK=1): mismatches count as differences")
     opts = p.parse_args(opts_argv)
     if not cmd:
         p.error("missing command (python -m rustique diff -- <command...>)")
@@ -179,6 +181,8 @@ def main(argv: list[str]) -> int:
                     env["RUSTIQUE"] = "0"
                 else:
                     env.update(RUSTIQUE="1", RUSTIQUE_STATS="1", RUSTIQUE_REPORT=report.format(i))
+                    if opts.check:
+                        env["RUSTIQUE_CHECK"] = "1"
                 xml = os.path.join(tmp, f"{side}-{i}.xml")
                 full = pytest_args(cmd, xml) if pytest else cmd
                 try:
@@ -225,6 +229,10 @@ def main(argv: list[str]) -> int:
         rc = rc or 2
     else:
         rec = _report.merge(records)
+        bad = _report.mismatches(rec)
+        if bad:
+            out.insert(2, f"  CHECK MISMATCHES in the rustique run: {', '.join(f'{k} ({v})' for k, v in bad.items())}")
+            rc = 1
         hits = sum(c.get("hits", 0) for c in (rec.get("stats") or {}).values())
         if rec.get("counters") and not hits:
             out.append("  note: no accelerated call happened in the rustique run: an identical result proves little.")

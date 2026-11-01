@@ -14,18 +14,18 @@ import sys
 
 COMMANDS = ("run", "status", "report", "diff")
 USAGE = """\
-usage: python -m rustique [run] [--only G,..] [--exclude G,..] [--report] [--native PATTERN]...
+usage: python -m rustique [run] [--only G,..] [--exclude G,..] [--report] [--check|--check-raise] [--native PATTERN]...
                           [--no-builtins] (script.py | -m module | -c command) [args...]
        python -m rustique status [--json]
-       python -m rustique report [--json] [-o FILE] [--limit N] -- <command...>
-       python -m rustique diff [--repeat N] [--ignore REGEX]... [--no-normalize] [--keep DIR] -- <command...>
+       python -m rustique report [--json] [-o FILE] [--limit N] [--check] -- <command...>
+       python -m rustique diff [--repeat N] [--ignore REGEX]... [--no-normalize] [--keep DIR] [--check] -- <command...>
 
   run      run a Python program with Rustique enabled (RUSTIQUE=0 still turns it off)
   status   what Rustique accelerates on this interpreter, and why anything is refused
   report   run a command with RUSTIQUE=1 and counters on; print the per-target report
   diff     run a command plain and with RUSTIQUE=1; compare exit code, output, test outcomes
 
-Environment: RUSTIQUE=1|0, RUSTIQUE_ONLY, RUSTIQUE_EXCLUDE, RUSTIQUE_STATS, RUSTIQUE_REPORT
+Environment: RUSTIQUE=1|0, RUSTIQUE_ONLY, RUSTIQUE_EXCLUDE, RUSTIQUE_STATS, RUSTIQUE_REPORT, RUSTIQUE_CHECK
 (docs/USAGE.md).
 """
 
@@ -67,6 +67,9 @@ def _parse_run(argv: list[str]):
     p.add_argument("--only", metavar="G,..", help="enable only these groups or targets")
     p.add_argument("--exclude", metavar="G,..", help="do not enable these groups or targets")
     p.add_argument("--report", action="store_true", help="print the per-target report at exit (RUSTIQUE_REPORT=1)")
+    p.add_argument("--check", action="store_true",
+                   help="check mode (RUSTIQUE_CHECK=1): compare checkable fast paths with CPython's original")
+    p.add_argument("--check-raise", action="store_true", help="check mode, a mismatch raises (RUSTIQUE_CHECK=raise)")
     p.add_argument("--native", action="append", default=[], metavar="PATTERN",
                    help="rewrite modules matching PATTERN (and the main program) to Rustique containers")
     p.add_argument("--native-main", action="store_true", help="rewrite the main program only")
@@ -103,6 +106,10 @@ def run(argv: list[str]) -> None:
 
     if opts.report and _switch.report_target() is None:
         _switch.report_to("stderr")
+    if (opts.check or opts.check_raise) and not _switch.killed():
+        from rustique import _framework
+
+        _framework.check("raise" if opts.check_raise else "warn")
     _switch.enable(only=opts.only, exclude=opts.exclude, native=opts.native or None,
                    builtins=not opts.no_builtins, _source="python -m rustique")
     native_main = (bool(opts.native) or opts.native_main) and not _switch.killed()
@@ -268,6 +275,7 @@ def report_cmd(argv: list[str]) -> int:
     p.add_argument("--json", action="store_true", help="print the merged record as JSON")
     p.add_argument("-o", "--output", help="write the report to FILE instead of stderr")
     p.add_argument("--limit", type=int, default=None, help="show at most N installed targets")
+    p.add_argument("--check", action="store_true", help="check mode in the command (RUSTIQUE_CHECK=1)")
     opts = p.parse_args(opts_argv)
     if not cmd:
         p.error("missing command (python -m rustique report -- <command...>)")
@@ -279,6 +287,8 @@ def report_cmd(argv: list[str]) -> int:
     with tempfile.TemporaryDirectory(prefix="rustique-report-") as tmp:
         path = os.path.join(tmp, "report.json")
         env = {**os.environ, "RUSTIQUE": "1", "RUSTIQUE_STATS": "1", "RUSTIQUE_REPORT": path}
+        if opts.check:
+            env["RUSTIQUE_CHECK"] = "1"
         t0 = time.perf_counter()
         try:
             rc = subprocess.call(resolve_command(cmd), env=env)

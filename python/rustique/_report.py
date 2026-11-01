@@ -58,6 +58,34 @@ def header(rec: dict) -> str:
             f"{where}: {how}")
 
 
+def mismatches(rec: dict) -> dict[str, int]:
+    """Check-mode mismatches per target (``fallback["check"]``)."""
+    out = {}
+    for name, c in (rec.get("stats") or {}).items():
+        n = (c.get("fallback") or {}).get("check", 0)
+        if n:
+            out[name] = n
+    return out
+
+
+def check_lines(rec: dict) -> list[str]:
+    proc = rec["status"].get("process", {})
+    mode = proc.get("check")
+    bad = mismatches(rec)
+    if mode in (None, "off") and not bad:
+        return []
+    checkable = sum(1 for t in rec["status"].get("targets", []) if t.get("checkable") and t["state"] == "installed")
+    lines = [f"  check mode: {mode or 'off'} ({checkable} installed checkable targets re-run CPython's original "
+             "after each fast path and compare)"]
+    if bad:
+        lines.append(f"  CHECK MISMATCHES: {sum(bad.values()):,} in "
+                     + ", ".join(f"{k} ({v:,})" for k, v in sorted(bad.items(), key=lambda kv: -kv[1]))
+                     + " -- CPython's result was used; please report this")
+    else:
+        lines.append("  check mismatches: none")
+    return lines
+
+
 def render(rec: dict, *, limit: int | None = None, title: bool = True, counters_note: bool = True) -> str:
     """The report: header, one line per target that ran (sorted by hits), then the targets
     waiting for their module, refused (with reasons) and not selected."""
@@ -83,6 +111,7 @@ def render(rec: dict, *, limit: int | None = None, title: bool = True, counters_
         lines.append("  counters: not available (this build's kernels have no counters)")
     elif not (proc.get("stats") or sw.get("stats")) and not any(c.get("hits") for c in counters.values()):
         lines.append("  counters: off (set RUSTIQUE_STATS=1, or use `python -m rustique report -- <cmd>`)")
+    lines += check_lines(rec)
     installed = by_state["installed"]
     if installed:
         def key(t):
@@ -112,7 +141,8 @@ def render(rec: dict, *, limit: int | None = None, title: bool = True, counters_
         lines.append("  refused:")
         w = max(len(t["name"]) for t in refused)
         for t in sorted(refused, key=lambda t: t["name"]):
-            lines.append(f"    {t['name']:<{w}}  {t.get('reason') or 'no reason given'}")
+            kind = f"[{t['refusal']}] " if t.get("refusal") else ""
+            lines.append(f"    {t['name']:<{w}}  {kind}{t.get('reason') or 'no reason given'}")
     disabled = by_state["disabled"]
     if disabled and sw.get("source"):
         groups = sorted({t["group"] for t in disabled})

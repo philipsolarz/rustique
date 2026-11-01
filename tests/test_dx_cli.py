@@ -11,7 +11,7 @@ import pytest
 
 from rustique import _diff
 
-VARS = ("RUSTIQUE", "RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_STATS", "RUSTIQUE_REPORT")
+VARS = ("RUSTIQUE", "RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_STATS", "RUSTIQUE_REPORT", "RUSTIQUE_CHECK")
 
 
 def clean_env(**extra: str) -> dict[str, str]:
@@ -278,24 +278,66 @@ import rustique._framework as fw
 _status = fw.status
 def status():
     st = _status()
-    st["targets"].append({{"name": "fake.target", "group": "fake", "state": "refused", "reason": {reason!r},
-                          "sites": [], "versions": []}})
+    st["targets"].append({{"name": "fake.target", "group": "fake", "state": "refused", "reason": "test",
+                          "refusal": {refusal!r}, "sites": [], "versions": []}})
     return st
 fw.status = status
 """
 
 
-@pytest.mark.parametrize(("reason", "args", "fails"), [
-    ("fingerprint mismatch: json.dumps code changed", (), True),
-    ("fingerprint mismatch: json.dumps code changed", ("--rustique-allow-refused", "fake"), False),
-    ("CPython 3.14.9 is not validated (validated: 3.15)", (), False),
+@pytest.mark.parametrize(("refusal", "args", "fails"), [
+    ("fingerprint", (), True),
+    ("conflict", (), True),
+    ("fingerprint", ("--rustique-allow-refused", "fake"), False),
+    ("version", (), False),
+    ("build", (), False),
+    ("jit", (), False),
 ])
-def test_plugin_unexpected_refusal_fails_the_session(plain_suite, reason, args, fails):
-    (plain_suite / "conftest.py").write_text(REFUSE.format(reason=reason))
+def test_plugin_unexpected_refusal_fails_the_session(plain_suite, refusal, args, fails):
+    (plain_suite / "conftest.py").write_text(REFUSE.format(refusal=refusal))
     r = pytest_run(plain_suite, "--rustique", *args)
     assert (r.returncode == 1) == fails, r.stdout
     assert ("refused unexpectedly" in r.stdout) == fails
     assert "fake.target" in r.stdout
+
+
+def test_plugin_check_mode(plain_suite):
+    (plain_suite / "test_c.py").write_text(
+        "import rustique\n\ndef test_check():\n    assert rustique.status()['process']['check'] == 'warn'\n")
+    r = pytest_run(plain_suite, "--rustique", "--rustique-check")
+    assert r.returncode == 0, r.stdout
+    assert "check mode: warn" in r.stdout and "check mismatches: none" in r.stdout
+
+
+MISMATCH = """
+import rustique._framework as fw
+_stats = fw.stats
+def stats(enabled=None, reset=False):
+    out = _stats(enabled=enabled, reset=reset)
+    out["list.sort"] = {"hits": 3, "fallback": {"check": 2}}
+    return out
+fw.stats = stats
+"""
+
+
+def test_plugin_check_mismatch_fails_the_session(plain_suite):
+    (plain_suite / "conftest.py").write_text(MISMATCH)
+    r = pytest_run(plain_suite, "--rustique", "--rustique-check")
+    assert r.returncode == 1, r.stdout
+    assert "CHECK MISMATCHES: 2 in list.sort (2)" in r.stdout and "check mode found 2 mismatch(es)" in r.stdout
+
+
+def test_run_check_flag():
+    r = rq("--check", "-c", "import rustique; print(rustique.status()['process']['check'])")
+    assert r.stdout.strip() == "warn", r.stderr
+    r = rq("--check-raise", "-c", "import rustique; print(rustique.status()['process']['check'])")
+    assert r.stdout.strip() == "raise", r.stderr
+
+
+def test_diff_check():
+    r = rq("diff", "--check", "--", sys.executable, "-c", ENABLE + "print(sorted([3, 1, 2]))")
+    assert r.returncode == 0, r.stdout
+    assert "check mode: warn" in r.stdout
 
 
 def test_plugin_xdist(plain_suite):
