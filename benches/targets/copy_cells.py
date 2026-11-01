@@ -108,7 +108,7 @@ CELLS = [
     ("deepcopy dict subclass", "deepcopy(dsub)"),
     ("deepcopy OrderedDict", "deepcopy(od)"),
     # fallback paths
-    ("deepcopy memo=OrderedDict (fallback args)", "deepcopy(cfg, collections.OrderedDict())"),
+    ("deepcopy memo=OrderedDict (generic memo)", "deepcopy(cfg, collections.OrderedDict())"),
     ("deepcopy explicit {} memo", "deepcopy(cfg, {})"),
     # copy.copy
     ("copy int", "copy.copy(7)"),

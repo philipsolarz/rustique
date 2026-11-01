@@ -78,10 +78,12 @@ def main() -> None:
                 path = f.name
             out = path + ".json"
             cmd = [sys.executable, "-m", "pyperf", "timeit", "-q", "-o", out,
-                   "-s", f"exec(open({path!r}).read())", stmt]
+                   "-s", f"exec(open({path!r}).read(), globals())", stmt]
             if a.fast:
                 cmd.append("--fast")
-            subprocess.run(cmd, check=True, capture_output=True)
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode:
+                sys.exit(f"{name} ({mode}) failed:\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}")
             import pyperf
 
             means[mode] = pyperf.BenchmarkSuite.load(out).get_benchmarks()[0].median()

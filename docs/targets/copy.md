@@ -154,56 +154,124 @@ and the class is not abstract (whose error CPython raises).
 
 | build | `test_copy` | `test_copyreg` | `test_dataclasses` | differences |
 |---|---|---|---|---|
-RESULTS_CONFORMANCE
+| 3.15.1 | 84 pass | 6 pass | 284 pass, 1 skip | 0 |
+| 3.15.1t | 84 pass | 6 pass | 284 pass, 1 skip | 0 |
+| 3.14.9 | 81 pass | 6 pass | 279 pass, 1 skip | 0 |
+| 3.14.9t | 81 pass | 6 pass | 279 pass, 1 skip | 0 |
+
+Same pass/fail/skip sets with and without Rustique; every target asserted `installed`.
+Full `pytest -q`: 4126 passed (3.15.1, 3.14.9), 4129 passed (3.15.1t, 3.14.9t).
 
 ## 7. Measurements
 
-### 7.1 Callgrind, 3.15.1 (Ir per call, `benches/targets/copy_cells.py`, region-instrumented, steady state)
+### 7.1 Callgrind (Ir per call, `benches/targets/copy_cells.py`, region-instrumented, steady state)
+
+| cell | 3.15.1 CPython | 3.15.1 Rustique | ratio | 3.14.9 CPython | 3.14.9 Rustique | ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| deepcopy int | 712 | 493 | 0.692 | 753 | 622 | 0.826 |
+| deepcopy str | 714 | 493 | 0.690 | 757 | 624 | 0.825 |
+| deepcopy record (10 fields) | 24,230 | 4,126 | 0.170 | 25,844 | 4,297 | 0.166 |
+| deepcopy list of 5 records | 119,215 | 20,493 | 0.172 | 128,790 | 20,833 | 0.162 |
+| deepcopy cfg (3 keys, nested) | 25,373 | 4,506 | 0.178 | 26,625 | 4,705 | 0.177 |
+| deepcopy tuple of immutables | 19,354 | 2,371 | 0.122 | 20,479 | 2,512 | 0.123 |
+| deepcopy small dataclass | 29,384 | 7,756 | 0.264 | 32,631 | 7,906 | 0.242 |
+| deepcopy dataclass tree | 141,114 | 46,111 | 0.327 | 160,581 | 46,675 | 0.291 |
+| deepcopy plain object | 35,316 | 8,970 | 0.254 | 38,984 | 9,134 | 0.234 |
+| deepcopy slotted object | 38,272 | 9,819 | 0.257 | 41,960 | 10,262 | 0.245 |
+| deepcopy enum member | 3,067 | 1,737 | 0.566 | 3,140 | 1,983 | 0.632 |
+| deepcopy frozenset | 29,082 | 5,707 | 0.196 | 31,998 | 5,790 | 0.181 |
+| deepcopy set | 28,007 | 5,355 | 0.191 | 31,029 | 5,620 | 0.181 |
+| deepcopy datetime | 13,104 | 4,189 | 0.320 | 15,951 | 4,681 | 0.293 |
+| deepcopy uuid | 27,324 | 11,267 | 0.412 | 30,435 | 11,794 | 0.388 |
+| deepcopy Decimal (C __deepcopy__) | 2,816 | 1,299 | 0.461 | 2,806 | 1,471 | 0.524 |
+| deepcopy __deepcopy__ hook | 13,993 | 7,073 | 0.505 | 14,339 | 7,410 | 0.517 |
+| deepcopy registered copier | 13,218 | 6,631 | 0.502 | 13,493 | 6,982 | 0.517 |
+| deepcopy copyreg reductor | 18,958 | 5,346 | 0.282 | 21,716 | 5,573 | 0.257 |
+| deepcopy dict subclass | 26,095 | 9,661 | 0.370 | 29,629 | 10,069 | 0.340 |
+| deepcopy OrderedDict | 22,489 | 12,854 | 0.572 | 23,927 | 13,593 | 0.568 |
+| deepcopy memo=OrderedDict (generic memo) | 28,583 | 10,782 | 0.377 | 30,695 | 11,832 | 0.385 |
+| deepcopy explicit {} memo | 25,433 | 8,548 | 0.336 | 26,969 | 8,986 | 0.333 |
+| copy int | 645 | 385 | 0.596 | 654 | 448 | 0.685 |
+| copy list100 | 3,123 | 2,686 | 0.860 | 3,138 | 2,709 | 0.863 |
+| copy dict100 | 5,096 | 4,665 | 0.915 | 5,048 | 4,584 | 0.908 |
+| copy record | 1,688 | 1,242 | 0.735 | 1,661 | 1,219 | 0.734 |
+| copy plain object | 12,722 | 4,725 | 0.371 | 13,297 | 4,671 | 0.351 |
+| copy small dataclass | 12,704 | 4,728 | 0.372 | 13,215 | 4,656 | 0.352 |
+| copy enum member | 1,938 | 1,136 | 0.586 | 2,120 | 1,233 | 0.581 |
+| copy __copy__ hook | 2,834 | 2,032 | 0.717 | 2,788 | 2,107 | 0.756 |
+| copy set | 1,477 | 1,275 | 0.863 | 1,529 | 1,303 | 0.852 |
+| copy datetime | 6,629 | 2,635 | 0.397 | 7,664 | 3,000 | 0.391 |
+| copy (fallback args: kw) | 1,840 | 1,840 | 1.000 | 1,795 | 1,794 | 1.000 |
+| asdict small dataclass | 12,605 | 4,637 | 0.368 | 12,620 | 4,631 | 0.367 |
+| asdict dataclass tree | 76,328 | 27,269 | 0.357 | 78,865 | 27,720 | 0.351 |
+| astuple small dataclass | 12,483 | 4,212 | 0.337 | 12,576 | 4,194 | 0.333 |
+| replace small dataclass | 10,431 | 7,545 | 0.723 | 10,125 | 7,497 | 0.740 |
+| replace no changes | 10,001 | 8,054 | 0.805 | 9,715 | 7,875 | 0.811 |
+| asdict (fallback: dict_factory) | 16,547 | 16,611 | 1.004 | 16,630 | 16,550 | 0.995 |
+
+Every cell is ≤ 1.05 (`asdict(..., dict_factory=f)`, a whole-call fallback, is 1.004 / 0.995: noise floor ±15 Ir).
+
+### 7.2 Under the JIT (3.15.1, `PYTHON_JIT=1`, warmed 30,000 iterations; subset)
 
 | cell | CPython | Rustique | ratio |
 |---|---:|---:|---:|
-| deepcopy int | 712 | 496 | 0.696 |
-| deepcopy str | 714 | 496 | 0.694 |
-| deepcopy record (10 fields) | 24,230 | 4,123 | 0.170 |
-| deepcopy list of 5 records | 119,216 | 20,502 | 0.172 |
-| deepcopy cfg (3 keys, nested) | 25,442 | 4,510 | 0.177 |
-| deepcopy tuple of immutables | 19,354 | 2,367 | 0.122 |
-| deepcopy small dataclass | 29,376 | 7,833 | 0.267 |
-| deepcopy dataclass tree | 141,272 | 46,009 | 0.326 |
-| deepcopy plain object | 35,373 | 8,994 | 0.254 |
-| deepcopy slotted object | 38,220 | 9,852 | 0.258 |
-| deepcopy enum member | 3,002 | 1,784 | 0.594 |
-| deepcopy frozenset | 29,082 | 5,696 | 0.196 |
-| deepcopy set | 27,941 | 5,362 | 0.192 |
-| deepcopy datetime | 13,104 | 4,193 | 0.320 |
-| deepcopy uuid | 27,280 | 11,322 | 0.415 |
-| deepcopy Decimal (C __deepcopy__) | 2,836 | 1,313 | 0.463 |
-| deepcopy __deepcopy__ hook | 14,042 | 7,155 | 0.510 |
-| deepcopy registered copier | 13,128 | 6,695 | 0.510 |
-| deepcopy copyreg reductor | 18,958 | 5,390 | 0.284 |
-| deepcopy dict subclass | 26,027 | 9,660 | 0.371 |
-| deepcopy OrderedDict | 22,509 | 12,763 | 0.567 |
-| deepcopy memo=OrderedDict (fallback args) | 28,583 | 28,474 | 0.996 |
-| deepcopy explicit {} memo | 25,502 | 8,617 | 0.338 |
-| copy int | 645 | 386 | 0.598 |
-| copy list100 | 3,123 | 2,686 | 0.860 |
-| copy dict100 | 5,146 | 4,620 | 0.898 |
-| copy record | 1,688 | 1,242 | 0.735 |
-| copy plain object | 12,688 | 4,725 | 0.372 |
-| copy small dataclass | 12,796 | 4,764 | 0.372 |
-| copy enum member | 1,911 | 1,133 | 0.593 |
-| copy __copy__ hook | 2,926 | 2,029 | 0.693 |
-| copy set | 1,477 | 1,275 | 0.863 |
-| copy datetime | 6,629 | 2,653 | 0.400 |
-| copy (fallback args: kw) | 1,840 | 1,840 | 1.000 |
-| asdict small dataclass | 12,605 | 4,635 | 0.368 |
-| asdict dataclass tree | 76,314 | 27,221 | 0.357 |
-| astuple small dataclass | 12,483 | 4,210 | 0.337 |
-| replace small dataclass | 10,431 | 7,550 | 0.724 |
-| replace no changes | 10,001 | 8,059 | 0.806 |
-| asdict (fallback: dict_factory) | 16,547 | 16,528 | 0.999 |
+| deepcopy int | 575 | 496 | 0.862 |
+| deepcopy enum member | 2,379 | 1,807 | 0.760 |
+| deepcopy record (10 fields) | 21,256 | 4,129 | 0.194 |
+| deepcopy list of 5 records | 102,423 | 20,496 | 0.200 |
+| deepcopy small dataclass | 26,680 | 7,745 | 0.290 |
+| copy int | 419 | 387 | 0.924 |
+| copy record | 1,450 | 1,244 | 0.858 |
+| copy enum member | 1,437 | 1,203 | 0.837 |
+| copy small dataclass | 11,226 | 4,716 | 0.420 |
+| asdict small dataclass | 10,588 | 4,639 | 0.438 |
+| astuple small dataclass | 10,759 | 4,214 | 0.392 |
+| replace small dataclass | 9,524 | 7,530 | 0.791 |
 
-RESULTS_MORE
+All steady-state cells measured under the JIT stay below 1 (the kernels' fast paths replace
+calls the JIT cannot inline into anyway), so the five targets keep `jit_safe: true`.
+
+### 7.3 Fallbacks before adaptive suspension
+
+Steady-state fallback cells (§7.1) measure ~1.00 because a target that falls back 64 times
+in a row is suspended (the original vectorcall is restored). The first 64 calls pay the
+vectorcall fallback. Measured with each fallback followed by a hit that resets the streak
+(fallback overhead = pair difference + the hit's measured saving):
+
+| pair cell | CPython | Rustique | ratio | fallback overhead |
+|---|---:|---:|---:|---:|
+| `deepcopy(cfg, OrderedDict()); deepcopy(7)` (generic memo: no fallback any more) | 29,289 | 11,268 | 0.385 | none (was +3,490 Ir: one fallback per level) |
+| `copy.copy(x=rec); copy.copy(7)` | 2,479 | 2,502 | 1.009 | +283 Ir on a 1,840 Ir call (1.15 for the first 64 calls) |
+| same, JIT | 2,208 | 2,362 | 1.070 | +186 Ir |
+| same, 3.14.9 | 2,438 | 2,502 | 1.027 | +270 Ir |
+| `asdict(p, dict_factory=OrderedDict); asdict(p)` | 29,144 | 21,529 | 0.739 | ~+200 Ir on a 16,500 Ir call (1.01) |
+
+The only remaining whole-call fallbacks are keyword forms nobody writes (`copy.copy(x=…)`,
+`deepcopy(x=…)`), 3.14's private `_nil` argument, non-default factories, patched
+dependencies (suspended immediately by deopt-while-unpinned) and tools.
+
+### 7.4 pyperf, large inputs (3.15.1, `benches/targets/copy_pyperf.py --fast`; shared, loaded box: only ≥ 1.5× is claimed)
+
+| cell | CPython | Rustique | ratio |
+|---|---:|---:|---:|
+| `deepcopy` 10k records | 32.27 ms | 10.94 ms | 0.339 |
+| `deepcopy` 1k dataclass orders (items, tuple, datetime, enum) | 16.63 ms | 8.18 ms | 0.492 |
+| `deepcopy` object tree (3^7 plain objects) | 9.58 ms | 3.38 ms | 0.353 |
+| `deepcopy` config (500 sections) | 1.18 ms | 0.22 ms | 0.183 |
+| `copy.copy` list 100k | 0.14 ms | 0.14 ms | 1.007 (same `list.copy`; noise) |
+| `asdict` 1k orders | 6.70 ms | 2.83 ms | 0.422 |
+| `astuple` 1k orders | 7.14 ms | 4.95 ms | 0.693 (not claimed) |
+
+### 7.5 Workloads (3.15.1, `benches/workloads/run.py compare … -n 5 -p 3 --only copy,dataclasses`; wall time, loaded box)
+
+| workload | plain | enabled | ratio | digests |
+|---|---:|---:|---:|---|
+| data/state_snapshot | 665.2 ms | 538.5 ms | 0.809 | same |
+| devtools/isort_stdlib | 282.8 ms | 211.6 ms | 0.748 | same |
+| web/json_api | 397.4 ms | 376.3 ms | 0.947 | same |
+| devtools/sqlglot_transpile | 876.3 ms | 849.0 ms | 0.969 | same |
+| geometric mean | | | 0.863 | |
+
 
 ## 8. Tests
 
