@@ -15,6 +15,7 @@ use std::sync::{Mutex, OnceLock};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::ffi;
+use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule};
 
@@ -821,24 +822,27 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         }
         enabled |= matches!(rt.state, State::Installed | State::Pending);
         let d = PyDict::new(py);
-        d.set_item("name", spec.name)?;
-        d.set_item("group", spec.group)?;
-        d.set_item("state", rt.state.as_str())?;
-        d.set_item("reason", rt.reason.as_deref())?;
-        d.set_item("refusal", if rt.state == State::Refused { rt.refusal.map(Category::as_str) } else { None })?;
-        d.set_item("sites", PyList::new(py, &rt.site_names)?)?;
-        d.set_item("versions", PyList::new(py, versions_of(spec))?)?;
-        d.set_item("checkable", spec.checkable)?;
+        d.set_item(intern!(py, "name"), spec.name)?;
+        d.set_item(intern!(py, "group"), spec.group)?;
+        d.set_item(intern!(py, "state"), rt.state.as_str())?;
+        d.set_item(intern!(py, "reason"), rt.reason.as_deref())?;
+        d.set_item(
+            intern!(py, "refusal"),
+            if rt.state == State::Refused { rt.refusal.map(Category::as_str) } else { None },
+        )?;
+        d.set_item(intern!(py, "sites"), PyList::new(py, &rt.site_names)?)?;
+        d.set_item(intern!(py, "versions"), PyList::new(py, versions_of(spec))?)?;
+        d.set_item(intern!(py, "checkable"), spec.checkable)?;
         if let Some(m) = spec.module {
-            d.set_item("module", m)?;
+            d.set_item(intern!(py, "module"), m)?;
         }
         if rt.pin_owner != 0 {
             let pins = guard::describe(py, rt.pin_owner);
             let ok = pins.iter().all(|(_, _, intact, broken)| *intact && !*broken);
-            d.set_item("deps_intact", ok)?;
+            d.set_item(intern!(py, "deps_intact"), ok)?;
         }
         if let Some(why) = rt.suspended {
-            d.set_item("suspended", why.as_str())?;
+            d.set_item(intern!(py, "suspended"), why.as_str())?;
             d.set_item(
                 "reason",
                 match why {

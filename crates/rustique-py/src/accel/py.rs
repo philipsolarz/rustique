@@ -93,6 +93,14 @@ fn mode_name(m: Option<bool>) -> Option<&'static str> {
     m.map(|raise| if raise { "raise" } else { "warn" })
 }
 
+/// Whether a pure-Python function's vectorcall is CPython's own (`_PyFunction_Vectorcall`).
+#[pyfunction]
+fn vectorcall_is_original(func: &Bound<'_, pyo3::types::PyFunction>) -> bool {
+    // SAFETY: an exact function object (type-checked by the signature).
+    let vc = unsafe { (*func.as_ptr().cast::<pyo3::ffi::PyFunctionObject>()).vectorcall };
+    vc.map_or(0, |f| f as usize) == super::prepare::function_vectorcall()
+}
+
 /// `func_version` of a function (0 unset, 1 cleared, >= 2 valid): tests of uninstall.
 #[pyfunction]
 fn func_version(func: &Bound<'_, pyo3::types::PyFunction>) -> u32 {
@@ -112,6 +120,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(fingerprint_report, &sub)?)?;
     sub.add_function(wrap_pyfunction!(pins, &sub)?)?;
     sub.add_function(wrap_pyfunction!(func_version, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(vectorcall_is_original, &sub)?)?;
     sub.add_function(wrap_pyfunction!(check, &sub)?)?;
     sub.add_function(wrap_pyfunction!(check_mode, &sub)?)?;
     sub.add("RustiqueCheckError", m.py().get_type::<super::check::RustiqueCheckError>())?;

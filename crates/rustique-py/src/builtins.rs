@@ -2619,13 +2619,17 @@ fn check_layouts(py: Python<'_>) -> PyResult<()> {
             return Err(bad("int"));
         }
     }
-    let big = py.eval(c"2 ** 64", None, None)?;
+    let big = (1u128 << 64).into_pyobject(py)?;
     // SAFETY: an exact int.
     if unsafe { int_value(big.as_ptr()) }.is_some() {
         return Err(bad("int"));
     }
-    let set = py.eval(c"{1, 2, 3, 'x'}", None, None)?;
-    set.call_method1("discard", (2,))?;
+    let set = pyo3::types::PySet::empty(py)?;
+    for v in [1, 2, 3] {
+        set.add(v)?;
+    }
+    set.add("x")?;
+    set.discard(2)?;
     // SAFETY: an exact set, not shared with other threads.
     let mut keys: Vec<String> = unsafe { set_keys(set.as_ptr()) }
         .map(|k| {
@@ -2665,13 +2669,7 @@ fn capture<'a>(py: Python<'_>, state: &'a mut Option<Captured>) -> PyResult<&'a 
         }
     }
     BUILTINS_MODULE.store(builtins.clone().into_ptr(), Atomic::Release); // kept forever
-    let mut replacements: [Option<Py<PyAny>>; 6] = Default::default();
-    for which in ALL {
-        if let Some(def) = defs[which as usize] {
-            replacements[which as usize] = Some(make_replacement(py, which, def, &builtins)?);
-        }
-    }
-    Ok(state.insert(Captured { defs, replacements }))
+    Ok(state.insert(Captured { defs, replacements: Default::default() }))
 }
 
 /// A standalone builtin function running the kernel of `which` (same name, docstring,
@@ -2702,12 +2700,19 @@ fn init_statics(py: Python<'_>) -> PyResult<()> {
             slot.store(PyString::intern(py, name).into_ptr(), Atomic::Relaxed);
         }
     }
+    Ok(())
+}
+
+/// The Rustique container types exist now (created lazily on first access to the opt-in
+/// API, `crate::ensure_core`): let the kernels recognise them. Until then no Rustique
+/// container can exist, so the null pointers the kernels compare against are correct.
+pub fn core_types_ready(py: Python<'_>) -> PyResult<()> {
+    objsort::list_sort_descriptor(py)?;
     RS_LIST.store(py.get_type::<List>().as_type_ptr(), Atomic::Relaxed);
     RS_SET.store(py.get_type::<Set>().as_type_ptr(), Atomic::Relaxed);
     RS_FROZENSET.store(py.get_type::<FrozenSet>().as_type_ptr(), Atomic::Relaxed);
     RS_DICT.store(py.get_type::<Dict>().as_type_ptr(), Atomic::Relaxed);
     RS_TUPLE.store(py.get_type::<Tuple>().as_type_ptr(), Atomic::Relaxed);
-    objsort::list_sort_descriptor(py)?;
     Ok(())
 }
 
@@ -2835,6 +2840,12 @@ fn replacement(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
     }
     let mut state = lock_state()?;
     let captured = capture(py, &mut state)?;
+    if captured.replacements[i].is_none()
+        && let Some(def) = captured.defs[i]
+    {
+        let builtins = py.import("builtins")?;
+        captured.replacements[i] = Some(make_replacement(py, ALL[i], def, &builtins)?);
+    }
     captured.replacements[i]
         .as_ref()
         .map(|r| r.clone_ref(py))

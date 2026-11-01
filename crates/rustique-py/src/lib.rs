@@ -25,6 +25,101 @@ pub mod targets;
 pub mod tuple;
 pub mod typing;
 
+/// Scalar classes, each created on its first access.
+const SCALARS: &[&str] = &["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"];
+
+fn add_scalar(m: &Bound<'_, PyModule>, name: &str) -> PyResult<bool> {
+    use scalars::*;
+    match name {
+        "i8" => m.add_class::<I8>()?,
+        "i16" => m.add_class::<I16>()?,
+        "i32" => m.add_class::<I32>()?,
+        "i64" => m.add_class::<I64>()?,
+        "u8" => m.add_class::<U8>()?,
+        "u16" => m.add_class::<U16>()?,
+        "u32" => m.add_class::<U32>()?,
+        "u64" => m.add_class::<U64>()?,
+        "f32" => m.add_class::<F32>()?,
+        "f64" => m.add_class::<F64>()?,
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+static CORE: pyo3::sync::PyOnceLock<()> = pyo3::sync::PyOnceLock::new();
+
+/// Create the opt-in containers and everything that can produce them (types, typed
+/// constructors, `X`, `arange`, the C-API capsule), once, on first access to any of them
+/// (startup: `import rustique` must cost almost nothing, docs/ACCELERATION.md §5.2). No
+/// instance can exist before this ran: every way to make one starts at a module attribute.
+fn ensure_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    let py = m.py();
+    CORE.get_or_try_init(py, || -> PyResult<()> {
+        typing::register(m)?;
+        list::register(m)?;
+        tuple::register(m)?;
+        dict::register(m)?;
+        set::register(m)?;
+        frozenset::register(m)?;
+        expr::register(m)?;
+        capi::register(m)?;
+        // `isinstance(x, collections.abc.MutableSequence)` etc. hold, as for the builtins.
+        // `_collections_abc` is imported by the interpreter at startup.
+        let abc = py.import("_collections_abc")?;
+        for (abc_name, cls) in [
+            ("MutableSequence", py.get_type::<list::List>()),
+            ("MutableMapping", py.get_type::<dict::Dict>()),
+            ("MutableSet", py.get_type::<set::Set>()),
+            ("Sequence", py.get_type::<tuple::Tuple>()),
+            ("Set", py.get_type::<frozenset::FrozenSet>()),
+        ] {
+            abc.getattr(abc_name)?.call_method1("register", (cls,))?;
+        }
+        builtins::core_types_ready(py)?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// PEP 562: names of the opt-in API are created on first access.
+#[pyfunction]
+#[pyo3(name = "__getattr__")]
+fn module_getattr(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
+    let m = py.import("rustique._rustique")?;
+    if name.starts_with("__") && name.ends_with("__") {
+        return Err(pyo3::exceptions::PyAttributeError::new_err(format!(
+            "module 'rustique._rustique' has no attribute '{name}'"
+        )));
+    }
+    if SCALARS.contains(&name) {
+        add_scalar(&m, name)?;
+    } else {
+        ensure_core(&m)?;
+    }
+    match m.dict().get_item(name)? {
+        Some(v) => Ok(v.unbind()),
+        None => Err(pyo3::exceptions::PyAttributeError::new_err(format!(
+            "module 'rustique._rustique' has no attribute '{name}'"
+        ))),
+    }
+}
+
+/// `dir()` lists the lazy names too (creating them).
+#[pyfunction]
+#[pyo3(name = "__dir__")]
+fn module_dir(py: Python<'_>) -> PyResult<Vec<String>> {
+    let m = py.import("rustique._rustique")?;
+    ensure_core(&m)?;
+    for name in SCALARS {
+        if !m.dict().contains(*name)? {
+            add_scalar(&m, name)?;
+        }
+    }
+    let mut names: Vec<String> = m.dict().keys().iter().map(|k| k.extract()).collect::<PyResult<_>>()?;
+    names.sort();
+    Ok(names)
+}
+
 #[pymodule]
 fn _rustique(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Refuse every subinterpreter, isolated or legacy shared-GIL (docs/ACCELERATION.md
@@ -38,17 +133,12 @@ fn _rustique(m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
     accel::guard::set_main_interpreter();
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    scalars::register(m)?;
-    typing::register(m)?;
-    list::register(m)?;
-    tuple::register(m)?;
-    dict::register(m)?;
-    set::register(m)?;
-    frozenset::register(m)?;
-    expr::register(m)?;
-    capi::register(m)?;
+    // Eager: the switch (registry, kernels) and the internal submodules. Everything else is
+    // created on first access (`__getattr__`).
     builtins::register(m)?;
     takeover::register(m)?;
     accel::py::register(m)?;
+    m.add_function(wrap_pyfunction!(module_getattr, m)?)?;
+    m.add_function(wrap_pyfunction!(module_dir, m)?)?;
     Ok(())
 }
