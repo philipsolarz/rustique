@@ -1,4 +1,5 @@
-STATUS: Phase 1 result, 2026-11-01. Decides wave 1. Evidence lives in `docs/atlas/`
+STATUS: Phase 1 result, 2026-11-01. Decided wave 1; §6 compares its predictions with what
+wave 1 measured (Phase 3), and `docs/DECISIONS.md` §9 ranks the next waves. Evidence lives in `docs/atlas/`
 (`workloads-{web,data,devtools}.md`, `static-usage.md`, `headroom-{text,objects}.md`,
 `mechanisms.md`) and the raw profiles in `~/rustique-research/` (roll-up script:
 `benches/workloads/rollup.py`). Every number is **measured** (M) or **inferred** (I).
@@ -176,3 +177,24 @@ are wide.
 - **Two-version windows**: a target that CPython 3.16 will cover (numeric `strptime`,
   `uuid`) is still worth it for 3.14/3.15 only if its share is large; datetime qualifies
   because named and `%z` formats stay interpreted in 3.16.
+
+## 6. Wave 1 against this atlas (Phase 3, M)
+
+Measured at `wave1` `11bad29` (`docs/atlas/phase3.md`; all 15 groups on, 34 workloads, plain
+vs enabled, identical results):
+
+| prediction (§1.5, I) | measured, 3.15.1 (3.15.1t) |
+|---|---|
+| mean workload ~10% less time | geometric mean 0.880 (0.843): 12% (16%) less |
+| stdlib-heavy programs 1.3–2× | 1.2–2.3×: `report_render` 0.436, `tz_events` 0.591, `log_analytics` 0.594, `csv_etl` 0.625, `state_snapshot` 0.651, `fs_inventory` 0.743, `isort_stdlib` 0.771 (0.196), `asyncio_http` 0.791, `json_api` 0.835 |
+| framework apps ~1.0–1.05× | 1.00–1.10×: Django 0.997, Flask 0.990, FastAPI 0.983, SQLAlchemy 0.997, black 0.990, pylint 1.002 |
+
+Per candidate (score → workloads with only that group on, Phase 2, 3.15.1): copy (1.71) →
+`state_snapshot` 0.675, `isort_stdlib` 0.763; json (1.07) → `asyncio_http` 0.789,
+`csv_etl` 0.799; paths (0.98) → `fs_inventory` 0.742; datetime text (0.52) →
+`tz_events` 0.593, `log_analytics` 0.617; logging (0.36) → `logging_service` 0.830;
+utilities (0.22–0.31) → `report_render` 0.449. The ordering held, with one surprise:
+datetime text, ranked 4th, gave the largest per-workload gains (its `ml_meth` mechanism has
+free fallbacks and its kernels run 0.07–0.20 of CPython). Not reached: the time in
+interpreting bytecode, allocation and GC (§3), as predicted.
+

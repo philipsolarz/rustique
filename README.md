@@ -24,28 +24,38 @@ Other ways to turn it on: `python -m rustique app.py`, `import rustique; rustiqu
 
 Rustique accelerates the parts of the standard library and builtins where real programs
 spend measurable time ([impact atlas](docs/IMPACT_ATLAS.md): 35 real workloads profiled).
-The numbers below are from the Phase 1 atlas and prototypes. The measured numbers of the
-shipped targets replace them in Phase 3.
+Measured on CPython 3.15.1 (callgrind instructions per call on small realistic inputs, and
+wall time of real workloads; time with Rustique / time without, lower is better; details in
+[docs/targets/](docs/targets/) and [the Phase 3 report](docs/atlas/phase3.md)):
 
-| area | entry points | where it shows | atlas (time vs CPython) | measured |
-|---|---|---|---|---|
-| JSON | `json.dumps`, `json.loads` | API services, config, ETL | exact Rust prototype 0.31 small, 0.60 large (M) | ⟨Phase 3⟩ |
-| copying | `copy.deepcopy`, `copy.copy`, `dataclasses.asdict/astuple` | state snapshots, isort (44% of its time) | an exact C deepcopy: 0.11–0.18 (M) | ⟨Phase 3⟩ |
-| paths | `os.path`/`posixpath`, `pathlib` pure paths, `fnmatch` | file inventories, build tools | `posixpath.join` kernel 0.29 (M) | ⟨Phase 3⟩ |
-| date and time text | `strptime`, `strftime`, `isoformat` (datetime, date, time; `time.strptime/strftime`) | log analytics, ETL | `strptime` is 3.7 µs of interpreted Python (M) | ⟨Phase 3⟩ |
-| logging | `LogRecord`, `Formatter.format`/`formatTime` | services (66% of a logging-heavy one) | ≤ 0.5 inferred | ⟨Phase 3⟩ |
-| utilities | `random` glue, `textwrap`, `urllib.parse`, `statistics` | scripts, web | 0.1–0.35 (M, per call) | ⟨Phase 3⟩ |
-| containers, builtins | `list.sort`, `index`/`count`/`in` on lists and tuples; `sum`, `min`, `max`, `sorted`, `any`, `all` | sorting, searching, aggregating | 1M elements: `max(floats)` 0.13, `min(ints)` 0.17, `ints.sort()` 0.18, `x in ints` 0.26 (M) | ⟨Phase 3⟩ |
+| area | entry points | per call | real workloads |
+|---|---|---|---|
+| JSON | `json.dumps`, `json.loads`, `float.__repr__` | dumps 0.06–0.29, loads 0.22–0.56 | API server 0.79, CSV/JSON ETL 0.63 |
+| copying | `copy.deepcopy`, `copy.copy`, `dataclasses.asdict/astuple` | deepcopy 0.13–0.46 | state snapshots 0.65, isort 0.77 |
+| paths | `os.path`/`posixpath`, `pathlib` pure paths, `fnmatch` | `join` 0.27, `fnmatch` 0.12, pathlib 0.05–0.76 | file inventory 0.74 |
+| date and time text | `strptime`, `strftime`, `isoformat` (datetime, date, time; `time.strptime/strftime`) | strptime 0.07–0.09, strftime 0.09–0.20 | log analytics 0.59, time-zone events 0.59 |
+| logging | `LogRecord`, `Formatter.format`/`formatTime`, `findCaller`, `Logger.level` | one record 0.45–0.51 | logging service 0.82 |
+| utilities | `random` glue, `textwrap`, `urllib.parse`, `statistics` | 0.04–0.67 | report rendering 0.44 |
+| containers, builtins | `list.sort`, `index`/`count`/`in` on lists and tuples; `sum`, `min`, `max`, `sorted`, `any`, `all` | 1M elements: `max(floats)` 0.13, `ints.sort()` 0.18 | spread thinly |
 
-Whole programs (atlas, inferred from where their time goes):
+Whole programs, all groups on (34 workloads, plain vs enabled, identical results):
 
-- stdlib-heavy programs gain 1.3–2×: snapshots, report generation, log analytics, JSON
-  services, file inventories;
-- the mean of the 35 workloads spends ~10% less time;
-- framework-heavy web apps gain ~1.0–1.05×, because their time is in their own bytecode.
+| | 3.15.1 | 3.15.1t |
+|---|---:|---:|
+| all 34 workloads (geometric mean) | **0.88** (1.14× faster) | **0.84** (1.19×) |
+| data processing / developer tools / web | 0.77 / 0.96 / 0.92 | 0.76 / 0.86 / 0.93 |
+| best | report rendering 0.44 | isort 0.20 |
+| worst | config merging 1.01 | XML feeds 1.01 |
 
-⟨Phase 3: measured table of the workload set, plain vs `RUSTIQUE=1`⟩. To see what your own
-program hits, run `python -m rustique report -- python app.py`.
+- Stdlib-heavy programs gain 1.2–2.3×: report generation, log analytics, time-zone
+  processing, CSV/JSON ETL, state snapshots, file inventories, JSON API servers.
+- Framework-heavy programs (Django, Flask, FastAPI, SQLAlchemy, black, pylint, pandas) run at
+  0.97–1.01: their time is their own bytecode.
+- pyperformance (~120 benchmarks): geometric mean 0.94 on 3.15.1 and 0.96 on 3.15.1t;
+  `deepcopy` 0.13–0.28, `json_dumps` 0.25–0.33, `json_loads` 0.57–0.59, logging 0.61–0.79;
+  only `python_startup` above 1.05 (1.08–1.10).
+
+To see what your own program hits, run `python -m rustique report -- python app.py`.
 
 ## The catch
 
@@ -59,16 +69,16 @@ program hits, run `python -m rustique report -- python app.py`.
   program's own bytecode, attribute lookups, allocation and garbage collection. Rustique
   does not change any of that. If your profile shows no time in the stdlib, expect ~1.0×.
 - **Startup costs something: with Rustique on, it exceeds our own 1.05 bar.** Measured on
-  `python -c pass` (release wheels, callgrind and wall time; [details](docs/targets/dx.md#14-startup-cells-release-build-m)):
+  `python -c pass` (release wheels, callgrind and wall time, [details](docs/atlas/phase3.md#6-startup-cells)):
   - **Installed but off** (`RUSTIQUE` unset): one `.pth` line read at every interpreter
-    start, nothing imported.
-    - bare venv: +0.3 ms, 1.026× on 3.15 and 1.047× on 3.14. Most of it is the
-      `utf-8-sig` codec import that any `.pth` file costs;
-    - venv that already has a `.pth` (editable installs, setuptools): ≤ 1.014×.
-  - **On** (`RUSTIQUE=1`, against the same venv with it unset): +0.5 ms, 1.05× wall on
-    3.15, and +0.7 ms, 1.07× on 3.14. That is the extension loading (page faults and
-    relocations) plus installing the targets.
-  - `import rustique; rustique.enable()` in code costs about the same.
+    start, nothing imported. Bare venv: 1.03× on 3.15 and 1.05× on 3.14 (+0.3–0.45 ms),
+    most of it the `utf-8-sig` codec import that any `.pth` file costs; in a venv that
+    already has a `.pth` (editable installs, setuptools): ≤ 1.014×.
+  - **On** (`RUSTIQUE=1`, against the same venv with it unset): +0.76 ms, 1.08× wall on
+    3.15, and +1.09 ms, 1.11× on 3.14. That is the extension loading (page faults and
+    relocations) plus installing the targets of modules Python imports at startup.
+  - `import rustique; rustique.enable()` in code costs a little more (it also builds the
+    status it returns).
 
   This is a documented exceedance of the never-slower rule for wave 1. Short-lived
   processes (CLI tools run thousands of times) may not gain enough to pay it back.
