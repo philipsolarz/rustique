@@ -28,7 +28,7 @@ Repository = "https://github.com/philipsolarz/rustique"
 # named like the module so that `-p rustique.pytest_plugin` loads it through the entry point
 # instead of registering the module a second time.
 [project.entry-points.pytest11]
-"rustique.pytest_plugin" = "rustique.pytest_plugin"
+"rustique.pytest_plugin" = "_rustique_pytest"
 
 [dependency-groups]
 dev = [
@@ -53,6 +53,8 @@ include = [
     # The startup switch (docs/USAGE.md): one .pth line at the root of site-packages. In the
     # sdist too, so that wheels built from it ship it.
     { path = "python/_rustique_startup.pth", format = ["sdist", "wheel"] },
+    # The pytest plugin, top-level so that autoloading it does not import the package.
+    { path = "python/_rustique_pytest.py", format = ["sdist", "wheel"] },
 ]
 
 [tool.uv]

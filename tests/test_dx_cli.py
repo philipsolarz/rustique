@@ -250,6 +250,15 @@ def test_plugin_inactive_without_flag(plain_suite):
     assert r.returncode == 0 and not re.search(r"^=+ rustique =+$", r.stdout, re.M)
 
 
+def test_plugin_without_flag_imports_nothing(tmp_path):
+    # The pytest11 entry point (which `-p rustique.pytest_plugin` resolves to) is the
+    # top-level `_rustique_pytest`: without --rustique, no session imports the package.
+    (tmp_path / "test_m.py").write_text(
+        "import sys\n\ndef test_m():\n    assert not [m for m in sys.modules if m.split('.')[0] == 'rustique']\n")
+    r = pytest_run(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
 def test_plugin_enables_and_reports(plain_suite):
     (plain_suite / "test_c.py").write_text(
         "import rustique\n\ndef test_on():\n    assert rustique.status()['process']['switch']['source'] == 'pytest --rustique'\n")

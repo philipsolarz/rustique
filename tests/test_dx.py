@@ -339,7 +339,8 @@ def test_wheel_ships_the_startup_files():
         cfg = tomllib.load(f)
     inc = {i["path"]: i["format"] for i in cfg["tool"]["maturin"]["include"] if isinstance(i, dict)}
     assert inc.get("python/_rustique_startup.pth") == ["sdist", "wheel"]
-    assert cfg["project"]["entry-points"]["pytest11"] == {"rustique.pytest_plugin": "rustique.pytest_plugin"}
+    assert inc.get("python/_rustique_pytest.py") == ["sdist", "wheel"]
+    assert cfg["project"]["entry-points"]["pytest11"] == {"rustique.pytest_plugin": "_rustique_pytest"}
 
 
 def test_startup_unset_imports_nothing(sitedir):

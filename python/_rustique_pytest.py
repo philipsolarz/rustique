@@ -1,6 +1,7 @@
 """pytest plugin: run a test session with Rustique enabled and show what it did.
 
-Registered automatically (entry point ``pytest11: rustique``) and inactive unless asked::
+Registered automatically (entry point ``pytest11: rustique.pytest_plugin``) and inactive
+unless asked::
 
     pytest --rustique                       # enable for the session, report in the summary
     pytest --rustique --rustique-only json,copy --rustique-exclude re
@@ -17,6 +18,12 @@ turns check mode on (every fast path of a checkable target is compared with CPyt
 original); any mismatch fails the session. Under ``pytest-xdist`` each worker enables Rustique and the controller adds up
 their counters. ``RUSTIQUE=0`` (kill switch) wins: the session runs plain and the summary
 says so.
+
+A top-level module, not part of the ``rustique`` package: pytest imports every autoloaded
+plugin in every session, and importing anything inside the package runs
+``rustique/__init__.py``, which loads the extension (≈ 1.5M instructions). Without
+``--rustique`` this module imports nothing but pytest. ``rustique.pytest_plugin`` is an
+alias of it (``-p rustique.pytest_plugin``).
 """
 
 import pytest

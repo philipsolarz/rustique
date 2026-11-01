@@ -311,13 +311,18 @@ at all (Rustique not installed in the command's interpreter), exit 2, so CI cann
 vacuously. `--check` adds check mode to the enabled run (mismatches → exit 1). Refuses a
 command containing `--rustique` (the plugin's summary would differ between runs).
 
-### 4.2 pytest plugin (`rustique/pytest_plugin.py`)
+### 4.2 pytest plugin (`_rustique_pytest.py`, alias `rustique/pytest_plugin.py`)
 
-Entry point `pytest11: "rustique.pytest_plugin" = "rustique.pytest_plugin"` — named like the
-module, so `-p rustique.pytest_plugin` (needed with `PYTEST_DISABLE_PLUGIN_AUTOLOAD`) loads
-the entry point instead of registering the module twice (pluggy would raise "Plugin already
-registered under a different name"). Inactive without `--rustique` (no output; the only
-cost is importing `rustique` when pytest loads plugins, ~1.5 ms of a ≥ 100 ms pytest start).
+Entry point `pytest11: "rustique.pytest_plugin" = "_rustique_pytest"` — a top-level module
+shipped next to `_rustique_startup.pth`, so that autoloading it does not import the
+`rustique` package (whose `__init__` loads the extension: ≈ 1.5M instructions / 0.65 ms per
+pytest process, found in Phase 3, `docs/atlas/phase3.md` §4.1). The entry point keeps the
+name `rustique.pytest_plugin`, so `-p rustique.pytest_plugin` (needed with
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD`) loads the entry point instead of registering the module
+twice (pluggy would raise "Plugin already registered under a different name");
+`rustique/pytest_plugin.py` re-exports the hooks for direct imports. Inactive without
+`--rustique`: no output, and nothing imported but pytest
+(`tests/test_dx_cli.py::test_plugin_without_flag_imports_nothing`).
 
 - `--rustique`: counters on, `enable()` in `pytest_configure` (before collection).
 - Terminal summary: `=== rustique ===` section with the report (`--rustique-report-limit`).
