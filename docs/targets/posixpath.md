@@ -249,26 +249,28 @@ The three groups together; ratios on a shared box are indicative (±~5%).
 ## Startup
 
 `benches/targets/_prof_install.py` (callgrind, 3.15.1, the registry warmed first with an
-imported vectorcall target of another group so one-time calibrations are not counted; head
-after wave1 b162e61). `enable(only=["posixpath"])` with `posixpath` imported (it always
-is) costs **0.21M Ir** (was 0.36M before the `GroupSpec`): eight vectorcall sites, 11
-Python-function and 4 C-function fingerprints (≈ 0.12M), 20 pins (one `GroupSpec`), the normpath
-identity check. Nothing is imported. Still over the 0.1M budget: the fingerprints dominate.
-Pre-interned keys (`pin_s`/`pin_global_s` with `intern!`) measured *slower* here (0.22M:
-each `intern!` site initialises once per process, while `pin`'s interning cache is shared
+imported vectorcall target of another group so one-time calibrations are not counted; wave1
+672009b + release hooks). `enable(only=["posixpath"])` with `posixpath` imported (it always
+is) costs **0.22M Ir** (0.36M before the `GroupSpec`): eight vectorcall sites, 11
+Python-function and 4 C-function fingerprints (≈ 0.12M), 20 pins (one `GroupSpec`), the
+normpath identity check. Nothing is imported. Still over the 0.1M budget: the fingerprints
+dominate. Pre-interned keys (`pin_s`/`pin_global_s` with `intern!`) measured *slower* here
+(each `intern!` site initialises once per process, while `pin`'s interning cache is shared
 with the other groups), so the groups keep `pin`.
 
 Whole process (`benches/targets/_whole.sh`: `python -c pass` through the `.pth` loader,
-callgrind totals, RUSTIQUE=1 vs RUSTIQUE=1 with `RUSTIQUE_EXCLUDE=posixpath,fnmatch,pathlib`):
-the paths groups add **0.98M Ir** (+2.5% of 39.9M). With `os._exit(0)` at the end (no
-interpreter teardown) they add 0.21M (posixpath's enable; fnmatch and pathlib stay pending):
-the other ~0.75M is teardown, in the framework: dict-watcher callbacks while
-`_PyModule_ClearDict` empties the watched module dicts (`guard::on_dict_event` comparing
-every pinned key with `PyUnicode_Compare`, 602 events, ≈ 0.36M) and the module dicts kept
-alive by the installed function objects (gc traversals and dict clearing instead of
-deallocation, ≈ 0.4M: one leaked reference to `posixpath.join` alone costs 0.3–0.5M at
-teardown). Both are fixable in accel-core (compare interned keys by identity; release the
-installs at exit); see the report.
+callgrind totals, `PYTHONHASHSEED=0` (string hashing otherwise moves the totals by
+±0.15M), RUSTIQUE=1 vs RUSTIQUE=1 with `RUSTIQUE_EXCLUDE=posixpath,fnmatch,pathlib`): the
+paths groups add **0.30M Ir** (+0.75% of 39.9M; seed 1: the same). With `os._exit(0)` at
+the end (no interpreter teardown) they add 0.26M: posixpath's enable (fnmatch and pathlib
+stay pending) and the first install's framework work. Teardown is now ≈ 0.04M. It was
+≈ 0.75M before accel-core's exit hook (sites restored, watchers stopped at finalization)
+and the groups' `release` hooks, which drop the references the groups keep themselves:
+verified functions (whose globals kept the `posixpath`/`genericpath`/`pathlib` dicts
+alive), `os.getcwd(b)` (its `__self__` is `posix`), the pathlib classes and their recorded
+attributes. Kernels entered on a stale path after the release decline: their flags are
+false, the type cells are null, and `cwd_units` checks for a null `os.getcwd`
+(`test_exit_release_and_daemon_threads`).
 
 ## Version coverage
 

@@ -151,14 +151,16 @@ The three groups together; ratios on a shared box are indicative (±~5%).
 
 ## Startup
 
-With `fnmatch` imported, `enable(only=["fnmatch"])` costs **0.27M Ir** (3.15.1, registry
-warmed with an imported vectorcall target of another group; was 0.34M before the
+With `fnmatch` imported, `enable(only=["fnmatch"])` costs **0.28M Ir** (3.15.1, registry
+warmed with an imported vectorcall target of another group; 0.34M before the
 `GroupSpec`); 0.17M of it is the fingerprints of the `fnmatch`, `re` and `re._parser`
 functions (`re._parser._parse` dominates). Everything the three targets share (the
 `fnmatch` namespace snapshot, `re.compile/_compile`, the `os.path.normcase` chain, the
 builtins) is one `GroupSpec` (`fnmatch::SHARED`, one dependency flag) declared once. When
 `fnmatch` is imported after `enable()` the same work runs at its import (`python -c pass`
-does not import it: no startup cost, see posixpath.md "Startup").
+does not import it: no startup cost, see posixpath.md "Startup"). At exit its `release`
+hook drops the references to the verified functions (its pattern caches hold no Python
+objects).
 
 ## Version coverage
 

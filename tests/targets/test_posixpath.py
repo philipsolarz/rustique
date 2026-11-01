@@ -444,3 +444,53 @@ def test_shared_mechanics():
             M.assert_introspection_unchanged(getattr(posixpath, name), f"posixpath.{name}")
     finally:
         rt.enable(only="posixpath")
+
+
+# --- interpreter exit: the groups' release hooks ----------------------------------------
+
+EXIT_BODY = """
+import atexit, fnmatch, gc, os, pathlib, posixpath, sys, threading, time
+from rustique._rustique import _accel as A
+
+def calls():
+    p = pathlib.PurePosixPath("/a/b") / "c.txt"
+    return (posixpath.join("a", "b"), posixpath.splitext("x.tar.gz"), posixpath.abspath("q") == os.getcwd() + "/q",
+            posixpath.relpath("/a/b/c", "/a"), posixpath.relpath(b"/a/b", b"/a"), fnmatch.filter(["a.py", "b.c"], "*.py"),
+            str(p), p.name, p.relative_to("/a").parts, hash(p) == hash(pathlib.PurePosixPath("/a/b/c.txt")))
+
+# Registered before enable(): runs after the exit hook (originals restored, references released).
+atexit.register(lambda: print("before", calls() == EXPECTED, posixpath.join.__code__ is CODE,
+                              sys.getrefcount(posixpath.__dict__) - RC))
+EXPECTED = calls()
+CODE = posixpath.join.__code__
+gc.collect()
+RC = sys.getrefcount(posixpath.__dict__)
+A.enable(["posixpath", "fnmatch", "pathlib"])
+assert {"posixpath.relpath", "fnmatch.filter", "pathlib.PurePath.relative_to"} <= set(A.installed())
+assert calls() == EXPECTED
+atexit.register(lambda: print("after", calls() == EXPECTED))  # runs before the hook: kernels
+
+def spin():
+    while True:
+        calls()
+
+for _ in range(3):
+    threading.Thread(target=spin, daemon=True).start()
+time.sleep(0.05)
+"""
+
+
+def test_exit_release_and_daemon_threads():
+    # The exit hook restores the sites and calls the groups' release hooks (verified
+    # functions, os.getcwd(b), the pathlib classes and recorded attributes): the
+    # posixpath module dict holds no reference of ours afterwards, the originals run, and
+    # daemon threads inside kernels during the release fall back.
+    import subprocess
+    import textwrap
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
+    r = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(EXIT_BODY)], capture_output=True, text=True, env=env, timeout=120
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines() == ["after True", "before True True 0"], (r.stdout, r.stderr)

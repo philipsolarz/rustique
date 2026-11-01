@@ -85,6 +85,7 @@ macro_rules! target {
             jit_safe: true,
             checkable: true,
             shared: Some(&SHARED),
+            release: Some(release),
             ..TargetSpec::DEFAULT
         };
     };
@@ -539,6 +540,15 @@ fn check_normpath(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>) -> Result<(), Ref
     Ok(())
 }
 
+/// Exit release: the verified objects and the cached `os.getcwd`/`os.getcwdb` (builtins
+/// whose `__self__` is the `posix` module). The `relpath` constants and the `start` keyword
+/// (str/bytes: they keep nothing alive) stay.
+fn release(py: Python<'_>) {
+    rt::release(py);
+    rt::release_cell(&GETCWD);
+    rt::release_cell(&GETCWDB);
+}
+
 /// The current directory through the pinned `os.getcwd`/`os.getcwdb` (a C function: no
 /// Python code, no audit event), as code units. `None` (error cleared) if it fails: the
 /// caller declines and CPython's code raises.
@@ -546,6 +556,9 @@ unsafe fn cwd_units(t: Ty) -> Option<CwdBuf> {
     // SAFETY: attached thread; pinned builtins.
     unsafe {
         let f = if t == Ty::Str { GETCWD.load(Relaxed) } else { GETCWDB.load(Relaxed) } as O;
+        if f.is_null() {
+            return None; // released at exit (a call that passed the flag check before it)
+        }
         let r = ffi::PyObject_CallNoArgs(f);
         if r.is_null() {
             ffi::PyErr_Clear();

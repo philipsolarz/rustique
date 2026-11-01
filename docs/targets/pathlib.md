@@ -203,15 +203,17 @@ vectorcall target of another group):
 | region | Ir |
 |---|---:|
 | `import pathlib`, plain | 8.06M |
-| `import pathlib` after `enable(only=["pathlib"])` | 8.51M (**+0.45M, +5.6%**) |
-| `enable(only=["pathlib"])` with pathlib imported | 0.45M |
+| `import pathlib` after `enable(only=["pathlib"])` | 8.50M (**+0.44M, +5.5%**) |
+| `enable(only=["pathlib"])` with pathlib imported | 0.46M |
 
 History: +24M at first (per-target MRO pins), +4.2M (fewer pins), +2.4M (accel-core's v2
 fingerprints and shared pins), +1.04M (class attributes guarded by type version tag, shared
 validation once per pass), +0.45M (one `GroupSpec`: ~130 per-target pins became 31). What
 remains: 29 fingerprints (≈ 0.12M), the validation (`record_class`, slot offsets, ≈ 0.1M),
 31 pins, thirteen vectorcall sites. At the lazy-install budget (5% of the import, 0.40M)
-within 0.05M. `python -c pass` never imports pathlib (no startup cost; see posixpath.md
+within 0.04M. At exit the `release` hook drops the classes, their recorded attributes and
+the verified functions (the type cells go null first: a stale kernel declines).
+`python -c pass` never imports pathlib (no startup cost; see posixpath.md
 "Startup" for the whole-process cells).
 
 ## Version coverage

@@ -387,6 +387,29 @@ pub fn code_const<'py>(func: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> P
 /// is never reused): targets sharing helpers (`_get_sep`, `os.fspath`, ...) hash them once.
 static VERIFIED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
+/// Exit release of the paths groups (`TargetSpec::release`, run by the registry's atexit
+/// hook after every site was restored and every flag cleared): drop the references taken
+/// on verified objects. Functions keep their module's globals alive, so without this the
+/// `posixpath`/`genericpath`/`pathlib` dicts would survive into finalization. Idempotent; a
+/// later prepare verifies again.
+pub fn release(_py: Python<'_>) {
+    let v = std::mem::take(&mut *VERIFIED.lock().unwrap_or_else(|p| p.into_inner()));
+    for o in v {
+        // SAFETY: attached thread; the strong references taken by `mark_verified`.
+        unsafe { ffi::Py_DECREF(o as O) };
+    }
+}
+
+/// Clear a cell holding a strong reference (from [`leak`]) and drop the reference. Only for
+/// cells a kernel reads past its dependency flag and checks for null.
+pub fn release_cell(cell: &std::sync::atomic::AtomicUsize) {
+    let p = cell.swap(0, std::sync::atomic::Ordering::Relaxed);
+    if p != 0 {
+        // SAFETY: attached thread; the reference stored with the cell.
+        unsafe { ffi::Py_DECREF(p as O) };
+    }
+}
+
 fn verified(obj: &Bound<'_, PyAny>) -> bool {
     VERIFIED.lock().map(|v| v.contains(&(obj.as_ptr() as usize))).unwrap_or(false)
 }

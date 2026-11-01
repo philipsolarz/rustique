@@ -64,6 +64,8 @@ macro_rules! target {
             jit_safe: true,
             checkable: true,
             shared: Some(&SHARED),
+            // Its compiled-pattern caches hold no Python objects: only the verified ones.
+            release: Some(rt::release),
             ..TargetSpec::DEFAULT
         };
     };
