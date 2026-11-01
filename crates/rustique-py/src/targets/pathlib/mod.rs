@@ -607,15 +607,28 @@ fn prep(
     if !cx.type_attr(&pure_posix, "parser")?.is(&pp) {
         return Err(refuse!("PurePosixPath.parser is not posixpath"));
     }
-    for name in reached(attr) {
-        let v = cx.pin_attr(&posix, name, &rt.deps)?;
-        if name == "parser" && !v.is(&pp) {
-            return Err(refuse!("PosixPath.parser is not posixpath"));
+    // `parser` through PosixPath's MRO (also registers the type watcher that breaks the pin on
+    // an MRO change); the other attributes: few → one MRO pin each; many → one snapshot pin
+    // per class dict of the MRO (any added, replaced or deleted attribute breaks it).
+    let v = cx.pin_attr(&posix, "parser", &rt.deps)?;
+    if !v.is(&pp) {
+        return Err(refuse!("PosixPath.parser is not posixpath"));
+    }
+    let names = reached(attr);
+    if names.len() <= 4 {
+        for name in names.iter().filter(|n| **n != "parser") {
+            cx.pin_attr(&posix, name, &rt.deps)?;
+        }
+    } else {
+        for t in [&posix, &path, &pure_posix, &pure] {
+            cx.pin_dict(&type_dict(t)?, &rt.deps)?;
         }
     }
     if attr == "relative_to" {
-        // `path in self.parents`: Sequence.__contains__ / __iter__ over _PathParents.
-        for name in ["__init__", "__len__", "__getitem__", "__contains__", "__iter__"] {
+        // `path in self.parents`: _PathParents.__getitem__/__len__ (its own dict) and the
+        // Sequence mixin's __contains__ / __iter__.
+        cx.pin_dict(&type_dict(&parents)?, &rt.deps)?;
+        for name in ["__contains__", "__iter__"] {
             cx.pin_attr(&parents, name, &rt.deps)?;
         }
     }

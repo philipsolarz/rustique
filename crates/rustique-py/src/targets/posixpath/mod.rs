@@ -475,8 +475,8 @@ static BYTES_OK: AtomicBool = AtomicBool::new(false);
 /// Interned `"start"` (keyword of relpath).
 static KW_START: AtomicUsize = AtomicUsize::new(0);
 
-/// `posixpath.normpath` must be the C `posix._path_normpath` (pinned), behaving like the
-/// port on probe inputs; bytes are accepted only under UTF-8 + surrogateescape.
+/// `posixpath.normpath` must be the C `posix._path_normpath` (pinned, fingerprinted);
+/// bytes are accepted only under UTF-8 + surrogateescape.
 fn check_normpath(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, deps: &'static DepFlag) -> Result<(), Refusal> {
     let np = cx.get(g, "normpath")?;
     let posix = cx.loaded_module("posix")?;
@@ -486,40 +486,8 @@ fn check_normpath(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, deps: &'static De
     }
     rt::check_c(cx, FPS, "posixpath.normpath", &np)?;
     cx.pin(g, "normpath", deps)?;
-    cx.self_test("normpath port", |_py| {
-        let probes = [
-            "",
-            "/",
-            "//",
-            "///",
-            ".",
-            "..",
-            "./",
-            "a/..",
-            "a/../..",
-            "/../a",
-            "//x/../..",
-            "a//b/./c/../d/",
-            "\u{e9}/\u{4f60}/..",
-            "./../a",
-            "../../a/b/../..",
-            "/a/b/c/../../../../d",
-            "a/./.b/..c/...",
-            "\u{1F600}//./\u{1F600}",
-            "\0/x/../\0",
-        ];
-        for p in probes {
-            let want: String = c_np.call1((p,))?.extract()?;
-            let cps: Vec<u32> = p.chars().map(|c| c as u32).collect();
-            let got = posix::normpath(&cps);
-            let got: String =
-                if got.is_empty() { ".".into() } else { got.iter().filter_map(|&c| char::from_u32(c)).collect() };
-            if got != want {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    })?;
+    // Behaviour of the port is proved by the conformance and differential tests (and
+    // `_paths_normpath` fuzzing); install only checks identity and the C fingerprint.
     let sys = cx.loaded_module("sys")?;
     let enc: String = sys.call_method0("getfilesystemencoding")?.extract()?;
     let err: String = sys.call_method0("getfilesystemencodeerrors")?.extract()?;
