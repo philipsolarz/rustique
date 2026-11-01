@@ -58,17 +58,21 @@ def main() -> int:
 
     probe = ("import json, sys\nloaded = sorted(m for m in sys.modules if 'rustique' in m)\n"
              "out = {'loaded': loaded}\n"
-             "if 'rustique' in sys.modules:\n"
-             "    st = sys.modules['rustique'].status()\n"
+             "ext = sys.modules.get('rustique._rustique')\n"
+             "if ext is not None:  # the startup path loads only the extension\n"
+             "    st = ext._accel.status()\n"
              "    out['source'] = st['process']['switch']['source']\n"
              "    out['states'] = sorted({t['state'] for t in st['targets']})\n"
              "    out['installed'] = sum(t['state'] == 'installed' for t in st['targets'])\n"
              "print(json.dumps(out))\n")
     unset = json.loads(py("-c", probe).stdout)
     check("RUSTIQUE unset imports nothing at startup", unset["loaded"] == [], str(unset))
+    zero = json.loads(py("-c", probe, RUSTIQUE="0").stdout)
+    check("RUSTIQUE=0 imports nothing at startup", zero["loaded"] == [], str(zero))
     on = py("-c", probe, RUSTIQUE="1")
     on_out = json.loads(on.stdout) if on.returncode == 0 else {}
-    check("RUSTIQUE=1 enables at startup (.pth)", on_out.get("source") == "RUSTIQUE=1", on.stdout + on.stderr)
+    check("RUSTIQUE=1 enables at startup (.pth), loading only the extension",
+          on_out.get("source") == "RUSTIQUE=1" and on_out.get("loaded") == ["rustique._rustique"], on.stdout + on.stderr)
     if expect_installed:
         check("targets installed on this interpreter", on_out.get("installed", 0) > 0, str(on_out))
     startup_battery = py("-c", BATTERY, RUSTIQUE="1")

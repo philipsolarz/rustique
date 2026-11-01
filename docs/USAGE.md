@@ -62,7 +62,7 @@ means more calls are accelerated.
 
 ## Turn it off, or turn parts of it off
 
-- **`RUSTIQUE=0` is the kill switch.** Every way of turning Rustique on becomes a no-op:
+- **`RUSTIQUE=0` is the kill switch** (so are `off`, `false`, `no` and an empty value). Every way of turning Rustique on becomes a no-op:
   the startup switch, `python -m rustique`, `pytest --rustique`, and also a
   `rustique.enable()` written in the program. `rustique.native` returns functions
   unchanged. The process runs as plain CPython, so if you suspect Rustique, set
@@ -215,8 +215,8 @@ containing `--rustique`.
 | variable | values | effect |
 |---|---|---|
 | `RUSTIQUE` | `1`/`true`/`yes`/`on` | enable at interpreter startup (through `_rustique_startup.pth`) |
-| | `0`/`false`/`no`/`off` | kill switch: every enable path is a no-op |
-| | unset or empty | nothing at startup; explicit `enable()` works |
+| | `0`/`false`/`no`/`off`/empty | kill switch: every enable path is a no-op, and nothing is loaded at startup |
+| | unset | nothing at startup; explicit `enable()` works |
 | `RUSTIQUE_ONLY` | `json,copy` (groups or targets) | narrow every enable path to these |
 | `RUSTIQUE_EXCLUDE` | `re,json.loads` | leave these out of every enable path |
 | `RUSTIQUE_STATS` | `1` | counters on when Rustique is enabled |
@@ -235,6 +235,8 @@ rustique.enable(*, only=None, exclude=None, native=None, builtins=True) -> dict
 rustique.disable() -> dict
 rustique.status() -> dict
 rustique.stats(enabled=None, reset=False) -> dict
+rustique.check(mode=...) -> str | None        # "warn" | "raise" | "off"; no argument: current mode
+rustique.RustiqueCheckError                    # raised by check mode "raise" on a mismatch
 ```
 
 - `enable`: installs the selected targets. It is idempotent and additive.
@@ -251,6 +253,7 @@ rustique.stats(enabled=None, reset=False) -> dict
     how Rustique was turned on (`RUSTIQUE=1`, `rustique.enable()`, `python -m rustique`,
     `pytest --rustique`), whether the kill switch is set, and which `RUSTIQUE*` variables
     are set.
+- `check`: check mode from code, same as `RUSTIQUE_CHECK`. It returns the previous mode.
 - `stats`: returns `{name: {"hits": n, "fallback": {reason: n}}}`. `stats(True)` turns
   counting on, `stats(reset=True)` zeroes the counters after the snapshot.
 
@@ -346,5 +349,5 @@ Unlike everything above, this changes types, so it is never on by default.
   on autoloading.
 - **Rustique in `pip list`, but `import rustique` fails.** The wheel does not match the
   interpreter (`pip debug --verbose` lists supported tags), or the venv is broken. The
-  startup switch never breaks Python startup: it prints
-  `rustique: RUSTIQUE=1 ignored: cannot import rustique: ...` and continues plain.
+  startup switch never breaks Python startup. If the extension cannot be loaded, `site`
+  prints the failing `_rustique_startup.pth` line with the error and Python starts plain.
