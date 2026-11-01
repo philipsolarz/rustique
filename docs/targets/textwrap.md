@@ -119,3 +119,44 @@ threshold; every cell is ≤ 1.005 with and without the JIT, so the group is `ji
 Per-call cost of the class checks that replace pins (TextWrapper methods, `__init__`
 defaults, the translation table): one `tp_version_tag` compare for the class, two pointer
 compares for the defaults, six dict lookups for the table (~150 Ir, included above).
+
+### Wall time, large inputs (pyperf)
+
+`python benches/targets/utils_pyperf.py textwrap --fast` (busy shared box: only ≥ 1.5× claims). **M**.
+
+| cell | plain | rustique | ratio |
+|---|---:|---:|---:|
+| `wrap(540 chars)` | 64.4 µs | 11.0 µs | 0.170 |
+| `fill(540 chars, 40, indents)` | 66.9 µs | 11.0 µs | 0.165 |
+| `dedent(500 lines)` | 69.9 µs | 33.5 µs | 0.480 |
+| `indent(500 lines)` | 41.5 µs | 34.5 µs | 0.831 |
+
+### Workloads
+
+`python benches/workloads/run.py compare data/report_render data/log_analytics
+data/billing_engine web/requests_local -n 5 -p 3 --only random,textwrap,urllib,statistics`
+(3.15.1, busy shared box; medians of steady-state runs; digests identical in every pair). **M**.
+
+| workload | plain | utils groups enabled | ratio | where the utils groups act |
+|---|---:|---:|---:|---|
+| `data/report_render` | 409.5 ms | 183.9 ms | **0.449** | `random` (choice/choices/sample/randint) + `textwrap` (fill/shorten/indent) |
+| `data/log_analytics` | 770.4 ms | 751.5 ms | 0.975 | `urllib` (`urlsplit` misses, `parse_qs`); `ipaddress` (20%) is not a target yet |
+| `web/requests_local` | 266.8 ms | 248.1 ms | 0.930 | `urllib` (`urlsplit`/`parse_qs` in the handler, `requests`' `quote`/`urlparse`) |
+| `data/billing_engine` | 1024.2 ms | 1021.0 ms | 0.997 | `statistics` on `Decimal` totals falls back (by design); `stdev` of floats accelerated |
+
+### Install cost (budget: ≤ 5% of the module's import; ≤ 0.1M Ir per group at `enable()`)
+
+`python benches/targets/utils_install_cost.py textwrap` (callgrind, fresh processes; the module
+removed from `sys.modules` first, its dependencies imported): lazy install on `import textwrap`
++727k Ir on a 3.03M-Ir `import textwrap` (+24%). `enable(only=["textwrap"])` with the module not imported costs 0.92M Ir, the same for every
+group (the registry's `enable()` + `status()`, not the group). **Over budget**: the install is
+dominated by the framework's per-function fingerprint (~35–60k Ir each) and
+`Prepare::vectorcall`/pin activation; accel-core is reducing those (lead, item 13). The
+group's own prepare is already trimmed (minimal self-test, no `eval`, no class pins, pins only
+for names read on the accepted paths). To be re-measured after the framework fix.
+
+### First 64 fallback calls (before the registry suspends a target that keeps falling back)
+
+`python benches/targets/utils_first64.py` (Ir per call over 64 calls, fresh process):
+`textwrap.dedent(str subclass)`: 7,548 → 7,893 Ir/call (1.046, +345). After 64 consecutive fallbacks the target is suspended and the cells above
+measure 1.000 (steady state).

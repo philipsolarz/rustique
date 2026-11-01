@@ -59,3 +59,75 @@ inputs. **Private state skipped:** none.
 
 3.14.9 and 3.15.1 and their free-threaded builds (the five functions and their helpers
 are identical in both).
+
+## 5. Measurements
+
+### 5.1 Instructions per call (callgrind)
+
+`python benches/targets/utils_cg.py statistics_cells [--jit]`, CPython 3.15.1, dev box
+(method: random.md §5.1; JIT column measured for the 10-element cells only — warming the
+1000-element cells 30,000 times under valgrind is impractical). **M**.
+
+| cell | orig Ir | rq Ir | ratio | JIT orig | JIT rq | JIT ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| `mean(10 floats)` | 125823 | 13757 | 0.109 | 116761 | 13758 | 0.118 |
+| `mean(1000 floats)` | 3791191 | 132034 | 0.035 | | | |
+| `mean(10 ints)` | 52166 | 7132 | 0.137 | 48940 | 7133 | 0.146 |
+| `mean(1000 ints)` | 1663068 | 127067 | 0.076 | | | |
+| `variance(10 floats)` | 296260 | 43053 | 0.145 | 276879 | 43019 | 0.155 |
+| `pvariance(1000 floats)` | 5901804 | 239851 | 0.041 | | | |
+| `stdev(10 floats)` | 303969 | 81337 | 0.268 | 284008 | 81251 | 0.286 |
+| `stdev(1000 floats)` | 5909146 | 280611 | 0.047 | | | |
+| `pstdev(10 ints)` | 124757 | 23390 | 0.187 | | | |
+| `variance(10 ints)` | 117624 | 15079 | 0.128 | | | |
+| fallbacks (steady state): | | | | | | |
+| `mean(10 Decimals)` | 175825 | 176210 | 1.002 | | | |
+| `stdev(10 Decimals)` | 437915 | 438824 | 1.002 | | | |
+| `mean(iterator)` | 125992 | 126349 | 1.003 | | | |
+| `variance(floats, xbar)` | 187697 | 188212 | 1.003 | | | |
+
+Every original costs ≥ 49k Ir, far above the vectorcall fallback threshold: the group is
+`jit_safe`.
+
+### Wall time, large inputs (pyperf)
+
+`python benches/targets/utils_pyperf.py statistics --fast` (busy shared box: only ≥ 1.5×
+claims). **M**.
+
+| cell | plain | rustique | ratio |
+|---|---:|---:|---:|
+| `mean(10k floats)` | 3521.8 µs | 77.3 µs | 0.022 |
+| `mean(10k ints)` | 985.6 µs | 69.3 µs | 0.070 |
+| `variance(10k floats)` | 4929.4 µs | 117.4 µs | 0.024 |
+| `stdev(10k floats)` | 4961.7 µs | 121.2 µs | 0.024 |
+| `pstdev(10k ints)` | 1500.7 µs | 100.9 µs | 0.067 |
+
+### Workloads
+
+`python benches/workloads/run.py compare data/report_render data/log_analytics
+data/billing_engine web/requests_local -n 5 -p 3 --only random,textwrap,urllib,statistics`
+(3.15.1, busy shared box; medians of steady-state runs; digests identical in every pair). **M**.
+
+| workload | plain | utils groups enabled | ratio | where the utils groups act |
+|---|---:|---:|---:|---|
+| `data/report_render` | 409.5 ms | 183.9 ms | **0.449** | `random` (choice/choices/sample/randint) + `textwrap` (fill/shorten/indent) |
+| `data/log_analytics` | 770.4 ms | 751.5 ms | 0.975 | `urllib` (`urlsplit` misses, `parse_qs`); `ipaddress` (20%) is not a target yet |
+| `web/requests_local` | 266.8 ms | 248.1 ms | 0.930 | `urllib` (`urlsplit`/`parse_qs` in the handler, `requests`' `quote`/`urlparse`) |
+| `data/billing_engine` | 1024.2 ms | 1021.0 ms | 0.997 | `statistics` on `Decimal` totals falls back (by design); `stdev` of floats accelerated |
+
+### Install cost (budget: ≤ 5% of the module's import; ≤ 0.1M Ir per group at `enable()`)
+
+`python benches/targets/utils_install_cost.py statistics` (callgrind, fresh processes; the module
+removed from `sys.modules` first, its dependencies imported): lazy install on `import statistics`
++0.93M Ir on a 12.9M-Ir `import statistics` (+7.2%). `enable(only=["statistics"])` with the module not imported costs 0.92M Ir, the same for every
+group (the registry's `enable()` + `status()`, not the group). **Over budget**: the install is
+dominated by the framework's per-function fingerprint (~35–60k Ir each) and
+`Prepare::vectorcall`/pin activation; accel-core is reducing those (lead, item 13). The
+group's own prepare is already trimmed (minimal self-test, no `eval`, no class pins, pins only
+for names read on the accepted paths). To be re-measured after the framework fix.
+
+### First 64 fallback calls (before the registry suspends a target that keeps falling back)
+
+`python benches/targets/utils_first64.py` (Ir per call over 64 calls, fresh process):
+`statistics.mean([Decimal]*2)`: 48,831 → 49,274 Ir/call (1.009, +443). After 64 consecutive fallbacks the target is suspended and the cells above
+measure 1.000 (steady state).

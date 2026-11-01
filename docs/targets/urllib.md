@@ -107,3 +107,45 @@ random.md §5.1). **M**.
 
 The cheapest fallback (`quote` of a str subclass, ~7.5–8.4k Ir) is above the JIT threshold;
 every cell is ≤ 1.011, so the group is `jit_safe`.
+
+### Wall time, large inputs (pyperf)
+
+`python benches/targets/utils_pyperf.py urllib --fast` (busy shared box: only ≥ 1.5× claims). **M**.
+
+| cell | plain | rustique | ratio |
+|---|---:|---:|---:|
+| `quote(9 KB, non-ASCII)` | 159.3 µs | 16.2 µs | 0.102 |
+| `unquote(9 KB)` | 400.0 µs | 43.8 µs | 0.110 |
+| `parse_qsl(500 fields)` | 906.1 µs | 119.2 µs | 0.132 |
+| `parse_qs(500 fields)` | 945.4 µs | 141.6 µs | 0.150 |
+| `[urlparse(u) for u in 1000 urls]` | 1800.6 µs | 1180.8 µs | 0.656 |
+
+### Workloads
+
+`python benches/workloads/run.py compare data/report_render data/log_analytics
+data/billing_engine web/requests_local -n 5 -p 3 --only random,textwrap,urllib,statistics`
+(3.15.1, busy shared box; medians of steady-state runs; digests identical in every pair). **M**.
+
+| workload | plain | utils groups enabled | ratio | where the utils groups act |
+|---|---:|---:|---:|---|
+| `data/report_render` | 409.5 ms | 183.9 ms | **0.449** | `random` (choice/choices/sample/randint) + `textwrap` (fill/shorten/indent) |
+| `data/log_analytics` | 770.4 ms | 751.5 ms | 0.975 | `urllib` (`urlsplit` misses, `parse_qs`); `ipaddress` (20%) is not a target yet |
+| `web/requests_local` | 266.8 ms | 248.1 ms | 0.930 | `urllib` (`urlsplit`/`parse_qs` in the handler, `requests`' `quote`/`urlparse`) |
+| `data/billing_engine` | 1024.2 ms | 1021.0 ms | 0.997 | `statistics` on `Decimal` totals falls back (by design); `stdev` of floats accelerated |
+
+### Install cost (budget: ≤ 5% of the module's import; ≤ 0.1M Ir per group at `enable()`)
+
+`python benches/targets/utils_install_cost.py urllib` (callgrind, fresh processes; the module
+removed from `sys.modules` first, its dependencies imported): lazy install on `import urllib.parse`
++1.14M Ir on an 8.86M-Ir `import urllib.parse` (+12.9%). `enable(only=["urllib"])` with the module not imported costs 0.92M Ir, the same for every
+group (the registry's `enable()` + `status()`, not the group). **Over budget**: the install is
+dominated by the framework's per-function fingerprint (~35–60k Ir each) and
+`Prepare::vectorcall`/pin activation; accel-core is reducing those (lead, item 13). The
+group's own prepare is already trimmed (minimal self-test, no `eval`, no class pins, pins only
+for names read on the accepted paths). To be re-measured after the framework fix.
+
+### First 64 fallback calls (before the registry suspends a target that keeps falling back)
+
+`python benches/targets/utils_first64.py` (Ir per call over 64 calls, fresh process):
+`quote(str subclass)`: 9,449 → 9,884 Ir/call (1.046, +435). After 64 consecutive fallbacks the target is suspended and the cells above
+measure 1.000 (steady state).

@@ -190,3 +190,33 @@ re-measures on a quiet box). **M**.
 | `rng.choices(list of 1000, k=1000)` | 43.1 µs | 8.9 µs | 0.206 |
 | `rng.choices(list of 1000, weights, k=1000)` | 261.3 µs | 72.6 µs | 0.278 |
 | `[rng.randint(1, 6) for _ in range(1000)]` | 139.6 µs | 56.5 µs | 0.405 |
+
+### Workloads
+
+`python benches/workloads/run.py compare data/report_render data/log_analytics
+data/billing_engine web/requests_local -n 5 -p 3 --only random,textwrap,urllib,statistics`
+(3.15.1, busy shared box; medians of steady-state runs; digests identical in every pair). **M**.
+
+| workload | plain | utils groups enabled | ratio | where the utils groups act |
+|---|---:|---:|---:|---|
+| `data/report_render` | 409.5 ms | 183.9 ms | **0.449** | `random` (choice/choices/sample/randint) + `textwrap` (fill/shorten/indent) |
+| `data/log_analytics` | 770.4 ms | 751.5 ms | 0.975 | `urllib` (`urlsplit` misses, `parse_qs`); `ipaddress` (20%) is not a target yet |
+| `web/requests_local` | 266.8 ms | 248.1 ms | 0.930 | `urllib` (`urlsplit`/`parse_qs` in the handler, `requests`' `quote`/`urlparse`) |
+| `data/billing_engine` | 1024.2 ms | 1021.0 ms | 0.997 | `statistics` on `Decimal` totals falls back (by design); `stdev` of floats accelerated |
+
+### Install cost (budget: ≤ 5% of the module's import; ≤ 0.1M Ir per group at `enable()`)
+
+`python benches/targets/utils_install_cost.py random` (callgrind, fresh processes; the module
+removed from `sys.modules` first, its dependencies imported): lazy install on `import random`
++724k Ir on a 1.06M-Ir `import random` (+68%; dependencies already imported). `enable(only=["random"])` with the module not imported costs 0.92M Ir, the same for every
+group (the registry's `enable()` + `status()`, not the group). **Over budget**: the install is
+dominated by the framework's per-function fingerprint (~35–60k Ir each) and
+`Prepare::vectorcall`/pin activation; accel-core is reducing those (lead, item 13). The
+group's own prepare is already trimmed (minimal self-test, no `eval`, no class pins, pins only
+for names read on the accepted paths). To be re-measured after the framework fix.
+
+### First 64 fallback calls (before the registry suspends a target that keeps falling back)
+
+`python benches/targets/utils_first64.py` (Ir per call over 64 calls, fresh process):
+`r.choice(UserList)`: 4,434 → 4,870 Ir/call (1.098, +436); `r.choices('abc', [Fraction]*3)`: 46,589 → 47,378 (1.017). After 64 consecutive fallbacks the target is suspended and the cells above
+measure 1.000 (steady state).
