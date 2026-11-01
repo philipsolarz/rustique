@@ -923,6 +923,8 @@ pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -
         clear_internal_caches();
     }
     after_unlock(py);
+    // Release everything before finalization (registered once, outside the lock).
+    super::exit::ensure_hook(py);
     Ok(())
 }
 
@@ -956,6 +958,53 @@ pub fn disable(py: Python<'_>, names: Option<Vec<String>>) -> PyResult<()> {
         clear_internal_caches();
     }
     after_unlock(py);
+    Ok(())
+}
+
+/// Interpreter exit (the atexit hook, `exit::exit_hook`): restore every site, drop every
+/// pin, watch and cached reference, clear every dependency flag, and call the targets'
+/// `release` hooks. Finalization then neither keeps module objects alive through Rustique
+/// nor pays dict-watcher events while it empties module dicts. A later `enable()` works
+/// again (and registers the hook again).
+pub fn teardown(py: Python<'_>) -> PyResult<()> {
+    let mut g = REG.lock(py)?;
+    JIT.store(jit_enabled(py), Ordering::Relaxed);
+    let reg = registry(&mut g);
+    // Modules queued by the watcher meanwhile: dropped, not activated.
+    let deferred = std::mem::take(&mut lazy().deferred);
+    let mut ml = false;
+    // Pins are dropped all at once by `guard::teardown` below.
+    guard::begin_teardown();
+    for i in 0..reg.rt.len() {
+        ml |= deactivate(reg, i);
+    }
+    reg.only = None;
+    reg.exclude = Vec::new();
+    refresh_pending(reg);
+    NEED_RESYNC.store(false, Ordering::Release);
+    guard::unwatch_sys_modules();
+    // Under the registry lock, like `disable()`: no activation can add pins meanwhile.
+    guard::teardown();
+    prepare::teardown();
+    drop(g);
+    // SAFETY: attached thread; the strong references taken when the modules were queued.
+    unsafe {
+        for (_, p) in deferred {
+            ffi::Py_DECREF(p as *mut ffi::PyObject);
+        }
+    }
+    let mut seen: Vec<usize> = Vec::new();
+    for spec in all_specs() {
+        if let Some(f) = spec.release
+            && !seen.contains(&(f as usize))
+        {
+            seen.push(f as usize);
+            f(py);
+        }
+    }
+    if ml {
+        clear_internal_caches();
+    }
     Ok(())
 }
 

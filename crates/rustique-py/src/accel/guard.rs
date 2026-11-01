@@ -265,15 +265,18 @@ struct KeySlot {
     deps: Vec<Dep>,
 }
 
+/// A str key (strong reference) and its hash (`None`: not a str, compared by identity).
+type Key = (usize, Option<isize>);
+
 /// A whole-dict snapshot pin: intact while the dict's contents equal the snapshot (keys
 /// by str equality, values by identity). The callback keeps the set of deviating keys.
 struct Snapshot {
     owner: u64,
     flag: &'static DepFlag,
     /// `(key, value)` strong references; keys are exact str.
-    snap: Vec<(usize, usize)>,
+    snap: Vec<(Key, usize)>,
     /// Keys currently deviating from the snapshot (strong references).
-    dev: Vec<usize>,
+    dev: Vec<Key>,
     broken: bool,
     good: bool,
 }
@@ -281,14 +284,16 @@ struct Snapshot {
 /// A generation watch: `counter` is bumped on every change of `dict[key]` (`key` 0: of any
 /// key) and on wholesale changes of the dict. Process lifetime; deduplicated.
 struct GenWatch {
-    key: usize,
+    key: Key,
     counter: &'static AtomicU64,
 }
 
 struct DictSlot {
     /// Strong reference: its address cannot be reused while watched.
     dict: usize,
-    keys: Vec<KeySlot>,
+    /// Pinned keys by str hash: an event for an unpinned key costs one hash read and one
+    /// map probe.
+    keys: FastMap<isize, Vec<KeySlot>>,
     snaps: Vec<Snapshot>,
     gens: Vec<GenWatch>,
 }
@@ -310,12 +315,25 @@ struct Tables {
     /// Flags whose flips must reach the registry (vectorcall targets: deopt while
     /// unpinned), as addresses.
     tracked: Vec<usize>,
+    /// Every flag that ever had a dep (cleared at exit and when finalization starts).
+    all_flags: Vec<usize>,
 }
 
 // SAFETY: plain addresses of objects kept alive by the tables' strong references.
 unsafe impl Send for Tables {}
 
 static TABLES: Mutex<Option<Tables>> = Mutex::new(None);
+/// The interpreter is finalizing: every flag is false and the watchers return at once
+/// (module dicts are being cleared; nothing is re-armed any more).
+static CLOSED: AtomicBool = AtomicBool::new(false);
+/// The registry is tearing down (exit hook): per-owner `deactivate`/`track` are skipped,
+/// [`teardown`] drops the whole tables at once (one pass instead of one per owner).
+static BULK: AtomicBool = AtomicBool::new(false);
+
+/// Start an exit teardown: see [`BULK`]. Ended by [`teardown`].
+pub(crate) fn begin_teardown() {
+    BULK.store(true, Ordering::Release);
+}
 static DICT_WATCHER: AtomicI32 = AtomicI32::new(-1);
 static TYPE_WATCHER: AtomicI32 = AtomicI32::new(-1);
 static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
@@ -353,10 +371,14 @@ fn flag_addr(f: &'static DepFlag) -> usize {
 impl Tables {
     /// A dep of `flag` was added (`good` or not).
     fn add_dep(&mut self, flag: &'static DepFlag, good: bool) {
-        let c = self.counts.entry(flag_addr(flag)).or_default();
+        let a = flag_addr(flag);
+        if !self.all_flags.contains(&a) {
+            self.all_flags.push(a);
+        }
+        let c = self.counts.entry(a).or_default();
         c.deps += 1;
         c.bad += u32::from(!good);
-        flag.0.store(c.bad == 0, Ordering::Relaxed);
+        flag.0.store(c.bad == 0 && !CLOSED.load(Ordering::Relaxed), Ordering::Relaxed);
     }
 
     /// A dep of `flag` was removed (it was `good` or not).
@@ -365,7 +387,7 @@ impl Tables {
         if let Some(c) = self.counts.get_mut(&a) {
             c.deps = c.deps.saturating_sub(1);
             c.bad = c.bad.saturating_sub(u32::from(!good));
-            flag.0.store(c.bad == 0, Ordering::Relaxed);
+            flag.0.store(c.bad == 0 && !CLOSED.load(Ordering::Relaxed), Ordering::Relaxed);
             if c.deps == 0 {
                 self.counts.remove(&a);
             }
@@ -390,19 +412,65 @@ impl Tables {
     }
 }
 
-/// `key` (from a dict event) equals the str `ours`. No Python code runs: identity, then
-/// exact-str comparison.
+/// The str hash of `key` (exact str or a subclass: `str`'s own hash of the contents,
+/// cached in the object; no Python code), `None` for any other key.
+///
+/// # Safety
+/// Attached thread; `key` live or NULL.
+#[inline]
+unsafe fn str_hash(key: *mut ffi::PyObject) -> Option<isize> {
+    // SAFETY: per the caller; `str.__hash__` (C) cannot fail or run Python code.
+    unsafe {
+        if key.is_null() || ffi::PyUnicode_Check(key) == 0 {
+            return None;
+        }
+        let hash = ffi::PyUnicode_Type.tp_hash?;
+        let h = hash(key);
+        (h != -1).then_some(h)
+    }
+}
+
+/// `(key, hash)` from a dict event equals `ours`: identity, then hash, then contents (two
+/// str: no Python code). A non-str key matches by identity only.
 ///
 /// # Safety
 /// Attached thread; live objects.
 #[inline]
-unsafe fn same_key(key: *mut ffi::PyObject, ours: usize) -> bool {
-    // SAFETY: per the caller; `PyUnicode_Compare` of two exact str cannot fail.
-    unsafe {
-        !key.is_null()
-            && (key as usize == ours
-                || (ffi::PyUnicode_CheckExact(key) != 0 && ffi::PyUnicode_Compare(key, ours as *mut _) == 0))
+unsafe fn same_key(key: *mut ffi::PyObject, hash: Option<isize>, ours: Key) -> bool {
+    // SAFETY: per the caller; `PyUnicode_Compare` of two str cannot fail.
+    key as usize == ours.0
+        || (hash.is_some()
+            && hash == ours.1
+            && unsafe { ffi::PyUnicode_Compare(key, ours.0 as *mut ffi::PyObject) } == 0)
+}
+
+/// Finalization started (`Py_IsFinalizing`): clear every flag once, so kernels reached
+/// while module dicts are emptied run CPython's code, and stop tracking. No Python code,
+/// no reference released (the dict watcher callback is running).
+#[cold]
+fn close_for_finalization() {
+    if CLOSED.swap(true, Ordering::AcqRel) {
+        return;
     }
+    let guard = tables();
+    if let Some(t) = guard.as_ref() {
+        for &a in &t.all_flags {
+            // SAFETY: flags are statics (addresses of `&'static DepFlag`).
+            unsafe { &*(a as *const DepFlag) }.0.store(false, Ordering::Relaxed);
+        }
+        for slot in t.dicts.values() {
+            for g in &slot.gens {
+                g.counter.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// Is the interpreter finalizing? (Then the watchers stop.)
+#[inline]
+fn finalizing() -> bool {
+    // SAFETY: reads the runtime's finalizing state (no GIL requirement).
+    CLOSED.load(Ordering::Relaxed) || unsafe { ffi::Py_IsFinalizing() } != 0
 }
 
 unsafe extern "C" fn on_dict_event(
@@ -413,6 +481,11 @@ unsafe extern "C" fn on_dict_event(
 ) -> c_int {
     // Rules (CPython's PyDict_WatchCallback): never raise, never run Python code, never
     // release the GIL or block on Python state; the dict is not modified yet.
+    if finalizing() {
+        // Module dicts are being cleared (hundreds of events): nothing to keep up to date.
+        close_for_finalization();
+        return 0;
+    }
     if dict as usize == SYS_MODULES.load(Ordering::Relaxed) {
         // SAFETY: forwarded from CPython's callback.
         unsafe { super::registry::on_sys_modules_event(event, dict, key, new_value) };
@@ -421,51 +494,65 @@ unsafe extern "C" fn on_dict_event(
     let mut guard = tables();
     let Some(t) = guard.as_mut() else { return 0 };
     let Some(slot) = t.dicts.get_mut(&(dict as usize)) else { return 0 };
+    // SAFETY: attached thread; the event's key is live.
+    let hash = if wholesale { None } else { unsafe { str_hash(key) } };
+    // A key that is not a str may still compare equal to a pinned one (a custom `__eq__`
+    // with the same hash replaces that entry): which one cannot be told without running
+    // Python code, so every pin of the dict breaks.
+    let unknown = !wholesale && hash.is_none();
     let mut changes: Vec<(&'static DepFlag, bool, bool)> = Vec::new();
     for g in &slot.gens {
         // SAFETY: attached thread; live objects.
-        if wholesale || g.key == 0 || unsafe { same_key(key, g.key) } {
+        if wholesale || unknown || g.key.0 == 0 || unsafe { same_key(key, hash, g.key) } {
             g.counter.fetch_add(1, Ordering::Relaxed);
         }
     }
-    for ks in slot.keys.iter_mut() {
-        // SAFETY: attached thread; live objects.
-        if !wholesale && !unsafe { same_key(key, ks.key) } {
-            continue;
-        }
+    let update = |ks: &mut KeySlot, changes: &mut Vec<_>| {
         for d in ks.deps.iter_mut() {
             let was = d.good;
-            if wholesale {
+            if wholesale || unknown {
                 d.broken = true;
             }
             let intact = !wholesale && if event == 2 { d.expected == 0 } else { new_value as usize == d.expected };
             d.good = intact && !d.broken;
             changes.push((d.flag, was, d.good));
         }
+    };
+    if wholesale || unknown {
+        for ks in slot.keys.values_mut().flatten() {
+            update(ks, &mut changes);
+        }
+    } else if let Some(bucket) = slot.keys.get_mut(&hash.unwrap_or(0)) {
+        for ks in bucket.iter_mut() {
+            // SAFETY: attached thread; live objects.
+            if unsafe { same_key(key, hash, (ks.key, hash)) } {
+                update(ks, &mut changes);
+            }
+        }
     }
     for sn in slot.snaps.iter_mut() {
         let was = sn.good;
-        if wholesale || sn.broken {
+        if wholesale || unknown || sn.broken {
             sn.broken = true;
         } else {
             // SAFETY: attached thread; live objects (strong references held by the snapshot).
             unsafe {
-                let in_snap = sn.snap.iter().find(|&&(k, _)| same_key(key, k)).map(|&(_, v)| v);
+                let in_snap = sn.snap.iter().find(|&&(k, _)| same_key(key, hash, k)).map(|&(_, v)| v);
                 let deviates = match event {
                     2 => in_snap.is_some(),
                     _ => in_snap != Some(new_value as usize),
                 };
-                let pos = sn.dev.iter().position(|&k| same_key(key, k));
+                let pos = sn.dev.iter().position(|&k| same_key(key, hash, k));
                 match (deviates, pos) {
                     (true, None) => {
                         if sn.dev.len() >= MAX_DEVIATIONS {
                             sn.broken = true;
                         } else {
-                            sn.dev.push(ffi::Py_NewRef(key) as usize);
+                            sn.dev.push((ffi::Py_NewRef(key) as usize, hash));
                         }
                     }
                     // Decref of a str key: no Python code runs.
-                    (false, Some(i)) => ffi::Py_DECREF(sn.dev.swap_remove(i) as *mut _),
+                    (false, Some(i)) => ffi::Py_DECREF(sn.dev.swap_remove(i).0 as *mut _),
                     _ => {}
                 }
             }
@@ -488,11 +575,14 @@ unsafe extern "C" fn on_type_event(ty: *mut ffi::PyTypeObject) -> c_int {
     // A class with attribute pins was modified. Attribute changes are seen precisely by the
     // dict watcher on its `__dict__`; here only an MRO change matters (`__bases__`
     // assignment): the pinned lookup path is no longer the one validated.
+    if finalizing() {
+        return 0;
+    }
     let mut guard = tables();
     let Some(t) = guard.as_mut() else { return 0 };
     let mut changes: Vec<(&'static DepFlag, bool, bool)> = Vec::new();
     for slot in t.dicts.values_mut() {
-        for ks in slot.keys.iter_mut() {
+        for ks in slot.keys.values_mut().flatten() {
             for d in ks.deps.iter_mut().filter(|d| d.ty == ty as usize) {
                 // SAFETY: the dep holds a strong reference to the type.
                 if unsafe { (*ty).tp_mro } as usize != d.mro {
@@ -562,7 +652,7 @@ fn dict_slot<'t>(py: Python<'_>, t: &'t mut Tables, dict: &Bound<'_, PyAny>) -> 
             }
             Ok(e.insert(DictSlot {
                 dict: dict.clone().into_ptr() as usize,
-                keys: Vec::new(),
+                keys: FastMap::default(),
                 snaps: Vec::new(),
                 gens: Vec::new(),
             }))
@@ -578,13 +668,17 @@ fn dict_slot<'t>(py: Python<'_>, t: &'t mut Tables, dict: &Bound<'_, PyAny>) -> 
 pub fn watch(dict: &Bound<'_, PyDict>, key: &str, gen_: &'static AtomicU64) -> PyResult<()> {
     let py = dict.py();
     let k = super::prepare::interned(py, key);
+    // SAFETY: attached thread; live str.
+    let h = unsafe { str_hash(k.as_ptr()) };
     let mut guard = tables();
     let t = guard.get_or_insert_with(Tables::default);
     let slot = dict_slot(py, t, dict.as_any())?;
-    // SAFETY: attached thread; live objects.
-    if !slot.gens.iter().any(|g| std::ptr::eq(g.counter, gen_) && g.key != 0 && unsafe { same_key(k.as_ptr(), g.key) })
-    {
-        slot.gens.push(GenWatch { key: k.into_ptr() as usize, counter: gen_ });
+    let known = slot.gens.iter().any(|g| {
+        // SAFETY: attached thread; live objects (no Python code).
+        std::ptr::eq(g.counter, gen_) && g.key.0 != 0 && unsafe { same_key(k.as_ptr(), h, g.key) }
+    });
+    if !known {
+        slot.gens.push(GenWatch { key: (k.into_ptr() as usize, h), counter: gen_ });
     }
     Ok(())
 }
@@ -597,8 +691,8 @@ pub fn watch_dict_generation(dict: &Bound<'_, PyDict>, gen_: &'static AtomicU64)
     let mut guard = tables();
     let t = guard.get_or_insert_with(Tables::default);
     let slot = dict_slot(py, t, dict.as_any())?;
-    if !slot.gens.iter().any(|g| g.key == 0 && std::ptr::eq(g.counter, gen_)) {
-        slot.gens.push(GenWatch { key: 0, counter: gen_ });
+    if !slot.gens.iter().any(|g| g.key.0 == 0 && std::ptr::eq(g.counter, gen_)) {
+        slot.gens.push(GenWatch { key: (0, None), counter: gen_ });
     }
     Ok(())
 }
@@ -654,11 +748,14 @@ pub(crate) fn activate(py: Python<'_>, pins: Vec<PendingPin>) -> PyResult<(u64, 
                 // Keys come from the interning cache (or `pyo3::intern!`): one object per
                 // name, so identity is the key slot's identity.
                 let kp = key.as_ptr() as usize;
-                let ks = match slot.keys.iter().position(|k| k.key == kp) {
-                    Some(i) => &mut slot.keys[i],
+                // SAFETY: attached thread; live str.
+                let h = unsafe { str_hash(key.as_ptr()) }.unwrap_or(0);
+                let bucket = slot.keys.entry(h).or_default();
+                let ks = match bucket.iter().position(|k| k.key == kp) {
+                    Some(i) => &mut bucket[i],
                     None => {
-                        slot.keys.push(KeySlot { key: key.clone_ref(py).into_ptr() as usize, deps: Vec::new() });
-                        slot.keys.last_mut().expect("just pushed")
+                        bucket.push(KeySlot { key: key.clone_ref(py).into_ptr() as usize, deps: Vec::new() });
+                        bucket.last_mut().expect("just pushed")
                     }
                 };
                 ks.deps.push(Dep {
@@ -674,20 +771,31 @@ pub(crate) fn activate(py: Python<'_>, pins: Vec<PendingPin>) -> PyResult<(u64, 
             }
             PendingPin::Dict { dict, snap, flag } => {
                 let d = dict.bind(py);
+                let snap: Vec<(Key, Py<PyAny>)> = snap
+                    .into_iter()
+                    .map(|(k, v)| {
+                        // SAFETY: attached thread; live str.
+                        let h = unsafe { str_hash(k.as_ptr()) };
+                        ((k.into_ptr() as usize, h), v)
+                    })
+                    .collect();
                 let mut dev = Vec::new();
                 for (k, v) in d.iter() {
+                    // SAFETY: attached thread; live key (no Python code).
+                    let h = unsafe { str_hash(k.as_ptr()) };
                     let same = snap.iter().any(|(sk, sv)| {
-                        sv.as_ptr() == v.as_ptr()
-                            // SAFETY: attached thread; same_key runs no Python code.
-                            && unsafe { same_key(k.as_ptr(), sk.as_ptr() as usize) }
+                        // SAFETY: attached thread; live objects (no Python code).
+                        sv.as_ptr() == v.as_ptr() && unsafe { same_key(k.as_ptr(), h, *sk) }
                     });
                     if !same {
-                        dev.push(k.into_ptr() as usize);
+                        dev.push((k.into_ptr() as usize, h));
                     }
                 }
-                for (sk, _) in &snap {
-                    if !d.contains(sk.bind(py))? {
-                        dev.push(sk.clone_ref(py).into_ptr() as usize);
+                for ((sk, h), _) in &snap {
+                    // SAFETY: the snapshot's strong reference.
+                    let k = unsafe { Bound::from_borrowed_ptr(py, *sk as *mut ffi::PyObject) };
+                    if !d.contains(&k)? {
+                        dev.push((k.clone().into_ptr() as usize, *h));
                     }
                 }
                 let broken = dev.len() > MAX_DEVIATIONS;
@@ -696,7 +804,7 @@ pub(crate) fn activate(py: Python<'_>, pins: Vec<PendingPin>) -> PyResult<(u64, 
                 slot.snaps.push(Snapshot {
                     owner,
                     flag,
-                    snap: snap.into_iter().map(|(k, v)| (k.into_ptr() as usize, v.into_ptr() as usize)).collect(),
+                    snap: snap.into_iter().map(|(k, v)| (k, v.into_ptr() as usize)).collect(),
                     dev,
                     broken,
                     good,
@@ -710,6 +818,9 @@ pub(crate) fn activate(py: Python<'_>, pins: Vec<PendingPin>) -> PyResult<(u64, 
 
 /// Report flips of `flags` to the registry (deopt while unpinned), or stop.
 pub(crate) fn track(flags: &[&'static DepFlag], on: bool) {
+    if BULK.load(Ordering::Acquire) {
+        return;
+    }
     let mut guard = tables();
     let t = guard.get_or_insert_with(Tables::default);
     for f in flags {
@@ -725,6 +836,9 @@ pub(crate) fn track(flags: &[&'static DepFlag], on: bool) {
 /// Remove the pins of `owner`; key slots, dicts and types left without any interest are
 /// released and unwatched.
 pub(crate) fn deactivate(owner: u64) {
+    if BULK.load(Ordering::Acquire) {
+        return;
+    }
     let mut release: Vec<usize> = Vec::new();
     let mut unwatch_dicts: Vec<usize> = Vec::new();
     let mut types: Vec<usize> = Vec::new();
@@ -734,7 +848,7 @@ pub(crate) fn deactivate(owner: u64) {
         let mut removed: Vec<(&'static DepFlag, bool)> = Vec::new();
         let sys_modules = SYS_MODULES.load(Ordering::Relaxed);
         t.dicts.retain(|_, slot| {
-            for ks in slot.keys.iter_mut() {
+            for ks in slot.keys.values_mut().flatten() {
                 ks.deps.retain(|d| {
                     if d.owner != owner {
                         return true;
@@ -744,29 +858,34 @@ pub(crate) fn deactivate(owner: u64) {
                         release.push(d.expected);
                     }
                     if d.ty != 0 {
+                        // The dep's strong reference to the class (taken at activation).
                         types.push(d.ty);
+                        release.push(d.ty);
                     }
                     false
                 });
             }
-            slot.keys.retain(|ks| {
-                if ks.deps.is_empty() {
-                    release.push(ks.key);
-                    false
-                } else {
-                    true
-                }
+            slot.keys.retain(|_, bucket| {
+                bucket.retain(|ks| {
+                    if ks.deps.is_empty() {
+                        release.push(ks.key);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                !bucket.is_empty()
             });
             slot.snaps.retain(|sn| {
                 if sn.owner != owner {
                     return true;
                 }
                 removed.push((sn.flag, sn.good));
-                for &(k, v) in &sn.snap {
+                for &((k, _), v) in &sn.snap {
                     release.push(k);
                     release.push(v);
                 }
-                release.extend(sn.dev.iter().copied());
+                release.extend(sn.dev.iter().map(|k| k.0));
                 false
             });
             let keep = !slot.keys.is_empty() || !slot.snaps.is_empty() || !slot.gens.is_empty();
@@ -782,7 +901,9 @@ pub(crate) fn deactivate(owner: u64) {
             t.remove_dep(f, good);
         }
         // Types still pinned by someone stay watched.
-        types.retain(|ty| !t.dicts.values().any(|s| s.keys.iter().any(|k| k.deps.iter().any(|d| d.ty == *ty))));
+        types.retain(|ty| {
+            !t.dicts.values().any(|s| s.keys.values().flatten().any(|k| k.deps.iter().any(|d| d.ty == *ty)))
+        });
     }
     // SAFETY: attached thread (callers hold the registry lock); releasing the strong
     // references taken at activation, outside the tables lock (a value's finalizer may
@@ -808,6 +929,74 @@ pub(crate) fn deactivate(owner: u64) {
     }
 }
 
+/// Interpreter exit (the registry's exit hook, after every target was deactivated): drop
+/// everything the tables still hold (generation watches, pre-registry pins), unwatch every
+/// dict and type, and clear every flag that ever had a dep, so a kernel reached on a stale
+/// path falls back. A later activation starts from empty tables.
+pub(crate) fn teardown() {
+    let taken = tables().take();
+    BULK.store(false, Ordering::Release);
+    let Some(t) = taken else { return };
+    for &a in &t.all_flags {
+        // SAFETY: flags are statics (addresses of `&'static DepFlag`).
+        unsafe { &*(a as *const DepFlag) }.0.store(false, Ordering::Relaxed);
+    }
+    let mut release: Vec<usize> = Vec::new();
+    let mut types: Vec<usize> = Vec::new();
+    let mut dicts: Vec<usize> = Vec::new();
+    for slot in t.dicts.into_values() {
+        for ks in slot.keys.into_values().flatten() {
+            release.push(ks.key);
+            for d in ks.deps {
+                if d.expected != 0 {
+                    release.push(d.expected);
+                }
+                if d.ty != 0 {
+                    types.push(d.ty);
+                    release.push(d.ty);
+                }
+            }
+        }
+        for sn in slot.snaps {
+            for ((k, _), v) in sn.snap {
+                release.push(k);
+                release.push(v);
+            }
+            release.extend(sn.dev.iter().map(|k| k.0));
+        }
+        for g in slot.gens {
+            // Kernels caching a validation by generation revalidate once more.
+            g.counter.fetch_add(1, Ordering::Relaxed);
+            if g.key.0 != 0 {
+                release.push(g.key.0);
+            }
+        }
+        dicts.push(slot.dict);
+    }
+    // SAFETY: attached thread (the registry holds its lock, as for `deactivate`); the
+    // tables' own strong references, released outside the tables lock (finalizers may run
+    // Python code).
+    unsafe {
+        let did = DICT_WATCHER.load(Ordering::Acquire);
+        for &d in &dicts {
+            if did >= 0 && PyDict_Unwatch(did, d as *mut _) < 0 {
+                ffi::PyErr_Clear();
+            }
+        }
+        let tid = TYPE_WATCHER.load(Ordering::Acquire);
+        types.sort_unstable();
+        types.dedup();
+        for &ty in &types {
+            if tid >= 0 && PyType_Unwatch(tid, ty as *mut _) < 0 {
+                ffi::PyErr_Clear();
+            }
+        }
+        for o in release.into_iter().chain(dicts) {
+            ffi::Py_DECREF(o as *mut _);
+        }
+    }
+}
+
 /// Pin state of `owner` for diagnostics: (key, absent-pin, intact, broken); snapshot pins
 /// show as `("<dict>", false, no deviation, broken)`.
 pub(crate) fn describe(py: Python<'_>, owner: u64) -> Vec<(String, bool, bool, bool)> {
@@ -815,7 +1004,7 @@ pub(crate) fn describe(py: Python<'_>, owner: u64) -> Vec<(String, bool, bool, b
     let Some(t) = guard.as_ref() else { return Vec::new() };
     let mut out = Vec::new();
     for slot in t.dicts.values() {
-        for ks in &slot.keys {
+        for ks in slot.keys.values().flatten() {
             for d in ks.deps.iter().filter(|d| d.owner == owner) {
                 // SAFETY: live str key (strong reference held by the slot).
                 let k = unsafe { Bound::from_borrowed_ptr(py, ks.key as *mut ffi::PyObject) }.to_string();

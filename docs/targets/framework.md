@@ -26,9 +26,19 @@ pub static DUMPS: TargetSpec = TargetSpec {
     prepare: prepare_dumps,
     jit_safe: true,                // false: refused while the JIT is on (vectorcall fallbacks)
     checkable: true,               // exact subset runs no user code: check mode may re-run
+    release: Some(release_dumps),  // at exit: drop the target's own static references
     ..TargetSpec::DEFAULT          // always: future fields stay additive
 };
 ```
+
+`release` (default `None`) runs once at interpreter exit (once per distinct function),
+after every site was restored, every pin dropped and every `DepFlag` cleared. Drop every
+static strong reference the target keeps (verified objects, cached functions, types):
+whatever survives keeps its module alive past finalization's garbage collection, and
+CPython then empties that module's dict key by key. A kernel can still be entered on a stale
+path (another thread already past the vectorcall pointer): its flags are false, so it
+falls back; a static it reads before checking a flag must stay valid (or be checked for
+null).
 
 Add the group's `TARGETS: &[&TargetSpec]` to `targets::ALL` (`crates/rustique-py/src/targets/mod.rs`).
 
@@ -181,6 +191,24 @@ unsafe extern "C" fn k_join(f: O, args: *const O, nargsf: usize, kw: O) -> O {
   specializer version back (`_PyFunction_SetVersion`), drops pins.
 - The registry lock is a CPython `PyMutex` (detaches while waiting); the `sys.modules`
   watcher only try-locks and queues.
+- Interpreter exit (`accel/exit.rs`): the first `enable()` registers an `atexit` callback
+  without importing `atexit` (`atexit.register`'s C function from the builtin's
+  `PyModuleDef`, ~0.3k Ir; `import atexit` costs ~110k). Callbacks run last in, first
+  out, so callbacks registered after the first `enable()` still see the kernels. The hook
+  writes a pending `RUSTIQUE_REPORT`, then restores every site and drops every pin,
+  watch and cached reference in one pass, clears every `DepFlag` and calls the `release`
+  hooks; `enable()` afterwards works again. Measured with paths
+  (`benches/targets/_whole.sh` on ws/paths, `python -c pass`, `RUSTIQUE=1`, 3.15.1): the
+  paths groups' share was ~1.0M Ir with finalization against ~0.21M with `os._exit(0)`;
+  with the hook and paths' verified objects released (`release`), ~0.25M against
+  ~0.22M (the hook itself 34k).
+- If the hook does not run (`atexit._clear()`), the watchers stop at `Py_IsFinalizing()`:
+  the first event clears every flag (kernels reached while module dicts are emptied run
+  CPython's code) and every later event returns at once.
+- Pins are indexed by key hash per dict: an event for a key nobody pinned costs one hash
+  read and one probe; keys match by identity, then hash, then contents (a `str` subclass
+  key reaches the pin of the equal `str`). A key that is not a `str` breaks the dict's pins
+  (it may compare equal to any of them, and telling which would run Python code).
 
 ## 5. Python API
 

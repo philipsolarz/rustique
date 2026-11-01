@@ -402,7 +402,9 @@ pub fn record(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
 #[pyfunction]
 #[pyo3(name = "_report_at_exit")]
 pub fn report_at_exit(py: Python<'_>) -> PyResult<()> {
-    let Some(target) = state().report.clone() else { return Ok(()) };
+    // Written once: by the registry's exit hook (before it releases the installed state) or
+    // by this callback, whichever runs first.
+    let Some(target) = state().report.take() else { return Ok(()) };
     let accel = crate::module(py)?.getattr("_accel")?;
     py.import("rustique._report")?.call_method1("write", (target, accel.getattr("_record")?))?;
     Ok(())

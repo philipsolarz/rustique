@@ -41,8 +41,26 @@ static ORIG_STR: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut())
 
 /// `("orig"|"kernel", x)`.
 unsafe fn tagged(tag: &AtomicPtr<ffi::PyObject>, x: O) -> O {
-    // SAFETY: attached thread; the tag is a live interned str kept forever.
-    unsafe { ffi::PyTuple_Pack(2, tag.load(Ordering::Relaxed), x) }
+    // SAFETY: attached thread; the tag is a live interned str kept forever (created here
+    // if the helpers were never registered: kernels must not depend on `_accel`'s extras).
+    unsafe {
+        let mut t = tag.load(Ordering::Acquire);
+        if t.is_null() {
+            let s: &std::ffi::CStr = if std::ptr::eq(tag, &KERNEL_STR) { c"kernel" } else { c"orig" };
+            let new = ffi::PyUnicode_InternFromString(s.as_ptr());
+            if new.is_null() {
+                return std::ptr::null_mut();
+            }
+            t = match tag.compare_exchange(std::ptr::null_mut(), new, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => new,
+                Err(cur) => {
+                    ffi::Py_DECREF(new);
+                    cur
+                }
+            };
+        }
+        ffi::PyTuple_Pack(2, t, x)
+    }
 }
 
 unsafe extern "C" fn probe_orig(_m: O, x: O) -> O {
@@ -231,6 +249,7 @@ macro_rules! target {
             free_threaded: true,
             counters: &$counters,
             prepare: $prepare,
+            release: Some(release),
             ..TargetSpec::DEFAULT
         };
     };
@@ -245,6 +264,7 @@ pub static METH: TargetSpec = TargetSpec {
     counters: &C_METH,
     prepare: prepare_meth,
     checkable: true,
+    release: Some(release),
     ..TargetSpec::DEFAULT
 };
 target!(VECTORCALL, "_selftest.vectorcall", Some(MODULE), C_VC, prepare_vectorcall);
@@ -500,6 +520,28 @@ fn _selftest_probe_state() -> Vec<bool> {
         .collect()
 }
 
+static RELEASED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The self-test targets' exit release (one function shared by all: called once).
+fn release(_py: Python<'_>) {
+    RELEASED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// How many times the self-test release ran.
+#[pyfunction]
+fn _selftest_released() -> u32 {
+    RELEASED.load(Ordering::Relaxed)
+}
+
+/// Call `_selftest.vectorcall`'s kernel directly on `func` (a stale path: whatever the
+/// function's current vectorcall is).
+#[pyfunction]
+fn _selftest_call_kernel<'py>(func: &Bound<'py, PyAny>, x: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    let args = [x.as_ptr()];
+    // SAFETY: a vectorcall of one positional argument on a live object; attached thread.
+    unsafe { Bound::from_owned_ptr_or_err(func.py(), k_ident(func.as_ptr(), args.as_ptr(), 1, std::ptr::null_mut())) }
+}
+
 /// The vectorcall self-test's dependency flag.
 #[pyfunction]
 fn _selftest_deps_ok() -> bool {
@@ -508,8 +550,13 @@ fn _selftest_deps_ok() -> bool {
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
-    KERNEL_STR.store(PyString::intern(py, "kernel").into_ptr(), Ordering::Relaxed);
-    ORIG_STR.store(PyString::intern(py, "orig").into_ptr(), Ordering::Relaxed);
+    for (tag, text) in [(&KERNEL_STR, "kernel"), (&ORIG_STR, "orig")] {
+        let new = PyString::intern(py, text).into_ptr();
+        if tag.compare_exchange(std::ptr::null_mut(), new, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            // SAFETY: our own new reference (a kernel created the tag first).
+            unsafe { ffi::Py_DECREF(new) };
+        }
+    }
     for (i, name) in [(0, "_probe"), (1, "_probe_a"), (2, "_probe_b")] {
         // SAFETY: a static method def; module name string.
         let f = unsafe {
@@ -531,5 +578,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_selftest_watch_dict, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_shared_ok, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_degrade, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_released, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_call_kernel, m)?)?;
     Ok(())
 }

@@ -207,6 +207,12 @@ fn func_version(func: &Bound<'_, pyo3::types::PyFunction>) -> u32 {
     unsafe { (*func.as_ptr().cast::<pyo3::ffi::PyFunctionObject>()).func_version }
 }
 
+/// Is the exit hook registered (tests)?
+#[pyfunction]
+fn exit_hook_registered() -> bool {
+    super::exit::hooked()
+}
+
 static EXTRAS: pyo3::sync::PyOnceLock<()> = pyo3::sync::PyOnceLock::new();
 
 /// Diagnostics, the self-test targets' helpers and `RustiqueCheckError`: created on first
@@ -220,6 +226,8 @@ fn add_extras(sub: &Bound<'_, PyModule>) -> PyResult<()> {
         sub.add_function(wrap_pyfunction!(func_version, sub)?)?;
         sub.add_function(wrap_pyfunction!(_bench, sub)?)?;
         sub.add_function(wrap_pyfunction!(vectorcall_is_original, sub)?)?;
+        sub.add_function(wrap_pyfunction!(super::exit::exit_hook, sub)?)?;
+        sub.add_function(wrap_pyfunction!(exit_hook_registered, sub)?)?;
         sub.add("RustiqueCheckError", sub.py().get_type::<super::check::RustiqueCheckError>())?;
         crate::targets::register(sub)
     })?;

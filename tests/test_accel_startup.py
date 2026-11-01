@@ -201,3 +201,98 @@ def test_other_layouts_fall_back_to_a_normal_import(tmp_path):
     )
     assert r.returncode == 0, r.stderr
     assert r.stdout.split() == ["RUSTIQUE=1", "True"]
+
+
+# --- interpreter exit -------------------------------------------------------------------
+
+EXIT_MODULE = """
+DEP = object()
+SEP = "/"
+class K:
+    attr = 1000
+def ident(x):
+    return ("orig", x)
+def same(x):
+    return x
+"""
+
+
+def _exit_run(tmp_path, body):
+    (tmp_path / "_rustique_selftest.py").write_text(EXIT_MODULE)
+    code = f"import sys; sys.path.insert(0, {str(tmp_path)!r})\n" + textwrap.dedent(body)
+    e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
+    return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=e, timeout=120)
+
+
+def test_exit_hook_without_importing_atexit(tmp_path):
+    r = _exit_run(
+        tmp_path,
+        """
+        import _rustique_selftest as m
+        from rustique._rustique import _accel as A
+        A.enable(["_selftest.vectorcall", "_selftest.same", "containers"])
+        print("atexit" in sys.modules, A.exit_hook_registered(), A._selftest_vectorcall(m.ident))
+        """,
+    )
+    assert r.returncode == 0 and r.stdout.split() == ["False", "True", "kernel"], (r.stdout, r.stderr)
+    assert r.stderr == ""
+
+
+def test_exit_hook_runs_after_later_atexit_callbacks(tmp_path):
+    # Callbacks run last in, first out: one registered before the first enable() runs after
+    # the hook (originals restored), one registered after it runs before (kernels).
+    r = _exit_run(
+        tmp_path,
+        """
+        import atexit
+        import _rustique_selftest as m
+        from rustique._rustique import _accel as A
+        atexit.register(lambda: print("before", A._selftest_vectorcall(m.ident), m.ident(1)))
+        A.enable(["_selftest.vectorcall"])
+        atexit.register(lambda: print("after", A._selftest_vectorcall(m.ident), m.ident(1)))
+        """,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines() == ["after kernel ('kernel', 1)", "before original ('orig', 1)"], r.stdout
+
+
+def test_kernels_on_daemon_threads_survive_exit(tmp_path):
+    r = _exit_run(
+        tmp_path,
+        """
+        import threading, time
+        import _rustique_selftest as m
+        from rustique._rustique import _accel as A
+        A.enable(["_selftest.vectorcall", "_selftest.same", "containers", "builtins"])
+        def spin():
+            xs = [3, 1, 2]
+            while True:
+                m.ident(1); m.same(2); xs.index(2); sorted(xs); sum(xs)
+                A._selftest_call_kernel(m.ident, 1)
+        for _ in range(4):
+            threading.Thread(target=spin, daemon=True).start()
+        time.sleep(0.05)
+        print("exiting")
+        """,
+    )
+    assert r.returncode == 0 and r.stdout == "exiting\n", (r.stdout, r.stderr)
+
+
+def test_finalization_without_the_hook(tmp_path):
+    # `atexit._clear()` drops the hook: the dict watcher stops at Py_IsFinalizing instead.
+    r = _exit_run(
+        tmp_path,
+        """
+        import atexit
+        import _rustique_selftest as m
+        from rustique._rustique import _accel as A
+        A.enable(["_selftest.vectorcall", "_selftest.same"])
+        atexit._clear()
+        class Late:
+            def __del__(self):
+                print("late", m.ident(1) if callable(m.ident) else None)
+        m.LATE = Late()
+        """,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() in ("late ('orig', 1)", "late None", ""), r.stdout

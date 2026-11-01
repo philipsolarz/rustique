@@ -70,6 +70,15 @@ pub struct TargetSpec {
     /// credit 2, debit 1). Defaults 4 / 1 (20%).
     pub hit_credit: u8,
     pub fallback_debit: u8,
+    /// Called once at interpreter exit (the registry's atexit hook; once per distinct
+    /// function when several targets share one), after every site was restored, every pin
+    /// dropped and every dependency flag cleared: drop the target's own static references
+    /// to Python objects (verified objects, cached functions), so finalization does not
+    /// keep module objects alive through them. A kernel may still be entered afterwards on
+    /// a stale path (a call already past the vectorcall pointer on another thread) and
+    /// must fall back (its flags are false); a static it reads without a flag check must
+    /// stay valid or be checked for null. Default `None`.
+    pub release: Option<fn(Python<'_>)>,
 }
 
 /// Declarations shared by several targets: dependency pins (with the group's own
@@ -106,6 +115,7 @@ impl TargetSpec {
         shared: None,
         hit_credit: crate::accel::stats::HIT_CREDIT,
         fallback_debit: crate::accel::stats::FALLBACK_DEBIT,
+        release: None,
     };
 
     /// Hidden targets (group starting with `_`): only selected when named explicitly.
