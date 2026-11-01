@@ -257,6 +257,7 @@ fn prepare_record(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         return Err(Refusal::new("level name tables are not dicts"));
     }
     record::LEVEL_TO_NAME.set_obj(&l2n);
+    accel::guard::watch_dict_generation(l2n.cast::<PyDict>().map_err(PyErr::from)?, &record::L2N_GEN)?;
     record::NAME_TO_LEVEL.set_obj(&n2l);
     let start: i64 = cx.get(&g, "_startTime")?.extract().map_err(|_| Refusal::new("_startTime"))?;
     record::START_TIME.store(start as u64, Relaxed);
@@ -408,7 +409,7 @@ fn prepare_record_types(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         format::TIME_FORMATTERS.set_names([n.converter, n.default_time_format, n.default_msec_format]);
         format::FORMATTERS.set_names([n.converter, n.default_time_format, n.default_msec_format, n.style, n.datefmt]);
         format::STYLES.set_names([n.fmt, n.asctime_search, n.defaults]);
-        format::FMT_RECORDS.set_names([]);
+        format::FMT_RECORDS.set_names([n.msg, n.args]);
     }
     calibrate(cx)?;
     let lr = ty(cx.module_attr("LogRecord")?)?;

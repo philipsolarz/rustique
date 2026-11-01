@@ -4,7 +4,6 @@
 //! Every helper here is *pure* in the contract's sense: it runs no Python code and has no
 //! observable effect, so a kernel may still restart in CPython's original after using it.
 
-use std::cell::UnsafeCell;
 use std::ffi::c_int;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering::Relaxed};
@@ -13,8 +12,6 @@ use pyo3::prelude::*;
 
 use pyo3::ffi;
 
-use crate::accel::version::RawCode;
-
 pub type O = *mut ffi::PyObject;
 pub type Tp = *mut ffi::PyTypeObject;
 
@@ -22,15 +19,7 @@ pub type Tp = *mut ffi::PyTypeObject;
 // CPython symbols pyo3-ffi does not bind
 // ---------------------------------------------------------------------------------------
 
-#[repr(C)]
-struct MonState {
-    active: u8,
-    opaque: u8,
-}
-
 unsafe extern "C" {
-    fn PyMonitoring_EnterScope(state: *mut MonState, version: *mut u64, events: *const u8, n: ffi::Py_ssize_t)
-    -> c_int;
     /// Exported (cpython/object.h, 3.14 and 3.15): MRO lookup through the type cache.
     pub fn _PyType_LookupRef(t: Tp, name: O) -> O;
     pub fn PyUnstable_Type_AssignVersionTag(t: Tp) -> c_int;
@@ -57,85 +46,10 @@ pub fn nargs(nargsf: usize) -> usize {
 }
 
 // ---------------------------------------------------------------------------------------
-// Tools guard
+// Tools guard (the framework's: every global event, and local events per code object)
 // ---------------------------------------------------------------------------------------
 
-/// The ungrouped monitoring events (`_PY_MONITORING_UNGROUPED_EVENTS`, 16 in 3.14 and 3.15).
-/// `C_RETURN`/`C_RAISE` follow `CALL`, `BRANCH` follows `BRANCH_LEFT/RIGHT`.
-const EVENTS: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-
-/// "No `sys.monitoring` tool listens to any global event" (covers `sys.settrace`,
-/// `sys.setprofile`, cProfile, coverage, debuggers). Stricter than the framework's
-/// `PY_START`-only guard: the logging kernels replace whole call trees of Python code
-/// (raises, handled exceptions, lines), so any global event a tool asked for must see
-/// CPython's frames.
-pub struct Tools {
-    version: UnsafeCell<u64>,
-    state: UnsafeCell<[MonState; 16]>,
-    seen: UnsafeCell<u64>,
-    quiet: UnsafeCell<bool>,
-}
-
-// SAFETY: written by CPython's API and by `quiet()` with values derived from the same
-// interpreter state; concurrent writers store equal values (benign, as in Cython's use).
-unsafe impl Sync for Tools {}
-
-impl Tools {
-    pub const fn new() -> Self {
-        Tools {
-            version: UnsafeCell::new(0),
-            state: UnsafeCell::new([const { MonState { active: 0, opaque: 0 } }; 16]),
-            seen: UnsafeCell::new(u64::MAX),
-            quiet: UnsafeCell::new(false),
-        }
-    }
-
-    /// # Safety
-    /// Attached thread.
-    #[inline(always)]
-    pub unsafe fn quiet(&self) -> bool {
-        // SAFETY: pointers into this static; see the type's Sync note.
-        unsafe {
-            PyMonitoring_EnterScope(self.state.get().cast(), self.version.get(), EVENTS.as_ptr(), 16);
-            let v = *self.version.get();
-            if v != *self.seen.get() {
-                *self.quiet.get() = (*self.state.get()).iter().all(|s| s.active == 0);
-                *self.seen.get() = v;
-            }
-            *self.quiet.get()
-        }
-    }
-}
-
-impl Default for Tools {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub static TOOLS: Tools = Tools::new();
-
-/// No tool listens locally (`sys.monitoring.set_local_events`: breakpoints) on `code`.
-/// `_co_monitoring->local_monitors` holds one byte per local event: 11 on 3.14, 16 on 3.15.
-///
-/// # Safety
-/// A live code object; layout validated by `version::code_layout_ok` at install.
-#[inline(always)]
-pub unsafe fn code_quiet(code: O) -> bool {
-    // SAFETY: per the caller.
-    unsafe {
-        let mon = (*code.cast::<RawCode>())._co_monitoring;
-        if mon.is_null() {
-            return true;
-        }
-        let lo = std::ptr::read_unaligned(mon.cast::<u64>());
-        #[cfg(Py_3_15)]
-        let hi = std::ptr::read_unaligned(mon.add(8).cast::<u64>());
-        #[cfg(not(Py_3_15))]
-        let hi = std::ptr::read_unaligned(mon.add(8).cast::<u16>()) as u64 | (*mon.add(10) as u64) << 16;
-        lo == 0 && hi == 0
-    }
-}
+pub static TOOLS: crate::accel::Tools = crate::accel::Tools::new();
 
 /// A Python function a kernel stands in for (the patched one or a helper it inlines):
 /// its code and defaults are still the ones validated at install (`__code__`/`__defaults__`
@@ -183,7 +97,7 @@ impl FnGuard {
             let code = self.code.load(Relaxed);
             (*f).func_code as usize == code
                 && (*f).func_defaults as usize == self.defaults.load(Relaxed)
-                && code_quiet(code as O)
+                && crate::accel::code_locally_quiet(code as O)
         }
     }
 }

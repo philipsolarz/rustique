@@ -58,7 +58,8 @@ pub static TIME_FORMATTERS: TypeCache<3> = TypeCache::new(validate_time_formatte
 pub static FORMATTERS: TypeCache<5> = TypeCache::new(validate_formatter);
 /// Reads _fmt, asctime_search, _defaults.
 pub static STYLES: TypeCache<3> = TypeCache::new(validate_style);
-pub static FMT_RECORDS: TypeCache<0> = TypeCache::new(validate_fmt_record);
+/// Reads msg, args (the early purity check).
+pub static FMT_RECORDS: TypeCache<2> = TypeCache::new(validate_fmt_record);
 
 /// `converter`, `default_time_format`, `default_msec_format` are plain values.
 unsafe fn validate_time_formatter(t: Tp) -> bool {
@@ -574,6 +575,37 @@ unsafe fn parse_fmt(fmt: O) -> Option<std::sync::Arc<Parsed>> {
     }
 }
 
+/// `record.msg` is plain and `record.args` empty / a tuple of plain values / a dict of plain
+/// values: the message can be computed without running Python code.
+#[inline(always)]
+unsafe fn plain_message(re: usize, record: O) -> bool {
+    // SAFETY: attached thread; record of a validated type.
+    unsafe {
+        let msg = FMT_RECORDS.read(re, record, 0);
+        if msg.is_null() {
+            return false;
+        }
+        let ok = pure_scalar(msg);
+        ffi::Py_DECREF(msg);
+        if !ok {
+            return false;
+        }
+        let args = FMT_RECORDS.read(re, record, 1);
+        if args.is_null() {
+            return false;
+        }
+        let ok = if exact_tuple(args) {
+            (0..ffi::PyTuple_GET_SIZE(args)).all(|i| pure_scalar(ffi::PyTuple_GET_ITEM(args, i)))
+        } else if exact_dict(args) {
+            ffi::PyDict_Size(args) <= 64 && dict_all(args, |_, v| pure_scalar(v))
+        } else {
+            args == ffi::Py_None()
+        };
+        ffi::Py_DECREF(args);
+        ok
+    }
+}
+
 /// `record.getMessage()`: `str(msg) % args` for plain operands. `Some(new str)`.
 unsafe fn message(msg: O, args: O) -> Option<O> {
     // SAFETY: attached thread; borrowed operands.
@@ -820,7 +852,10 @@ pub unsafe extern "C" fn vc_format(func: O, args: *const O, nargsf: usize, kw: O
             }
             let (me, record) = (*args, *args.add(1));
             let Some(fe) = FORMATTERS.entry(ffi::Py_TYPE(me)) else { break 'fb Reason::Args };
-            if !FMT_RECORDS.ok(ffi::Py_TYPE(record)) {
+            let Some(re) = FMT_RECORDS.entry(ffi::Py_TYPE(record)) else { break 'fb Reason::Args };
+            // Arguments that are not plain are the most common reason to fall back: decide
+            // that first, with two attribute reads, so the fallback costs little.
+            if !plain_message(re, record) {
                 break 'fb Reason::Args;
             }
             if !TOOLS.quiet() || !fns_ok(&FORMAT_CODES) {

@@ -33,6 +33,10 @@ pub static DEPS: DepFlag = DepFlag::new();
 pub static STATS: Counters = Counters::new();
 
 pub static LEVEL_TO_NAME: Cap = Cap::new();
+/// Generation of `_levelToName` (bumped on any change by the registry's dict watcher) and
+/// the generation + 1 at which every key was verified to be an exact int (0: never).
+pub static L2N_GEN: AtomicU64 = AtomicU64::new(0);
+static L2N_VERIFIED: AtomicU64 = AtomicU64::new(0);
 pub static NAME_TO_LEVEL: Cap = Cap::new();
 pub static SYS_MODULES: Cap = Cap::new();
 pub static THREAD_ACTIVE: Cap = Cap::new();
@@ -192,11 +196,27 @@ unsafe fn level_name(level: O) -> Option<O> {
         if !exact_dict(l2n) {
             return None;
         }
-        // `None` (makeLogRecord): equal to no int key; the lookup only checks key types.
-        let found = if level == ffi::Py_None() {
-            if dict_all(l2n, |k, _| exact_int(k)) { Ok(None) } else { Err(()) }
+        // Every key an exact int: then a lookup with an int (or None) runs no `__eq__`.
+        // Verified once per generation of the dict.
+        let gen_ = L2N_GEN.load(Relaxed);
+        if L2N_VERIFIED.load(Relaxed) != gen_ + 1 {
+            if !(ffi::PyDict_Size(l2n) <= 256 && dict_all(l2n, |k, _| exact_int(k))) {
+                return None;
+            }
+            L2N_VERIFIED.store(gen_ + 1, Relaxed);
+        }
+        let found: Result<Option<O>, ()> = if level == ffi::Py_None() {
+            Ok(None) // equal to no int key
         } else {
-            int_keyed_get(l2n, level)
+            let mut v: O = std::ptr::null_mut();
+            match ffi::PyDict_GetItemRef(l2n, level, &mut v) {
+                1 => Ok(Some(v)),
+                0 => Ok(None),
+                _ => {
+                    ffi::PyErr_Clear();
+                    Err(())
+                }
+            }
         };
         match found {
             Ok(Some(v)) => {
