@@ -192,15 +192,26 @@ def test_int_max_str_digits():
         sys.set_int_max_str_digits(old)
 
 
+def same_chain(a, b):
+    # Nested single-element lists compared without recursion (a 100,000-deep result would
+    # overflow the recursive `same`).
+    while True:
+        assert type(a) is type(b) is list and len(a) == len(b) and sys.getsizeof(a) == sys.getsizeof(b)
+        if not a:
+            return
+        a, b = a[0], b[0]
+
+
 def test_deep_nesting():
     for depth in (10, 500, 100_000):
         s = "[" * depth + "]" * depth
         a, b = outcome(json.loads, s), outcome(cpython, s)
+        # Whether 100,000 levels fit depends on the C stack (they do on GitHub's runners).
         assert a[0] == b[0]
         if a[0] == "raise":
             assert a[1][0] is b[1][0] is RecursionError
         else:
-            same(a[1], b[1], [], [])
+            same_chain(a[1], b[1])
 
 
 # ---------------------------------------------------------------------------------------
