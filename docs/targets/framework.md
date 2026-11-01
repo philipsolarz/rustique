@@ -215,7 +215,24 @@ importing the `rustique` package, and calls `_accel.startup()`; OFF values and `
 load nothing. A later `import rustique` reuses the loaded extension. The extension never
 imports itself by name (`PyImport_Import` uses an empty fromlist, which imports the
 parent package): it keeps its module object in a static. Tests:
-`tests/test_accel_startup.py`. Measured in fresh venvs: see below.
+`tests/test_accel_startup.py`. The loader is a string exec'd only when `RUSTIQUE` is set
+(`site` compiles every `.pth` line at each start; 3.15's compiler costs ~140k Ir even for
+one call, 0.43M for this loader, 1.0M for the first, longer version).
+
+`benches/startup_switch.py`, release wheel, fresh venvs (`uv venv`), 3.15.1, `python -c
+pass`, CPU-pinned, 40 interleaved runs, against the same venv without rustique,
+**measured**:
+
+| | Ir | wall | page faults |
+|---|---:|---:|---:|
+| bare venv, rustique installed, `RUSTIQUE` unset | 1.026 | 1.028 | +11 |
+| bare venv, `RUSTIQUE=1` | **1.060** | **1.084** | +86 |
+| venv with another `.pth`, unset | 1.005 | 1.009 | +6 |
+| venv with another `.pth`, `RUSTIQUE=1` | **1.035** | **1.062** | +80 |
+
+The `RUSTIQUE=1` increment (≈1.3M Ir, ≈0.55 ms): compiling the loader 0.43M, dlopen +
+`PyInit` of the 5.4 MB extension ≈0.3M plus most of the page faults, module exec ≈0.1M,
+`startup()` (environment, 13 targets) ≈0.3M.
 
 What remains in `import rustique` (lean): importlib's finder/loader floor for the package
 and an extension (a tiny two-module pure-Python package costs 0.65M Ir), dlopen of the
