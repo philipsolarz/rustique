@@ -76,9 +76,12 @@ impl<T> Default for Table<T> {
     }
 }
 
+/// (format bytes, compiled or rejected)
+type LocalEntry<T> = (Box<[u8]>, std::rc::Rc<Option<T>>);
+
 /// Per-thread content-keyed cache (formats built at run time).
 pub struct Local<T: 'static> {
-    entries: RefCell<Vec<(Box<[u8]>, std::rc::Rc<Option<T>>)>>,
+    entries: RefCell<Vec<LocalEntry<T>>>,
 }
 
 impl<T> Local<T> {
