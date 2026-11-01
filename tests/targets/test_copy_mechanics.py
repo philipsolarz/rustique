@@ -327,8 +327,7 @@ def test_enable_disable_under_load():
         ("copy.deepcopy", copy.deepcopy, lambda: copy.deepcopy({"a": [1, (2, 3)], "b": P(1, [2])})),
         ("copy.copy", copy.copy, lambda: copy.copy([1, 2, {"a": 1}])),
         ("dataclasses.asdict", dataclasses.asdict, lambda: dataclasses.asdict(P(1, [2, {"k": 3}]))),
-        ("dataclasses.astuple", dataclasses.astuple, lambda: dataclasses.astuple(P(1, [2]))),
-        ("dataclasses.replace", dataclasses.replace, lambda: dataclasses.replace(P(1, [2]), x=3)),
+        ("dataclasses.astuple", dataclasses.astuple, lambda: dataclasses.astuple(P(1, (2, 3)))),
     ],
 )
 def test_tools_guard_shared(name, func, call):

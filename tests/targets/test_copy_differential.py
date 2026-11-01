@@ -30,9 +30,9 @@ def _enabled():
     S.disable()
     assert st["copy.deepcopy"]["hits"] > 0, st["copy.deepcopy"]
     for name in S.ALL_TARGETS:
-        # Only explicit non-default arguments fall back (asdict(dict_factory=list), ...).
+        # Explicit non-default arguments fall back; calls that reach user code restart.
         fb = {k: v for k, v in st[name]["fallback"].items() if v}
-        assert set(fb) <= {"args"}, (name, fb)
+        assert set(fb) <= {"args", "deopt"}, (name, fb)
 
 
 # ---------------------------------------------------------------------------------------
@@ -828,3 +828,84 @@ def test_deepcopy_ordereddict_memo(spec):
     import collections
 
     S.compare(deepcopy_memo_of(collections.OrderedDict), build(spec))
+
+
+# ---------------------------------------------------------------------------------------
+# Hooks run under CPython's own frames (the kernel restarts before any user code)
+# ---------------------------------------------------------------------------------------
+
+
+class FrameHook:
+    def __init__(self, child=None):
+        self.child = child
+
+    def __deepcopy__(self, memo):
+        import traceback
+
+        log("stack", [f.name for f in traceback.extract_stack()][-8:-1])
+        return FrameHook(Ctx.cp.deepcopy(self.child, memo))
+
+    def __copy__(self):
+        import traceback
+
+        log("stack", [f.name for f in traceback.extract_stack()][-8:-1])
+        return FrameHook(self.child)
+
+
+class RaisingHook:
+    def __deepcopy__(self, memo):
+        raise ValueError("boom")
+
+
+def _frames_case(fn):
+    def source():
+        x = [{"a": (1, [FrameHook({"k": [1, 2]})])}, Plain()]
+        return x, {"x": x}
+
+    return S.compare(fn, source)
+
+
+@pytest.mark.parametrize("fn", [deepcopy_root, copy_root])
+def test_hook_sees_cpython_frames(fn):
+    _frames_case(fn)
+
+
+def test_hook_exception_traceback():
+    import traceback
+
+    def fn(cp, dc, root):
+        try:
+            cp.deepcopy(root)
+        except ValueError as e:
+            return [f.name for f in traceback.extract_tb(e.__traceback__)]
+        return None
+
+    S.compare(fn, lambda: ([{"a": [1, RaisingHook()]}], {}))
+
+
+class TracingHook:
+    """Turns a tracer on from inside the copy: the rest of the call must be traced as in
+    CPython (the kernel is not running anymore)."""
+
+    def __deepcopy__(self, memo):
+        events = Ctx.events
+
+        def tracer(frame, event, arg):
+            if event == "call":
+                events.append(frame.f_code.co_name)
+            return None
+
+        sys.settrace(tracer)
+        return self
+
+
+def test_tool_attached_by_hook_sees_the_rest():
+    def fn(cp, dc, root):
+        Ctx.events = []
+        try:
+            cp.deepcopy(root)
+        finally:
+            sys.settrace(None)
+        return list(Ctx.events)
+
+    S.compare(fn, lambda: ([TracingHook(), {"a": [1, (2, Plain())]}, Plain()], {}))

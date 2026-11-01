@@ -23,7 +23,7 @@ from rustique import _rustique
 
 A = _rustique._accel
 COPY_TARGETS = ["copy.deepcopy", "copy.copy"]
-DC_TARGETS = ["dataclasses.asdict", "dataclasses.astuple", "dataclasses.replace"]
+DC_TARGETS = ["dataclasses.asdict", "dataclasses.astuple"]
 ALL_TARGETS = COPY_TARGETS + DC_TARGETS
 PY315 = sys.version_info >= (3, 15)
 

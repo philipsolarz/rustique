@@ -6,7 +6,7 @@
 //! `PyObject_GetOptionalAttr`, `y[k] = v` is `PyObject_SetItem`, ...), so that user code
 //! reached through them runs with the same arguments in the same order.
 
-use std::ffi::{c_char, c_int};
+use std::ffi::c_int;
 use std::sync::atomic::{AtomicPtr, Ordering::Relaxed};
 
 use pyo3::ffi;
@@ -128,6 +128,8 @@ pub struct St {
     pub atomic: O,
     /// 3.14: `_atomic_types` is a mutable set; its table at install.
     pub(crate) atomic_snap: Option<super::SetSnap>,
+    pub(crate) copy_atomic_snap: Option<super::SetSnap>,
+    pub(crate) copy_containers_snap: Option<super::SetSnap>,
     pub copy_atomic: O,
     pub copy_atomic_types: Vec<*mut ffi::PyTypeObject>,
     pub copy_container_types: Vec<*mut ffi::PyTypeObject>,
@@ -139,8 +141,6 @@ pub struct St {
     pub h_dict: O,
     pub h_frozendict: O,
     pub h_method: O,
-    pub keep_alive: O,
-    pub reconstruct: O,
     /// (function, code, defaults) for each helper the kernel emulates; checked before use.
     pub helpers: [(O, O, O); 9],
     // copyreg
@@ -156,6 +156,7 @@ pub struct St {
     pub s_getnewargs: O,
     pub s_getnewargs_ex: O,
     pub s_slotnames: O,
+    pub s_del: O,
     // types
     pub atomic_types: [*mut ffi::PyTypeObject; 16],
     pub method_type: *mut ffi::PyTypeObject,
@@ -165,19 +166,11 @@ pub struct St {
     pub s_copy: O,
     pub s_copy_method: O,
     pub s_memo: O,
-    pub s_get: O,
-    /// 3.14: `deepcopy`'s `_nil` default (the sentinel of `memo.get(d, _nil)`).
-    pub nil: O,
     pub s_reduce_ex: O,
     pub s_reduce: O,
     pub s_setstate: O,
     pub s_dict: O,
-    pub s_update: O,
-    pub s_items: O,
-    pub s_append: O,
     pub s_new: O,
-    pub s_error: O,
-    pub int4: O,
     // tstate layout
 }
 
@@ -234,6 +227,63 @@ pub fn is_quick(t: *mut ffi::PyTypeObject) -> bool {
     }
 }
 
+/// The type's attribute access is `object`'s generic one (no `__getattr__`/`__getattribute__`).
+#[inline(always)]
+pub unsafe fn generic_getattr(t: *mut ffi::PyTypeObject) -> bool {
+    // SAFETY: live type objects.
+    unsafe { (*t).tp_getattro.map(|f| f as usize) == ffi::PyBaseObject_Type.tp_getattro.map(|f| f as usize) }
+}
+
+/// Hashing `o` and comparing it with other pure keys runs no Python code: builtin scalars,
+/// tuples/frozensets of pure keys, types with a plain metatype, and instances whose
+/// `__hash__` and `__eq__` are `object`'s.
+pub unsafe fn pure_key(o: O) -> bool {
+    // SAFETY: live object.
+    unsafe {
+        let t = ty(o);
+        if is_quick(t)
+            || t == &raw mut ffi::PyBytes_Type
+            || t == &raw mut ffi::PyComplex_Type
+            || t == &raw mut ffi::PyEllipsis_Type
+        {
+            return true;
+        }
+        if t == &raw mut ffi::PyTuple_Type {
+            return (0..ffi::PyTuple_GET_SIZE(o)).all(|i| pure_key(ffi::PyTuple_GET_ITEM(o, i)));
+        }
+        if t == &raw mut ffi::PyFrozenSet_Type {
+            let it = ffi::PyObject_GetIter(o);
+            if it.is_null() {
+                ffi::PyErr_Clear();
+                return false;
+            }
+            let it = Own(it);
+            loop {
+                let v = ffi::PyIter_Next(it.get());
+                if v.is_null() {
+                    let ok = ffi::PyErr_Occurred().is_null();
+                    ffi::PyErr_Clear();
+                    return ok;
+                }
+                let ok = pure_key(v);
+                decref(v);
+                if !ok {
+                    return false;
+                }
+            }
+        }
+        let obj = &raw mut ffi::PyBaseObject_Type;
+        let same = |a: Option<ffi::hashfunc>, b: Option<ffi::hashfunc>| a.map(|f| f as usize) == b.map(|f| f as usize);
+        let same_rc =
+            |a: Option<ffi::richcmpfunc>, b: Option<ffi::richcmpfunc>| a.map(|f| f as usize) == b.map(|f| f as usize);
+        if ffi::PyType_Check(o) != 0 {
+            let m = t; // the metatype
+            return same((*m).tp_hash, (*obj).tp_hash) && same_rc((*m).tp_richcompare, (*obj).tp_richcompare);
+        }
+        same((*t).tp_hash, (*obj).tp_hash) && same_rc((*t).tp_richcompare, (*obj).tp_richcompare)
+    }
+}
+
 /// `type.__hash__` (what a metatype without its own `__hash__` uses), as an address.
 #[inline(always)]
 pub fn default_type_hash() -> usize {
@@ -245,95 +295,16 @@ pub fn default_type_hash() -> usize {
 // Python-frame recursion counter (`tstate->py_recursion_remaining`)
 // ---------------------------------------------------------------------------------------
 
+/// `tstate->py_recursion_remaining` of the calling thread: how many more Python frames
+/// CPython would enter before raising `RecursionError`.
+#[inline(always)]
+pub unsafe fn recursion_remaining() -> i32 {
+    // SAFETY: attached thread; offset calibrated at install.
+    unsafe { *ffi::PyThreadState_Get().cast::<u8>().add(REM_OFF.load(Relaxed)).cast::<c_int>() }
+}
+
 /// Offset of `py_recursion_remaining` in `PyThreadState` (calibrated at install).
 pub static REM_OFF: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// Emulates the `_Py_EnterRecursivePy`/`_Py_LeaveRecursiveCallPy` pair CPython runs for
-/// each Python frame of `copy.py` the kernel does not actually execute, on the real
-/// thread-state counter: user code called from inside a kernel sees the depth CPython's
-/// would, and `RecursionError` is raised at the same frame.
-pub struct Depth {
-    pub rem: *mut c_int,
-    headroom: *mut c_int,
-    pub pushed: i32,
-}
-
-impl Depth {
-    #[inline(always)]
-    pub unsafe fn new() -> Depth {
-        let off = REM_OFF.load(Relaxed);
-        // SAFETY: attached thread; offset calibrated at install (`calibrate_tstate`).
-        unsafe {
-            let ts = ffi::PyThreadState_Get().cast::<u8>();
-            Depth { rem: ts.add(off).cast(), headroom: ts.add(off + 8).cast(), pushed: 0 }
-        }
-    }
-
-    #[inline(always)]
-    pub fn remaining(&self) -> c_int {
-        // SAFETY: this thread's state.
-        unsafe { *self.rem }
-    }
-
-    /// Enter one emulated Python frame.
-    #[inline(always)]
-    pub unsafe fn push(&mut self) -> R<()> {
-        // SAFETY: this thread's state.
-        unsafe {
-            let r = *self.rem;
-            *self.rem = r - 1;
-            if r <= 0 && self.too_deep() {
-                *self.rem = r;
-                return Err(());
-            }
-        }
-        self.pushed += 1;
-        Ok(())
-    }
-
-    #[cold]
-    unsafe fn too_deep(&mut self) -> bool {
-        // SAFETY: this thread's state; mirrors `_Py_CheckRecursiveCallPy`.
-        unsafe {
-            if *self.headroom != 0 {
-                if *self.rem < -50 {
-                    ffi::Py_FatalError(c"Cannot recover from Python stack overflow.".as_ptr());
-                }
-                false
-            } else {
-                *self.headroom += 1;
-                ffi::PyErr_SetString(ffi::PyExc_RecursionError, c"maximum recursion depth exceeded".as_ptr());
-                *self.headroom -= 1;
-                true
-            }
-        }
-    }
-
-    /// Leave one emulated Python frame.
-    #[inline(always)]
-    pub fn pop(&mut self) {
-        // SAFETY: this thread's state.
-        unsafe { *self.rem += 1 };
-        self.pushed -= 1;
-    }
-
-    /// A Python frame entered and left with nothing observable in between (a call the
-    /// kernel performs natively): only its depth check remains.
-    #[inline(always)]
-    pub unsafe fn touch(&mut self) -> R<()> {
-        // SAFETY: as push.
-        unsafe { self.push()? };
-        self.pop();
-        Ok(())
-    }
-
-    /// Unwind every frame still entered (error paths).
-    pub fn unwind(&mut self) {
-        while self.pushed > 0 {
-            self.pop();
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------------------
 // Generic operations (exact equivalents of the bytecode in Lib/copy.py)
@@ -355,14 +326,6 @@ pub unsafe fn dict_get(d: O, k: O) -> R<O> {
     if unsafe { ffi::PyDict_GetItemRef(d, k, &mut out) } < 0 { Err(()) } else { Ok(out) }
 }
 
-#[inline(always)]
-pub unsafe fn truth(o: O) -> R<bool> {
-    // SAFETY: live object.
-    match unsafe { ffi::PyObject_IsTrue(o) } {
-        r if r < 0 => Err(()),
-        r => Ok(r != 0),
-    }
-}
 
 #[inline(always)]
 pub unsafe fn call1(f: O, a: O) -> R<O> {
@@ -370,11 +333,6 @@ pub unsafe fn call1(f: O, a: O) -> R<O> {
     nn(unsafe { ffi::PyObject_CallOneArg(f, a) })
 }
 
-#[inline(always)]
-pub unsafe fn call0(f: O) -> R<O> {
-    // SAFETY: live object.
-    nn(unsafe { ffi::PyObject_CallNoArgs(f) })
-}
 
 #[inline(always)]
 pub unsafe fn call2(f: O, a: O, b: O) -> R<O> {
@@ -385,202 +343,13 @@ pub unsafe fn call2(f: O, a: O, b: O) -> R<O> {
     })
 }
 
-/// `o.name(a)` (method load + call).
-#[inline(always)]
-pub unsafe fn call_method1(o: O, name: O, a: O) -> R<O> {
-    let args = [o, a];
-    // SAFETY: live objects.
-    nn(unsafe {
-        ffi::PyObject_VectorcallMethod(
-            name,
-            args.as_ptr(),
-            2 | ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
-            std::ptr::null_mut(),
-        )
-    })
-}
 
-/// `o.name()`.
-#[inline(always)]
-pub unsafe fn call_method0(o: O, name: O) -> R<O> {
-    let args = [o];
-    // SAFETY: live objects.
-    nn(unsafe {
-        ffi::PyObject_VectorcallMethod(
-            name,
-            args.as_ptr(),
-            1 | ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
-            std::ptr::null_mut(),
-        )
-    })
-}
 
-/// `isinstance(o, str)`.
-#[inline(always)]
-pub unsafe fn is_str_instance(o: O) -> R<bool> {
-    // SAFETY: live object.
-    unsafe {
-        if ty(o) == &raw mut ffi::PyUnicode_Type {
-            return Ok(true);
-        }
-        if ty(o) == &raw mut ffi::PyTuple_Type {
-            // `PyObject_IsInstance` -> `object_isinstance`: a tuple's `__class__` is `tuple`.
-            return Ok(false);
-        }
-        match ffi::PyObject_IsInstance(o, (&raw mut ffi::PyUnicode_Type).cast()) {
-            r if r < 0 => Err(()),
-            r => Ok(r != 0),
-        }
-    }
-}
 
-/// `next(it)` as `FOR_ITER` does it: Ok(None) when exhausted (StopIteration swallowed).
-#[inline(always)]
-pub unsafe fn iter_next(it: O) -> R<Option<O>> {
-    let mut item: O = std::ptr::null_mut();
-    // SAFETY: live iterator.
-    match unsafe { ffi::PyIter_NextItem(it, &mut item) } {
-        1 => Ok(Some(item)),
-        0 => Ok(None),
-        _ => Err(()),
-    }
-}
 
-/// `UNPACK_SEQUENCE 2` (`a, b = v`): exact tuples and lists directly, anything else through
-/// `_PyEval_UnpackIterableStackRef`'s algorithm and messages.
-pub unsafe fn unpack2(v: O) -> R<(Own, Own)> {
-    // SAFETY: live object.
-    unsafe {
-        let t = ty(v);
-        if t == &raw mut ffi::PyTuple_Type && ffi::PyTuple_GET_SIZE(v) == 2 {
-            return Ok((Own(incref(ffi::PyTuple_GET_ITEM(v, 0))), Own(incref(ffi::PyTuple_GET_ITEM(v, 1)))));
-        }
-        let it = ffi::PyObject_GetIter(v);
-        if it.is_null() {
-            if ffi::PyErr_ExceptionMatches(ffi::PyExc_TypeError) != 0
-                && (*t).tp_iter.is_none()
-                && ffi::PySequence_Check(v) == 0
-            {
-                ffi::PyErr_Format(
-                    ffi::PyExc_TypeError,
-                    c"cannot unpack non-iterable %.200s object".as_ptr(),
-                    (*t).tp_name,
-                );
-            }
-            return Err(());
-        }
-        let it = Own(it);
-        let mut got: [Own; 2] = [Own(std::ptr::null_mut()), Own(std::ptr::null_mut())];
-        for (i, slot) in got.iter_mut().enumerate() {
-            match iter_next(it.get())? {
-                Some(w) => slot.0 = w,
-                None => {
-                    ffi::PyErr_Format(
-                        ffi::PyExc_ValueError,
-                        c"not enough values to unpack (expected %d, got %d)".as_ptr(),
-                        2 as c_int,
-                        i as c_int,
-                    );
-                    return Err(());
-                }
-            }
-        }
-        match iter_next(it.get())? {
-            None => {
-                let [a, b] = got;
-                Ok((a, b))
-            }
-            Some(w) => {
-                decref(w);
-                if t == &raw mut ffi::PyList_Type || t == &raw mut ffi::PyTuple_Type || t == &raw mut ffi::PyDict_Type {
-                    let ll = if t == &raw mut ffi::PyDict_Type { ffi::PyDict_Size(v) } else { ffi::Py_SIZE(v) };
-                    if ll > 2 {
-                        ffi::PyErr_Format(
-                            ffi::PyExc_ValueError,
-                            c"too many values to unpack (expected %d, got %zd)".as_ptr(),
-                            2 as c_int,
-                            ll,
-                        );
-                        return Err(());
-                    }
-                }
-                ffi::PyErr_Format(
-                    ffi::PyExc_ValueError,
-                    c"too many values to unpack (expected %d)".as_ptr(),
-                    2 as c_int,
-                );
-                Err(())
-            }
-        }
-    }
-}
 
-/// `CALL_FUNCTION_EX` with a positional-only star argument: `f(*args)`.
-pub unsafe fn call_star(f: O, args: O) -> R<O> {
-    // SAFETY: live objects.
-    unsafe {
-        if ty(args) == &raw mut ffi::PyTuple_Type {
-            return nn(ffi::PyObject_Call(f, args, std::ptr::null_mut()));
-        }
-        let t = ty(args);
-        if (*t).tp_iter.is_none() && ffi::PySequence_Check(args) == 0 {
-            ffi::PyErr_Format(
-                ffi::PyExc_TypeError,
-                c"Value after * must be an iterable, not %.200s".as_ptr(),
-                (*t).tp_name,
-            );
-            return Err(());
-        }
-        let tup = Own::new(ffi::PySequence_Tuple(args))?;
-        nn(ffi::PyObject_Call(f, tup.get(), std::ptr::null_mut()))
-    }
-}
 
-/// `raise Error(fmt % cls)` with `Error` looked up like `LOAD_GLOBAL` in copy's globals.
-#[cold]
-pub unsafe fn raise_copy_error(st: &St, fmt: *const c_char, cls: *mut ffi::PyTypeObject) -> R<O> {
-    // SAFETY: attached thread, live objects.
-    unsafe {
-        let msg = Own::new(ffi::PyUnicode_FromFormat(fmt, cls))?;
-        let mut err = dict_get(st.copy_dict, st.s_error)?;
-        if err.is_null() {
-            let builtins = ffi::PyEval_GetBuiltins();
-            err = dict_get(builtins, st.s_error)?;
-            if err.is_null() {
-                ffi::PyErr_Format(ffi::PyExc_NameError, c"name '%U' is not defined".as_ptr(), st.s_error);
-                return Err(());
-            }
-        }
-        let err = Own(err);
-        let exc = Own::new(ffi::PyObject_CallOneArg(err.get(), msg.get()))?;
-        raise_obj(exc.get())
-    }
-}
 
-/// `raise exc` (RAISE_VARARGS 1).
-pub unsafe fn raise_obj(exc: O) -> R<O> {
-    // SAFETY: live object.
-    unsafe {
-        if ffi::PyExceptionInstance_Check(exc) != 0 {
-            ffi::PyErr_SetObject(ty(exc).cast(), exc);
-        } else if ffi::PyType_Check(exc) != 0 && ffi::PyExceptionClass_Check(exc) != 0 {
-            let inst = Own::new(ffi::PyObject_CallNoArgs(exc))?;
-            if ffi::PyExceptionInstance_Check(inst.get()) == 0 {
-                ffi::PyErr_Format(
-                    ffi::PyExc_TypeError,
-                    c"calling %R should have returned an instance of BaseException, not %R".as_ptr(),
-                    exc,
-                    ty(inst.get()),
-                );
-                return Err(());
-            }
-            ffi::PyErr_SetObject(exc, inst.get());
-        } else {
-            ffi::PyErr_SetString(ffi::PyExc_TypeError, c"exceptions must derive from BaseException".as_ptr());
-        }
-        Err(())
-    }
-}
 
 static REF1: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
 static REF2: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());

@@ -39,9 +39,12 @@ where
     }
 }
 
-/// Lookups of `cls` that decide eligibility (all through the type cache, no user code).
+/// Lookups of `cls` that decide eligibility (all through the type cache, no user code):
+/// `object.__reduce_ex__(4)` resolves to `object`'s own machinery, and `_reconstruct` then
+/// runs only C code: `object.__new__`, the standard `__dict__`, member-descriptor slots, no
+/// `__setstate__`; with `deep`, no finalizer either (a copy may be discarded on restart).
 #[inline(always)]
-unsafe fn class_ok(st: &St, cls: *mut ffi::PyTypeObject) -> bool {
+unsafe fn class_ok(st: &St, cls: *mut ffi::PyTypeObject, deep: bool) -> bool {
     // SAFETY: a live, ready type.
     unsafe {
         if ty(cls.cast()) != &raw mut ffi::PyType_Type {
@@ -49,23 +52,32 @@ unsafe fn class_ok(st: &St, cls: *mut ffi::PyTypeObject) -> bool {
         }
         let obj = &raw mut ffi::PyBaseObject_Type;
         let flags = ffi::PyType_GetFlags(cls);
-        if addr((*cls).tp_getattro) != addr((*obj).tp_getattro)
+        if !generic_getattr(cls)
             || (*cls).tp_itemsize != 0
-            || (*cls).tp_new.is_none()
-            || flags & (ffi::Py_TPFLAGS_LIST_SUBCLASS | ffi::Py_TPFLAGS_DICT_SUBCLASS) != 0
+            || addr((*cls).tp_new) != addr((*obj).tp_new)
+            || flags & (ffi::Py_TPFLAGS_LIST_SUBCLASS | ffi::Py_TPFLAGS_DICT_SUBCLASS | ffi::Py_TPFLAGS_IS_ABSTRACT) != 0
         {
             return false;
         }
-        // The instance dict, if any, must be the managed one (`_PyObject_IsInstanceDictEmpty`
-        // is emulated for it only).
         if (*cls).tp_dictoffset != 0 && flags & ffi::Py_TPFLAGS_MANAGED_DICT == 0 {
             return false;
+        }
+        if deep && ((*cls).tp_finalize.is_some() || (*cls).tp_del.is_some() || !_PyType_Lookup(cls, st.s_del).is_null()) {
+            return false;
+        }
+        if flags & ffi::Py_TPFLAGS_MANAGED_DICT != 0 {
+            let d = _PyType_Lookup(cls, st.s_dict);
+            if d.is_null() || ty(d) != &raw mut ffi::PyGetSetDescr_Type {
+                return false;
+            }
         }
         _PyType_Lookup(cls, st.s_reduce_ex) == st.obj_reduce_ex
             && _PyType_Lookup(cls, st.s_reduce) == st.obj_reduce
             && _PyType_Lookup(cls, st.s_getstate) == st.obj_getstate
+            && _PyType_Lookup(cls, st.s_new) == st.object_new
             && _PyType_Lookup(cls, st.s_getnewargs_ex).is_null()
             && _PyType_Lookup(cls, st.s_getnewargs).is_null()
+            && _PyType_Lookup(cls, st.s_setstate).is_null()
     }
 }
 
@@ -120,10 +132,10 @@ unsafe fn instance_state(x: O, cls: *mut ffi::PyTypeObject) -> R<O> {
 
 /// The reduce value of plain `x`, or `None` when `x` does not qualify (nothing observable
 /// happened then).
-pub unsafe fn plain_reduce(st: &St, x: O, cls: *mut ffi::PyTypeObject) -> R<Option<O>> {
+pub unsafe fn plain_reduce(st: &St, x: O, cls: *mut ffi::PyTypeObject, deep: bool) -> R<Option<O>> {
     // SAFETY: attached thread; live objects.
     unsafe {
-        if st.get_method_addr == 0 || !class_ok(st, cls) {
+        if st.get_method_addr == 0 || !class_ok(st, cls, deep) {
             return Ok(None);
         }
         if !unshadowed(st, x, st.s_reduce_ex, st.obj_reduce_ex)? || !unshadowed(st, x, st.s_getstate, st.obj_getstate)?
@@ -138,6 +150,23 @@ pub unsafe fn plain_reduce(st: &St, x: O, cls: *mut ffi::PyTypeObject) -> R<Opti
             return Ok(None);
         }
         let nslots = if sn == ffi::Py_None() { 0 } else { ffi::PyList_GET_SIZE(sn) };
+        if nslots > 0 {
+            // `getattr(x, name)` / `setattr(y, name, v)` must be the slots' member descriptors.
+            let obj = &raw mut ffi::PyBaseObject_Type;
+            if addr((*cls).tp_setattro) != addr((*obj).tp_setattro) {
+                return Ok(None);
+            }
+            for i in 0..nslots {
+                let n = ffi::PyList_GET_ITEM(sn, i);
+                if ty(n) != &raw mut ffi::PyUnicode_Type {
+                    return Ok(None);
+                }
+                let d = _PyType_Lookup(cls, n);
+                if d.is_null() || ty(d) != &raw mut ffi::PyMemberDescr_Type {
+                    return Ok(None);
+                }
+            }
+        }
         // `required`: the basicsize check ("cannot pickle 'X' object" otherwise).
         let obj = &raw mut ffi::PyBaseObject_Type;
         let mut basicsize = (*obj).tp_basicsize;

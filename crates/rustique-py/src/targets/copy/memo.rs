@@ -1,12 +1,14 @@
 //! The `deepcopy` memo.
 //!
-//! `copy.deepcopy(x)` (no memo argument) creates a private `{}` that nothing but `copy.py`
-//! can see until a hook receives it: `__deepcopy__(memo)`, a copier registered in
-//! `copy._deepcopy_dispatch`, or a call into `copy._reconstruct`. Until then the kernel keeps
-//! the same entries natively — `id(x) -> copy` in insertion order, plus the keep-alive list
-//! stored under `id(memo)` — and *materialises* the dict, with exactly CPython's contents and
-//! insertion order, the moment a hook needs it. From then on (and whenever the caller passed
-//! a memo dict) every memo operation is the dict operation `copy.py` performs.
+//! The kernel only completes calls in which no user code runs, so no hook ever sees the
+//! memo while the kernel works. `deepcopy(x)` keeps it natively (`id(x) -> copy` in
+//! insertion order, plus the keep-alive list `copy.py` stores under `id(memo)`), and drops
+//! it as CPython's dict would be dropped. `deepcopy(x, memo)` with an exact dict reads the
+//! caller's dict (pure lookups of int keys) and buffers every write natively; on success the
+//! writes are applied to the dict in CPython's order — new keys in insertion order, the
+//! keep-alive list created at its position (`memo[id(memo)] = [x]`) or appended to — so the
+//! caller finds exactly the memo `copy.py` would have left. A call that restarts in the
+//! original leaves the caller's dict untouched.
 
 use std::ptr::null_mut;
 
@@ -14,14 +16,14 @@ use pyo3::ffi;
 
 use super::rt::*;
 
-/// Native image of CPython's memo dict.
+/// Native image of the entries a `deepcopy` call adds to its memo.
 pub struct Native {
     /// `(id(x), copy)` in insertion order (values strong).
     entries: SVec<(usize, O), 16>,
     index: hashbrown::HashMap<usize, u32, foldhash::fast::FixedState>,
-    /// The list at memo[id(memo)] (strong).
+    /// Objects appended to the keep-alive list (strong).
     keep: SVec<O, 16>,
-    /// Number of entries inserted before the keep-alive list was (position of id(memo)).
+    /// Number of entries inserted before the keep-alive list was created (its position).
     ka_pos: usize,
 }
 
@@ -29,7 +31,7 @@ const LINEAR: usize = 12;
 
 impl Native {
     #[inline(always)]
-    pub fn new() -> Native {
+    fn new() -> Native {
         Native {
             entries: SVec::new(),
             index: hashbrown::HashMap::with_hasher(foldhash::fast::FixedState::with_seed(0)),
@@ -44,15 +46,9 @@ impl Native {
         if e.len() <= LINEAR { e.iter().position(|&(x, _)| x == k) } else { self.index.get(&k).map(|&i| i as usize) }
     }
 
-    /// Borrowed value for `id(x)`.
-    #[inline(always)]
-    pub fn get(&self, x: O) -> Option<O> {
-        self.find(x as usize).map(|i| self.entries.as_slice()[i].1)
-    }
-
     /// `memo[id(x)] = y` (y borrowed; a new key goes last, an existing one keeps its place).
     #[inline(always)]
-    pub unsafe fn set(&mut self, x: O, y: O) {
+    unsafe fn set(&mut self, x: O, y: O) {
         let k = x as usize;
         // SAFETY: live object.
         unsafe { incref(y) };
@@ -73,58 +69,10 @@ impl Native {
         }
     }
 
-    /// `_keep_alive(x, memo)`.
-    #[inline(always)]
-    pub unsafe fn keep_alive(&mut self, x: O) {
-        if self.ka_pos == usize::MAX {
-            self.ka_pos = self.entries.len();
-        }
-        // SAFETY: live object.
-        self.keep.push(unsafe { incref(x) });
-    }
-
-    /// Build the dict CPython would hold now: same keys (ints), values and insertion
-    /// order, the keep-alive list (grown by appends from `[x]`, as `_keep_alive` grows it)
-    /// at its position. Consumes the native entries.
-    pub unsafe fn materialize(&mut self) -> R<O> {
-        // SAFETY: attached thread.
-        unsafe {
-            let d = Own::new(ffi::PyDict_New())?;
-            let e = self.entries.as_slice();
-            let keep = self.keep.as_slice();
-            let ka = self.ka_pos;
-            let insert_ka = |d: O| -> R<()> {
-                let list = Own::new(ffi::PyList_New(1))?;
-                ffi::PyList_SET_ITEM(list.get(), 0, incref(keep[0]));
-                for &o in &keep[1..] {
-                    if ffi::PyList_Append(list.get(), o) < 0 {
-                        return Err(());
-                    }
-                }
-                let key = Own::new(ffi::PyLong_FromVoidPtr(d.cast()))?;
-                if ffi::PyDict_SetItem(d, key.get(), list.get()) < 0 { Err(()) } else { Ok(()) }
-            };
-            for (i, &(k, v)) in e.iter().enumerate() {
-                if i == ka {
-                    insert_ka(d.get())?;
-                }
-                let key = Own::new(ffi::PyLong_FromVoidPtr(k as *mut _))?;
-                if ffi::PyDict_SetItem(d.get(), key.get(), v) < 0 {
-                    return Err(());
-                }
-            }
-            if ka == e.len() {
-                insert_ka(d.get())?;
-            }
-            self.release();
-            Ok(d.into_raw())
-        }
-    }
-
-    /// Drop every reference in the order CPython's memo dict releases them when it dies:
-    /// entries in insertion order, the keep-alive list (released back to front, as
-    /// `list_dealloc`) at its position.
-    pub unsafe fn release(&mut self) {
+    /// Release every reference in the order CPython's memo dict releases them when it dies:
+    /// entries in insertion order, the keep-alive list (back to front, as `list_dealloc`)
+    /// at its position.
+    unsafe fn release(&mut self) {
         let ka = self.ka_pos;
         self.ka_pos = usize::MAX;
         if self.entries.is_empty() && self.keep.is_empty() {
@@ -158,159 +106,145 @@ impl Native {
     }
 }
 
-impl Drop for Native {
-    fn drop(&mut self) {
-        // SAFETY: owned references (attached thread: engines live inside kernel calls).
-        unsafe { self.release() }
-    }
+/// What `memo[id(memo)]` held in the caller's dict when the first `_keep_alive` ran.
+enum Ka {
+    /// Not looked up yet.
+    Unknown,
+    /// Absent: `_keep_alive` creates `[x]` at `ka_pos`.
+    Create,
+    /// An exact list (owned by the dict, which nothing else touches meanwhile): appended to.
+    Append(O),
 }
 
-/// The memo of one `deepcopy` call tree. The native variant is large on purpose: its
-/// first entries live inline (no allocation for small call trees); the enum lives on the
-/// kernel's stack.
-#[allow(clippy::large_enum_variant)]
-pub enum Memo {
-    Native(Native),
-    /// The caller's memo (any object: `copy.py` only uses `in`, `[]`, `[]=` and, on 3.14,
-    /// `.get`), or the materialised dict. Strong reference.
-    Dict(O),
-}
-
-/// Result of the memo lookup at the top of `deepcopy`.
-pub enum Look {
-    /// `return memo[d]` (new reference).
-    Hit(O),
-    /// Not memoised; `d` is the `id(x)` int in dict mode (strong), null in native mode.
-    Miss(O),
+/// The memo of one kernel call.
+pub struct Memo {
+    native: Native,
+    /// The caller's exact dict (strong), or null for `deepcopy(x)`.
+    base: O,
+    ka: Ka,
 }
 
 impl Memo {
-    /// `if d in memo: return memo[d]` (3.15) / `y = memo.get(d, _nil)` (3.14).
+    /// `base`: null or an exact dict (borrowed).
     #[inline(always)]
-    pub unsafe fn lookup(&mut self, x: O, minor: u8, st: &St) -> R<Look> {
-        match self {
-            Memo::Native(n) => Ok(match n.get(x) {
-                // SAFETY: live value.
-                Some(y) => Look::Hit(unsafe { incref(y) }),
-                None => Look::Miss(null_mut()),
-            }),
-            // SAFETY: exact dict memo; the same dict operations as copy.py.
-            Memo::Dict(m) => unsafe {
-                let m = *m;
-                let d = Own::new(ffi::PyLong_FromVoidPtr(x.cast()))?;
-                let exact = ty(m) == &raw mut ffi::PyDict_Type;
-                if minor >= 15 {
-                    // `if d in memo: return memo[d]`
-                    let r = if exact { ffi::PyDict_Contains(m, d.get()) } else { ffi::PySequence_Contains(m, d.get()) };
-                    match r {
-                        r if r < 0 => Err(()),
-                        0 => Ok(Look::Miss(d.into_raw())),
-                        _ => Ok(Look::Hit(nn(ffi::PyObject_GetItem(m, d.get()))?)),
-                    }
-                } else if exact {
-                    // `y = memo.get(d, _nil)` on an exact dict.
-                    let y = dict_get(m, d.get())?;
-                    if y.is_null() { Ok(Look::Miss(d.into_raw())) } else { Ok(Look::Hit(y)) }
-                } else {
-                    let args = [m, d.get(), st.nil];
-                    let y = nn(ffi::PyObject_VectorcallMethod(
-                        st.s_get,
-                        args.as_ptr(),
-                        3 | ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
-                        std::ptr::null_mut(),
-                    ))?;
-                    if y == st.nil {
-                        decref(y);
-                        Ok(Look::Miss(d.into_raw()))
-                    } else {
-                        Ok(Look::Hit(y))
-                    }
-                }
-            },
+    pub unsafe fn new(base: O) -> Memo {
+        // SAFETY: live dict.
+        Memo { native: Native::new(), base: if base.is_null() { base } else { unsafe { incref(base) } }, ka: Ka::Unknown }
+    }
+
+    #[inline(always)]
+    pub fn has_base(&self) -> bool {
+        !self.base.is_null()
+    }
+
+    /// `memo.get(id(x))` (new reference or null). Err: an error (restart).
+    #[inline(always)]
+    pub unsafe fn lookup(&self, x: O) -> R<O> {
+        if let Some(i) = self.native.find(x as usize) {
+            // SAFETY: live value.
+            return Ok(unsafe { incref(self.native.entries.as_slice()[i].1) });
+        }
+        if self.base.is_null() {
+            return Ok(null_mut());
+        }
+        // SAFETY: an exact dict and an int key: no Python code runs.
+        unsafe {
+            let d = Own::new(ffi::PyLong_FromVoidPtr(x.cast()))?;
+            dict_get(self.base, d.get())
         }
     }
 
-    /// `memo[d] = y` / `memo[id(x)] = y`.
+    /// `memo[id(x)] = y`.
     #[inline(always)]
-    pub unsafe fn set(&mut self, x: O, d: O, y: O) -> R<()> {
-        match self {
-            Memo::Native(n) => {
-                // SAFETY: live objects.
-                unsafe { n.set(x, y) };
-                Ok(())
-            }
-            // SAFETY: dict memo, int key.
-            Memo::Dict(m) => unsafe {
-                if d.is_null() {
-                    let k = Own::new(ffi::PyLong_FromVoidPtr(x.cast()))?;
-                    if ffi::PyObject_SetItem(*m, k.get(), y) < 0 { Err(()) } else { Ok(()) }
-                } else if ffi::PyObject_SetItem(*m, d, y) < 0 {
-                    Err(())
-                } else {
-                    Ok(())
+    pub unsafe fn set(&mut self, x: O, y: O) {
+        // SAFETY: live objects.
+        unsafe { self.native.set(x, y) }
+    }
+
+    /// `_keep_alive(x, memo)`. Err: the caller's `memo[id(memo)]` is not an exact list (its
+    /// `append` could run user code): restart.
+    #[inline(always)]
+    pub unsafe fn keep_alive(&mut self, x: O) -> R<()> {
+        // SAFETY: live objects; pure dict lookup.
+        unsafe {
+            if matches!(self.ka, Ka::Unknown) {
+                self.ka = Ka::Create;
+                if !self.base.is_null() {
+                    let k = Own::new(ffi::PyLong_FromVoidPtr(self.base.cast()))?;
+                    let l = dict_get(self.base, k.get())?;
+                    if !l.is_null() {
+                        decref(l);
+                        if ty(l) != &raw mut ffi::PyList_Type {
+                            return Err(());
+                        }
+                        self.ka = Ka::Append(l);
+                    }
                 }
-            },
+            }
+            let n = &mut self.native;
+            if n.ka_pos == usize::MAX {
+                n.ka_pos = n.entries.len();
+            }
+            n.keep.push(incref(x));
+            Ok(())
         }
     }
 
-    /// `_keep_alive(x, memo)` (its frame is accounted for by the caller).
-    #[inline(always)]
-    pub unsafe fn keep_alive(&mut self, st: &St, x: O) -> R<()> {
-        match self {
-            Memo::Native(n) => {
-                // SAFETY: live object.
-                unsafe { n.keep_alive(x) };
-                Ok(())
-            }
-            // SAFETY: dict memo; `memo[id(memo)].append(x)` / `memo[id(memo)] = [x]`.
-            Memo::Dict(m) => unsafe {
-                let m = *m;
-                let k = Own::new(ffi::PyLong_FromVoidPtr(m.cast()))?;
-                let l = ffi::PyObject_GetItem(m, k.get());
-                if l.is_null() {
-                    if ffi::PyErr_ExceptionMatches(ffi::PyExc_KeyError) == 0 {
+    /// Success: apply the buffered writes to the caller's dict (if any), in CPython's order.
+    /// Inserting int keys into an exact dict runs no Python code; Err only on allocation
+    /// failure (the caller then raises it: the call had no other observable effect).
+    pub unsafe fn commit(&mut self) -> R<()> {
+        if self.base.is_null() {
+            return Ok(());
+        }
+        // SAFETY: an exact dict; int keys and arbitrary values.
+        unsafe {
+            let d = self.base;
+            let n = &self.native;
+            let e = n.entries.as_slice();
+            let keep = n.keep.as_slice();
+            let create = matches!(self.ka, Ka::Create) && !keep.is_empty();
+            let insert_ka = || -> R<()> {
+                let list = Own::new(ffi::PyList_New(1))?;
+                ffi::PyList_SET_ITEM(list.get(), 0, incref(keep[0]));
+                for &o in &keep[1..] {
+                    if ffi::PyList_Append(list.get(), o) < 0 {
                         return Err(());
                     }
-                    ffi::PyErr_Clear();
-                    let list = Own::new(ffi::PyList_New(1))?;
-                    ffi::PyList_SET_ITEM(list.get(), 0, incref(x));
-                    return if ffi::PyObject_SetItem(m, k.get(), list.get()) < 0 { Err(()) } else { Ok(()) };
                 }
-                let l = Own(l);
-                if ty(l.get()) == &raw mut ffi::PyList_Type {
-                    if ffi::PyList_Append(l.get(), x) < 0 { Err(()) } else { Ok(()) }
-                } else {
-                    call_method1(l.get(), st.s_append, x).map(|r| decref(r))
+                let key = Own::new(ffi::PyLong_FromVoidPtr(d.cast()))?;
+                if ffi::PyDict_SetItem(d, key.get(), list.get()) < 0 { Err(()) } else { Ok(()) }
+            };
+            for (i, &(k, v)) in e.iter().enumerate() {
+                if create && i == n.ka_pos {
+                    insert_ka()?;
                 }
-            },
-        }
-    }
-
-    /// The dict to hand to a hook (materialising a native memo). Borrowed.
-    #[inline(always)]
-    pub unsafe fn dict(&mut self) -> R<O> {
-        match self {
-            Memo::Dict(m) => Ok(*m),
-            Memo::Native(n) => {
-                // SAFETY: attached thread.
-                let d = unsafe { n.materialize()? };
-                *self = Memo::Dict(d);
-                Ok(d)
+                let key = Own::new(ffi::PyLong_FromVoidPtr(k as *mut _))?;
+                if ffi::PyDict_SetItem(d, key.get(), v) < 0 {
+                    return Err(());
+                }
             }
+            if create && n.ka_pos == e.len() {
+                insert_ka()?;
+            }
+            if let Ka::Append(l) = self.ka {
+                for &o in keep {
+                    if ffi::PyList_Append(l, o) < 0 {
+                        return Err(());
+                    }
+                }
+            }
+            Ok(())
         }
-    }
-
-    #[inline(always)]
-    pub fn is_native(&self) -> bool {
-        matches!(self, Memo::Native(_))
     }
 }
 
 impl Drop for Memo {
     fn drop(&mut self) {
-        if let Memo::Dict(m) = self {
-            // SAFETY: owned reference.
-            unsafe { decref(*m) }
+        // SAFETY: owned references (attached thread: memos live inside kernel calls).
+        unsafe {
+            self.native.release();
+            xdecref(self.base);
         }
     }
 }

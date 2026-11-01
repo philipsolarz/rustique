@@ -76,6 +76,18 @@ unsafe fn atomic_fast(st: &St) -> bool {
     }
 }
 
+/// Are `copy.copy`'s two type sets intact (3.14's are mutable sets)?
+#[inline(always)]
+unsafe fn copy_sets_fast(st: &St) -> bool {
+    // SAFETY: live sets.
+    unsafe {
+        match (&st.copy_atomic_snap, &st.copy_containers_snap) {
+            (Some(a), Some(b)) => a.matches(st.copy_atomic) && b.matches(st.copy_containers),
+            _ => true,
+        }
+    }
+}
+
 /// Is the `copy.deepcopy` kernel installed and its guards satisfied, so that callers inside
 /// Rustique (dataclasses) may run the engine directly instead of calling the function?
 #[inline(always)]
@@ -115,6 +127,11 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
             return original(func, args, nargsf, kw);
         };
         let memo = if memo == ffi::Py_None() { std::ptr::null_mut() } else { memo };
+        // Any other memo's `__contains__`/`__getitem__` could be user code.
+        if !memo.is_null() && ty(memo) != &raw mut ffi::PyDict_Type {
+            C_DEEPCOPY.fallback_streak(Reason::Args);
+            return original(func, args, nargsf, kw);
+        }
         let fo = func.cast::<ffi::PyFunctionObject>();
         if !DEPS_COPY.ok() || (*fo).func_code != st.deepcopy_code || (*fo).func_defaults != st.deepcopy_defaults {
             C_DEEPCOPY.fallback_streak(Reason::Deps);
@@ -124,9 +141,19 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
             C_DEEPCOPY.fallback_streak(Reason::Tools);
             return original(func, args, nargsf, kw);
         }
-        C_DEEPCOPY.hit_streak();
-        let mut e = deep::Engine::new(st, memo, atomic_fast(st));
-        e.run(*args).unwrap_or(std::ptr::null_mut())
+        let e = deep::Engine::new(st, memo, atomic_fast(st), recursion_remaining());
+        match e.run(*args) {
+            Some(y) => {
+                C_DEEPCOPY.hit_streak();
+                y
+            }
+            None => {
+                // User code (or an error, or the recursion limit) ahead: CPython's own call,
+                // from scratch, with the unchanged arguments.
+                C_DEEPCOPY.fallback_streak(Reason::Deopt);
+                original(func, args, nargsf, kw)
+            }
+        }
     }
 }
 
@@ -148,8 +175,16 @@ unsafe extern "C" fn vc_copy(func: O, args: *const O, nargsf: usize, kw: O) -> O
             C_COPY.fallback_streak(Reason::Tools);
             return original(func, args, nargsf, kw);
         }
-        C_COPY.hit_streak();
-        shallow::copy(st, *args, st.minor >= 15).unwrap_or(std::ptr::null_mut())
+        match shallow::copy(st, *args, copy_sets_fast(st), recursion_remaining()) {
+            Some(y) => {
+                C_COPY.hit_streak();
+                y
+            }
+            None => {
+                C_COPY.fallback_streak(Reason::Deopt);
+                original(func, args, nargsf, kw)
+            }
+        }
     }
 }
 
@@ -161,17 +196,17 @@ unsafe extern "C" fn vc_copy(func: O, args: *const O, nargsf: usize, kw: O) -> O
 /// function the kernels replace or emulate.
 mod fp {
     use crate::accel::Fingerprints;
-    pub const DEEPCOPY: Fingerprints = &[(3, 14, "a287496a0d76e2fa"), (3, 15, "d19ec63249fba4bc")];
-    pub const COPY: Fingerprints = &[(3, 14, "e72c3343e74a17a5"), (3, 15, "08cc44a96c8b6e95")];
-    pub const DEEPCOPY_LIST: Fingerprints = &[(3, 14, "bd3cf7284db8584f"), (3, 15, "cf55f78857788db7")];
-    pub const DEEPCOPY_TUPLE: Fingerprints = &[(3, 14, "45a481d94ebaabaa"), (3, 15, "5d98059dc4051884")];
-    pub const DEEPCOPY_DICT: Fingerprints = &[(3, 14, "637e9e6fc42f392b"), (3, 15, "9769f589217192e9")];
-    pub const DEEPCOPY_FROZENDICT: Fingerprints = &[(3, 15, "cc960aba60739226")];
-    pub const DEEPCOPY_METHOD: Fingerprints = &[(3, 14, "f8003d8e1e6a1386"), (3, 15, "a85c9c3946dab55a")];
-    pub const KEEP_ALIVE: Fingerprints = &[(3, 14, "421fc8f79248786d"), (3, 15, "968491e533d8ab2b")];
-    pub const RECONSTRUCT: Fingerprints = &[(3, 14, "389ff8af1279cb19"), (3, 15, "1365ac6436d0273d")];
-    pub const SLOTNAMES: Fingerprints = &[(3, 14, "de21d08840b8fc73"), (3, 15, "2e5497602f72e1e0")];
-    pub const NEWOBJ: Fingerprints = &[(3, 14, "59d84e3426e38a01"), (3, 15, "f3dc1dde05b828a4")];
+    pub const DEEPCOPY: Fingerprints = &[(3, 14, "a8e15d1610cfc3b7"), (3, 15, "307dc8f19f9b5db4")];
+    pub const COPY: Fingerprints = &[(3, 14, "14c52708c4954d3f"), (3, 15, "2eea511e3b3c11d5")];
+    pub const DEEPCOPY_LIST: Fingerprints = &[(3, 14, "b7639b0a182a4223"), (3, 15, "0ebca81111a34cee")];
+    pub const DEEPCOPY_TUPLE: Fingerprints = &[(3, 14, "21bef80950ffc7aa"), (3, 15, "7334dda0989c80a9")];
+    pub const DEEPCOPY_DICT: Fingerprints = &[(3, 14, "8ae3d261d6c844e1"), (3, 15, "355063d5f74669c2")];
+    pub const DEEPCOPY_FROZENDICT: Fingerprints = &[(3, 15, "7e2fe4b5411f95f3")];
+    pub const DEEPCOPY_METHOD: Fingerprints = &[(3, 14, "512dee8b68330b17"), (3, 15, "5a261da2c95b4fce")];
+    pub const KEEP_ALIVE: Fingerprints = &[(3, 14, "e3a4068b84c7e5ac"), (3, 15, "51a2113d512c2be0")];
+    pub const RECONSTRUCT: Fingerprints = &[(3, 14, "eef7983ee166e632"), (3, 15, "cfebe2bd44245931")];
+    pub const SLOTNAMES: Fingerprints = &[(3, 14, "fa693b043c4d7ca4"), (3, 15, "d2fbfedc0f8bcb0d")];
+    pub const NEWOBJ: Fingerprints = &[(3, 14, "e9a487187e3c3309"), (3, 15, "dc09633e5824ebb5")];
 }
 
 /// The CPython 3.14 type sets in copy.py are mutable sets: a snapshot of the hash table.
@@ -504,6 +539,8 @@ fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>
         copy_code,
         atomic: atomic_set.into_ptr(),
         atomic_snap: None,
+        copy_atomic_snap: None,
+        copy_containers_snap: None,
         copy_atomic: get("_copy_atomic_types")?.into_ptr(),
         copy_containers: get("_copy_builtin_containers")?.into_ptr(),
         copy_atomic_types: copy_atomic,
@@ -515,8 +552,6 @@ fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>
         h_dict: helpers[H_DICT].0,
         h_frozendict: helpers[H_FROZENDICT].0,
         h_method: helpers[H_METHOD].0,
-        keep_alive: helpers[H_KEEP_ALIVE].0,
-        reconstruct: helpers[H_RECONSTRUCT].0,
         helpers,
         newobj: helpers[H_NEWOBJ].0,
         object_new: object_attr("__new__"),
@@ -529,6 +564,7 @@ fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>
         s_getnewargs: intern(py, "__getnewargs__"),
         s_getnewargs_ex: intern(py, "__getnewargs_ex__"),
         s_slotnames: intern(py, "__slotnames__"),
+        s_del: intern(py, "__del__"),
         atomic_types: atomic.try_into().map_err(|_| Refusal::new("atomic types"))?,
         // SAFETY: static type objects.
         method_type: &raw mut PyMethod_Type,
@@ -538,29 +574,19 @@ fn ensure_state(py: Python<'_>, cx: &mut Prepare<'_>, copy: &Bound<'_, PyModule>
         s_copy: intern(py, "__copy__"),
         s_copy_method: intern(py, "copy"),
         s_memo: intern(py, "memo"),
-        s_get: intern(py, "get"),
-        // SAFETY: a live tuple (3.14: `(None, [])`).
-        nil: if minor < 15 && !deepcopy_defaults.is_null() && unsafe { ffi::PyTuple_GET_SIZE(deepcopy_defaults) } == 2 {
-            // SAFETY: as above.
-            unsafe { incref(ffi::PyTuple_GET_ITEM(deepcopy_defaults, 1)) }
-        } else {
-            nul
-        },
         s_reduce_ex: intern(py, "__reduce_ex__"),
         s_reduce: intern(py, "__reduce__"),
         s_setstate: intern(py, "__setstate__"),
         s_dict: intern(py, "__dict__"),
-        s_update: intern(py, "update"),
-        s_items: intern(py, "items"),
-        s_append: intern(py, "append"),
         s_new: intern(py, "__new__"),
-        s_error: intern(py, "Error"),
-        // SAFETY: attached thread.
-        int4: unsafe { ffi::PyLong_FromLong(4) },
     };
     if minor < 15 {
         // SAFETY: a live set.
         st.atomic_snap = Some(unsafe { SetSnap::take(st.atomic) });
+        // SAFETY: live sets.
+        st.copy_atomic_snap = Some(unsafe { SetSnap::take(st.copy_atomic) });
+        // SAFETY: live sets.
+        st.copy_containers_snap = Some(unsafe { SetSnap::take(st.copy_containers) });
     }
     let st: &'static St = Box::leak(Box::new(st));
     ST.store((st as *const St).cast_mut(), Relaxed);
@@ -617,7 +643,7 @@ fn copy_recursion_remaining() -> PyResult<c_int> {
         return Err(pyo3::exceptions::PyRuntimeError::new_err("copy group never prepared"));
     }
     // SAFETY: attached thread.
-    Ok(unsafe { Depth::new() }.remaining())
+    Ok(unsafe { recursion_remaining() })
 }
 
 /// Python-visible helpers (on `rustique._rustique._accel`).

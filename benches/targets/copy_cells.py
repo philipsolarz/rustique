@@ -80,6 +80,8 @@ dsub = DictSub(a=1, b=[2])
 slotted = Slotted()
 od = collections.OrderedDict(a=1)
 lst100 = list(range(100))
+recs_h = recs + [hook]
+recs_dt = recs + [dt]
 dct100 = dict.fromkeys(range(100))
 """
 
@@ -102,7 +104,9 @@ CELLS = [
     ("deepcopy uuid", "deepcopy(u)"),
     # hook paths
     ("deepcopy Decimal (C __deepcopy__)", "deepcopy(dec)"),
-    ("deepcopy __deepcopy__ hook", "deepcopy(hook)"),
+    ("deepcopy __deepcopy__ hook (restart at the root)", "deepcopy(hook)"),
+    ("restart: 5 records then a hook", "deepcopy(recs_h)"),
+    ("restart: 5 records then a datetime", "deepcopy(recs_dt)"),
     ("deepcopy registered copier", "deepcopy(disp)"),
     ("deepcopy copyreg reductor", "deepcopy(reg)"),
     ("deepcopy dict subclass", "deepcopy(dsub)"),
@@ -126,13 +130,14 @@ CELLS = [
     ("asdict small dataclass", "dataclasses.asdict(p)"),
     ("asdict dataclass tree", "dataclasses.asdict(order)"),
     ("astuple small dataclass", "dataclasses.astuple(p)"),
-    ("replace small dataclass", "dataclasses.replace(p, x=2)"),
-    ("replace no changes", "dataclasses.replace(p)"),
     ("asdict (fallback: dict_factory)", "dataclasses.asdict(p, dict_factory=collections.OrderedDict)"),
     # Fallbacks before adaptive suspension: each fallback is followed by a hit, which
     # resets the streak; fallback overhead = (pair cell) - (the hit cell's saving).
     ("pair: deepcopy memo=OrderedDict + deepcopy int", "deepcopy(cfg, collections.OrderedDict()); deepcopy(7)"),
     ("pair: copy kw + copy int", "copy.copy(x=rec); copy.copy(7)"),
+    ("pair: restart (5 records then a hook) + deepcopy int", "deepcopy(recs_h); deepcopy(7)"),
+    ("pair: restart (hook at the root) + deepcopy int", "deepcopy(hook); deepcopy(7)"),
+    ("pair: copy __copy__ hook + copy int", "copy.copy(hook); copy.copy(7)"),
     ("pair: asdict factory + asdict", "dataclasses.asdict(p, dict_factory=collections.OrderedDict); dataclasses.asdict(p)"),
 ]
 

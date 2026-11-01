@@ -1,265 +1,143 @@
-//! `copy.copy`, and the parts of `_reconstruct` shared with `deepcopy`.
-
-use std::ptr::null_mut;
+//! `copy.copy` for the calls in which no user code runs: `None` from [`copy`] means
+//! "restart in the original" (nothing observable happened).
+//!
+//! Native: `copy`'s atomic types, `list`/`dict`/`set`/`bytearray` (`cls.copy(x)`),
+//! `issubclass(cls, type)`, `__copy__` that is exactly `return self` (Enum), and plain
+//! objects (`object.__reduce_ex__(4)` emulated, then `y.__dict__.update(x.__dict__)` and
+//! the slots). Anything else — a user `__copy__`, a registered reductor, a custom reduce
+//! protocol — restarts before anything was done.
 
 use pyo3::ffi;
 
+use super::reduce::{object_new_alloc, plain_reduce};
 use super::rt::*;
 
-/// `cls in s` for one of copy's type sets: the fast answer for a pointer-hashed type when
-/// the set is known intact (`fast`), the real set lookup otherwise.
+/// `cls in s` for one of copy's type sets, decided purely: `known` is the set's validated
+/// content, valid while `fast` (3.15's frozensets; 3.14's mutable sets as snapshotted).
+/// Err: the answer would need a lookup that could run user code.
 #[inline(always)]
-pub unsafe fn in_type_set(
-    set: O,
-    fast: bool,
-    known: &[*mut ffi::PyTypeObject],
-    cls: *mut ffi::PyTypeObject,
-) -> R<bool> {
-    // SAFETY: live set and type.
+unsafe fn in_type_set(fast: bool, known: &[*mut ffi::PyTypeObject], cls: *mut ffi::PyTypeObject) -> R<bool> {
+    if !fast {
+        return Err(());
+    }
+    if known.contains(&cls) {
+        return Ok(true);
+    }
+    // SAFETY: live type.
+    if unsafe { meta_hash(cls.cast()) } != default_type_hash() {
+        return Err(());
+    }
+    Ok(false)
+}
+
+/// `getattr(cls, "__copy__", None)` decided purely: Ok(true) when it is `return self`,
+/// Ok(false) when absent or None, Err otherwise.
+#[inline(always)]
+unsafe fn copy_hook(st: &St, cls: *mut ffi::PyTypeObject) -> R<bool> {
+    // SAFETY: live type objects.
     unsafe {
-        if fast {
-            if known.contains(&cls) {
-                return Ok(true);
-            }
-            if meta_hash(cls.cast()) == default_type_hash() {
-                return Ok(false);
-            }
+        let meta = ty(cls.cast());
+        // `type.__getattribute__`, and no data descriptor `__copy__` on the metatype.
+        let type_getattro = ffi::PyType_Type.tp_getattro.map(|f| f as usize);
+        if (*meta).tp_getattro.map(|f| f as usize) != type_getattro || !_PyType_Lookup(meta, st.s_copy).is_null() {
+            return Err(());
         }
-        match ffi::PySet_Contains(set, cls.cast()) {
-            r if r < 0 => Err(()),
-            r => Ok(r != 0),
+        let d = _PyType_Lookup(cls, st.s_copy);
+        if d.is_null() || d == ffi::Py_None() {
+            return Ok(false);
         }
+        if is_return_self(d, 1) {
+            return Ok(true);
+        }
+        Err(())
     }
 }
 
-/// The `state` branch of `_reconstruct` once `state` is final (deep-copied or not):
-/// `__setstate__`, or `__dict__.update` plus slot `setattr`s.
-pub unsafe fn set_state(st: &St, y: O, sc: O) -> R<()> {
-    // SAFETY: live objects; each step is the operation copy.py performs.
-    unsafe {
-        let probe = getattr_opt(y, st.s_setstate)?;
-        if !probe.is_null() {
-            decref(probe);
-            decref(call_method1(y, st.s_setstate, sc)?);
-            return Ok(());
-        }
-        let mut state = Own(incref(sc));
-        let mut slotstate = Own(null_mut());
-        let is_tuple = ty(sc) == &raw mut ffi::PyTuple_Type
-            || match ffi::PyObject_IsInstance(sc, (&raw mut ffi::PyTuple_Type).cast()) {
-                r if r < 0 => return Err(()),
-                r => r != 0,
-            };
-        if is_tuple {
-            let n = ffi::PyObject_Size(sc);
-            if n < 0 {
-                return Err(());
-            }
-            if n == 2 {
-                let (a, b) = unpack2(sc)?;
-                state = a;
-                slotstate = b;
-            }
-        }
-        if state.get() != ffi::Py_None() {
-            let dd = Own::new(ffi::PyObject_GetAttr(y, st.s_dict))?;
-            if ty(dd.get()) == &raw mut ffi::PyDict_Type && ty(state.get()) == &raw mut ffi::PyDict_Type {
-                if ffi::PyDict_Merge(dd.get(), state.get(), 1) < 0 {
-                    return Err(());
-                }
-            } else {
-                decref(call_method1(dd.get(), st.s_update, state.get())?);
-            }
-        }
-        if !slotstate.get().is_null() && slotstate.get() != ffi::Py_None() {
-            let items = Own::new(call_method0(slotstate.get(), st.s_items)?)?;
-            let it = Own::new(ffi::PyObject_GetIter(items.get()))?;
-            while let Some(kv) = iter_next(it.get())? {
-                let kv = Own(kv);
-                let (k, v) = unpack2(kv.get())?;
-                if ffi::PyObject_SetAttr(y, k.get(), v.get()) < 0 {
-                    return Err(());
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-/// `copyreg.__newobj__(cls, *args)` when `func` is the original (its frame emulated), else
-/// `func(*args)`. `args`: a tuple or list.
-pub unsafe fn call_func(st: &St, depth: &mut Depth, func: O, args: O, newobj_ok: bool) -> R<O> {
-    // SAFETY: live objects.
-    unsafe {
-        let n = if ty(args) == &raw mut ffi::PyTuple_Type {
-            ffi::PyTuple_GET_SIZE(args)
-        } else if ty(args) == &raw mut ffi::PyList_Type {
-            ffi::PyList_GET_SIZE(args)
-        } else {
-            -1
-        };
-        if func == st.newobj && n >= 1 && newobj_ok {
-            depth.push()?;
-            if n == 1 {
-                let cls = if ty(args) == &raw mut ffi::PyTuple_Type {
-                    ffi::PyTuple_GET_ITEM(args, 0)
-                } else {
-                    ffi::PyList_GET_ITEM(args, 0)
-                };
-                if let Some(r) = super::reduce::object_new_alloc(st, cls) {
-                    depth.pop();
-                    return r;
-                }
-            }
-            let r = (|| {
-                let t = if ty(args) == &raw mut ffi::PyTuple_Type {
-                    Own(incref(args))
-                } else {
-                    Own::new(ffi::PyList_AsTuple(args))?
-                };
-                let cls = ffi::PyTuple_GET_ITEM(t.get(), 0);
-                let new = Own::new(ffi::PyObject_GetAttr(cls, st.s_new))?;
-                nn(ffi::PyObject_Call(new.get(), t.get(), null_mut()))
-            })();
-            depth.pop();
-            return r;
-        }
-        call_star(func, args)
-    }
-}
-
-/// `_reconstruct(x, None, *rv)`.
-unsafe fn reconstruct_shallow(st: &St, depth: &mut Depth, x: O, rv: O) -> R<O> {
-    // SAFETY: live objects.
-    unsafe {
-        let n = if ty(rv) == &raw mut ffi::PyTuple_Type { ffi::PyTuple_GET_SIZE(rv) } else { -1 };
-        if !(2..=5).contains(&n) || !helper_intact(st, H_RECONSTRUCT) {
-            let args = Own::new(ffi::PyList_New(0))?;
-            if ffi::PyList_Append(args.get(), x) < 0 || ffi::PyList_Append(args.get(), ffi::Py_None()) < 0 {
-                return Err(());
-            }
-            if ffi::PyList_Extend(args.get(), rv) < 0 {
-                let t = ty(rv);
-                if ffi::PyErr_ExceptionMatches(ffi::PyExc_TypeError) != 0
-                    && (*t).tp_iter.is_none()
-                    && ffi::PySequence_Check(rv) == 0
-                {
-                    ffi::PyErr_Clear();
-                    ffi::PyErr_Format(
-                        ffi::PyExc_TypeError,
-                        c"Value after * must be an iterable, not %.200s".as_ptr(),
-                        (*t).tp_name,
-                    );
-                }
-                return Err(());
-            }
-            let t = Own::new(ffi::PyList_AsTuple(args.get()))?;
-            return nn(ffi::PyObject_Call(st.reconstruct, t.get(), null_mut()));
-        }
-        let item = |i: ffi::Py_ssize_t| if i < n { ffi::PyTuple_GET_ITEM(rv, i) } else { ffi::Py_None() };
-        let (func, args, state, listiter, dictiter) = (item(0), item(1), item(2), item(3), item(4));
-        depth.push()?; // the `_reconstruct` frame
-        let r = (|| {
-            let y = Own::new(call_func(st, depth, func, args, helper_intact(st, H_NEWOBJ))?)?;
-            if state != ffi::Py_None() {
-                set_state(st, y.get(), state)?;
-            }
-            if listiter != ffi::Py_None() {
-                let it = Own::new(ffi::PyObject_GetIter(listiter))?;
-                while let Some(item) = iter_next(it.get())? {
-                    let item = Own(item);
-                    if ty(y.get()) == &raw mut ffi::PyList_Type {
-                        if ffi::PyList_Append(y.get(), item.get()) < 0 {
-                            return Err(());
-                        }
-                    } else {
-                        decref(call_method1(y.get(), st.s_append, item.get())?);
-                    }
-                }
-            }
-            if dictiter != ffi::Py_None() {
-                let it = Own::new(ffi::PyObject_GetIter(dictiter))?;
-                while let Some(pair) = iter_next(it.get())? {
-                    let pair = Own(pair);
-                    let (k, v) = unpack2(pair.get())?;
-                    if ffi::PyObject_SetItem(y.get(), k.get(), v.get()) < 0 {
-                        return Err(());
-                    }
-                }
-            }
-            Ok(y.into_raw())
-        })();
-        depth.pop();
-        r
-    }
-}
-
-/// `copy.copy(x)` from its first line (the caller checked the guards).
-pub unsafe fn copy(st: &St, x: O, fast_sets: bool) -> R<O> {
+/// `copy.copy(x)`; `None`: restart in the original.
+pub unsafe fn copy(st: &St, x: O, fast_sets: bool, budget: i32) -> Option<O> {
     // SAFETY: attached thread, live x.
-    unsafe {
-        let mut depth = Depth::new();
-        depth.push()?; // copy's own frame
-        let r = copy_body(st, &mut depth, x, fast_sets);
-        depth.unwind();
-        r
+    let r = unsafe { copy_body(st, x, fast_sets, budget) };
+    match r {
+        Ok(y) => Some(y),
+        Err(()) => {
+            // SAFETY: attached thread.
+            unsafe { ffi::PyErr_Clear() };
+            None
+        }
     }
 }
 
-unsafe fn copy_body(st: &St, depth: &mut Depth, x: O, fast_sets: bool) -> R<O> {
+unsafe fn copy_body(st: &St, x: O, fast_sets: bool, budget: i32) -> R<O> {
     // SAFETY: as copy.
     unsafe {
+        // copy's own frame.
+        if budget <= 0 {
+            return Err(());
+        }
         let cls = ty(x);
-        if in_type_set(st.copy_atomic, fast_sets, &st.copy_atomic_types, cls)? {
+        if in_type_set(fast_sets, &st.copy_atomic_types, cls)? {
             return Ok(incref(x));
         }
-        if in_type_set(st.copy_containers, fast_sets, &st.copy_container_types, cls)? {
-            // cls.copy(x)
+        if in_type_set(fast_sets, &st.copy_container_types, cls)? {
+            // `cls.copy(x)`: the C methods of the four exact types.
             if cls == &raw mut ffi::PyList_Type {
                 return nn(ffi::PyList_GetSlice(x, 0, ffi::PY_SSIZE_T_MAX));
             }
             if cls == &raw mut ffi::PyDict_Type {
                 return nn(ffi::PyDict_Copy(x));
             }
-            let m = Own::new(ffi::PyObject_GetAttr(cls.cast(), st.s_copy_method))?;
-            return call1(m.get(), x);
+            if cls == &raw mut ffi::PySet_Type {
+                return nn(ffi::PySet_New(x));
+            }
+            if cls == &raw mut ffi::PyByteArray_Type {
+                let m = Own::new(ffi::PyObject_GetAttr(cls.cast(), st.s_copy_method))?;
+                return call1(m.get(), x);
+            }
+            return Err(());
         }
         if ffi::PyType_IsSubtype(cls, &raw mut ffi::PyType_Type) != 0 {
             return Ok(incref(x));
         }
-        let copier = Own(getattr_opt(cls.cast(), st.s_copy)?);
-        if !copier.get().is_null() && copier.get() != ffi::Py_None() {
-            if is_return_self(copier.get(), 1) {
-                depth.touch()?;
-                return Ok(incref(x));
+        if copy_hook(st, cls)? {
+            // `def __copy__(self): return self` (Enum): its frame only.
+            if budget - 1 <= 0 {
+                return Err(());
             }
-            return call1(copier.get(), x);
-        }
-        let rv = {
-            let reductor = Own(dict_get(st.dispatch_table, cls.cast())?);
-            if !reductor.get().is_null() && truth(reductor.get())? {
-                call1(reductor.get(), x)?
-            } else if let Some(rv) = super::reduce::plain_reduce(st, x, cls)? {
-                rv
-            } else {
-                drop(reductor);
-                let r = Own(getattr_opt(x, st.s_reduce_ex)?);
-                if !r.get().is_null() && r.get() != ffi::Py_None() {
-                    call1(r.get(), st.int4)?
-                } else {
-                    let r = Own(getattr_opt(x, st.s_reduce)?);
-                    if !r.get().is_null() && truth(r.get())? {
-                        call0(r.get())?
-                    } else {
-                        return raise_copy_error(st, c"un(shallow)copyable object of type %S".as_ptr(), cls);
-                    }
-                }
-            }
-        };
-        let rv = Own(rv);
-        if is_str_instance(rv.get())? {
             return Ok(incref(x));
         }
-        reconstruct_shallow(st, depth, x, rv.get())
+        let r = dict_get(st.dispatch_table, cls.cast())?;
+        if !r.is_null() {
+            decref(r);
+            return Err(());
+        }
+        let Some(rv) = plain_reduce(st, x, cls, false)? else { return Err(()) };
+        let rv = Own(rv);
+        if !helper_intact(st, H_RECONSTRUCT) || !helper_intact(st, H_NEWOBJ) {
+            return Err(());
+        }
+        // `_reconstruct(x, None, copyreg.__newobj__, (cls,), state)`: its frame and
+        // `__newobj__`'s.
+        if budget - 2 <= 0 {
+            return Err(());
+        }
+        let state = ffi::PyTuple_GET_ITEM(rv.get(), 2);
+        // `y.__dict__.update(state)` with `state` = `x.__dict__` itself: inserting its keys
+        // into a fresh dict must not compare them through user `__eq__`.
+        let dict_part = if ty(state) == &raw mut ffi::PyTuple_Type { ffi::PyTuple_GET_ITEM(state, 0) } else { state };
+        if dict_part != ffi::Py_None() {
+            let mut pos = 0;
+            let mut k: O = std::ptr::null_mut();
+            let mut v: O = std::ptr::null_mut();
+            while ffi::PyDict_Next(dict_part, &mut pos, &mut k, &mut v) != 0 {
+                if ty(k) != &raw mut ffi::PyUnicode_Type {
+                    return Err(());
+                }
+            }
+        }
+        let y = Own::new(object_new_alloc(st, cls.cast()).unwrap_or(Err(()))?)?;
+        if state != ffi::Py_None() {
+            super::deep::apply_state(st, y.get(), state)?;
+        }
+        Ok(y.into_raw())
     }
 }
