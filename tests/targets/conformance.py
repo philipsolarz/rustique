@@ -91,7 +91,7 @@ def _summary(err: Any) -> str:
 
 def install(groups: list[str]) -> dict[str, Any]:
     import rustique
-    from rustique import _takeover as _tk
+    _tk = rustique
 
     rustique.enable(only=groups)
     _tk.stats(enabled=True, reset=True)
@@ -107,7 +107,7 @@ def install(groups: list[str]) -> dict[str, Any]:
 
 def counters(groups: list[str]) -> dict[str, Any]:
     import rustique
-    from rustique import _takeover as _tk
+    _tk = rustique
 
     status = {d["name"]: d for d in _tk.status()["targets"]}
     return {name: {**c, "state": status[name]["state"]} for name, c in _tk.stats().items()

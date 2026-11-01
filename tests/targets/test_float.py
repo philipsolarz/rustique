@@ -16,7 +16,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 rustique = pytest.importorskip("rustique")
-from rustique import _takeover as _tk  # noqa: E402  (status/stats until the DX layer exports them)
+_tk = rustique  # the public switch: enable/disable/status/stats/check
 from rustique._rustique import _accel  # noqa: E402
 
 t = _accel._t_float

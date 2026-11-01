@@ -179,7 +179,7 @@ def worker(name: str, variant: str, first64: bool = False) -> None:
     exec("enc = json.JSONEncoder()", ns)
     if variant == "on":
         import rustique
-        from rustique import _takeover as _tk
+        _tk = rustique
 
         rustique.enable(only=groups.split(","))
         for d in _tk.status()["targets"]:

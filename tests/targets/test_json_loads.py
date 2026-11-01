@@ -24,7 +24,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 rustique = pytest.importorskip("rustique")
-from rustique import _takeover as _tk  # noqa: E402
+_tk = rustique  # the public switch: enable/disable/status/stats/check
 
 NAME = "json.loads"
 loads_captured_before_enable = json.loads

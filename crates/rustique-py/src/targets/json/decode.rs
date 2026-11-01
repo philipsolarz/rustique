@@ -190,6 +190,11 @@ unsafe fn equal<T: Unit>(v: &View, units: &[T]) -> bool {
     }
     // SAFETY: per the caller.
     unsafe {
+        if T::MAX == 0xFF && v.kind == 1 {
+            // SAFETY: `T` is `u8` (the only unit with MAX 0xFF): a byte comparison.
+            let u = std::slice::from_raw_parts(units.as_ptr().cast::<u8>(), units.len());
+            return v.u8s() == u;
+        }
         match v.kind {
             1 => v.u8s().iter().zip(units).all(|(&a, b)| u32::from(a) == b.get()),
             2 => v.u16s().iter().zip(units).all(|(&a, b)| u32::from(a) == b.get()),
@@ -225,9 +230,12 @@ impl<'a, T: Unit> Parser<'a, T> {
         Ok(v.take())
     }
 
+    /// The unit at `i` (callers check `i < len` first).
     #[inline(always)]
     fn at(&self, i: usize) -> u32 {
-        self.s[i].get()
+        debug_assert!(i < self.s.len());
+        // SAFETY: every caller compares `i` with the length first.
+        unsafe { self.s.get_unchecked(i).get() }
     }
 
     /// `scan_once_unicode` at `i`: the value and the index after it.

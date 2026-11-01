@@ -25,7 +25,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 rustique = pytest.importorskip("rustique")
-from rustique import _takeover as _tk  # noqa: E402  (status/stats until the DX layer exports them)
+_tk = rustique  # the public switch: enable/disable/status/stats/check
 
 NAME = "json.dumps"
 dumps_captured_before_enable = json.dumps  # a reference taken before enable()
@@ -304,7 +304,7 @@ def test_introspection_unchanged():
 
 
 def test_disable_restores():
-    _tk.disable() if hasattr(_tk, "disable") else rustique.disable()
+    rustique.disable()
     try:
         _tk.stats(reset=True)
         assert json.dumps([1, 2]) == "[1, 2]"

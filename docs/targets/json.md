@@ -122,7 +122,22 @@ Allocation counts (`gc.get_count()`) differ, as for every kernel.
 
 ## Conformance (measured, `tests/targets/conformance.py --groups float,json`)
 
-RESULTS_PLACEHOLDER
+Same outcome for every test id with and without the targets (groups `float` + `json`
+enabled before the test modules are imported) on 3.15.1, 3.15.1t, 3.14.9 and 3.14.9t:
+
+| module | 3.15.1 / 3.15.1t | 3.14.9 / 3.14.9t | kernel hits (3.15.1) |
+|---|---|---|---|
+| `test_json` (C and Python variants) | 232 pass, 1 skip | 220 pass, 1 skip | dumps 14, loads 6, float 51 |
+| `test_json@real` (C variant run on the real `json` module) | 232 / 1 | 220 / 1 | dumps 129, loads 29, float 28 |
+| `test_float`, `test_format`, `test_strtod`, `test_fstring` | identical (see `float.md`) | identical | |
+
+`test_json` imports fresh copies of `json` (`import_fresh_module`), which the targets do
+not patch (they are installed on the process's `json` module, the one programs use); the
+`@real` variant makes its C tests (`CTest`, `self.json = cjson`) use the real module, so
+the kernels run under CPython's own json test suite. Hit counts are modest because many
+tests exercise hooks, `cls=`, invalid documents (fallbacks) and the adaptive suspension
+stops the sites after 64 consecutive fallbacks (re-armed by the next `enable()`).
+`tests/targets/conformance.py` also asserts both targets `installed`.
 
 ## Tests
 
@@ -139,7 +154,70 @@ mutation, enable/disable under load).
 
 ## Benchmarks
 
-BENCH_PLACEHOLDER
+### Small inputs: callgrind (Ir per call, region-instrumented; `benches/targets/json_cg.py`)
+
+3.15.1, plain → `enable(only=["json", "float"])`; JIT column: `PYTHON_JIT=1`, warmed
+30,000 iterations. Inputs: a 10-field record (`{"id": 12345, "name": "Ada Lovelace",
+..., "score": 98.5, ...}`), an 8-element mixed list, an 8-float record, a nested order
+document, a unicode record.
+
+| cell | plain | enabled | ratio | JIT ratio |
+|---|---:|---:|---:|---:|
+| `dumps(record)` | 31,030 | 6,547 | **0.211** | 0.222 |
+| `dumps(small_list)` | 18,106 | 2,374 | 0.131 | 0.144 |
+| `dumps(floats)` | 37,801 | 6,228 | 0.165 | 0.172 |
+| `dumps(nested)` | 58,536 | 17,026 | 0.291 | 0.299 |
+| `dumps(unicode_rec)` | 18,481 | 3,256 | 0.176 | 0.192 |
+| `dumps(unicode_rec, ensure_ascii=False)` | 23,905 | 4,660 | 0.195 | 0.209 |
+| `dumps('hello')` | 3,304 | 874 | 0.264 | 0.325 |
+| `dumps(7)` | 11,286 | 619 | 0.055 | 0.064 |
+| `dumps(record, indent=2)` | 40,293 | 7,877 | 0.196 | 0.205 |
+| `dumps(record, sort_keys=True)` | 45,893 | 12,305 | 0.268 | 0.282 |
+| `dumps(record, separators=(',', ':'))` | 36,836 | 6,695 | 0.182 | 0.191 |
+| `dumps([Color.RED])` (IntEnum) | 13,131 | 1,328 | 0.101 | 0.115 |
+| `loads(record_text)` | 27,894 | 12,979 | **0.465** | 0.477 |
+| `loads(record_bytes)` | 32,562 | 13,059 | 0.401 | 0.420 |
+| `loads(small_list_text)` | 13,163 | 2,876 | 0.218 | 0.229 |
+| `loads(floats_text)` | 24,493 | 10,623 | 0.434 | 0.445 |
+| `loads(nested_text)` | 57,271 | 32,236 | 0.563 | 0.571 |
+| `loads(unicode_text)` | 16,352 | 6,344 | 0.388 | 0.404 |
+
+`loads` keeps CPython's object-building cost (dict inserts with key hashing, list appends,
+string and number objects; ~60% of the enabled cost): the gain is the scanner and the
+Python glue.
+
+Fallback cells, steady state (after the warm-up the site is suspended by its fallback
+streak where every call falls back; the float kernel still speeds up the C encoder):
+
+| cell | plain | enabled | ratio | JIT ratio |
+|---|---:|---:|---:|---:|
+| `dumps(record, default=str)` | 36,645 | 31,125 | 0.849 | 0.844 |
+| `dumps(with_decimal, default=default)` | 39,816 | 34,277 | 0.861 | 0.855 |
+| `dumps(OrderedDict)` | 36,587 | 30,973 | 0.847 | 0.843 |
+| `dumps(record, cls=json.JSONEncoder)` | 36,561 | 31,041 | 0.849 | 0.844 |
+| `JSONEncoder().encode(record)` (not patched) | 28,890 | 23,370 | 0.809 | 0.803 |
+| `loads(text, object_hook=dict)` | 40,959 | 41,014 | 1.001 | 1.003 |
+| `dumps(with_decimal)` → TypeError | 40,457 | 34,714 | 0.858 | 0.863 |
+| `dumps(circular)` → ValueError | 19,920 | 19,750 | 0.991 | 0.995 |
+| `loads('{"id": 1, "name": "x",}')` → JSONDecodeError | 26,293 | 26,403 | 1.004 | 1.005 |
+
+First 64 fallbacks (`--first64`: 20 and 40 calls after a hit that resets the streak,
+i.e. before suspension; the cost a program pays when fallbacks are interleaved with hits):
+
+| cell | plain | enabled | ratio |
+|---|---:|---:|---:|
+| `dumps(record, default=str)` / `OrderedDict` / `cls=` | 36,6xx | 31,4xx | 0.86 |
+| `loads(text, object_hook=dict)` | 40,895 | 41,478 | 1.014 |
+| `dumps(with_decimal)` → TypeError (restart after a partial encode) | 40,405 | 41,287 | 1.022 |
+| `dumps(circular)` → ValueError (restart) | 19,959 | 20,778 | 1.041 |
+| `dumps(circular, skipkeys=[])` (declined at once: the mechanism's floor) | 20,125 | 20,258 | 1.007 |
+| `loads('{"id": 1, "name": "x",}')` → JSONDecodeError (restart after a partial parse) | 26,293 | 28,720 | **1.092** |
+
+The one cell above 1.05 is an invalid document during the first 64 consecutive invalid
+documents: the kernel parses up to the error (building and discarding objects), then the
+original re-parses and raises. Steady state (the site suspended) is 1.004; a program that
+mixes valid and invalid documents pays ~2.4k Ir per invalid one and saves ~15k per valid
+one. Float cells: see `float.md`.
 
 ## Versions
 
