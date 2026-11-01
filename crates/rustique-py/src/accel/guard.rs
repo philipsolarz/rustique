@@ -236,58 +236,77 @@ impl Default for DepFlag {
     }
 }
 
-/// One pinned `dict[key]` (a module global, a builtin, or one class `__dict__` along an
-/// MRO): intact while the key maps to `expected` (or is absent, for absence pins).
-struct Entry {
-    /// Owner (one target's install), for removal.
+// The tables below are indexed by dict (one slot per watched dict) and, within a dict, by
+// key. A pin is shared by every target that pins the same `(dict, key)`: each target is a
+// `Dep` of the key slot (its own flag, expected value and owner), so registering a pin that
+// another target already has costs a lookup and a push. Flags keep counters of their
+// non-intact deps, so a transition updates a flag in O(1).
+
+type FastMap<K, V> = std::collections::HashMap<K, V, foldhash::fast::FixedState>;
+
+/// One target's interest in a pinned `dict[key]`.
+struct Dep {
     owner: u64,
-    /// The watched dict (strong reference: its address cannot be reused while pinned).
-    dict: usize,
-    /// The key (strong reference to an interned str).
-    key: usize,
+    flag: &'static DepFlag,
     /// The pinned value (strong reference), or 0 to pin "absent".
     expected: usize,
-    flag: &'static DepFlag,
-    /// Holds the expected value right now.
-    intact: bool,
-    /// Never re-arms (the dict was cleared or replaced wholesale, or the class's MRO
-    /// changed).
-    broken: bool,
     /// Attribute pins: the class whose MRO the pin follows (strong ref) and its `tp_mro`
     /// at pin time (identity only); 0 for dict pins.
     ty: usize,
     mro: usize,
+    /// Holds the expected value right now and was never broken.
+    good: bool,
+    broken: bool,
+}
+
+struct KeySlot {
+    /// Interned str key (strong reference).
+    key: usize,
+    deps: Vec<Dep>,
 }
 
 /// A whole-dict snapshot pin: intact while the dict's contents equal the snapshot (keys
 /// by str equality, values by identity). The callback keeps the set of deviating keys.
 struct Snapshot {
     owner: u64,
-    dict: usize,
     flag: &'static DepFlag,
     /// `(key, value)` strong references; keys are exact str.
     snap: Vec<(usize, usize)>,
     /// Keys currently deviating from the snapshot (strong references).
     dev: Vec<usize>,
     broken: bool,
+    good: bool,
 }
 
-/// A generation watch: `gen` is bumped on every change of `dict[key]` (`key` 0: of any key)
-/// and on wholesale changes of the dict. Process lifetime; deduplicated.
+/// A generation watch: `counter` is bumped on every change of `dict[key]` (`key` 0: of any
+/// key) and on wholesale changes of the dict. Process lifetime; deduplicated.
 struct GenWatch {
-    dict: usize,
     key: usize,
     counter: &'static AtomicU64,
+}
+
+struct DictSlot {
+    /// Strong reference: its address cannot be reused while watched.
+    dict: usize,
+    keys: Vec<KeySlot>,
+    snaps: Vec<Snapshot>,
+    gens: Vec<GenWatch>,
 }
 
 /// Deviations beyond this many keys break a snapshot pin (bounded memory).
 const MAX_DEVIATIONS: usize = 64;
 
 #[derive(Default)]
+struct FlagCount {
+    deps: u32,
+    bad: u32,
+}
+
+#[derive(Default)]
 struct Tables {
-    pins: Vec<Entry>,
-    snaps: Vec<Snapshot>,
-    gens: Vec<GenWatch>,
+    dicts: FastMap<usize, DictSlot>,
+    /// Non-intact deps per flag (by address).
+    counts: FastMap<usize, FlagCount>,
     /// Flags whose flips must reach the registry (vectorcall targets: deopt while
     /// unpinned), as addresses.
     tracked: Vec<usize>,
@@ -296,8 +315,7 @@ struct Tables {
 // SAFETY: plain addresses of objects kept alive by the tables' strong references.
 unsafe impl Send for Tables {}
 
-static TABLES: Mutex<Tables> =
-    Mutex::new(Tables { pins: Vec::new(), snaps: Vec::new(), gens: Vec::new(), tracked: Vec::new() });
+static TABLES: Mutex<Option<Tables>> = Mutex::new(None);
 static DICT_WATCHER: AtomicI32 = AtomicI32::new(-1);
 static TYPE_WATCHER: AtomicI32 = AtomicI32::new(-1);
 static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
@@ -321,39 +339,55 @@ pub(crate) enum PendingPin {
     },
 }
 
-impl PendingPin {
-    pub(crate) fn flag(&self) -> &'static DepFlag {
-        match self {
-            PendingPin::Key { flag, .. } | PendingPin::Dict { flag, .. } => flag,
-        }
-    }
-}
-
-/// Recompute `flag` from every pin using it; returns whether its value flipped.
-fn recompute(t: &Tables, flag: &'static DepFlag) -> bool {
-    let all = t.pins.iter().filter(|e| std::ptr::eq(e.flag, flag)).all(|e| e.intact && !e.broken)
-        && t.snaps.iter().filter(|e| std::ptr::eq(e.flag, flag)).all(|e| e.dev.is_empty() && !e.broken);
-    flag.0.swap(all, Ordering::Relaxed) != all
-}
-
-/// Recompute `flags`; if a tracked flag flipped, ask the registry to resynchronise.
-fn recompute_all(t: &Tables, flags: &[&'static DepFlag]) {
-    let mut flipped = false;
-    for f in flags {
-        if recompute(t, f) && t.tracked.contains(&(*f as *const DepFlag as usize)) {
-            flipped = true;
-        }
-    }
-    if flipped {
-        super::registry::schedule_resync();
-    }
-}
-
 /// Lock the tables. Held only for short, Python-free sections (never across a call that
 /// could run Python code, release the GIL or block), so the watcher callbacks may wait on
 /// it.
-fn tables() -> std::sync::MutexGuard<'static, Tables> {
+fn tables() -> std::sync::MutexGuard<'static, Option<Tables>> {
     TABLES.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn flag_addr(f: &'static DepFlag) -> usize {
+    f as *const DepFlag as usize
+}
+
+impl Tables {
+    /// A dep of `flag` was added (`good` or not).
+    fn add_dep(&mut self, flag: &'static DepFlag, good: bool) {
+        let c = self.counts.entry(flag_addr(flag)).or_default();
+        c.deps += 1;
+        c.bad += u32::from(!good);
+        flag.0.store(c.bad == 0, Ordering::Relaxed);
+    }
+
+    /// A dep of `flag` was removed (it was `good` or not).
+    fn remove_dep(&mut self, flag: &'static DepFlag, good: bool) {
+        let a = flag_addr(flag);
+        if let Some(c) = self.counts.get_mut(&a) {
+            c.deps = c.deps.saturating_sub(1);
+            c.bad = c.bad.saturating_sub(u32::from(!good));
+            flag.0.store(c.bad == 0, Ordering::Relaxed);
+            if c.deps == 0 {
+                self.counts.remove(&a);
+            }
+        }
+    }
+
+    /// A dep of `flag` went from `was` to `now`; returns whether the flag flipped.
+    fn transition(&mut self, flag: &'static DepFlag, was: bool, now: bool) -> bool {
+        if was == now {
+            return false;
+        }
+        let Some(c) = self.counts.get_mut(&flag_addr(flag)) else { return false };
+        let before = c.bad == 0;
+        if now {
+            c.bad = c.bad.saturating_sub(1);
+        } else {
+            c.bad += 1;
+        }
+        let after = c.bad == 0;
+        flag.0.store(after, Ordering::Relaxed);
+        before != after && self.tracked.contains(&flag_addr(flag))
+    }
 }
 
 /// `key` (from a dict event) equals the str `ours`. No Python code runs: identity, then
@@ -384,58 +418,68 @@ unsafe extern "C" fn on_dict_event(
         unsafe { super::registry::on_sys_modules_event(event, dict, key, new_value) };
     }
     let wholesale = event > 2; // CLONED, CLEARED, DEALLOCATED
-    let mut t = tables();
-    let mut touched: Vec<&'static DepFlag> = Vec::new();
-    for g in t.gens.iter().filter(|g| g.dict == dict as usize) {
+    let mut guard = tables();
+    let Some(t) = guard.as_mut() else { return 0 };
+    let Some(slot) = t.dicts.get_mut(&(dict as usize)) else { return 0 };
+    let mut changes: Vec<(&'static DepFlag, bool, bool)> = Vec::new();
+    for g in &slot.gens {
         // SAFETY: attached thread; live objects.
         if wholesale || g.key == 0 || unsafe { same_key(key, g.key) } {
             g.counter.fetch_add(1, Ordering::Relaxed);
         }
     }
-    for e in t.pins.iter_mut().filter(|e| e.dict == dict as usize) {
-        if wholesale {
-            e.broken = true;
-            touched.push(e.flag);
+    for ks in slot.keys.iter_mut() {
         // SAFETY: attached thread; live objects.
-        } else if unsafe { same_key(key, e.key) } {
-            e.intact = if event == 2 { e.expected == 0 } else { new_value as usize == e.expected };
-            touched.push(e.flag);
-        }
-    }
-    for e in t.snaps.iter_mut().filter(|e| e.dict == dict as usize) {
-        touched.push(e.flag);
-        if wholesale || e.broken {
-            e.broken = true;
+        if !wholesale && !unsafe { same_key(key, ks.key) } {
             continue;
         }
-        // SAFETY: attached thread; live objects (strong references held by the snapshot).
-        unsafe {
-            let in_snap = e.snap.iter().find(|&&(k, _)| same_key(key, k)).map(|&(_, v)| v);
-            let deviates = match event {
-                2 => in_snap.is_some(),
-                _ => in_snap != Some(new_value as usize),
-            };
-            let pos = e.dev.iter().position(|&k| same_key(key, k));
-            match (deviates, pos) {
-                (true, None) => {
-                    if e.dev.len() >= MAX_DEVIATIONS {
-                        e.broken = true;
-                    } else {
-                        e.dev.push(ffi::Py_NewRef(key) as usize);
-                    }
-                }
-                (false, Some(i)) => {
-                    // Decref of a str key: no Python code runs.
-                    ffi::Py_DECREF(e.dev.swap_remove(i) as *mut _);
-                }
-                _ => {}
+        for d in ks.deps.iter_mut() {
+            let was = d.good;
+            if wholesale {
+                d.broken = true;
             }
+            let intact = !wholesale && if event == 2 { d.expected == 0 } else { new_value as usize == d.expected };
+            d.good = intact && !d.broken;
+            changes.push((d.flag, was, d.good));
         }
     }
-    if !touched.is_empty() {
-        touched.sort_by_key(|f| *f as *const DepFlag as usize);
-        touched.dedup_by_key(|f| *f as *const DepFlag as usize);
-        recompute_all(&t, &touched);
+    for sn in slot.snaps.iter_mut() {
+        let was = sn.good;
+        if wholesale || sn.broken {
+            sn.broken = true;
+        } else {
+            // SAFETY: attached thread; live objects (strong references held by the snapshot).
+            unsafe {
+                let in_snap = sn.snap.iter().find(|&&(k, _)| same_key(key, k)).map(|&(_, v)| v);
+                let deviates = match event {
+                    2 => in_snap.is_some(),
+                    _ => in_snap != Some(new_value as usize),
+                };
+                let pos = sn.dev.iter().position(|&k| same_key(key, k));
+                match (deviates, pos) {
+                    (true, None) => {
+                        if sn.dev.len() >= MAX_DEVIATIONS {
+                            sn.broken = true;
+                        } else {
+                            sn.dev.push(ffi::Py_NewRef(key) as usize);
+                        }
+                    }
+                    // Decref of a str key: no Python code runs.
+                    (false, Some(i)) => ffi::Py_DECREF(sn.dev.swap_remove(i) as *mut _),
+                    _ => {}
+                }
+            }
+        }
+        sn.good = sn.dev.is_empty() && !sn.broken;
+        changes.push((sn.flag, was, sn.good));
+    }
+    let mut flipped = false;
+    for (f, was, now) in changes {
+        flipped |= t.transition(f, was, now);
+    }
+    drop(guard);
+    if flipped {
+        super::registry::schedule_resync();
     }
     0
 }
@@ -444,16 +488,30 @@ unsafe extern "C" fn on_type_event(ty: *mut ffi::PyTypeObject) -> c_int {
     // A class with attribute pins was modified. Attribute changes are seen precisely by the
     // dict watcher on its `__dict__`; here only an MRO change matters (`__bases__`
     // assignment): the pinned lookup path is no longer the one validated.
-    let mut t = tables();
-    let mut touched: Vec<&'static DepFlag> = Vec::new();
-    for e in t.pins.iter_mut().filter(|e| e.ty == ty as usize) {
-        // SAFETY: the entry holds a strong reference to the type.
-        if unsafe { (*ty).tp_mro } as usize != e.mro {
-            e.broken = true;
-            touched.push(e.flag);
+    let mut guard = tables();
+    let Some(t) = guard.as_mut() else { return 0 };
+    let mut changes: Vec<(&'static DepFlag, bool, bool)> = Vec::new();
+    for slot in t.dicts.values_mut() {
+        for ks in slot.keys.iter_mut() {
+            for d in ks.deps.iter_mut().filter(|d| d.ty == ty as usize) {
+                // SAFETY: the dep holds a strong reference to the type.
+                if unsafe { (*ty).tp_mro } as usize != d.mro {
+                    let was = d.good;
+                    d.broken = true;
+                    d.good = false;
+                    changes.push((d.flag, was, false));
+                }
+            }
         }
     }
-    recompute_all(&t, &touched);
+    let mut flipped = false;
+    for (f, was, now) in changes {
+        flipped |= t.transition(f, was, now);
+    }
+    drop(guard);
+    if flipped {
+        super::registry::schedule_resync();
+    }
     0
 }
 
@@ -492,13 +550,21 @@ pub fn watcher_id() -> PyResult<c_int> {
     dict_watcher_id()
 }
 
-fn watch_dict(py: Python<'_>, dict: *mut ffi::PyObject) -> PyResult<()> {
-    let id = dict_watcher_id()?;
-    // SAFETY: attached thread; live dict.
-    if unsafe { ffi::PyDict_Watch(id, dict) } < 0 {
-        return Err(PyErr::fetch(py));
+/// The dict's slot, watching the dict when it is new.
+fn dict_slot<'t>(py: Python<'_>, t: &'t mut Tables, dict: &Bound<'_, PyAny>) -> PyResult<&'t mut DictSlot> {
+    let a = dict.as_ptr() as usize;
+    if !t.dicts.contains_key(&a) {
+        let id = dict_watcher_id()?;
+        // SAFETY: attached thread; live dict.
+        if unsafe { ffi::PyDict_Watch(id, dict.as_ptr()) } < 0 {
+            return Err(PyErr::fetch(py));
+        }
+        t.dicts.insert(
+            a,
+            DictSlot { dict: dict.clone().into_ptr() as usize, keys: Vec::new(), snaps: Vec::new(), gens: Vec::new() },
+        );
     }
-    Ok(())
+    Ok(t.dicts.get_mut(&a).expect("just inserted"))
 }
 
 /// Generation watch: bump `gen` (relaxed) whenever `dict[key]` is added, replaced or
@@ -508,20 +574,15 @@ fn watch_dict(py: Python<'_>, dict: *mut ffi::PyObject) -> PyResult<()> {
 /// Idempotent per `(dict, key, gen)`; lives as long as the process.
 pub fn watch(dict: &Bound<'_, PyDict>, key: &str, gen_: &'static AtomicU64) -> PyResult<()> {
     let py = dict.py();
-    let k = PyString::intern(py, key);
+    let k = super::prepare::interned(py, key);
+    let mut guard = tables();
+    let t = guard.get_or_insert_with(Tables::default);
+    let slot = dict_slot(py, t, dict.as_any())?;
+    // SAFETY: attached thread; live objects.
+    if !slot.gens.iter().any(|g| std::ptr::eq(g.counter, gen_) && g.key != 0 && unsafe { same_key(k.as_ptr(), g.key) })
     {
-        let t = tables();
-        if t.gens.iter().any(|g| {
-            g.dict == dict.as_ptr() as usize
-                && std::ptr::eq(g.counter, gen_)
-                // SAFETY: attached thread; live objects.
-                && unsafe { same_key(k.as_ptr(), g.key) }
-        }) {
-            return Ok(());
-        }
+        slot.gens.push(GenWatch { key: k.into_ptr() as usize, counter: gen_ });
     }
-    watch_dict(py, dict.as_ptr())?;
-    tables().gens.push(GenWatch { dict: dict.clone().into_ptr() as usize, key: k.into_ptr() as usize, counter: gen_ });
     Ok(())
 }
 
@@ -530,78 +591,81 @@ pub fn watch(dict: &Bound<'_, PyDict>, key: &str, gen_: &'static AtomicU64) -> P
 /// (a mapping it scans) between mutations. Idempotent per `(dict, gen)`; process lifetime.
 pub fn watch_dict_generation(dict: &Bound<'_, PyDict>, gen_: &'static AtomicU64) -> PyResult<()> {
     let py = dict.py();
-    {
-        let t = tables();
-        if t.gens.iter().any(|g| g.dict == dict.as_ptr() as usize && g.key == 0 && std::ptr::eq(g.counter, gen_)) {
-            return Ok(());
-        }
+    let mut guard = tables();
+    let t = guard.get_or_insert_with(Tables::default);
+    let slot = dict_slot(py, t, dict.as_any())?;
+    if !slot.gens.iter().any(|g| g.key == 0 && std::ptr::eq(g.counter, gen_)) {
+        slot.gens.push(GenWatch { key: 0, counter: gen_ });
     }
-    watch_dict(py, dict.as_ptr())?;
-    tables().gens.push(GenWatch { dict: dict.clone().into_ptr() as usize, key: 0, counter: gen_ });
     Ok(())
 }
 
-/// Activate `pins` under a new owner id; returns the owner id. Each pin's state is read now
-/// (a change between `prepare` and install shows as a deviation).
+/// Activate `pins` under a new owner id; returns the owner id. Pins already held by other
+/// targets are shared (one key slot per `(dict, key)`). Each pin's state is read now (a
+/// change between `prepare` and install shows as a deviation).
 pub(crate) fn activate(py: Python<'_>, pins: Vec<PendingPin>) -> PyResult<u64> {
     let owner = NEXT_OWNER.fetch_add(1, Ordering::Relaxed);
     if pins.is_empty() {
         return Ok(owner);
     }
-    for p in &pins {
-        match p {
-            PendingPin::Key { dict, ty, .. } => {
-                watch_dict(py, dict.as_ptr())?;
-                if let Some(ty) = ty {
-                    let tid = type_watcher_id()?;
-                    // SAFETY: attached thread; live type.
-                    if unsafe { PyType_Watch(tid, ty.as_ptr()) } < 0 {
-                        return Err(PyErr::fetch(py));
-                    }
-                }
-            }
-            PendingPin::Dict { dict, .. } => watch_dict(py, dict.as_ptr())?,
-        }
-    }
-    let mut new_pins = Vec::new();
-    let mut new_snaps = Vec::new();
-    let mut flags = Vec::new();
+    let mut guard = tables();
+    let t = guard.get_or_insert_with(Tables::default);
     for p in pins {
-        flags.push(p.flag());
         match p {
             PendingPin::Key { dict, key, expected, flag, ty } => {
-                let cur = dict.bind(py).get_item(key.bind(py))?;
+                let d = dict.bind(py);
+                // Current value (exact dict, interned str key: no Python code, cached hash).
+                let mut cur: *mut ffi::PyObject = std::ptr::null_mut();
+                // SAFETY: attached thread; live dict and key.
+                if unsafe { ffi::PyDict_GetItemRef(d.as_ptr(), key.as_ptr(), &mut cur) } < 0 {
+                    return Err(PyErr::fetch(py));
+                }
                 let exp = expected.as_ref().map_or(0, |o| o.as_ptr() as usize);
-                let intact = cur.as_ref().map_or(0, |c| c.as_ptr() as usize) == exp;
-                let (ty, mro) = match ty {
-                    Some(t) => {
+                let good = cur as usize == exp;
+                // SAFETY: the new reference from PyDict_GetItemRef (or NULL).
+                unsafe { ffi::Py_XDECREF(cur) };
+                let (tyaddr, mro) = match &ty {
+                    Some(tp) => {
+                        let tid = type_watcher_id()?;
+                        // SAFETY: attached thread; live type.
+                        if unsafe { PyType_Watch(tid, tp.as_ptr()) } < 0 {
+                            return Err(PyErr::fetch(py));
+                        }
                         // SAFETY: live type object.
-                        let mro = unsafe { (*t.as_ptr().cast::<ffi::PyTypeObject>()).tp_mro } as usize;
-                        (t.into_ptr() as usize, mro)
+                        let mro = unsafe { (*tp.as_ptr().cast::<ffi::PyTypeObject>()).tp_mro } as usize;
+                        (tp.clone_ref(py).into_ptr() as usize, mro)
                     }
                     None => (0, 0),
                 };
-                new_pins.push(Entry {
+                let slot = dict_slot(py, t, d.as_any())?;
+                let kp = key.as_ptr() as usize;
+                // SAFETY: attached thread; live str keys.
+                let ks = match slot.keys.iter().position(|k| unsafe { same_key(key.as_ptr(), k.key) }) {
+                    Some(i) => &mut slot.keys[i],
+                    None => {
+                        slot.keys.push(KeySlot { key: key.clone_ref(py).into_ptr() as usize, deps: Vec::new() });
+                        slot.keys.last_mut().expect("just pushed")
+                    }
+                };
+                let _ = kp;
+                ks.deps.push(Dep {
                     owner,
-                    dict: dict.into_ptr() as usize,
-                    key: key.into_ptr() as usize,
-                    expected: expected.map_or(0, |o| o.into_ptr() as usize),
                     flag,
-                    intact,
-                    broken: false,
-                    ty,
+                    expected: expected.map_or(0, |o| o.into_ptr() as usize),
+                    ty: tyaddr,
                     mro,
+                    good,
+                    broken: false,
                 });
+                t.add_dep(flag, good);
             }
             PendingPin::Dict { dict, snap, flag } => {
-                // Deviations of the current contents from the prepare-time snapshot.
                 let d = dict.bind(py);
                 let mut dev = Vec::new();
                 for (k, v) in d.iter() {
                     let same = snap.iter().any(|(sk, sv)| {
                         sv.as_ptr() == v.as_ptr()
-                            // SAFETY: attached thread; same_key runs no Python code (identity,
-                            // then exact-str comparison).
+                            // SAFETY: attached thread; same_key runs no Python code.
                             && unsafe { same_key(k.as_ptr(), sk.as_ptr() as usize) }
                     });
                     if !same {
@@ -614,31 +678,29 @@ pub(crate) fn activate(py: Python<'_>, pins: Vec<PendingPin>) -> PyResult<u64> {
                     }
                 }
                 let broken = dev.len() > MAX_DEVIATIONS;
-                new_snaps.push(Snapshot {
+                let good = dev.is_empty() && !broken;
+                let slot = dict_slot(py, t, d.as_any())?;
+                slot.snaps.push(Snapshot {
                     owner,
-                    dict: dict.into_ptr() as usize,
                     flag,
                     snap: snap.into_iter().map(|(k, v)| (k.into_ptr() as usize, v.into_ptr() as usize)).collect(),
                     dev,
                     broken,
+                    good,
                 });
+                t.add_dep(flag, good);
             }
         }
-    }
-    let mut t = tables();
-    t.pins.extend(new_pins);
-    t.snaps.extend(new_snaps);
-    for f in &flags {
-        recompute(&t, f);
     }
     Ok(owner)
 }
 
 /// Report flips of `flags` to the registry (deopt while unpinned), or stop.
 pub(crate) fn track(flags: &[&'static DepFlag], on: bool) {
-    let mut t = tables();
+    let mut guard = tables();
+    let t = guard.get_or_insert_with(Tables::default);
     for f in flags {
-        let a = *f as *const DepFlag as usize;
+        let a = flag_addr(f);
         if on {
             t.tracked.push(a);
         } else if let Some(i) = t.tracked.iter().position(|&x| x == a) {
@@ -647,75 +709,88 @@ pub(crate) fn track(flags: &[&'static DepFlag], on: bool) {
     }
 }
 
-/// Remove the pins of `owner`, unwatching dicts and types left without any watch.
+/// Remove the pins of `owner`; key slots, dicts and types left without any interest are
+/// released and unwatched.
 pub(crate) fn deactivate(owner: u64) {
-    let (pins, snaps): (Vec<Entry>, Vec<Snapshot>) = {
-        let mut t = tables();
-        let (gone, kept): (Vec<Entry>, Vec<Entry>) =
-            std::mem::take(&mut t.pins).into_iter().partition(|e| e.owner == owner);
-        t.pins = kept;
-        let (sgone, skept): (Vec<Snapshot>, Vec<Snapshot>) =
-            std::mem::take(&mut t.snaps).into_iter().partition(|e| e.owner == owner);
-        t.snaps = skept;
-        let flags: Vec<&'static DepFlag> = gone.iter().map(|e| e.flag).chain(sgone.iter().map(|e| e.flag)).collect();
-        for f in flags {
-            recompute(&t, f);
-        }
-        (gone, sgone)
-    };
-    let mut dicts: Vec<usize> = pins.iter().map(|e| e.dict).chain(snaps.iter().map(|e| e.dict)).collect();
-    dicts.sort_unstable();
-    dicts.dedup();
-    let mut types: Vec<usize> = pins.iter().filter(|e| e.ty != 0).map(|e| e.ty).collect();
-    types.sort_unstable();
-    types.dedup();
+    let mut release: Vec<usize> = Vec::new();
+    let mut unwatch_dicts: Vec<usize> = Vec::new();
+    let mut types: Vec<usize> = Vec::new();
     {
-        let t = tables();
+        let mut guard = tables();
+        let Some(t) = guard.as_mut() else { return };
+        let mut removed: Vec<(&'static DepFlag, bool)> = Vec::new();
         let sys_modules = SYS_MODULES.load(Ordering::Relaxed);
-        for &d in &dicts {
-            let used = d == sys_modules
-                || t.pins.iter().any(|e| e.dict == d)
-                || t.snaps.iter().any(|e| e.dict == d)
-                || t.gens.iter().any(|e| e.dict == d);
-            let id = DICT_WATCHER.load(Ordering::Acquire);
-            // SAFETY: attached thread; the dict is alive (strong references below).
-            if !used && id >= 0 && unsafe { PyDict_Unwatch(id, d as *mut _) } < 0 {
-                // SAFETY: attached thread.
-                unsafe { ffi::PyErr_Clear() };
+        t.dicts.retain(|_, slot| {
+            for ks in slot.keys.iter_mut() {
+                ks.deps.retain(|d| {
+                    if d.owner != owner {
+                        return true;
+                    }
+                    removed.push((d.flag, d.good));
+                    if d.expected != 0 {
+                        release.push(d.expected);
+                    }
+                    if d.ty != 0 {
+                        types.push(d.ty);
+                    }
+                    false
+                });
             }
-        }
-        for &ty in &types {
-            let id = TYPE_WATCHER.load(Ordering::Acquire);
-            // SAFETY: attached thread; the type is alive (strong references below).
-            if !t.pins.iter().any(|e| e.ty == ty) && id >= 0 && unsafe { PyType_Unwatch(id, ty as *mut _) } < 0 {
-                // SAFETY: attached thread.
-                unsafe { ffi::PyErr_Clear() };
+            slot.keys.retain(|ks| {
+                if ks.deps.is_empty() {
+                    release.push(ks.key);
+                    false
+                } else {
+                    true
+                }
+            });
+            slot.snaps.retain(|sn| {
+                if sn.owner != owner {
+                    return true;
+                }
+                removed.push((sn.flag, sn.good));
+                for &(k, v) in &sn.snap {
+                    release.push(k);
+                    release.push(v);
+                }
+                release.extend(sn.dev.iter().copied());
+                false
+            });
+            let keep = !slot.keys.is_empty() || !slot.snaps.is_empty() || !slot.gens.is_empty();
+            if !keep {
+                if slot.dict != sys_modules {
+                    unwatch_dicts.push(slot.dict);
+                }
+                release.push(slot.dict);
             }
+            keep
+        });
+        for (f, good) in removed {
+            t.remove_dep(f, good);
         }
+        // Types still pinned by someone stay watched.
+        types.retain(|ty| !t.dicts.values().any(|s| s.keys.iter().any(|k| k.deps.iter().any(|d| d.ty == *ty))));
     }
     // SAFETY: attached thread (callers hold the registry lock); releasing the strong
     // references taken at activation, outside the tables lock (a value's finalizer may
     // run Python code).
     unsafe {
-        for e in pins {
-            ffi::Py_DECREF(e.dict as *mut _);
-            ffi::Py_DECREF(e.key as *mut _);
-            if e.expected != 0 {
-                ffi::Py_DECREF(e.expected as *mut _);
-            }
-            if e.ty != 0 {
-                ffi::Py_DECREF(e.ty as *mut _);
+        let did = DICT_WATCHER.load(Ordering::Acquire);
+        for d in unwatch_dicts {
+            if did >= 0 && PyDict_Unwatch(did, d as *mut _) < 0 {
+                ffi::PyErr_Clear();
             }
         }
-        for e in snaps {
-            ffi::Py_DECREF(e.dict as *mut _);
-            for (k, v) in e.snap {
-                ffi::Py_DECREF(k as *mut _);
-                ffi::Py_DECREF(v as *mut _);
+        let tid = TYPE_WATCHER.load(Ordering::Acquire);
+        types.sort_unstable();
+        types.dedup();
+        for ty in types {
+            if tid >= 0 && PyType_Unwatch(tid, ty as *mut _) < 0 {
+                ffi::PyErr_Clear();
             }
-            for k in e.dev {
-                ffi::Py_DECREF(k as *mut _);
-            }
+        }
+        for o in release {
+            ffi::Py_DECREF(o as *mut _);
         }
     }
 }
@@ -723,42 +798,49 @@ pub(crate) fn deactivate(owner: u64) {
 /// Pin state of `owner` for diagnostics: (key, absent-pin, intact, broken); snapshot pins
 /// show as `("<dict>", false, no deviation, broken)`.
 pub(crate) fn describe(py: Python<'_>, owner: u64) -> Vec<(String, bool, bool, bool)> {
-    let t = tables();
-    let mut out: Vec<(String, bool, bool, bool)> = t
-        .pins
-        .iter()
-        .filter(|e| e.owner == owner)
-        .map(|e| {
-            // SAFETY: live str key (strong reference held by the entry).
-            let k = unsafe { Bound::from_borrowed_ptr(py, e.key as *mut ffi::PyObject) }.to_string();
-            (k, e.expected == 0, e.intact, e.broken)
-        })
-        .collect();
-    out.extend(
-        t.snaps.iter().filter(|e| e.owner == owner).map(|e| ("<dict>".to_owned(), false, e.dev.is_empty(), e.broken)),
-    );
+    let guard = tables();
+    let Some(t) = guard.as_ref() else { return Vec::new() };
+    let mut out = Vec::new();
+    for slot in t.dicts.values() {
+        for ks in &slot.keys {
+            for d in ks.deps.iter().filter(|d| d.owner == owner) {
+                // SAFETY: live str key (strong reference held by the slot).
+                let k = unsafe { Bound::from_borrowed_ptr(py, ks.key as *mut ffi::PyObject) }.to_string();
+                out.push((k, d.expected == 0, d.good, d.broken));
+            }
+        }
+        for sn in slot.snaps.iter().filter(|s| s.owner == owner) {
+            out.push(("<dict>".to_owned(), false, sn.dev.is_empty(), sn.broken));
+        }
+    }
     out
 }
 
 /// Flags of `owner`'s pins.
 pub(crate) fn flags_of(owner: u64) -> Vec<&'static DepFlag> {
-    let t = tables();
-    let mut v: Vec<&'static DepFlag> = t
-        .pins
-        .iter()
-        .filter(|e| e.owner == owner)
-        .map(|e| e.flag)
-        .chain(t.snaps.iter().filter(|e| e.owner == owner).map(|e| e.flag))
-        .collect();
-    v.sort_by_key(|f| *f as *const DepFlag as usize);
-    v.dedup_by_key(|f| *f as *const DepFlag as usize);
+    let guard = tables();
+    let Some(t) = guard.as_ref() else { return Vec::new() };
+    let mut v: Vec<&'static DepFlag> = Vec::new();
+    for slot in t.dicts.values() {
+        for ks in &slot.keys {
+            v.extend(ks.deps.iter().filter(|d| d.owner == owner).map(|d| d.flag));
+        }
+        v.extend(slot.snaps.iter().filter(|s| s.owner == owner).map(|s| s.flag));
+    }
+    v.sort_by_key(|f| flag_addr(f));
+    v.dedup_by_key(|f| flag_addr(f));
     v
 }
 
 /// Watch `sys.modules` for lazy activation (idempotent).
 pub(crate) fn watch_sys_modules(py: Python<'_>, sys_modules: &Bound<'_, PyAny>) -> PyResult<()> {
     SYS_MODULES.store(sys_modules.as_ptr() as usize, Ordering::Relaxed);
-    watch_dict(py, sys_modules.as_ptr())
+    let id = dict_watcher_id()?;
+    // SAFETY: attached thread; live dict.
+    if unsafe { ffi::PyDict_Watch(id, sys_modules.as_ptr()) } < 0 {
+        return Err(PyErr::fetch(py));
+    }
+    Ok(())
 }
 
 /// Stop watching `sys.modules` (nothing pending), unless something else watches it.
@@ -766,14 +848,8 @@ pub(crate) fn unwatch_sys_modules() {
     let d = SYS_MODULES.load(Ordering::Relaxed);
     let id = DICT_WATCHER.load(Ordering::Acquire);
     if d != 0 && id >= 0 {
-        {
-            let t = tables();
-            if t.pins.iter().any(|e| e.dict == d)
-                || t.snaps.iter().any(|e| e.dict == d)
-                || t.gens.iter().any(|e| e.dict == d)
-            {
-                return;
-            }
+        if tables().as_ref().is_some_and(|t| t.dicts.contains_key(&d)) {
+            return;
         }
         // SAFETY: attached thread (callers hold the registry lock); `sys.modules` lives as
         // long as the interpreter.
@@ -794,7 +870,7 @@ pub fn pin(dict: &Bound<'_, PyDict>, key: &str, flag: &'static DepFlag) -> PyRes
         py,
         vec![PendingPin::Key {
             dict: dict.clone().unbind(),
-            key: PyString::intern(py, key).unbind(),
+            key: super::prepare::interned(py, key).unbind(),
             expected: Some(value.unbind()),
             flag,
             ty: None,

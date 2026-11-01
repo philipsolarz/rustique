@@ -187,6 +187,30 @@ check` (dx) and `rustique._takeover` (native tier, compatibility) are thin wrapp
 
 ## 7. Measured
 
+**Install-time cost per primitive** (`benches/accel_primitives.py`, callgrind regions,
+3.15.1 dev-release; before → after the wave-1 trimming):
+
+| primitive | before | after |
+|---|---:|---:|
+| `fingerprint_code` per function (format v2: raw fields, word hash; cached for the process) | ~23k, unbounded with nested constants | 4.9k (`posixpath.join`), 6.5k (`json.dumps`), once per process |
+| `fingerprint_c` per C original | 3.3k | 2.1k |
+| `_PyFunction_Vectorcall` discovery | 140k (compiled a probe) | ~5k, once |
+| code-layout check | 10.9k per vectorcall site | once per process |
+| one vectorcall target + 1 pin, steady `enable()` | 21k | 16k (≈6k of it the target) |
+| each additional pin (incl. its lookup) | quadratic re-scan, a new `str` per key | ≈3.2k; shared per `(dict, key)` across targets, O(1) flag counters |
+| `status()` inside `_accel.enable()` | always built (~13k Ir per target) | only with `quiet=False` |
+| first `enable()` of a process with a module target | 174k | 64k |
+| groups `containers` (7 ml_meth/slot) / `builtins` (6), first enable | 123k / 60k | 109k / 63k |
+
+Lazy install of one Python-function target on its module's import: +61k Ir (was +171k).
+`Prepare::memo(key, f)` lets a group validate shared dependencies once per pass;
+identical pins of several targets share one watch slot.
+
+**3.14 note (from paths)**: on 3.14, `LOAD_ATTR_PROPERTY` inlines a property's getter
+without checking the function's version, so a vectorcall site on a property getter is
+never reached from specialized attribute loads: property targets are 3.15-only.
+
+
 **Per-call costs** (docs/atlas/mechanisms.md §1, unchanged): `ml_meth`/slot fallback +2 Ir,
 counters +3 Ir when off, tools guard 34 + ~4 Ir, a dependency flag one relaxed load, a
 vectorcall fallback +180–260 Ir (+250–350 under the JIT; hence deopt-while-unpinned and

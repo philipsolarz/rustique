@@ -331,6 +331,7 @@ fn activate_module(
         }
     }
     refresh_pending(reg);
+    prepare::clear_pass_caches();
     ml
 }
 
@@ -498,14 +499,18 @@ fn refresh_pending(reg: &Registry) {
 // ---------------------------------------------------------------------------------------
 
 fn jit_enabled(py: Python<'_>) -> bool {
-    // SAFETY: borrowed lookup in the sys module dict.
-    let jit = unsafe { ffi::PySys_GetObject(c"_jit".as_ptr()) };
-    if jit.is_null() {
-        return false;
-    }
-    // SAFETY: live borrowed object.
-    let jit = unsafe { Bound::from_borrowed_ptr(py, jit) };
-    jit.call_method0("is_enabled").and_then(|r| r.is_truthy()).unwrap_or(false)
+    // The JIT is chosen at startup (PYTHON_JIT) and cannot be switched on later.
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        // SAFETY: borrowed lookup in the sys module dict.
+        let jit = unsafe { ffi::PySys_GetObject(c"_jit".as_ptr()) };
+        if jit.is_null() {
+            return false;
+        }
+        // SAFETY: live borrowed object.
+        let jit = unsafe { Bound::from_borrowed_ptr(py, jit) };
+        jit.call_method0("is_enabled").and_then(|r| r.is_truthy()).unwrap_or(false)
+    })
 }
 
 static JIT: AtomicBool = AtomicBool::new(false);
@@ -722,6 +727,7 @@ pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -
     }
     let mut g = REG.lock(py)?;
     let reg = registry(&mut g);
+    prepare::clear_pass_caches();
     JIT.store(jit_enabled(py), Ordering::Relaxed);
     let sys_modules = prepare::sys_modules(py).map_err(|r| PyRuntimeError::new_err(r.reason().to_owned()))?;
     let mut ml = false;
@@ -740,7 +746,7 @@ pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -
         match spec.module {
             None => ml |= activate(py, reg, i, None, true),
             Some(name) => {
-                let m = sys_modules.get_item(name)?.and_then(|m| m.cast_into::<PyModule>().ok());
+                let m = sys_modules.get_item(prepare::interned(py, name))?.and_then(|m| m.cast_into::<PyModule>().ok());
                 match m {
                     Some(m) if !prepare::module_initializing(&m) => ml |= activate(py, reg, i, Some(m), true),
                     _ => {
@@ -760,6 +766,7 @@ pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -
     }
     refresh_pending(reg);
     ml |= drain_deferred(py, reg);
+    prepare::clear_pass_caches();
     drop(g);
     if ml {
         clear_internal_caches();

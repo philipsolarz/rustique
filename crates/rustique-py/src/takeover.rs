@@ -37,7 +37,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicPtr;
 
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::sync::critical_section::with_critical_section;
@@ -815,25 +815,41 @@ static ORIG_TUPLE_COUNT: Original<OFn> = Original::new();
 static ORIG_LIST_CONTAINS: Original<ContainsFn> = Original::new();
 static ORIG_TUPLE_CONTAINS: Original<ContainsFn> = Original::new();
 
-/// Exception messages of the original `index` methods, captured at the first install. Kept
-/// as C strings, not Python objects: the patched tables are process-global, so kernels
-/// also run in subinterpreters, which must never share objects with the main interpreter.
+/// Exception messages of the original `index` methods, captured from the original's own
+/// `ValueError` at the first miss (which the original handles). Kept as C strings, not
+/// Python objects: the patched tables are process-global, so kernels also run in
+/// subinterpreters, which must never share objects with the main interpreter.
 static LIST_INDEX_MSG: OnceLock<std::ffi::CString> = OnceLock::new();
 static TUPLE_INDEX_MSG: OnceLock<std::ffi::CString> = OnceLock::new();
 
-#[inline(always)]
-fn index_msg(cell: &'static OnceLock<std::ffi::CString>) -> &'static CStr {
-    match cell.get() {
-        Some(m) => m,
-        None => unreachable_originals(),
-    }
-}
-
+/// Record the message of the `ValueError` the original just raised (left raised).
+///
+/// # Safety
+/// Attached thread, an exception set by the original.
 #[cold]
-fn unreachable_originals() -> ! {
-    // Kernels are installed strictly after the messages were captured; abort rather than
-    // unwind across the C boundary if that invariant were ever broken.
-    std::process::abort()
+unsafe fn capture_index_message(cell: &'static OnceLock<std::ffi::CString>) {
+    // SAFETY: per the caller; str() of an exact ValueError runs no Python code.
+    unsafe {
+        let exc = ffi::PyErr_GetRaisedException();
+        if !exc.is_null() && ffi::Py_TYPE(exc) == ffi::PyExc_ValueError.cast() {
+            let s = ffi::PyObject_Str(exc);
+            if s.is_null() {
+                ffi::PyErr_Clear();
+            } else {
+                let mut len: ffi::Py_ssize_t = 0;
+                let p = ffi::PyUnicode_AsUTF8AndSize(s, &mut len);
+                if p.is_null() {
+                    ffi::PyErr_Clear();
+                } else if let Ok(c) =
+                    std::ffi::CString::new(std::slice::from_raw_parts(p.cast::<u8>(), len as usize).to_vec())
+                {
+                    let _ = cell.set(c);
+                }
+                ffi::Py_DECREF(s);
+            }
+        }
+        ffi::PyErr_SetRaisedException(exc);
+    }
 }
 
 static C_LIST_SORT: Counters = Counters::new();
@@ -1055,6 +1071,36 @@ unsafe fn index_result(r: Result<Option<isize>, ()>, msg: &CStr) -> *mut ffi::Py
     }
 }
 
+/// `index` after a decided scan: the result, or for a miss CPython's own `ValueError`
+/// (the first miss runs the original, which raises it, and its message is recorded).
+///
+/// # Safety
+/// Attached thread; the kernel's own METH_FASTCALL arguments.
+#[inline(always)]
+unsafe fn index_done(
+    r: Result<Option<isize>, ()>,
+    cell: &'static OnceLock<std::ffi::CString>,
+    original: FastFn,
+    slf: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+) -> *mut ffi::PyObject {
+    // SAFETY: per the caller.
+    unsafe {
+        match cell.get() {
+            Some(msg) => index_result(r, msg),
+            None if matches!(r, Ok(None)) => {
+                let res = original(slf, args, nargs);
+                if res.is_null() {
+                    capture_index_message(cell);
+                }
+                res
+            }
+            None => index_result(r, c""),
+        }
+    }
+}
+
 unsafe extern "C" fn k_list_index(
     slf: *mut ffi::PyObject,
     args: *const *mut ffi::PyObject,
@@ -1067,8 +1113,8 @@ unsafe extern "C" fn k_list_index(
             unsafe { list_prelude(slf, *args, Scan::First).unwrap_or_else(|| scan_list_slow(slf, *args, Scan::First)) };
         if let Outcome::Done(r) = outcome {
             C_LIST_INDEX.hit();
-            // SAFETY: attached thread.
-            return unsafe { index_result(r, index_msg(&LIST_INDEX_MSG)) };
+            // SAFETY: attached thread; the kernel's own arguments.
+            return unsafe { index_done(r, &LIST_INDEX_MSG, ORIG_LIST_INDEX.get(), slf, args, nargs) };
         }
     }
     C_LIST_INDEX.fallback(Reason::Args);
@@ -1089,8 +1135,8 @@ unsafe extern "C" fn k_tuple_index(
         };
         if let Outcome::Done(r) = outcome {
             C_TUPLE_INDEX.hit();
-            // SAFETY: attached thread.
-            return unsafe { index_result(r, index_msg(&TUPLE_INDEX_MSG)) };
+            // SAFETY: attached thread; the kernel's own arguments.
+            return unsafe { index_done(r, &TUPLE_INDEX_MSG, ORIG_TUPLE_INDEX.get(), slf, args, nargs) };
         }
     }
     C_TUPLE_INDEX.fallback(Reason::Args);
@@ -1414,11 +1460,11 @@ unsafe extern "C" fn k_list_sort(
 const VERSIONS: &[(u8, u8)] = &[(3, 14), (3, 15)];
 
 // Fingerprints of the C originals (`ml_name`, `ml_flags`, `ml_doc`), recorded with
-// `python -m rustique._takeover._dev fingerprint list.sort ...` (identical on 3.14.9,
-// 3.14.9t, 3.15.1 and 3.15.1t).
-const FP_SORT: accel::Fingerprints = &[(3, 14, "c354345b57a6339c"), (3, 15, "c354345b57a6339c")];
-const FP_INDEX: accel::Fingerprints = &[(3, 14, "41ad5dad780407da"), (3, 15, "41ad5dad780407da")];
-const FP_COUNT: accel::Fingerprints = &[(3, 14, "dccd1a56f428a482"), (3, 15, "dccd1a56f428a482")];
+// `python -m rustique._takeover._dev fingerprint list.sort ...` (format v2; identical on
+// 3.14.9, 3.14.9t, 3.15.1 and 3.15.1t).
+const FP_SORT: accel::Fingerprints = &[(3, 14, "e8c0ba48a89aa585"), (3, 15, "e8c0ba48a89aa585")];
+const FP_INDEX: accel::Fingerprints = &[(3, 14, "e401ffbd097a7175"), (3, 15, "e401ffbd097a7175")];
+const FP_COUNT: accel::Fingerprints = &[(3, 14, "e0cac92256fa864d"), (3, 15, "e0cac92256fa864d")];
 
 /// The method descriptor `ty.name`, checked for the expected `ml_name` and `ml_flags`.
 fn method<'py>(ty: &Bound<'py, pyo3::types::PyType>, name: &CStr, flags: c_int) -> Result<Bound<'py, PyAny>, Refusal> {
@@ -1465,12 +1511,7 @@ fn prepare_list_index(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusa
     calibrate(py)?;
     let m = method(&py.get_type::<PyList>(), c"index", ffi::METH_FASTCALL)?;
     cx.fingerprint_c(&m, FP_INDEX)?;
-    cx.ml_meth(&m, k_list_index as FastFn, &ORIG_LIST_INDEX)?;
-    if LIST_INDEX_MSG.get().is_none() {
-        let msg = index_message(py, ORIG_LIST_INDEX.get(), PyList::empty(py).as_any())?;
-        let _ = LIST_INDEX_MSG.set(msg);
-    }
-    Ok(())
+    cx.ml_meth(&m, k_list_index as FastFn, &ORIG_LIST_INDEX)
 }
 
 fn prepare_list_count(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
@@ -1484,12 +1525,7 @@ fn prepare_tuple_index(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refus
     calibrate(py)?;
     let m = method(&py.get_type::<PyTuple>(), c"index", ffi::METH_FASTCALL)?;
     cx.fingerprint_c(&m, FP_INDEX)?;
-    cx.ml_meth(&m, k_tuple_index as FastFn, &ORIG_TUPLE_INDEX)?;
-    if TUPLE_INDEX_MSG.get().is_none() {
-        let msg = index_message(py, ORIG_TUPLE_INDEX.get(), PyTuple::empty(py).as_any())?;
-        let _ = TUPLE_INDEX_MSG.set(msg);
-    }
-    Ok(())
+    cx.ml_meth(&m, k_tuple_index as FastFn, &ORIG_TUPLE_INDEX)
 }
 
 fn prepare_tuple_count(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
@@ -1535,25 +1571,6 @@ target!(TUPLE_CONTAINS, "tuple.__contains__", C_TUPLE_CONTAINS, prepare_tuple_co
 /// The `containers` group.
 pub static TARGETS: &[&TargetSpec] =
     &[&LIST_SORT, &LIST_INDEX, &LIST_COUNT, &TUPLE_INDEX, &TUPLE_COUNT, &LIST_CONTAINS, &TUPLE_CONTAINS];
-
-/// Capture the `ValueError` message the original `index` raises for a missing value.
-fn index_message(py: Python<'_>, original: FastFn, seq: &Bound<'_, PyAny>) -> PyResult<std::ffi::CString> {
-    let missing = PyTuple::empty(py); // never equal to an element of an empty sequence
-    let argv = [missing.as_ptr()];
-    // SAFETY: calling the original METH_FASTCALL function with one argument.
-    let r = unsafe { original(seq.as_ptr(), argv.as_ptr(), 1) };
-    if !r.is_null() {
-        // SAFETY: owned reference returned by the call.
-        unsafe { ffi::Py_DECREF(r) };
-        return Err(PyRuntimeError::new_err("index() of an empty sequence did not raise"));
-    }
-    let err = PyErr::fetch(py);
-    if !err.is_instance_of::<PyValueError>(py) {
-        return Err(err);
-    }
-    let text = err.value(py).str()?.to_string();
-    std::ffi::CString::new(text).map_err(|e| PyRuntimeError::new_err(e.to_string()))
-}
 
 /// Sanity-check the raw int/float layouts against the running interpreter.
 fn layouts_ok(py: Python<'_>) -> PyResult<bool> {
