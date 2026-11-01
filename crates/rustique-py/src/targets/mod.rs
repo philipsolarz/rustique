@@ -11,16 +11,16 @@ pub mod _selftest;
 pub mod builtins;
 pub mod containers;
 pub mod float;
+pub mod fnmatch;
 pub mod json;
 pub mod logging;
+pub mod pathlib;
+pub mod posixpath;
 pub mod random;
 pub mod statistics;
 pub mod textwrap;
 pub mod urllib;
 pub mod utils_kit;
-pub mod fnmatch;
-pub mod pathlib;
-pub mod posixpath;
 
 /// Every group's targets, in install order.
 pub static ALL: &[&[&TargetSpec]] = &[
