@@ -37,17 +37,21 @@ CELLS = [
 
 
 def run(group: str, stmt: str, enabled: bool, fast: bool) -> float:
+    import os
+    import tempfile
+
+    import pyperf
+
     setup = SETUP
     if enabled:
-        setup = f"import rustique._takeover as _rt; _rt.enable(only=[{group!r}])\n" + setup
-    cmd = [sys.executable, "-m", "pyperf", "timeit", "-q", "--json", "-s", setup, stmt]
-    if fast:
-        cmd.insert(4, "--fast")
-    out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
-    data = json.loads(out)
-    values = [v for run in data["benchmarks"][0]["runs"] for v in run.get("values", [])]
-    values.sort()
-    return values[len(values) // 2]
+        setup = f"import rustique; rustique.enable(only=[{group!r}])\n" + setup
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "b.json")
+        cmd = [sys.executable, "-m", "pyperf", "timeit", "-q", "-o", out, "-s", setup, stmt]
+        if fast:
+            cmd.insert(4, "--fast")
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return pyperf.Benchmark.load(out).median()
 
 
 def main() -> None:
