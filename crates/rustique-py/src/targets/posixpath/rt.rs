@@ -560,3 +560,70 @@ pub unsafe fn str_like(op: O) -> bool {
     // SAFETY: per the caller.
     unsafe { exact_str(op) || (ffi::PyUnicode_Check(op) != 0 && plain_str_subclass(op)) }
 }
+
+// ---------------------------------------------------------------------------------------
+// Kernel skeleton
+// ---------------------------------------------------------------------------------------
+
+/// Sentinels a kernel body returns for "guard failed" (never valid object pointers).
+pub const GUARD_DEPS: O = 1 as O;
+pub const GUARD_TOOLS: O = 2 as O;
+
+/// `Some(sentinel)` when a guard fails.
+///
+/// # Safety
+/// Attached thread; `func` is the patched function.
+#[inline(always)]
+pub unsafe fn guards(rt: &Rt, func: O) -> Option<O> {
+    // SAFETY: attached thread.
+    match unsafe { rt.ready(func) } {
+        Ok(()) => None,
+        Err(Reason::Deps) => Some(GUARD_DEPS),
+        Err(_) => Some(GUARD_TOOLS),
+    }
+}
+
+/// A vectorcall kernel: the body evaluates to `None` (outside the exact subset: decline
+/// before anything observable), `Some(GUARD_*)` (a guard failed), `Some(null)` (an error
+/// before anything observable: cleared, CPython re-runs and raises), or `Some(result)`.
+/// Successful results go through check mode when it is on.
+#[macro_export]
+macro_rules! paths_kernel {
+    ($name:ident, $rt:ident, $spec:ident, |$func:ident, $args:ident, $nargsf:ident, $n:ident, $kw:ident| $body:expr) => {
+        // The body is the kernel's own code (one unsafe region per kernel).
+        #[allow(clippy::macro_metavars_in_unsafe)]
+        unsafe extern "C" fn $name(
+            $func: *mut pyo3::ffi::PyObject,
+            $args: *const *mut pyo3::ffi::PyObject,
+            $nargsf: usize,
+            $kw: *mut pyo3::ffi::PyObject,
+        ) -> *mut pyo3::ffi::PyObject {
+            use $crate::accel::Reason;
+            use $crate::targets::posixpath::rt::{GUARD_DEPS, GUARD_TOOLS};
+            // SAFETY: vectorcall arguments from CPython; attached thread.
+            unsafe {
+                let $n = $crate::targets::posixpath::rt::nargs($nargsf);
+                let r: Option<*mut pyo3::ffi::PyObject> = $body;
+                match r {
+                    None => $rt.fallback(Reason::Args, $func, $args, $nargsf, $kw),
+                    Some(r) if r == GUARD_DEPS => $rt.fallback(Reason::Deps, $func, $args, $nargsf, $kw),
+                    Some(r) if r == GUARD_TOOLS => $rt.fallback(Reason::Tools, $func, $args, $nargsf, $kw),
+                    Some(r) if r.is_null() => {
+                        pyo3::ffi::PyErr_Clear();
+                        $rt.fallback(Reason::Deopt, $func, $args, $nargsf, $kw)
+                    }
+                    Some(r) => {
+                        if $rt.counters.hit_check() {
+                            let nkw = if $kw.is_null() { 0 } else { pyo3::ffi::PyTuple_GET_SIZE($kw) as usize };
+                            let all = std::slice::from_raw_parts($args, $n + nkw);
+                            return $crate::accel::check::verify(&$spec, r, all, || {
+                                $crate::accel::FUNCTION_VECTORCALL.get()($func, $args, $nargsf, $kw)
+                            });
+                        }
+                        r
+                    }
+                }
+            }
+        }
+    };
+}

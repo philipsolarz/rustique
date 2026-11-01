@@ -10,6 +10,7 @@ use crate::accel::TargetSpec;
 pub mod _selftest;
 pub mod builtins;
 pub mod containers;
+pub mod fnmatch;
 pub mod posixpath;
 
 /// Every group's targets, in install order.
@@ -17,6 +18,7 @@ pub static ALL: &[&[&TargetSpec]] = &[
     containers::TARGETS,
     builtins::TARGETS,
     posixpath::TARGETS,
+    fnmatch::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,
@@ -25,5 +27,6 @@ pub static ALL: &[&[&TargetSpec]] = &[
 /// Python-visible helpers of targets (registered on `rustique._rustique._accel`).
 pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {
     _selftest::register(accel)?;
-    posixpath::register(accel)
+    posixpath::register(accel)?;
+    fnmatch::register(accel)
 }

@@ -20,10 +20,10 @@ use pyo3::types::{PyDict, PyString};
 
 use rustique_core::paths::posix::{self, JoinArg, Joined, Piece};
 
-use crate::accel::{self, DepFlag, Fingerprints, Prepare, Reason, Refusal, TargetSpec};
+use crate::accel::{self, DepFlag, Fingerprints, Prepare, Refusal, TargetSpec};
 use crate::refuse;
 use rt::{
-    O, Rt, StrView, Text, Unit, bytes_view, exact_bytes, exact_str, nargs, new_str, str_from_units, str_view, subbytes,
+    O, Rt, StrView, Text, Unit, bytes_view, exact_bytes, exact_str, new_str, str_from_units, str_view, subbytes,
     substr, write_text,
 };
 
@@ -206,66 +206,18 @@ unsafe fn ty_of(o: O) -> Option<Ty> {
     }
 }
 
-/// Common kernel skeleton: shape check, guards, body; a body returning `Ok(None)` declines
-/// before anything observable, a null result clears the error and re-runs CPython.
-macro_rules! kernel {
-    ($name:ident, $rt:ident, $spec:ident, |$func:ident, $args:ident, $nargsf:ident, $n:ident, $kw:ident| $body:expr) => {
-        unsafe extern "C" fn $name($func: O, $args: *const O, $nargsf: usize, $kw: O) -> O {
-            // SAFETY: vectorcall arguments from CPython; attached thread.
-            unsafe {
-                let $n = nargs($nargsf);
-                let r: Option<O> = $body;
-                match r {
-                    None => $rt.fallback(Reason::Args, $func, $args, $nargsf, $kw),
-                    Some(r) if r == GUARD_DEPS => $rt.fallback(Reason::Deps, $func, $args, $nargsf, $kw),
-                    Some(r) if r == GUARD_TOOLS => $rt.fallback(Reason::Tools, $func, $args, $nargsf, $kw),
-                    Some(r) if r.is_null() => {
-                        ffi::PyErr_Clear();
-                        $rt.fallback(Reason::Deopt, $func, $args, $nargsf, $kw)
-                    }
-                    Some(r) => {
-                        if $rt.counters.hit_check() {
-                            let nkw = if $kw.is_null() { 0 } else { ffi::PyTuple_GET_SIZE($kw) as usize };
-                            let all = std::slice::from_raw_parts($args, $n + nkw);
-                            return accel::check::verify(&$spec, r, all, || {
-                                accel::FUNCTION_VECTORCALL.get()($func, $args, $nargsf, $kw)
-                            });
-                        }
-                        r
-                    }
-                }
-            }
-        }
-    };
-}
-
-/// Sentinels a kernel body returns for "guard failed" (never valid object pointers).
-const GUARD_DEPS: O = 1 as O;
-const GUARD_TOOLS: O = 2 as O;
-
-/// `Some(sentinel)` when a guard fails.
-#[inline(always)]
-unsafe fn guards(rt: &Rt, func: O) -> Option<O> {
-    // SAFETY: attached thread.
-    match unsafe { rt.ready(func) } {
-        Ok(()) => None,
-        Err(Reason::Deps) => Some(GUARD_DEPS),
-        Err(_) => Some(GUARD_TOOLS),
-    }
-}
-
 // ---------------------------------------------------------------------------------------
 // join
 // ---------------------------------------------------------------------------------------
 
 const MAXA: usize = 8;
 
-kernel!(k_join, RT_JOIN, JOIN, |func, args, nargsf, n, kw| {
+crate::paths_kernel!(k_join, RT_JOIN, JOIN, |func, args, nargsf, n, kw| {
     if !kw.is_null() || n == 0 {
         None
     } else {
         match ty_of(*args) {
-            Some(t) if (1..n).all(|k| ty_of(*args.add(k)) == Some(t)) => match guards(&RT_JOIN, func) {
+            Some(t) if (1..n).all(|k| ty_of(*args.add(k)) == Some(t)) => match rt::guards(&RT_JOIN, func) {
                 Some(g) => Some(g),
                 None => Some(if t == Ty::Str { join_str(args, n) } else { join_bytes(args, n) }),
             },
@@ -386,7 +338,7 @@ macro_rules! one_arg {
             let $p = *$args;
             match ty_of($p) {
                 None => None,
-                Some($t) => match guards(&$rt, $func) {
+                Some($t) => match rt::guards(&$rt, $func) {
                     Some(g) => Some(g),
                     None => Some($body),
                 },
@@ -444,12 +396,12 @@ macro_rules! units {
     };
 }
 
-kernel!(k_split, RT_SPLIT, SPLIT, |func, args, nargsf, n, kw| one_arg!(RT_SPLIT, func, args, n, kw, |p, t| {
+crate::paths_kernel!(k_split, RT_SPLIT, SPLIT, |func, args, nargsf, n, kw| one_arg!(RT_SPLIT, func, args, n, kw, |p, t| {
     let ((i, h), len) = units!(t, p, |s| (posix::tail_start(s), posix::head_len(s)));
     pair(slice(t, p, 0, h), slice(t, p, i, len))
 }));
 
-kernel!(k_splitext, RT_SPLITEXT, SPLITEXT, |func, args, nargsf, n, kw| one_arg!(
+crate::paths_kernel!(k_splitext, RT_SPLITEXT, SPLITEXT, |func, args, nargsf, n, kw| one_arg!(
     RT_SPLITEXT,
     func,
     args,
@@ -464,7 +416,7 @@ kernel!(k_splitext, RT_SPLITEXT, SPLITEXT, |func, args, nargsf, n, kw| one_arg!(
     }
 ));
 
-kernel!(k_basename, RT_BASENAME, BASENAME, |func, args, nargsf, n, kw| one_arg!(
+crate::paths_kernel!(k_basename, RT_BASENAME, BASENAME, |func, args, nargsf, n, kw| one_arg!(
     RT_BASENAME,
     func,
     args,
@@ -476,12 +428,12 @@ kernel!(k_basename, RT_BASENAME, BASENAME, |func, args, nargsf, n, kw| one_arg!(
     }
 ));
 
-kernel!(k_dirname, RT_DIRNAME, DIRNAME, |func, args, nargsf, n, kw| one_arg!(RT_DIRNAME, func, args, n, kw, |p, t| {
+crate::paths_kernel!(k_dirname, RT_DIRNAME, DIRNAME, |func, args, nargsf, n, kw| one_arg!(RT_DIRNAME, func, args, n, kw, |p, t| {
     let (h, _len) = units!(t, p, |s| posix::head_len(s));
     slice(t, p, 0, h)
 }));
 
-kernel!(k_isabs, RT_ISABS, ISABS, |func, args, nargsf, n, kw| one_arg!(RT_ISABS, func, args, n, kw, |p, t| {
+crate::paths_kernel!(k_isabs, RT_ISABS, ISABS, |func, args, nargsf, n, kw| one_arg!(RT_ISABS, func, args, n, kw, |p, t| {
     let (abs, _len) = units!(t, p, |s| posix::is_abs(s));
     ffi::Py_NewRef(if abs { ffi::Py_True() } else { ffi::Py_False() })
 }));
@@ -685,7 +637,7 @@ fn to_u32(t: Text<'_>) -> Vec<u32> {
     crate::with_text!(t, |s| s.iter().map(|c| c.cp()).collect())
 }
 
-kernel!(k_abspath, RT_ABSPATH, ABSPATH, |func, args, nargsf, n, kw| one_arg!(RT_ABSPATH, func, args, n, kw, |p, t| {
+crate::paths_kernel!(k_abspath, RT_ABSPATH, ABSPATH, |func, args, nargsf, n, kw| one_arg!(RT_ABSPATH, func, args, n, kw, |p, t| {
     match t {
         Ty::Str => {
             let v = to_u32(str_view(p).text);
@@ -728,7 +680,7 @@ fn rel_parts<'a, T: Unit>(path_abs: &'a [T], start_abs: &'a [T]) -> (usize, Vec<
     (start_list.len() - i, path_list[i..].to_vec())
 }
 
-kernel!(k_relpath, RT_RELPATH, RELPATH, |func, args, nargsf, n, kw| {
+crate::paths_kernel!(k_relpath, RT_RELPATH, RELPATH, |func, args, nargsf, n, kw| {
     // relpath(path), relpath(path, start), relpath(path, start=...)
     let start_kw = !kw.is_null()
         && n == 1
@@ -749,7 +701,7 @@ kernel!(k_relpath, RT_RELPATH, RELPATH, |func, args, nargsf, n, kw| {
                 if empty || (t == Ty::Bytes && !BYTES_OK.load(Relaxed)) {
                     None
                 } else {
-                    match guards(&RT_RELPATH, func) {
+                    match rt::guards(&RT_RELPATH, func) {
                         Some(g) => Some(g),
                         None => Some(match t {
                             Ty::Str => relpath_str(p, s),
