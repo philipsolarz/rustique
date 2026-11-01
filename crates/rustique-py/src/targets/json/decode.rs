@@ -79,6 +79,11 @@ fn enter() -> R<Depth> {
 
 /// The per-call key memo: canonical key strings by content. Up to `SMALL` keys a linear
 /// scan (length first); beyond, an open-addressing table on a content hash.
+///
+/// The memo owns a reference to every key it holds, like CPython's `memo` dict
+/// (`PyDict_SetDefaultRef(memo, key, key)`): a key's only other owner can go away during
+/// the parse — a repeated key in one object (`{"a": {"k": 1}, "a": 2}`) replaces the first
+/// value, freeing its subtree and its keys. Released when the parse ends ([`Drop`]).
 struct Memo {
     small: [(usize, *mut ffi::PyObject); SMALL],
     n: usize,
@@ -108,7 +113,7 @@ impl Memo {
     fn find<T: Unit>(&self, units: &[T]) -> Option<*mut ffi::PyObject> {
         if self.n <= SMALL {
             for &(len, o) in &self.small[..self.n] {
-                // SAFETY: memoized keys are live str objects (held by the result).
+                // SAFETY: memoized keys are live str objects (the memo owns a reference).
                 if len == units.len() && unsafe { equal(&view(o), units) } {
                     return Some(o);
                 }
@@ -131,8 +136,10 @@ impl Memo {
         }
     }
 
-    /// Memoize a new key whose content is `units`.
+    /// Memoize a new key whose content is `units` (takes a new reference to `o`).
     fn insert<T: Unit>(&mut self, units: &[T], o: *mut ffi::PyObject) {
+        // SAFETY: a live str object; attached thread.
+        unsafe { ffi::Py_INCREF(o) };
         if self.n < SMALL {
             self.small[self.n] = (units.len(), o);
             self.n += 1;
@@ -176,6 +183,28 @@ impl Memo {
             i = (i + 1) & mask;
         }
         self.slots[i] = (h, o);
+    }
+}
+
+impl Drop for Memo {
+    fn drop(&mut self) {
+        // Every key once: up to `SMALL` keys they live in `small`; beyond, `slots` holds
+        // all of them (the small entries were re-hashed into it).
+        // SAFETY: references taken in `insert`; the parser runs attached (the kernel
+        // drops the parser before returning to CPython).
+        unsafe {
+            if self.n <= SMALL {
+                for &(_, o) in &self.small[..self.n] {
+                    ffi::Py_DECREF(o);
+                }
+            } else {
+                for &(_, o) in &self.slots {
+                    if !o.is_null() {
+                        ffi::Py_DECREF(o);
+                    }
+                }
+            }
+        }
     }
 }
 

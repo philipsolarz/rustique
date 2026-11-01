@@ -299,17 +299,19 @@ key interning) and goes to wave 2; pins and fingerprints are not dropped.
   after accel-core's second pass and the group's trims. Accepted as a wave-1 overage; the
   fix is framework-side in wave 2 (deferred first-call fingerprint verification or cheaper
   interning), not fewer pins or fingerprints.
-- **Unreproduced crash, 3.15.1 (GIL build).** In the first 4-build matrix run
-  (`~/rustique-research/p2-json/matrix.sh`, log `~/rustique-research/p2-json/matrix.log`,
-  section `=== 3.15.1 tests`, 2026-11-01 around 12:50 UTC on the dev box, commit 44cbe9c),
-  the step `python -m pytest -q tests -p no:cacheprovider -x | tail -2` (whole suite, after
-  `tests/targets` passed with 954 tests and the conformance runs were identical) printed
-  only a blank line and `Current thread's C stack trace (most recent call first):`, i.e. a
-  faulthandler dump with no pytest summary: the process died. Only the last two lines were
-  kept, so the failing test is unknown (the suite runs `tests/targets` and the
-  thread-stress tests last). Not reproduced since: the immediate rerun (4861 passed), a
-  4-run loop with `-X faulthandler` (logs `/work/json/out/full_loop_{1..4}.log` on the box,
-  all exit 0) and the full suites of three later matrix runs on all four builds passed.
+- **Fixed: use-after-free in `json.loads` on repeated keys** (the "unreproduced crash" of
+  Phase 2). The per-call key memo held *borrowed* pointers to key strings, assuming the
+  result kept them alive. A key repeated within one object (`{"a": {"k": 1}, "a": 2}`, or two
+  escapes of one key: `json.dumps({"\ud83d\ude00": …, "\U0001F600": …})` writes
+  `"\ud83d\ude00"` twice) replaces the first value, freeing its subtree and its keys; the
+  next lookup of such a key read freed memory. It crashed the CI's 3.14/3.15 GIL jobs in
+  `test_check_mode_agrees` (a Hypothesis seed reproduced it on the dev box: seed 208 of
+  300; valgrind memcheck: invalid read in `Memo::find`, block freed by `dict_dealloc` from
+  `PyDict_SetItem`). The memo now owns a reference to each key, as CPython's `memo` dict
+  does, and releases them when the parse ends (on every exit path). Regression tests:
+  `test_repeated_key_frees_memoized_keys` (linear-scan and hash-table memo) and
+  `test_hypothesis_repeated_keys` (documents with repeated and differently escaped keys);
+  memcheck clean on the crashing input; the 300 seeds pass.
 - **`default=` / `cls=` callers** (json_api, logging, Flask/FastAPI providers): a kernel
   behind `_json.make_encoder.tp_call` that calls `default` exactly where the C encoder does
   (allowed by the clarified ruling 15) is ranked first for wave 2.

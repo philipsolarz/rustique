@@ -279,6 +279,50 @@ def test_check_mode_agrees(v):
     assert counters()["fallback"]["check"] == 0
 
 
+@pytest.mark.parametrize("n", [1, 5, 23, 24, 25, 60])
+def test_repeated_key_frees_memoized_keys(n):
+    # A repeated key replaces the first value: the keys inside it are freed during the parse
+    # while the key memo still knows them (a use-after-free, and a crash found by CI, until
+    # the memo owned its keys). `n` crosses the memo's switch from a linear scan to a hash
+    # table (24 keys). "\\ud83d\\ude00" and "\U0001F600" are two spellings of one key: how
+    # `json.dumps` of a dict with distinct keys produces such a document.
+    first = "{" + ", ".join(f'"k{i}": {i}' for i in range(n)) + "}"
+    later = "{" + ", ".join(f'"k{i}": [{i}]' for i in range(n)) + "}"
+    for doc in (
+        f'[{{"a": {first}, "a": 2}}, {later}]',
+        f'{{"a": {first}, "\\u0061": null, "b": {later}}}',
+        f'[{{"\\ud83d\\ude00": {first}, "\U0001F600": 1}}, {later}, {later}]',
+        json.dumps([{"\ud83d\ude00": json.loads(first), "\U0001F600": 1}, json.loads(later)]),
+    ):
+        for _ in range(3):
+            check(doc)
+
+
+def _object_text(pairs):
+    return "{" + ", ".join(f'"{k}": {v}' for k, v in pairs) + "}"
+
+
+# JSON texts whose objects may repeat keys (also under different escapes of one key).
+KEY_TEXT = st.one_of(
+    st.sampled_from(["a", "\\u0061", "b", "\\ud83d\\ude00", "\U0001F600", "\\u00e9", "\xe9", "k"]),
+    TEXT.map(lambda t: json.dumps(t)[1:-1]),
+)
+DOCS_REPEATED_KEYS = st.recursive(
+    SCALARS.map(json.dumps),
+    lambda c: st.one_of(
+        st.lists(c, max_size=6).map(lambda xs: "[" + ", ".join(xs) + "]"),
+        st.lists(st.tuples(KEY_TEXT, c), max_size=8).map(_object_text),
+    ),
+    max_leaves=40,
+)
+
+
+@given(DOCS_REPEATED_KEYS)
+@settings(max_examples=1500, suppress_health_check=[HealthCheck.too_slow])
+def test_hypothesis_repeated_keys(s):
+    check(s)
+
+
 def test_float_parsing_matches_float():
     rng = random.Random(1234)
     for _ in range(20000):
