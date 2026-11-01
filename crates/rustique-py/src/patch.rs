@@ -121,7 +121,10 @@ mod phdr {
         1
     }
 
-    fn snapshot() -> (Vec<(u64, u64, bool)>, Option<(u64, u64)>) {
+    /// (segments as (start, end, writable), the loader's (adds, subs) counters).
+    type Snapshot = (Vec<(u64, u64, bool)>, Option<(u64, u64)>);
+
+    fn snapshot() -> Snapshot {
         let mut c = Collect { segs: Vec::new(), counters: None };
         // SAFETY: the callback only reads the program headers it is given.
         unsafe { dl_iterate_phdr(collect, (&raw mut c).cast()) };
