@@ -16,6 +16,7 @@ pub mod pyfmt;
 pub mod pyhash;
 pub mod random;
 pub mod slice;
+pub mod stats;
 pub mod textwrap;
 pub mod urlparse;
 

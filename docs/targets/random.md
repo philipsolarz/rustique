@@ -121,5 +121,60 @@ on probe generators, C calls only).
 
 ## 5. Measurements
 
-See §6 of this file (filled from `benches/targets/random_cells.py` and
-`utils_pyperf.py random`).
+### 5.1 Instructions per call (callgrind, region-instrumented)
+
+`python benches/targets/utils_cg.py random_cells [--jit]` on the dev box, CPython 3.15.1
+(python-build-standalone), `--profile dev-release` build; each cell in its own process,
+Ir(2n) − Ir(n) over n calls, statements unrolled 10× (method of mechanisms.md §1). `orig`:
+plain CPython; `rq`: `rustique.enable(only=["random"])`. **M**.
+
+| cell | orig Ir | rq Ir | ratio | JIT orig | JIT rq | JIT ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| `randint(1, 6)` (module function) | 2195 | 799 | 0.364 | 1894 | 802 | 0.423 |
+| `rng.randint(3, 7)` | 2291 | 809 | 0.353 | 2056 | 813 | 0.395 |
+| `rng.randint(0, 2**40)` | 4691 | 1044 | 0.222 | 4315 | 1037 | 0.240 |
+| `rng.randint(0, 2**64)` (128-bit path) | 4791 | 1680 | 0.351 | 4536 | 1684 | 0.371 |
+| `rng.randint(1, 2**70)` | 4782 | 1814 | 0.379 | 4527 | 1807 | 0.399 |
+| `rng.randint(a=1, b=6)` (keywords) | 2354 | 981 | 0.417 | 2102 | 984 | 0.468 |
+| `rng.randint(True, 6)` | 2168 | 805 | 0.371 | 1915 | 808 | 0.422 |
+| `rng.randrange(10)` | 2212 | 776 | 0.351 | 1946 | 780 | 0.401 |
+| `rng.randrange(0, 100, 5)` | 3212 | 1081 | 0.337 | 2615 | 1085 | 0.415 |
+| `rng.choice(list of 6)` | 1770 | 546 | 0.308 | 1629 | 549 | 0.337 |
+| `rng.choice(tuple of 4)` | 2157 | 569 | 0.264 | 2035 | 576 | 0.283 |
+| `rng.choice('abcdef')` | 1778 | 642 | 0.361 | 1633 | 645 | 0.395 |
+| `rng.choice(range(10))` | 2887 | 1498 | 0.519 | 2761 | 1501 | 0.544 |
+| `rng.choice(deque)` (C sequence, generic protocol) | 1906 | 787 | 0.413 | 1765 | 790 | 0.448 |
+| `rng.choices(words, k=40)` | 33643 | 7025 | 0.209 | 32651 | 7038 | 0.216 |
+| `rng.choices(T4, weights=[50,30,15,5])` | 8340 | 2595 | 0.311 | 7737 | 2599 | 0.336 |
+| `rng.choices(L6, cum_weights=[1..6])` | 6101 | 3359 | 0.551 | 5574 | 3364 | 0.604 |
+| `rng.choices(L6)` | 3894 | 957 | 0.246 | 3705 | 962 | 0.260 |
+| `rng.sample(words, 5)` | 17249 | 2300 | 0.133 | 16337 | 2313 | 0.142 |
+| `rng.sample(range(10**6), 20)` (set method) | 59154 | 18087 | 0.306 | 57311 | 18068 | 0.315 |
+| `rng.shuffle(list of 100)` | 175741 | 8876 | 0.051 | 163572 | 8931 | 0.055 |
+| `sub.randint(1, 6)` (subclass, no overrides) | 2153 | 800 | 0.372 | 1908 | 803 | 0.421 |
+| `sub.choice(L6)` | 1796 | 547 | 0.304 | 1665 | 550 | 0.330 |
+| generic paths: | | | | | | |
+| `own.randint(1, 6)` (Python `random()`: `_randbelow_without_getrandbits` called) | 6330 | 6328 | 1.000 | 6025 | 6222 | 1.033 |
+| `own.choice(L6)` (same) | 5974 | 6109 | 1.023 | 5775 | 6003 | 1.040 |
+| `own.choices(L6)` (Python `random()` called) | 4616 | 2546 | 0.551 | 4380 | 2608 | 0.596 |
+| `own.sample(L100, 2)` | 17947 | 13110 | 0.730 | 17327 | 12957 | 0.748 |
+| `own_bits.randint(1, 6)` (Python `getrandbits`, the SystemRandom shape) | 3047 | 2764 | 0.907 | 2418 | 2838 | **1.174** |
+| `own_bits.choice(L6)` | 2691 | 2545 | 0.946 | 2174 | 2619 | **1.205** |
+| `own_bits.shuffle(L6)` | 17023 | 15503 | 0.911 | 13838 | 15622 | **1.129** |
+| `own_bits.sample(L6, 2)` | 11420 | 6272 | 0.549 | 9878 | 6389 | 0.647 |
+| `own_bits.choices(L6)` (C `random()`: native) | 3899 | 956 | 0.245 | 3709 | 961 | 0.259 |
+| `shadow.choice(L6)` (instance attribute shadows `getrandbits`) | 1642 | 1521 | 0.927 | 1385 | 1525 | **1.102** |
+| fallbacks (steady state: the target suspends after 64 consecutive fallbacks): | | | | | | |
+| `rng.choices(L6, [Fraction(1)]*6, k=3)` | 152319 | 152329 | 1.000 | 143032 | 143041 | 1.000 |
+| `rng.choice(UserList)` (Python `__len__`/`__getitem__`) | 3629 | 3629 | 1.000 | 3457 | 3457 | 1.000 |
+| `rng.sample(L6, k=2, counts=[1]*6)` (calls `sample` again: accelerated) | 21338 | 12336 | 0.578 | 19835 | 11791 | 0.594 |
+
+Every cell is ≤ 1.05 without the JIT. **Under the JIT**, CPython inlines its own calls into
+a Python `getrandbits` (SystemRandom, user generators) while a kernel's call into it enters
+the eval loop (C → Python): those cells are 1.10–1.21. The targets are therefore declared
+`jit_safe: false` (refused with reason `jit` when the JIT is enabled); the native paths would
+be 0.22–0.47 under the JIT.
+
+### 5.2 Wall time, large inputs (pyperf)
+
+See the table appended by `utils_pyperf.py random` (§5.3, filled in below).

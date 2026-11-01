@@ -1600,6 +1600,10 @@ macro_rules! target {
             free_threaded: true,
             counters: &$guard.counters,
             prepare: $prep,
+            // Under the JIT, CPython's own calls into a Python `getrandbits`/`_randbelow`
+            // (SystemRandom, user generators) are inlined frames; the kernels' calls into
+            // them cost an eval-loop entry each: 1.13-1.20x measured (docs/targets/random.md).
+            jit_safe: false,
             ..TargetSpec::DEFAULT
         };
     };

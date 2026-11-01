@@ -218,7 +218,7 @@ impl InstLayout {
             }
             let ty = Bound::from_owned_ptr(py, ty);
             let tp = ty.as_ptr().cast::<ffi::PyTypeObject>();
-            if (*tp).tp_flags & TPFLAGS_INLINE_VALUES == 0 {
+            if ffi::PyType_GetFlags(tp) & TPFLAGS_INLINE_VALUES == 0 {
                 return Ok(false);
             }
             let obj = Bound::from_owned_ptr_or_err(py, ffi::PyObject_CallNoArgs(ty.as_ptr()))?;
@@ -281,8 +281,8 @@ impl InstLayout {
         // SAFETY: heap type field read after the flag checks.
         unsafe {
             if !self.enabled()
-                || (*tp).tp_flags & TPFLAGS_INLINE_VALUES == 0
-                || (*tp).tp_flags & ffi::Py_TPFLAGS_HEAPTYPE == 0
+                || ffi::PyType_GetFlags(tp) & TPFLAGS_INLINE_VALUES == 0
+                || ffi::PyType_GetFlags(tp) & ffi::Py_TPFLAGS_HEAPTYPE == 0
             {
                 return std::ptr::null_mut();
             }

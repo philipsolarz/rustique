@@ -11,6 +11,7 @@ pub mod _selftest;
 pub mod builtins;
 pub mod containers;
 pub mod random;
+pub mod statistics;
 pub mod textwrap;
 pub mod urllib;
 pub mod utils_kit;
@@ -20,6 +21,7 @@ pub static ALL: &[&[&TargetSpec]] = &[
     containers::TARGETS,
     builtins::TARGETS,
     random::TARGETS,
+    statistics::TARGETS,
     textwrap::TARGETS,
     urllib::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless

@@ -156,8 +156,9 @@ def test_ft_stress_random():
 
 
 def test_ft_stress_shared_generator():
-    """One generator shared by all threads: results stay valid (any interleaving is a
-    valid CPython execution) and nothing crashes."""
+    """One generator and one list shared by all threads: results stay valid and nothing
+    crashes. (Only membership is checked: CPython's own `shuffle` swaps with two stores, so
+    another thread may observe a duplicate between them on free-threaded builds.)"""
     shared = random.Random(5)
     data = list(range(50))
 
@@ -165,7 +166,7 @@ def test_ft_stress_shared_generator():
         shared.shuffle(data)
         x = shared.choice(data)
         s = shared.sample(data, 5)
-        return x in range(50) and len(set(s)) == 5
+        return x in range(50) and len(s) == 5 and all(v in range(50) for v in s)
 
     ft_stress(["random"], fn, True)
 
