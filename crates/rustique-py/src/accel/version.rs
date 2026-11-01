@@ -232,3 +232,66 @@ pub fn code_layout_ok_for(code: &Bound<'_, PyAny>) -> PyResult<bool> {
         && raw.co_name == code.getattr("co_name")?.as_ptr()
         && raw.co_qualname == code.getattr("co_qualname")?.as_ptr())
 }
+
+unsafe extern "C" {
+    fn PyCode_NewEmpty(
+        filename: *const std::ffi::c_char,
+        funcname: *const std::ffi::c_char,
+        firstlineno: std::ffi::c_int,
+    ) -> *mut ffi::PyObject;
+}
+
+static MONITORING_LAYOUT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Calibrate the local-monitoring layout the tools guard reads (`_co_monitoring` →
+/// `local_monitors.tools[guard::LOCAL_EVENTS]`): on a fresh empty code object, set each
+/// probe event locally with a free `sys.monitoring` tool id and check that exactly that
+/// byte holds the tool's bit. Runs at `enable()` (never inside the `sys.modules` watcher),
+/// once per process; `true` when no tool id is free (nothing to calibrate against: the
+/// compile-time layout of the running minor is used).
+pub fn calibrate_monitoring(py: Python<'_>) -> bool {
+    *MONITORING_LAYOUT.get_or_init(|| probe_monitoring(py).unwrap_or(false))
+}
+
+/// The calibration result (`None`: not run yet).
+pub fn monitoring_layout_ok() -> Option<bool> {
+    MONITORING_LAYOUT.get().copied()
+}
+
+fn probe_monitoring(py: Python<'_>) -> PyResult<bool> {
+    use super::guard::LOCAL_EVENTS;
+    let mon = py.import("sys")?.getattr("monitoring")?;
+    let Some(id) = (0..6u8).rev().find(|i| mon.call_method1("get_tool", (*i,)).is_ok_and(|r| r.is_none())) else {
+        return Ok(true);
+    };
+    mon.call_method1("use_tool_id", (id, "rustique-layout-probe"))?;
+    // SAFETY: static C strings; returns a new reference or NULL with an exception.
+    let code = unsafe { PyCode_NewEmpty(c"<rustique-probe>".as_ptr(), c"probe".as_ptr(), 1) };
+    // SAFETY: new reference or NULL.
+    let code = unsafe { Bound::from_owned_ptr_or_err(py, code) };
+    let result = (|| -> PyResult<bool> {
+        let code = code?;
+        // LINE (local on every version), STOP_ITERATION (the last local event on 3.14), and
+        // RERAISE (the last local event on 3.15).
+        let mut events = vec![5u8, 10];
+        if LOCAL_EVENTS == 16 {
+            events.push(15);
+        }
+        for ev in events {
+            mon.call_method1("set_local_events", (id, &code, 1u32 << ev))?;
+            // SAFETY: a live code object; layout prefix calibrated by `code_layout_ok_for`
+            // on real functions (same struct); bytes read within the local monitors.
+            let ok = unsafe {
+                let raw = (*code.as_ptr().cast::<RawCode>())._co_monitoring;
+                !raw.is_null() && (0..LOCAL_EVENTS).all(|i| *raw.add(i) == if i == ev as usize { 1 << id } else { 0 })
+            };
+            mon.call_method1("set_local_events", (id, &code, 0))?;
+            if !ok {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })();
+    mon.call_method1("free_tool_id", (id,))?;
+    result
+}

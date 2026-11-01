@@ -33,7 +33,8 @@ cells = {
     "import rustique (ext preloaded)": (SPEC + "_mod = importlib.util.module_from_spec(_es); _es.loader.exec_module(_mod); sys.modules['rustique._rustique'] = _mod\n", "import rustique"),
     "rustique.enable()": ("import rustique", "rustique.enable()"),
     "rustique.enable() 2nd call": ("import rustique; rustique.enable()", "rustique.enable()"),
-    "rustique.status()": ("import rustique; rustique.enable()", "rustique._takeover.status()"),
+    "rustique.status()": ("import rustique; rustique.enable()", "rustique.status()"),
+    "_accel.enable(quiet=True)": ("import rustique", "rustique._rustique._accel.enable(quiet=True)"),
 }
 for name, (setup, stmt) in cells.items():
     print(f"{name:36s} {region(stmt, setup):>12,d} Ir", flush=True)

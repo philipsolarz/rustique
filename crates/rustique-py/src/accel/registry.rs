@@ -715,6 +715,11 @@ pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -
         check_names(o)?;
     }
     check_names(&exclude)?;
+    // Python-function targets (module targets) read the local-monitoring layout: calibrate
+    // it here, outside the registry lock and never inside the `sys.modules` watcher.
+    if all_specs().iter().any(|s| s.module.is_some() && selected(s, only.as_deref(), &exclude)) {
+        version::calibrate_monitoring(py);
+    }
     let mut g = REG.lock(py)?;
     let reg = registry(&mut g);
     JIT.store(jit_enabled(py), Ordering::Relaxed);
@@ -926,6 +931,7 @@ pub type FingerprintRow = (String, String, String, Option<String>);
 /// Module targets need their module imported (the dev tool imports them).
 pub fn fingerprint_report(py: Python<'_>, only: Option<Vec<String>>) -> PyResult<Vec<FingerprintRow>> {
     let sys_modules = prepare::sys_modules(py).map_err(|r| PyRuntimeError::new_err(r.reason().to_owned()))?;
+    version::calibrate_monitoring(py);
     let _g = REG.lock(py)?;
     let mut out = Vec::new();
     for spec in all_specs() {
