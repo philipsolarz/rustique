@@ -12,6 +12,7 @@ pub mod dtype;
 pub mod expr;
 pub mod index;
 pub mod kernels;
+pub mod logging;
 pub mod pyfmt;
 pub mod pyhash;
 pub mod slice;
