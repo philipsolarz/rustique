@@ -437,3 +437,15 @@ def test_stdlib_c_types_native():
     assert fallbacks("copy.deepcopy") == {} and fallbacks("copy.copy") == {}
     assert copy.deepcopy(dtm.timezone.utc) is dtm.timezone.utc
     assert copy.deepcopy(Col.A) is Col.A
+
+
+def test_nested_restart_counts():
+    h = _Hook()
+    root = {"a": {"b": [1, 2, h]}}
+    out = copy.deepcopy(root)
+    assert out["a"]["b"][2] is h and out["a"]["b"][:2] == [1, 2]
+    # The outer call abandons its copies; the containers on the path to the hook go straight
+    # to the original when its helpers reach them; the keys and ints are native hits; the
+    # hook restarts at its root.
+    assert fallbacks("copy.deepcopy") == {"deopt": 4}
+    assert hits("copy.deepcopy") == 4

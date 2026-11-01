@@ -81,7 +81,9 @@ slotted = Slotted()
 od = collections.OrderedDict(a=1)
 lst100 = list(range(100))
 recs_h = recs + [hook]
-recs_dt = recs + [dt]
+recs_u = recs + [u]
+nest_h = {"a": {"b": {"c": recs_h}}}
+nest_ok = {"a": {"b": {"c": recs}}}
 dct100 = dict.fromkeys(range(100))
 """
 
@@ -106,7 +108,9 @@ CELLS = [
     ("deepcopy Decimal (C __deepcopy__)", "deepcopy(dec)"),
     ("deepcopy __deepcopy__ hook (restart at the root)", "deepcopy(hook)"),
     ("restart: 5 records then a hook", "deepcopy(recs_h)"),
-    ("restart: 5 records then a datetime", "deepcopy(recs_dt)"),
+    ("restart: 5 records then a uuid", "deepcopy(recs_u)"),
+    ("restart: hook last, 4 levels deep", "deepcopy(nest_h)"),
+    ("same without the hook, 4 levels deep", "deepcopy(nest_ok)"),
     ("deepcopy registered copier", "deepcopy(disp)"),
     ("deepcopy copyreg reductor", "deepcopy(reg)"),
     ("deepcopy dict subclass", "deepcopy(dsub)"),
@@ -137,6 +141,7 @@ CELLS = [
     ("pair: copy kw + copy int", "copy.copy(x=rec); copy.copy(7)"),
     ("pair: restart (5 records then a hook) + deepcopy int", "deepcopy(recs_h); deepcopy(7)"),
     ("pair: restart (hook at the root) + deepcopy int", "deepcopy(hook); deepcopy(7)"),
+    ("pair: restart (hook last, 4 levels deep) + deepcopy int", "deepcopy(nest_h); deepcopy(7)"),
     ("pair: copy __copy__ hook + copy int", "copy.copy(hook); copy.copy(7)"),
     ("pair: asdict factory + asdict", "dataclasses.asdict(p, dict_factory=collections.OrderedDict); dataclasses.asdict(p)"),
 ]

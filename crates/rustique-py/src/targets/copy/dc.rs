@@ -484,7 +484,7 @@ impl Cx {
             }
             let st: &'static St = &*st;
             let e = deep::Engine::new(st, null_mut(), super::atomic_fast(st), self.budget - self.used);
-            e.run(obj).map_err(|_| ())
+            e.run(obj, &mut Vec::new()).map_err(|_| ())
         }
     }
 

@@ -140,7 +140,9 @@ impl Engine {
 
     /// Copy `root`; `Err(abandoned)`: restart in the original (no exception is left set);
     /// `abandoned` is false when nothing was built yet (user code at the root itself).
-    pub unsafe fn run(mut self, root: O) -> Result<O, bool> {
+    /// `path` receives, on an abandoning restart, the containers being copied when the
+    /// kernel stopped (root first).
+    pub unsafe fn run(mut self, root: O, path: &mut Vec<usize>) -> Result<O, bool> {
         // SAFETY: attached thread.
         let r = unsafe { self.drive(root) };
         let r = match r {
@@ -153,7 +155,12 @@ impl Engine {
                     Err(true)
                 }
             },
-            Err(()) => Err(self.started),
+            Err(()) => {
+                if self.started {
+                    path.extend(self.stack.as_slice().iter().map(|f| f.x as usize));
+                }
+                Err(self.started)
+            }
         };
         // Partial copies go first, then the memo (as CPython's frames and dict would).
         while let Some(f) = self.stack.pop() {

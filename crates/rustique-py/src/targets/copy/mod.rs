@@ -119,6 +119,76 @@ unsafe fn deepcopy_direct(st: &St, f: O) -> bool {
     }
 }
 
+/// Threads currently running a restarted `deepcopy` with a non-empty skip path.
+static RESTARTING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The containers (by address) on the paths to user code found by the kernel calls being
+/// restarted on this thread (a stack: nested restarts push, and truncate when they return).
+/// Only an optimisation: a false match calls the original, which is always correct.
+mod skip {
+    use std::cell::RefCell;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    use super::RESTARTING;
+
+    struct Path {
+        stack: Vec<usize>,
+        index: hashbrown::HashMap<usize, u32, foldhash::fast::FixedState>,
+    }
+
+    thread_local! {
+        static PATH: RefCell<Path> = const {
+            RefCell::new(Path {
+                stack: Vec::new(),
+                index: hashbrown::HashMap::with_hasher(foldhash::fast::FixedState::with_seed(0)),
+            })
+        };
+    }
+
+    pub fn contains(x: super::O) -> bool {
+        PATH.with(|p| {
+            let p = p.borrow();
+            !p.stack.is_empty() && p.index.contains_key(&(x as usize))
+        })
+    }
+
+    pub fn push(path: &[usize]) -> usize {
+        PATH.with(|p| {
+            let mut p = p.borrow_mut();
+            let mark = p.stack.len();
+            if mark == 0 && !path.is_empty() {
+                RESTARTING.fetch_add(1, Relaxed);
+            }
+            for &a in path {
+                p.stack.push(a);
+                *p.index.entry(a).or_insert(0) += 1;
+            }
+            mark
+        })
+    }
+
+    pub fn truncate(mark: usize) {
+        PATH.with(|p| {
+            let mut p = p.borrow_mut();
+            if p.stack.len() == mark {
+                return;
+            }
+            while p.stack.len() > mark {
+                let a = p.stack.pop().expect("entry");
+                if let Some(c) = p.index.get_mut(&a) {
+                    *c -= 1;
+                    if *c == 0 {
+                        p.index.remove(&a);
+                    }
+                }
+            }
+            if mark == 0 {
+                RESTARTING.fetch_sub(1, Relaxed);
+            }
+        })
+    }
+}
+
 /// Kernel for `copy.deepcopy(x, memo=None)`.
 unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments; attached thread.
@@ -163,24 +233,37 @@ unsafe extern "C" fn vc_deepcopy(func: O, args: *const O, nargsf: usize, kw: O) 
             C_DEEPCOPY.hit_streak();
             return incref(x);
         }
+        // Inside a restarted call whose kernel already found user code below `x`: the
+        // original's helpers reach `x` again, and the kernel would find it again.
+        if RESTARTING.load(Relaxed) != 0 && skip::contains(x) {
+            C_DEEPCOPY.fallback(Reason::Deopt);
+            return original(func, args, nargsf, kw);
+        }
+        let mut path = Vec::new();
         let e = deep::Engine::new(st, memo, fast, budget);
-        match e.run(x) {
+        match e.run(x, &mut path) {
             Ok(y) => {
                 C_DEEPCOPY.hit_streak();
                 y
             }
-            Err(abandoned) => {
-                // User code (or an error, or the recursion limit) ahead: CPython's own call,
-                // from scratch, with the unchanged arguments. A restart that abandoned
-                // copies extends the suspension streak; one decided at the root itself (a
-                // hook object, typically reached again through the original's helpers)
-                // wasted nothing and is only counted.
-                if abandoned {
-                    C_DEEPCOPY.fallback_streak(Reason::Deopt);
-                } else {
-                    C_DEEPCOPY.fallback(Reason::Deopt);
-                }
+            Err(false) => {
+                // User code at the root itself (a hook object, typically reached again
+                // through the original's helpers): nothing was wasted; counted, no streak.
+                C_DEEPCOPY.fallback(Reason::Deopt);
                 original(func, args, nargsf, kw)
+            }
+            Err(true) => {
+                // User code (or an error, or the recursion limit) below: CPython's own call,
+                // from scratch, with the unchanged arguments; the abandoned work extends the
+                // suspension streak. While it runs, the containers on the path to the node
+                // that needs user code go straight to the original when the helpers reach
+                // them again (each would restart at the same node: no user code ran before
+                // it), so a deep restart does not re-traverse its prefix once per level.
+                C_DEEPCOPY.fallback_streak(Reason::Deopt);
+                let mark = skip::push(&path);
+                let r = original(func, args, nargsf, kw);
+                skip::truncate(mark);
+                r
             }
         }
     }
