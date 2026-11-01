@@ -2722,10 +2722,10 @@ fn lock_state() -> PyResult<std::sync::MutexGuard<'static, Option<Captured>>> {
 fn prepare(py: Python<'_>, cx: &mut Prepare<'_>, which: Which) -> Result<(), Refusal> {
     let def = {
         let mut state = lock_state()?;
-        capture(py, &mut state)?.defs[which as usize]
+        capture(py, &mut state).map_err(|e| Refusal::from(e).or_category(accel::Category::Layout))?.defs[which as usize]
     };
     let name = NAMES[which as usize].to_str().unwrap_or_default();
-    let def = def.ok_or_else(|| refuse!("builtins.{name}: method table entry not found"))?;
+    let def = def.ok_or_else(|| refuse!(Conflict: "builtins.{name}: method table entry not found"))?;
     let what = format!("builtins.{name}");
     let def = def as *mut ffi::PyMethodDef;
     // SAFETY: a live entry of the static `builtins` method table.
