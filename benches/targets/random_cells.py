@@ -19,11 +19,21 @@ L1000 = list(range(1000))
 from decimal import Decimal
 from fractions import Fraction
 randint = random.randint
+import collections
+deque6 = collections.deque(L6)
+class Sh(random.Random):
+    pass
+shadow = Sh(5)
+shadow.getrandbits = shadow.getrandbits
+class OwnBits(random.Random):
+    def getrandbits(self, k):
+        return super().getrandbits(k)
+own_bits = OwnBits(9)
 """
 
 INSTALL = """
-from rustique._rustique import _t_random
-_t_random.install()
+import rustique
+rustique.enable(only=["random"])
 """
 
 CELLS = {
@@ -41,14 +51,11 @@ CELLS = {
     "rng.sample(W, 5)": "rng.sample(W, 5)",
     "rng.sample(range(10**6), 20)": "rng.sample(range(1000000), 20)",
     "rng.shuffle(L100)": "rng.shuffle(L100)",
-    "rng.uniform(0, 25000)": "rng.uniform(0, 25000)",
-    "rng.uniform(1.5, 2.5)": "rng.uniform(1.5, 2.5)",
     "sub.randint(1, 6) [subclass]": "sub.randint(1, 6)",
     "sub.choice(L6) [subclass]": "sub.choice(L6)",
     # generic paths / fallbacks
     "own.randint(1, 6) [random() overridden]": "own.randint(1, 6)",
     "own.choice(L6) [random() overridden]": "own.choice(L6)",
-    "own.uniform(1.0, 2.0) [random() overridden]": "own.uniform(1.0, 2.0)",
     "sysr.randint(1, 6) [SystemRandom]": "sysr.randint(1, 6)",
     "secrets.choice(L6) [SystemRandom]": "secrets.choice(L6)",
     "secrets.randbelow(100)": "secrets.randbelow(100)",
@@ -56,7 +63,12 @@ CELLS = {
     "rng.randint(1, 2**70) [big: fallback]": "rng.randint(1, 1180591620717411303424)",
     "rng.choice('abcdef') [str]": "rng.choice('abcdef')",
     "rng.choice(range(10))": "rng.choice(range(10))",
-    "rng.uniform(Decimal(1), 2) [fallback]": "rng.uniform(Fraction(1), 2)",
+    "rng.randint(a=1, b=6) [kwargs]": "rng.randint(a=1, b=6)",
+    "rng.randint(0, 2**64)": "rng.randint(0, 18446744073709551616)",
+    "rng.choice(deque6) [C sequence]": "rng.choice(deque6)",
+    "shadow.choice(L6) [instance attr shadows getrandbits]": "shadow.choice(L6)",
+    "rng.sample(L6, 2) [subclass with getrandbits: fallback]": "own_bits.sample(L6, 2)",
+    "rng.choices(L6, k=3) [Fraction weights: fallback]": "rng.choices(L6, [Fraction(1)]*6, k=3)",
     "rng.sample(L6, k=2, counts=[1]*6) [fallback]": "rng.sample(L6, k=2, counts=[1, 1, 1, 1, 1, 1])",
     "rng.choices(L6, cum_weights=[1,2,3,4,5,6])": "rng.choices(L6, cum_weights=[1, 2, 3, 4, 5, 6])",
 }

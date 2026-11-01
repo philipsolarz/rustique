@@ -1093,19 +1093,19 @@ unsafe fn choices(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
             if n == 0 || n as u64 >= 1 << 53 {
                 return None; // IndexError (or out of the exact range)
             }
-            let mut gen = mt(slf);
+            let mut rng = mt(slf);
             match &cum {
                 None => {
                     // `n += 0.0`; `population[floor(random() * n)]`
                     let nf = n as f64;
-                    Some(fill(out, pop, kind, (0..kk).map(|_| ((gen.random() * nf).floor() as usize).min(n - 1))))
+                    Some(fill(out, pop, kind, (0..kk).map(|_| ((rng.random() * nf).floor() as usize).min(n - 1))))
                 }
                 Some(c) => {
                     if c.len() != n {
                         return None; // ValueError
                     }
                     let total = c[n - 1] + 0.0;
-                    Some(fill(out, pop, kind, (0..kk).map(|_| bisect_right(c, gen.random() * total, n - 1))))
+                    Some(fill(out, pop, kind, (0..kk).map(|_| bisect_right(c, rng.random() * total, n - 1))))
                 }
             }
         });
@@ -1269,9 +1269,9 @@ fn self_test(
 
 /// Shared tail of every target's `prepare`: fingerprint, pins, guard identity, site.
 #[allow(clippy::too_many_arguments)]
-fn prepare_target(
-    py: Python<'_>,
-    cx: &mut Prepare<'_>,
+fn prepare_target<'py>(
+    py: Python<'py>,
+    cx: &mut Prepare<'py>,
     attr: &str,
     fp: accel::Fingerprints,
     module_globals: &[&str],
@@ -1294,7 +1294,7 @@ fn prepare_target(
 macro_rules! target {
     ($spec:ident, $prep:ident, $name:literal, $attr:literal, $kernel:ident, $guard:ident, $fp:expr,
      globals: [$($gl:literal),*], builtins: [$($bl:literal),*]) => {
-        fn $prep(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+        fn $prep<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
             prepare_target(py, cx, $attr, $fp, &[$($gl),*], &[$($bl),*], &$guard, $kernel)
         }
         pub static $spec: TargetSpec = TargetSpec {
@@ -1311,23 +1311,23 @@ macro_rules! target {
 }
 
 target!(RANDINT, prep_randint, "random.randint", "randint", vc_randint, G_RANDINT,
-    &[(3, 14, "PENDING"), (3, 15, "PENDING")],
+    &[(3, 14, "b27a71f673fed060"), (3, 15, "545e3e7cb98f48cd")],
     globals: ["_index"], builtins: ["ValueError"]);
 target!(RANDRANGE, prep_randrange, "random.randrange", "randrange", vc_randrange, G_RANDRANGE,
-    &[(3, 14, "PENDING"), (3, 15, "PENDING")],
+    &[(3, 14, "8908f05589aa8f2e"), (3, 15, "1a9ec83028108206")],
     globals: ["_index", "_ONE"], builtins: ["TypeError", "ValueError"]);
 target!(CHOICE, prep_choice, "random.choice", "choice", vc_choice, G_CHOICE,
-    &[(3, 14, "PENDING"), (3, 15, "PENDING")],
+    &[(3, 14, "27842dbf5347cdc8"), (3, 15, "0fe17a0dca4704ca")],
     globals: [], builtins: ["len", "IndexError"]);
 target!(SHUFFLE, prep_shuffle, "random.shuffle", "shuffle", vc_shuffle, G_SHUFFLE,
-    &[(3, 14, "PENDING"), (3, 15, "PENDING")],
+    &[(3, 14, "427ad4e7b927876c"), (3, 15, "030048553c6487ba")],
     globals: [], builtins: ["len", "range", "reversed"]);
 target!(SAMPLE, prep_sample, "random.sample", "sample", vc_sample, G_SAMPLE,
-    &[(3, 14, "PENDING"), (3, 15, "PENDING")],
+    &[(3, 14, "f107f053e2e5804f"), (3, 15, "f9f0292868e437e0")],
     globals: ["_Sequence", "_ceil", "_log", "_accumulate", "_bisect"],
     builtins: ["isinstance", "len", "list", "set", "range", "int", "TypeError", "ValueError"]);
 target!(CHOICES, prep_choices, "random.choices", "choices", vc_choices, G_CHOICES,
-    &[(3, 14, "PENDING"), (3, 15, "PENDING")],
+    &[(3, 14, "6b08a02ab968bfe1"), (3, 15, "a5cb98605af7c1a7")],
     globals: ["_floor", "_repeat", "_accumulate", "_bisect", "_isfinite"],
     builtins: ["len", "list", "isinstance", "int", "TypeError", "ValueError"]);
 

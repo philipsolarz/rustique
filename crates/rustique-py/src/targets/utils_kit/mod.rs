@@ -234,6 +234,7 @@ impl InstLayout {
             let dictp = o.cast::<u8>().offset(dict_off).cast::<O>();
             let f = std::mem::transmute::<usize, StringLookupFn>(lookup);
             let mut ok = !keys.is_null()
+                && *values >= 2
                 && *values.add(3) == 1
                 && *values.add(8).cast::<O>() == sentinel.as_ptr()
                 && (*dictp).is_null()
@@ -306,6 +307,32 @@ impl InstLayout {
     pub unsafe fn absent(&self, keys: *mut u8, name: O) -> bool {
         // SAFETY: calibrated symbol.
         unsafe { std::mem::transmute::<usize, StringLookupFn>(self.lookup.load(Relaxed))(keys, name) < 0 }
+    }
+
+    /// Does `obj` have `name` in its instance `__dict__`? Exact when it answers; `None`
+    /// when it cannot tell cheaply (no inline values, a materialized dict, no calibration).
+    ///
+    /// # Safety
+    /// Live object; `name` an exact str.
+    #[inline]
+    pub unsafe fn has_attr(&self, obj: O, name: O) -> Option<bool> {
+        // SAFETY: calibrated layout; index bounded by the values' capacity.
+        unsafe {
+            let tp = ffi::Py_TYPE(obj);
+            let keys = self.shared_keys(tp);
+            if keys.is_null() || !self.inline_only(obj) {
+                return None;
+            }
+            let ix = std::mem::transmute::<usize, StringLookupFn>(self.lookup.load(Relaxed))(keys, name);
+            if ix < 0 {
+                return Some(false);
+            }
+            let values = obj.cast::<u8>().add((*tp).tp_basicsize as usize);
+            if ix as usize >= usize::from(std::ptr::read_volatile(values)) {
+                return Some(false);
+            }
+            Some(!std::ptr::read_volatile(values.add(8).cast::<O>().add(ix as usize)).is_null())
+        }
     }
 
     /// Does `obj` (of an inline-values type) use only its inline values (valid, no
@@ -466,7 +493,7 @@ pub unsafe fn with_cs2<R>(a: O, b: O, f: impl FnOnce() -> R) -> R {
 }
 
 /// Bind a vectorcall's arguments to parameters: positional ones first, then keywords by
-/// name. `None`: an unknown keyword, a duplicate, or too many positionals (the original
+/// name (a NULL name: positional-only, e.g. `self`). `None`: an unknown keyword, a duplicate, or too many positionals (the original
 /// raises). Slots of unbound parameters are NULL.
 ///
 /// # Safety
@@ -487,7 +514,10 @@ pub unsafe fn bind<const K: usize>(args: *const O, npos: usize, kw: O, names: [O
         }
         for i in 0..ffi::PyTuple_GET_SIZE(kw) as usize {
             let k = ffi::PyTuple_GET_ITEM(kw, i as ffi::Py_ssize_t);
-            let slot = (0..K).find(|&j| k == names[j] || ffi::PyUnicode_Compare(k, names[j]) == 0)?;
+            let slot = (0..K).find(|&j| {
+                let n = names[j];
+                !n.is_null() && (k == n || ffi::PyUnicode_Compare(k, n) == 0)
+            })?;
             if !out[slot].is_null() {
                 return None;
             }
