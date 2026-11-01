@@ -160,14 +160,24 @@ impl<'py> Prepare<'py> {
     // Fingerprints and self-tests.
     // -----------------------------------------------------------------------------------
 
-    fn check_fingerprint(&mut self, what: String, observed: String, expected: Fingerprints) -> Result<(), Refusal> {
+    /// `what` (a readable name) is only built for a refusal or in record mode.
+    fn check_fingerprint(
+        &mut self,
+        what: impl FnOnce() -> String,
+        observed: String,
+        expected: Fingerprints,
+    ) -> Result<(), Refusal> {
         let (major, minor) = version::running();
         let want = fingerprint::expected_for(expected, major, minor);
         let ok = want == Some(observed.as_str());
         if self.record {
-            self.records.push(FingerprintRecord { what, observed, expected: want });
+            self.records.push(FingerprintRecord { what: what(), observed, expected: want });
             return Ok(());
         }
+        if ok {
+            return Ok(());
+        }
+        let what = what();
         match want {
             _ if ok => Ok(()),
             None => Err(Refusal::with(
@@ -188,14 +198,14 @@ impl<'py> Prepare<'py> {
         } else {
             fingerprint::code(func)?
         };
-        self.check_fingerprint(describe(func), observed, expected)
+        self.check_fingerprint(|| describe(func), observed, expected)
     }
 
     /// Require the `ml_name`/`ml_flags`/`ml_doc` fingerprint of a C function or method
     /// descriptor to be the one recorded for the running minor version.
     pub fn fingerprint_c(&mut self, obj: &Bound<'_, PyAny>, expected: Fingerprints) -> Result<(), Refusal> {
         let observed = fingerprint::c_object(obj)?;
-        self.check_fingerprint(describe(obj), observed, expected)
+        self.check_fingerprint(|| describe(obj), observed, expected)
     }
 
     /// Same as [`Self::fingerprint_c`] for a method table entry found directly.
@@ -210,7 +220,7 @@ impl<'py> Prepare<'py> {
     ) -> Result<(), Refusal> {
         // SAFETY: per the caller.
         let observed = unsafe { fingerprint::method_def(def) };
-        self.check_fingerprint(what.to_owned(), observed, expected)
+        self.check_fingerprint(|| what.to_owned(), observed, expected)
     }
 
     /// The canonical code fingerprint of `obj` (function, code object, or C function):
@@ -440,6 +450,35 @@ impl<'py> Prepare<'py> {
             dict: dict.clone().unbind(),
             key: interned(self.py, key).unbind(),
             expected: Some(value.unbind()),
+            flag,
+            ty: None,
+        });
+        Ok(flag)
+    }
+
+    /// [`Self::pin`] with a pre-interned key (e.g. `pyo3::intern!(py, "fspath")`): no key
+    /// lookup in the interning cache.
+    pub fn pin_s(
+        &mut self,
+        dict: &Bound<'_, PyDict>,
+        key: &Bound<'_, PyString>,
+        flag: &'static DepFlag,
+    ) -> Result<&'static DepFlag, Refusal> {
+        let mut out: *mut ffi::PyObject = std::ptr::null_mut();
+        // SAFETY: attached thread; exact dict and str key: no Python code runs.
+        let r = unsafe { ffi::PyDict_GetItemRef(dict.as_ptr(), key.as_ptr(), &mut out) };
+        if r < 0 {
+            return Err(PyErr::fetch(self.py).into());
+        }
+        if out.is_null() {
+            return Err(refuse_missing(&key.to_string_lossy()));
+        }
+        // SAFETY: the new reference returned by PyDict_GetItemRef.
+        let value = unsafe { Bound::from_owned_ptr(self.py, out) }.unbind();
+        self.pins.push(PendingPin::Key {
+            dict: dict.clone().unbind(),
+            key: key.clone().unbind(),
+            expected: Some(value),
             flag,
             ty: None,
         });

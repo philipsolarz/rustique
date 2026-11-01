@@ -64,7 +64,7 @@ pub use fingerprint::Fingerprints;
 pub use guard::{DepFlag, Tools, code_locally_quiet, in_main_interpreter, tools_quiet};
 pub use prepare::Prepare;
 pub use site::SlotName;
-pub use spec::{Category, FnPtr, Original, Refusal, TargetSpec};
+pub use spec::{Category, FnPtr, GroupSpec, Original, Refusal, TargetSpec};
 pub use stats::{Counters, Reason};
 
 /// `_PyFunction_Vectorcall`, shared by every vectorcall site: pass it to

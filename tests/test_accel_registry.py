@@ -33,6 +33,14 @@ SOURCE = textwrap.dedent(
     def ident2(x):
         return ("orig", x)
 
+    SEP = "/"
+
+    def same_a(x):
+        return x
+
+    def same_b(x):
+        return x
+
     class K:
         attr = 1000
 
@@ -406,3 +414,36 @@ def test_whole_dict_generation_watch():
     assert A._selftest_watch_dict(d) == g + 3
     d.clear()
     assert A._selftest_watch_dict(d) == g + 4
+
+
+def test_shared_group_declarations(selftest_module):
+    m = importlib.import_module(MOD)
+    rt.enable(only=["_selftest.shared_a", "_selftest.shared_b"])
+    a, b = target("_selftest.shared_a"), target("_selftest.shared_b")
+    assert a["state"] == b["state"] == "installed", (a, b)
+    assert a["shared"] == b["shared"] == "_selftest.shared" and a["deps_intact"]
+    assert A._selftest_vectorcall(m.same_a) == "other" or not A.vectorcall_is_original(m.same_a)
+    sep = m.SEP
+    m.SEP = "\\"  # the shared pin guards both targets
+    assert not A._selftest_shared_ok()
+    m.SEP = sep
+    assert A._selftest_shared_ok()
+    A.disable(["_selftest.shared_a"])  # the other user keeps the shared pins
+    assert A.vectorcall_is_original(m.same_a) and not A.vectorcall_is_original(m.same_b)
+    m.SEP = "\\"
+    assert not A._selftest_shared_ok()
+    m.SEP = sep
+    A.disable(["_selftest.shared_b"])  # the last user releases them
+    m.SEP = "\\"
+    assert A._selftest_shared_ok()  # a flag without pins is true: nothing watches SEP now
+    m.SEP = sep
+
+
+def test_shared_group_refusal_refuses_every_user(selftest_module):
+    m = importlib.import_module(MOD)
+    m.REFUSE_SHARED = True
+    rt.enable(only=["_selftest.shared_a", "_selftest.shared_b"])
+    for n in ("_selftest.shared_a", "_selftest.shared_b"):
+        st, reason = state(n)
+        assert st == "refused" and reason == "shared refusal"
+    assert A.vectorcall_is_original(m.same_a) and A.vectorcall_is_original(m.same_b)
