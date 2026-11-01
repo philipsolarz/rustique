@@ -349,5 +349,5 @@ Unlike everything above, this changes types, so it is never on by default.
   on autoloading.
 - **Rustique in `pip list`, but `import rustique` fails.** The wheel does not match the
   interpreter (`pip debug --verbose` lists supported tags), or the venv is broken. The
-  startup switch never breaks Python startup: it prints
-  `rustique: RUSTIQUE=1 ignored: cannot import rustique: ...` and continues plain.
+  startup switch never breaks Python startup. If the extension cannot be loaded, `site`
+  prints the failing `_rustique_startup.pth` line with the error and Python starts plain.
