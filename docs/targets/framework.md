@@ -88,7 +88,27 @@ Dependency pins (one relaxed load per call: `if !DEPS.ok() { fallback(Reason::De
 | "does this subclass override any of these names?" | `static C: accel::guard::OverrideCache` (`set_base`, `overrides(ty)`; keyed by `tp_version_tag`) |
 
 The target must validate what it pins (fingerprint, identity with a known object): a pin
-records the current object. Flags re-arm when the original state comes back
+records the current object. With a key that is already a `str` (`pyo3::intern!(py,
+"fspath")`), `pin_s`, `pin_global_s`, `get_opt_s` skip the interning cache.
+
+**Shared declarations (`GroupSpec`).** When several targets depend on the same module
+globals, declare those pins (and the fingerprints and validations they share) once:
+
+```rust
+static PATHLIB_DEPS: DepFlag = DepFlag::new();
+fn shared(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let g = cx.module()?.dict();
+    for key in ["os", "PurePath", "posixpath"] { cx.pin(&g, key, &PATHLIB_DEPS)?; }
+    cx.fingerprint_code(&cx.module_attr("PurePath")?.getattr("_parse_path")?, FP_PARSE)
+}
+pub static SHARED: GroupSpec = GroupSpec { name: "pathlib", prepare: shared };
+// every target: `shared: Some(&SHARED), ..TargetSpec::DEFAULT`, kernels check PATHLIB_DEPS
+```
+
+The registry prepares it before the first target that names it (same module context; it
+must not declare sites), keeps its pins while any of those targets is installed (refcount),
+releases them with the last one, and refuses every user with its refusal if it refuses.
+Vectorcall users are suspended while one of its pins is off, like their own. Flags re-arm when the original state comes back
 (`mock.patch` exiting). One dict watcher id and one type watcher id serve all of Rustique.
 
 ## 3. Kernels
@@ -203,6 +223,15 @@ check` (dx) and `rustique._takeover` (native tier, compatibility) are thin wrapp
 | groups `containers` (7 ml_meth/slot) / `builtins` (6), first enable | 123k / 60k | 109k / 63k |
 
 Lazy install of one Python-function target on its module's import: +61k Ir (was +171k).
+
+Second pass, measured on paths' groups (ws/paths merged, `benches/targets/_prof_install.py`,
+warm registry, quiet `enable([group])`): posixpath 0.32M, fnmatch 0.36M, pathlib 0.73M
+(was 1.06M); lazy pathlib install +0.35M on an 8.47M `import pathlib` (+4%, was +13.7%).
+What remains there: one pin set per target (~130 pins for pathlib's 13 targets, ≈2–3k Ir
+each: a `GroupSpec` makes it ~10–25 pins once), fingerprints of every reproduced function
+on first use in a process (≈6k Ir each, most of it CPython's `PyCode_GetCode`), and
+`status()` ≈4.8k Ir per target (37 targets: 0.18M, was 0.37M; `rustique.enable()` returns
+it, the startup path does not build it).
 `Prepare::memo(key, f)` lets a group validate shared dependencies once per pass;
 identical pins of several targets share one watch slot.
 
