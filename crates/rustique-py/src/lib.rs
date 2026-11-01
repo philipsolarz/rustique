@@ -4,6 +4,7 @@
 
 use pyo3::prelude::*;
 
+pub mod accel;
 pub mod builtins;
 pub mod capi;
 pub mod convert;
