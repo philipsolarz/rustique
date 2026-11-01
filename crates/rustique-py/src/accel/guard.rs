@@ -67,7 +67,7 @@ const ALL_EVENTS: [u8; UNGROUPED_EVENTS] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
 /// Number of local events in `_Py_LocalMonitors.tools` (`_co_monitoring`'s first member):
 /// `_PY_MONITORING_LOCAL_EVENTS` = 11 on 3.14, `_PY_MONITORING_UNGROUPED_EVENTS` = 16 on
 /// 3.15 (RAISE, EXCEPTION_HANDLED, PY_UNWIND, PY_THROW, RERAISE became local events).
-/// Calibrated at `enable()` (`version::monitoring_layout_ok`).
+/// Calibrated on the first vectorcall site prepared (`version::calibrate_monitoring`).
 pub const LOCAL_EVENTS: usize = if cfg!(Py_3_15) { 16 } else { 11 };
 
 // ---------------------------------------------------------------------------------------
@@ -151,11 +151,11 @@ impl std::fmt::Debug for Tools {
 /// No tool listens *locally* on this code object (`sys.monitoring.set_local_events`, what a
 /// debugger breakpoint or a per-function profiler does). Reads `_co_monitoring` (NULL until a
 /// tool ever instrumented the code) and its first member `local_monitors.tools[LOCAL_EVENTS]`
-/// (internal layout: 11 events on 3.14, 16 on 3.15; calibrated at `enable()`).
+/// (internal layout: 11 events on 3.14, 16 on 3.15; calibrated with the first vectorcall site).
 ///
 /// # Safety
 /// `code` is a live code object; layout calibrated (`version::code_layout_ok_for`,
-/// `version::monitoring_layout_ok`).
+/// `version::calibrate_monitoring`).
 #[inline(always)]
 pub unsafe fn code_locally_quiet(code: *mut ffi::PyObject) -> bool {
     // SAFETY: per the caller.
@@ -603,13 +603,23 @@ pub fn watch_dict_generation(dict: &Bound<'_, PyDict>, gen_: &'static AtomicU64)
     Ok(())
 }
 
-/// Activate `pins` under a new owner id; returns the owner id. Pins already held by other
-/// targets are shared (one key slot per `(dict, key)`). Each pin's state is read now (a
-/// change between `prepare` and install shows as a deviation).
-pub(crate) fn activate(py: Python<'_>, pins: Vec<PendingPin>) -> PyResult<u64> {
+/// Activate `pins` under a new owner id; returns the owner id and the distinct flags of
+/// the pins. Pins already held by other targets are shared (one key slot per `(dict,
+/// key)`). Each pin's state is read now (a change between `prepare` and install shows as a
+/// deviation).
+pub(crate) fn activate(py: Python<'_>, pins: Vec<PendingPin>) -> PyResult<(u64, Vec<&'static DepFlag>)> {
     let owner = NEXT_OWNER.fetch_add(1, Ordering::Relaxed);
     if pins.is_empty() {
-        return Ok(owner);
+        return Ok((owner, Vec::new()));
+    }
+    let mut flags: Vec<&'static DepFlag> = Vec::new();
+    for p in &pins {
+        let f = match p {
+            PendingPin::Key { flag, .. } | PendingPin::Dict { flag, .. } => *flag,
+        };
+        if !flags.iter().any(|x| std::ptr::eq(*x, f)) {
+            flags.push(f);
+        }
     }
     let mut guard = tables();
     let t = guard.get_or_insert_with(Tables::default);
@@ -641,16 +651,16 @@ pub(crate) fn activate(py: Python<'_>, pins: Vec<PendingPin>) -> PyResult<u64> {
                     None => (0, 0),
                 };
                 let slot = dict_slot(py, t, d.as_any())?;
+                // Keys come from the interning cache (or `pyo3::intern!`): one object per
+                // name, so identity is the key slot's identity.
                 let kp = key.as_ptr() as usize;
-                // SAFETY: attached thread; live str keys.
-                let ks = match slot.keys.iter().position(|k| unsafe { same_key(key.as_ptr(), k.key) }) {
+                let ks = match slot.keys.iter().position(|k| k.key == kp) {
                     Some(i) => &mut slot.keys[i],
                     None => {
                         slot.keys.push(KeySlot { key: key.clone_ref(py).into_ptr() as usize, deps: Vec::new() });
                         slot.keys.last_mut().expect("just pushed")
                     }
                 };
-                let _ = kp;
                 ks.deps.push(Dep {
                     owner,
                     flag,
@@ -695,7 +705,7 @@ pub(crate) fn activate(py: Python<'_>, pins: Vec<PendingPin>) -> PyResult<u64> {
             }
         }
     }
-    Ok(owner)
+    Ok((owner, flags))
 }
 
 /// Report flips of `flags` to the registry (deopt while unpinned), or stop.
@@ -817,22 +827,6 @@ pub(crate) fn describe(py: Python<'_>, owner: u64) -> Vec<(String, bool, bool, b
         }
     }
     out
-}
-
-/// Flags of `owner`'s pins.
-pub(crate) fn flags_of(owner: u64) -> Vec<&'static DepFlag> {
-    let guard = tables();
-    let Some(t) = guard.as_ref() else { return Vec::new() };
-    let mut v: Vec<&'static DepFlag> = Vec::new();
-    for slot in t.dicts.values() {
-        for ks in &slot.keys {
-            v.extend(ks.deps.iter().filter(|d| d.owner == owner).map(|d| d.flag));
-        }
-        v.extend(slot.snaps.iter().filter(|s| s.owner == owner).map(|s| s.flag));
-    }
-    v.sort_by_key(|f| flag_addr(f));
-    v.dedup_by_key(|f| flag_addr(f));
-    v
 }
 
 /// Watch `sys.modules` for lazy activation (idempotent).

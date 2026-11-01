@@ -56,14 +56,19 @@ def real(monkeypatch):
         rustique.enable()
 
 
+# Assertions look at the wave-0 groups only: target groups whose module is already imported
+# (pytest imports logging, json, ...) also install on a bare enable().
+WAVE0 = {"containers", "builtins"}
+
+
 def installed(st=None) -> set[str]:
     st = st or rustique.status()
-    return {t["name"] for t in st["targets"] if t["state"] == "installed"}
+    return {t["name"] for t in st["targets"] if t["state"] == "installed" and t["group"] in WAVE0}
 
 
 def groups(st=None) -> set[str]:
     st = st or rustique.status()
-    return {t["group"] for t in st["targets"] if t["state"] == "installed"}
+    return {t["group"] for t in st["targets"] if t["state"] == "installed" and t["group"] in WAVE0}
 
 
 @pytest.mark.parametrize("value", ["0", "false", "OFF", "no", " 0 ", ""])
