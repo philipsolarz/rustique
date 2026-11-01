@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _callgrind import region  # noqa: E402
 
 CELLS = [
+    ("baseline: enable(only=['_selftest'])", "rustique.enable(only=['_selftest'])", "import rustique, posixpath"),
     ("enable(only=['posixpath'])", "rustique.enable(only=['posixpath'])", "import rustique, posixpath"),
     ("enable(only=['fnmatch']) (fnmatch imported)", "rustique.enable(only=['fnmatch'])", "import rustique, fnmatch"),
     ("enable(only=['pathlib']) (pathlib imported)", "rustique.enable(only=['pathlib'])", "import rustique, pathlib"),

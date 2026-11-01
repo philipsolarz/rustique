@@ -76,36 +76,44 @@ pub static TARGETS: &[&TargetSpec] = &[&FNMATCH, &FNMATCHCASE, &FILTER];
 /// the whole `fnmatch` namespace (snapshot), the builtins it uses, `re.compile`,
 /// `re._compile` and the parts of `re._parser` whose set semantics the port reproduces.
 fn prep_compile(cx: &mut Prepare<'_>, rt: &'static Rt) -> Result<(), Refusal> {
-    if !rt::init_str_layout(cx.py()) {
-        return Err(refuse!("str layout not calibrated"));
-    }
+    // Validation shared by the three targets: once per enable pass.
+    cx.memo("fnmatch:compile", |cx| {
+        if !rt::init_str_layout(cx.py()) {
+            return Err(refuse!("str layout not calibrated"));
+        }
+        let g = cx.module()?.dict();
+        let cp = cx.get(&g, "_compile_pattern")?;
+        let wrapped = cp.getattr("__wrapped__")?;
+        rt::check_fp(cx, FPS, "fnmatch._compile_pattern", &wrapped)?;
+        for name in ["translate", "_translate", "_join_translated_parts"] {
+            let f = cx.get(&g, name)?;
+            rt::check_fp(cx, FPS, &format!("fnmatch.{name}"), &f)?;
+        }
+        let re = cx.loaded_module("re")?;
+        if !cx.get(&g, "re")?.is(&re) {
+            return Err(refuse!("fnmatch.re is not the re module"));
+        }
+        let esc = cx.get(&g, "_re_escape")?.getattr("__wrapped__")?;
+        let red = re.dict();
+        if !esc.is(&cx.get(&red, "escape")?) {
+            return Err(refuse!("fnmatch._re_escape does not wrap re.escape"));
+        }
+        rt::check_fp(cx, FPS, "re.escape", &esc)?;
+        for name in ["compile", "_compile"] {
+            let f = cx.get(&red, name)?;
+            rt::check_fp(cx, FPS, &format!("re.{name}"), &f)?;
+        }
+        let parser = cx.loaded_module("re._parser")?.dict();
+        for name in ["_parse", "_class_escape"] {
+            let f = cx.get(&parser, name)?;
+            rt::check_fp(cx, FPS, &format!("re._parser.{name}"), &f)?;
+        }
+        Ok(())
+    })?;
     let g = cx.module()?.dict();
-    let cp = cx.get(&g, "_compile_pattern")?;
-    let wrapped = cp.getattr("__wrapped__")?;
-    rt::check_fp(cx, FPS, "fnmatch._compile_pattern", &wrapped)?;
-    for name in ["translate", "_translate", "_join_translated_parts"] {
-        let f = cx.get(&g, name)?;
-        rt::check_fp(cx, FPS, &format!("fnmatch.{name}"), &f)?;
-    }
-    let re = cx.loaded_module("re")?;
-    if !cx.get(&g, "re")?.is(&re) {
-        return Err(refuse!("fnmatch.re is not the re module"));
-    }
-    let esc = cx.get(&g, "_re_escape")?.getattr("__wrapped__")?;
-    let red = re.dict();
-    if !esc.is(&cx.get(&red, "escape")?) {
-        return Err(refuse!("fnmatch._re_escape does not wrap re.escape"));
-    }
-    rt::check_fp(cx, FPS, "re.escape", &esc)?;
+    let red = cx.loaded_module("re")?.dict();
     for name in ["compile", "_compile"] {
-        let f = cx.get(&red, name)?;
-        rt::check_fp(cx, FPS, &format!("re.{name}"), &f)?;
         cx.pin(&red, name, &rt.deps)?;
-    }
-    let parser = cx.loaded_module("re._parser")?.dict();
-    for name in ["_parse", "_class_escape"] {
-        let f = cx.get(&parser, name)?;
-        rt::check_fp(cx, FPS, &format!("re._parser.{name}"), &f)?;
     }
     // Every fnmatch global (functions, `re`, `os`, `posixpath`, the caches) and the
     // absence of module globals shadowing builtins.
@@ -119,27 +127,31 @@ fn prep_compile(cx: &mut Prepare<'_>, rt: &'static Rt) -> Result<(), Refusal> {
 /// `os.path.normcase` as fnmatch reaches it: `fnmatch.os` → `os.path` → `posixpath`,
 /// whose `normcase` returns `os.fspath(s)`.
 fn prep_normcase(cx: &mut Prepare<'_>, rt: &'static Rt) -> Result<(), Refusal> {
-    let g = cx.module()?.dict();
-    let os = cx.loaded_module("os")?;
-    let pp = cx.loaded_module("posixpath")?;
-    if !cx.get(&g, "os")?.is(&os) || !cx.get(&g, "posixpath")?.is(&pp) {
-        return Err(refuse!("fnmatch.os / fnmatch.posixpath are not the modules"));
-    }
-    let osd = os.dict();
-    if !cx.get(&osd, "path")?.is(&pp) {
-        return Err(refuse!("os.path is not posixpath"));
-    }
+    cx.memo("fnmatch:normcase", |cx| {
+        let g = cx.module()?.dict();
+        let os = cx.loaded_module("os")?;
+        let pp = cx.loaded_module("posixpath")?;
+        if !cx.get(&g, "os")?.is(&os) || !cx.get(&g, "posixpath")?.is(&pp) {
+            return Err(refuse!("fnmatch.os / fnmatch.posixpath are not the modules"));
+        }
+        let osd = os.dict();
+        if !cx.get(&osd, "path")?.is(&pp) {
+            return Err(refuse!("os.path is not posixpath"));
+        }
+        let ppd = pp.dict();
+        let nc = cx.get(&ppd, "normcase")?;
+        rt::check_fp(cx, FPS, "posixpath.normcase", &nc)?;
+        if !cx.get(&ppd, "os")?.is(&os) {
+            return Err(refuse!("posixpath.os is not the os module"));
+        }
+        let fspath = cx.get(&osd, "fspath")?;
+        rt::check_c(cx, crate::targets::posixpath::FPS, "os.fspath", &fspath)
+    })?;
+    let osd = cx.loaded_module("os")?.dict();
+    let ppd = cx.loaded_module("posixpath")?.dict();
     cx.pin(&osd, "path", &rt.deps)?;
-    let ppd = pp.dict();
-    let nc = cx.get(&ppd, "normcase")?;
-    rt::check_fp(cx, FPS, "posixpath.normcase", &nc)?;
     cx.pin(&ppd, "normcase", &rt.deps)?;
-    if !cx.get(&ppd, "os")?.is(&os) {
-        return Err(refuse!("posixpath.os is not the os module"));
-    }
     cx.pin(&ppd, "os", &rt.deps)?;
-    let fspath = cx.get(&osd, "fspath")?;
-    rt::check_c(cx, crate::targets::posixpath::FPS, "os.fspath", &fspath)?;
     cx.pin(&osd, "fspath", &rt.deps)?;
     Ok(())
 }

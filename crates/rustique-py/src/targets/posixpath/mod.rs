@@ -103,16 +103,28 @@ fn func<'py>(cx: &mut Prepare<'py>, g: &Bound<'py, PyDict>, attr: &str) -> Resul
 
 /// `os.fspath` as `posixpath` reads it: `posixpath.os` (the os module) and `os.fspath`
 /// (the C function), both pinned.
+/// Group-shared validation (once per enable pass): `posixpath.os` is the os module,
+/// `os.fspath` and `_get_sep` are the recorded originals, str layouts calibrated.
+fn validate_sep(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    cx.memo("posixpath:sep", |cx| {
+        init_layouts(cx)?;
+        let g = cx.loaded_module("posixpath")?.dict();
+        let osm = cx.loaded_module("os")?;
+        if !cx.get(&g, "os")?.is(&osm) {
+            return Err(refuse!("posixpath.os is not the os module"));
+        }
+        let fspath = cx.get(&osm.dict(), "fspath")?;
+        rt::check_c(cx, FPS, "os.fspath", &fspath)?;
+        let get_sep = cx.get(&g, "_get_sep")?;
+        rt::check_fp(cx, FPS, "posixpath._get_sep", &get_sep)
+    })
+}
+
+/// `os.fspath` as `posixpath` reads it: `posixpath.os` and `os.fspath`, pinned.
 fn pin_fspath(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, deps: &'static DepFlag) -> Result<(), Refusal> {
-    let os = cx.get(g, "os")?;
-    let osm = cx.loaded_module("os")?;
-    if !os.is(&osm) {
-        return Err(refuse!("posixpath.os is not the os module"));
-    }
+    validate_sep(cx)?;
     cx.pin(g, "os", deps)?;
-    let osd = osm.dict();
-    let fspath = cx.get(&osd, "fspath")?;
-    rt::check_c(cx, FPS, "os.fspath", &fspath)?;
+    let osd = cx.loaded_module("os")?.dict();
     cx.pin(&osd, "fspath", deps)?;
     Ok(())
 }
@@ -120,8 +132,6 @@ fn pin_fspath(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, deps: &'static DepFla
 /// Pins shared by the functions built on `os.fspath` and `_get_sep`.
 fn pin_sep(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, deps: &'static DepFlag) -> Result<(), Refusal> {
     pin_fspath(cx, g, deps)?;
-    let get_sep = cx.get(g, "_get_sep")?;
-    rt::check_fp(cx, FPS, "posixpath._get_sep", &get_sep)?;
     cx.pin(g, "_get_sep", deps)?;
     cx.pin_global(g, "isinstance", deps)?;
     cx.pin_global(g, "bytes", deps)?;
@@ -477,7 +487,7 @@ static KW_START: AtomicUsize = AtomicUsize::new(0);
 
 /// `posixpath.normpath` must be the C `posix._path_normpath` (pinned, fingerprinted);
 /// bytes are accepted only under UTF-8 + surrogateescape.
-fn check_normpath(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, deps: &'static DepFlag) -> Result<(), Refusal> {
+fn check_normpath(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>) -> Result<(), Refusal> {
     let np = cx.get(g, "normpath")?;
     let posix = cx.loaded_module("posix")?;
     let c_np = cx.get(&posix.dict(), "_path_normpath")?;
@@ -485,7 +495,6 @@ fn check_normpath(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, deps: &'static De
         return Err(refuse!("posixpath.normpath is not posix._path_normpath"));
     }
     rt::check_c(cx, FPS, "posixpath.normpath", &np)?;
-    cx.pin(g, "normpath", deps)?;
     // Behaviour of the port is proved by the conformance and differential tests (and
     // `_paths_normpath` fuzzing); install only checks identity and the C fingerprint.
     let sys = cx.loaded_module("sys")?;
@@ -497,20 +506,27 @@ fn check_normpath(cx: &mut Prepare<'_>, g: &Bound<'_, PyDict>, deps: &'static De
 
 /// What `abspath` reads: `os.fspath`, `os.getcwd(b)`, `join`, `_get_sep`, `normpath`.
 fn prep_abs_common<'py>(cx: &mut Prepare<'py>, g: &Bound<'py, PyDict>, deps: &'static DepFlag) -> Result<(), Refusal> {
-    init_layouts(cx)?;
     pin_sep(cx, g, deps)?;
-    let osd = cx.loaded_module("os")?.dict();
-    for (key, cell) in [("getcwd", &GETCWD), ("getcwdb", &GETCWDB)] {
-        let f = cx.get(&osd, key)?;
-        rt::check_c(cx, FPS, &format!("os.{key}"), &f)?;
-        cx.pin(&osd, key, deps)?;
-        if cell.load(Relaxed) != f.as_ptr() as usize {
-            cell.store(rt::leak(&f), Relaxed);
+    cx.memo("posixpath:abs", |cx| {
+        let g = cx.loaded_module("posixpath")?.dict();
+        let osd = cx.loaded_module("os")?.dict();
+        for (key, cell) in [("getcwd", &GETCWD), ("getcwdb", &GETCWDB)] {
+            let f = cx.get(&osd, key)?;
+            rt::check_c(cx, FPS, &format!("os.{key}"), &f)?;
+            if cell.load(Relaxed) != f.as_ptr() as usize {
+                cell.store(rt::leak(&f), Relaxed);
+            }
         }
+        func(cx, &g, "join")?;
+        check_normpath(cx, &g)
+    })?;
+    let osd = cx.loaded_module("os")?.dict();
+    for key in ["getcwd", "getcwdb"] {
+        cx.pin(&osd, key, deps)?;
     }
-    func(cx, g, "join")?;
     cx.pin(g, "join", deps)?;
-    check_normpath(cx, g, deps)
+    cx.pin(g, "normpath", deps)?;
+    Ok(())
 }
 
 fn prep_abspath(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {

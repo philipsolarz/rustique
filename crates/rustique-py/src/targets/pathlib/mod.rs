@@ -134,7 +134,161 @@ static DOT: AtomicUsize = AtomicUsize::new(0);
 unsafe fn exact_path(o: O) -> bool {
     // SAFETY: live object.
     let t = unsafe { ffi::Py_TYPE(o) };
-    t == PURE_POSIX.load(Relaxed) || t == POSIX.load(Relaxed)
+    // SAFETY: the validated classes.
+    unsafe {
+        (t == PURE_POSIX.load(Relaxed) && class_intact(t, &TAG_PURE_POSIX, &ORIG_PURE_POSIX))
+            || (t == POSIX.load(Relaxed) && class_intact(t, &TAG_POSIX, &ORIG_POSIX))
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Class guard: instead of pinning every class attribute the originals reach (dozens of
+// dict pins per target at install), the kernels compare the class's `tp_version_tag`
+// (CPython assigns a new tag whenever the class or any base is modified, `__bases__`
+// included). On a new tag, the attributes are looked up again (`_PyType_Lookup`, no Python
+// code) and compared with the validated originals; if all are the same objects (a patch was
+// undone), the new tag is accepted, otherwise the call falls back.
+// ---------------------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn _PyType_Lookup(ty: *mut ffi::PyTypeObject, name: *mut ffi::PyObject) -> *mut ffi::PyObject;
+    fn PyUnstable_Type_AssignVersionTag(ty: *mut ffi::PyTypeObject) -> std::ffi::c_int;
+}
+
+/// Every PurePath attribute any kernel's original reaches through `self`/`cls`.
+const CLASS_ATTRS: &[&str] = &[
+    "parser",
+    "_parse_path",
+    "_raw_path",
+    "drive",
+    "root",
+    "_tail",
+    "_format_parsed_parts",
+    "_from_parsed_parts",
+    "_from_parsed_string",
+    "with_segments",
+    "__new__",
+    "__init__",
+    "name",
+    "parents",
+    "__eq__",
+    "_str_normcase",
+    "__str__",
+    "__hash__",
+];
+/// `_PathParents` attributes `path in self.parents` reaches (relative_to).
+const PARENTS_ATTRS: &[&str] = &["__init__", "__len__", "__getitem__", "__contains__", "__iter__"];
+
+/// (interned name, validated attribute) per class: strong references for the process.
+static ORIG_POSIX: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
+static ORIG_PURE_POSIX: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
+static ORIG_PARENTS: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
+static TAG_PURE_POSIX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static TAG_POSIX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static PARENTS_TYPE: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(std::ptr::null_mut());
+static TAG_PARENTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+#[inline(always)]
+unsafe fn version_tag(t: *mut ffi::PyTypeObject) -> u32 {
+    // SAFETY: a live type; the tag is written atomically by CPython (relaxed read).
+    unsafe { (*(&raw const (*t).tp_version_tag).cast::<std::sync::atomic::AtomicU32>()).load(Relaxed) }
+}
+
+/// The class's attributes are the validated ones (fast: its version tag is the accepted one).
+#[inline(always)]
+unsafe fn class_intact(
+    t: *mut ffi::PyTypeObject,
+    accepted: &std::sync::atomic::AtomicU32,
+    attrs: &std::sync::Mutex<Vec<(usize, usize)>>,
+) -> bool {
+    // SAFETY: live type; attached thread for the slow path.
+    unsafe {
+        let tag = version_tag(t);
+        (tag != 0 && tag == accepted.load(Relaxed)) || reverify(t, accepted, attrs)
+    }
+}
+
+/// Look the attributes up again; accept the class's (new) version tag if they are all the
+/// validated objects.
+#[cold]
+unsafe fn reverify(
+    t: *mut ffi::PyTypeObject,
+    accepted: &std::sync::atomic::AtomicU32,
+    attrs: &std::sync::Mutex<Vec<(usize, usize)>>,
+) -> bool {
+    let Ok(attrs) = attrs.lock() else { return false };
+    // SAFETY: attached thread; live type; interned names; results only compared.
+    unsafe {
+        if attrs.is_empty() || attrs.iter().any(|&(n, v)| _PyType_Lookup(t, n as O) as usize != v) {
+            return false;
+        }
+        if PyUnstable_Type_AssignVersionTag(t) == 0 {
+            return false;
+        }
+        accepted.store(version_tag(t), Relaxed);
+    }
+    true
+}
+
+/// `_PathParents` unchanged (relative_to's original iterates `self.parents`).
+#[inline(always)]
+unsafe fn parents_intact() -> bool {
+    let t = PARENTS_TYPE.load(Relaxed);
+    if t.is_null() {
+        return false;
+    }
+    // SAFETY: the validated, live class.
+    unsafe {
+        let tag = version_tag(t);
+        (tag != 0 && tag == TAG_PARENTS.load(Relaxed)) || reverify(t, &TAG_PARENTS, &ORIG_PARENTS)
+    }
+}
+
+/// Record the validated attributes and accept the classes' current tags.
+fn record_class(
+    py: Python<'_>,
+    posix: &Bound<'_, PyType>,
+    pure_posix: &Bound<'_, PyType>,
+    parents: &Bound<'_, PyType>,
+) -> Result<(), Refusal> {
+    let lookup = |t: &Bound<'_, PyType>, names: &[&str]| -> Result<Vec<(usize, usize)>, Refusal> {
+        let mut v = Vec::with_capacity(names.len());
+        for n in names {
+            let name = PyString::intern(py, n);
+            // SAFETY: a ready type; interned name; the result is kept with a new reference.
+            let d = unsafe { _PyType_Lookup(t.as_type_ptr(), name.as_ptr()) };
+            if d.is_null() {
+                return Err(refuse!("{n} not found on the class"));
+            }
+            // SAFETY: a live object found in the class dicts.
+            unsafe { ffi::Py_IncRef(d) };
+            v.push((name.into_ptr() as usize, d as usize));
+        }
+        Ok(v)
+    };
+    let a = lookup(posix, CLASS_ATTRS)?;
+    let b = lookup(pure_posix, CLASS_ATTRS)?;
+    let pa = lookup(parents, PARENTS_ATTRS)?;
+    if let Ok(mut v) = ORIG_POSIX.lock() {
+        *v = a;
+    }
+    if let Ok(mut v) = ORIG_PURE_POSIX.lock() {
+        *v = b;
+    }
+    if let Ok(mut v) = ORIG_PARENTS.lock() {
+        *v = pa;
+    }
+    PARENTS_TYPE.store(parents.as_type_ptr(), Relaxed);
+    // SAFETY: ready types.
+    unsafe {
+        for (t, tag) in [(posix, &TAG_POSIX), (pure_posix, &TAG_PURE_POSIX), (parents, &TAG_PARENTS)] {
+            if PyUnstable_Type_AssignVersionTag(t.as_type_ptr()) == 0 {
+                return Err(refuse!("no type version tag"));
+            }
+            tag.store(version_tag(t.as_type_ptr()), Relaxed);
+        }
+    }
+    Ok(())
 }
 
 #[inline(always)]
@@ -553,6 +707,101 @@ fn type_dict<'py>(ty: &Bound<'py, PyType>) -> Result<Bound<'py, PyDict>, Refusal
 }
 
 /// Validate the module (fingerprints, classes, slots, pins) once per target.
+/// Validation shared by the thirteen targets (once per enable pass): fingerprints of every
+/// function the kernels reproduce, the two exact classes (default metaclass, `posixpath`
+/// parser, PurePath's slot layout), `posixpath.sep/altsep`, `os.name`, and the C/Python
+/// helpers the parsing reaches.
+fn validate(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    cx.memo("pathlib:validate", |cx| {
+        let py = cx.py();
+        if !rt::init_str_layout(py) {
+            return Err(refuse!("str layout not calibrated"));
+        }
+        let g = cx.module()?.dict();
+        let mut types = Vec::new();
+        for name in ["PurePath", "PurePosixPath", "PosixPath", "Path", "_PathParents"] {
+            types.push(cx.get(&g, name)?.cast_into::<PyType>().map_err(PyErr::from)?);
+        }
+        let [pure, pure_posix, posix, path, parents] = <[Bound<'_, PyType>; 5]>::try_from(types).expect("five");
+        let pd = type_dict(&pure)?;
+        for (name, _) in FPS {
+            let (owner, a) = name.split_once('.').expect("dotted");
+            let f = match owner {
+                "PurePath" => underlying(&cx.get(&pd, a)?)?,
+                "_PathParents" => underlying(&cx.get(&type_dict(&parents)?, a)?)?,
+                "Path" => underlying(&cx.get(&type_dict(&path)?, a)?)?,
+                _ => cx.get(&cx.loaded_module(owner)?.dict(), a)?,
+            };
+            if *name == "posixpath.splitroot" {
+                rt::check_c(cx, FPS, name, &f)?;
+            } else {
+                rt::check_fp(cx, FPS, name, &f)?;
+            }
+        }
+        let pp = cx.loaded_module("posixpath")?;
+        for t in [&pure_posix, &posix] {
+            if !t.get_type().is(py.get_type::<PyType>()) {
+                return Err(refuse!("custom metaclass"));
+            }
+            // SAFETY: ready types.
+            if unsafe { ffi::PyType_IsSubtype(t.as_type_ptr(), pure.as_type_ptr()) } == 0 {
+                return Err(refuse!("class hierarchy differs"));
+            }
+        }
+        if !cx.type_attr(&pure_posix, "parser")?.is(&pp) {
+            return Err(refuse!("PurePosixPath.parser is not posixpath"));
+        }
+        // Slot offsets: object-typed, writable member descriptors of PurePath.
+        for (k, name) in SLOT_NAMES.iter().enumerate() {
+            let d = cx.get(&pd, name)?;
+            // SAFETY: type check, then the member definition of a member descriptor.
+            let off = unsafe {
+                if ffi::Py_TYPE(d.as_ptr()) != &raw mut ffi::PyMemberDescr_Type {
+                    return Err(refuse!("{name} is not a slot"));
+                }
+                let m = (*d.as_ptr().cast::<ffi::PyMemberDescrObject>()).d_member;
+                if (*m).type_code != ffi::Py_T_OBJECT_EX || (*m).flags & ffi::Py_READONLY != 0 {
+                    return Err(refuse!("{name} is not a writable object slot"));
+                }
+                (*m).offset
+            };
+            let prev = OFF[k].swap(off, Relaxed);
+            if prev != 0 && prev != off {
+                return Err(refuse!("slot layout changed"));
+            }
+        }
+        let ppd = pp.dict();
+        if !cx.get(&ppd, "sep")?.eq("/")? || !cx.get(&ppd, "altsep")?.is_none() {
+            return Err(refuse!("posixpath.sep/altsep differ"));
+        }
+        let osm = cx.loaded_module("os")?;
+        if !cx.get(&ppd, "os")?.is(&osm) {
+            return Err(refuse!("posixpath.os is not the os module"));
+        }
+        let osd = osm.dict();
+        if !cx.get(&osd, "name")?.eq("posix")? {
+            return Err(refuse!("os.name is not 'posix'"));
+        }
+        let join = cx.get(&ppd, "join")?;
+        rt::check_fp(cx, crate::targets::posixpath::FPS, "posixpath.join", &join)?;
+        rt::check_fp(cx, crate::targets::posixpath::FPS, "posixpath._get_sep", &cx.get(&ppd, "_get_sep")?)?;
+        rt::check_c(cx, crate::targets::posixpath::FPS, "os.fspath", &cx.get(&osd, "fspath")?)?;
+        // The attributes the originals reach are the ones just fingerprinted (looked up
+        // through each class's MRO); the kernels then guard them by version tag.
+        record_class(py, &posix, &pure_posix, &parents)?;
+        store_type(&PURE_POSIX, &pure_posix);
+        store_type(&POSIX, &posix);
+        store_type(&PURE_BASE, &pure);
+        store_type(&PATH_BASE, &path);
+        if DOT.load(Relaxed) == 0 {
+            DOT.store(rt::leak(PyString::new(py, ".").as_any()), Relaxed);
+        }
+        Ok(())
+    })
+}
+
+/// Validate (shared) and declare one target: the pins of what its original reaches, then
+/// the vectorcall site.
 fn prep(
     cx: &mut Prepare<'_>,
     owner: &str,
@@ -560,99 +809,25 @@ fn prep(
     rt: &'static Rt,
     kernel: ffi::vectorcallfunc,
 ) -> Result<(), Refusal> {
-    let py = cx.py();
-    if !rt::init_str_layout(py) {
-        return Err(refuse!("str layout not calibrated"));
-    }
+    validate(cx)?;
     let g = cx.module()?.dict();
-    let mut types = Vec::new();
-    for name in ["PurePath", "PurePosixPath", "PosixPath", "Path", "_PathParents"] {
-        types.push(cx.get(&g, name)?.cast_into::<PyType>().map_err(PyErr::from)?);
+    fn ty<'py>(cx: &Prepare<'py>, g: &Bound<'py, PyDict>, name: &str) -> Result<Bound<'py, PyType>, Refusal> {
+        Ok(cx.get(g, name)?.cast_into::<PyType>().map_err(PyErr::from)?)
     }
-    let [pure, pure_posix, posix, path, parents] = <[Bound<'_, PyType>; 5]>::try_from(types).expect("five");
-    let pd = type_dict(&pure)?;
-    // Fingerprints of every function the kernels reproduce. The ten targets share them:
-    // checked once per set of function objects (kept alive, so identity is stable).
-    let mut funcs = Vec::with_capacity(FPS.len());
-    for (name, _) in FPS {
-        let (owner, a) = name.split_once('.').expect("dotted");
-        let f = match owner {
-            "PurePath" => underlying(&cx.get(&pd, a)?)?,
-            "_PathParents" => underlying(&cx.get(&type_dict(&parents)?, a)?)?,
-            "Path" => underlying(&cx.get(&type_dict(&path)?, a)?)?,
-            _ => cx.get(&cx.loaded_module(owner)?.dict(), a)?,
-        };
-        funcs.push(f);
-    }
-    let ptrs: Vec<usize> = funcs.iter().map(|f| f.as_ptr() as usize).collect();
-    let known = VALIDATED.lock().map(|v| *v == ptrs).unwrap_or(false);
-    if !known {
-        for ((name, _), f) in FPS.iter().zip(&funcs) {
-            if *name == "posixpath.splitroot" {
-                rt::check_c(cx, FPS, name, f)?;
-            } else {
-                rt::check_fp(cx, FPS, name, f)?;
-            }
-        }
-    }
-    // Both exact classes: default metaclass, posixpath parser; the attributes this original
-    // reaches pinned along PosixPath's MRO (PosixPath, Path, PurePosixPath, PurePath, object:
-    // it contains PurePosixPath's).
-    let pp = cx.loaded_module("posixpath")?;
-    for t in [&pure_posix, &posix] {
-        if !t.get_type().is(py.get_type::<PyType>()) {
-            return Err(refuse!("custom metaclass"));
-        }
-    }
-    if !cx.type_attr(&pure_posix, "parser")?.is(&pp) {
-        return Err(refuse!("PurePosixPath.parser is not posixpath"));
-    }
-    // `parser` through PosixPath's MRO (also registers the type watcher that breaks the pin on
-    // an MRO change); the other attributes: few → one MRO pin each; many → one snapshot pin
-    // per class dict of the MRO (any added, replaced or deleted attribute breaks it).
-    let v = cx.pin_attr(&posix, "parser", &rt.deps)?;
-    if !v.is(&pp) {
-        return Err(refuse!("PosixPath.parser is not posixpath"));
-    }
+    // Class attributes are guarded per call by the classes' version tags (`class_intact`),
+    // `_PathParents` likewise for relative_to (`parents_intact`): no class pins.
     let names = reached(attr);
-    if names.len() <= 4 {
-        for name in names.iter().filter(|n| **n != "parser") {
-            cx.pin_attr(&posix, name, &rt.deps)?;
-        }
-    } else {
-        for t in [&posix, &path, &pure_posix, &pure] {
-            cx.pin_dict(&type_dict(t)?, &rt.deps)?;
-        }
-    }
-    if attr == "relative_to" {
-        // `path in self.parents`: _PathParents.__getitem__/__len__ (its own dict) and the
-        // Sequence mixin's __contains__ / __iter__.
-        cx.pin_dict(&type_dict(&parents)?, &rt.deps)?;
-        for name in ["__contains__", "__iter__"] {
-            cx.pin_attr(&parents, name, &rt.deps)?;
-        }
-    }
-    let ppd = pp.dict();
-    if !cx.get(&ppd, "sep")?.eq("/")? || !cx.get(&ppd, "altsep")?.is_none() {
-        return Err(refuse!("posixpath.sep/altsep differ"));
-    }
-    let parses = reached(attr).contains(&"_parse_path");
+    let ppd = cx.loaded_module("posixpath")?.dict();
+    let osd = cx.loaded_module("os")?.dict();
+    let parses = names.contains(&"_parse_path");
     if parses {
         // `_raw_path` → `parser.join`; `_parse_path` → `sep`, `altsep`, `splitroot`;
-        // `_format_parsed_parts` → `splitdrive`.
-        for key in ["sep", "altsep", "join", "splitroot", "splitdrive", "_get_sep"] {
+        // `_format_parsed_parts` → `splitdrive`; `posixpath.join` / `splitdrive` call
+        // `os.fspath` (through `posixpath.os`) and `_get_sep` resolves `isinstance`/`bytes`.
+        for key in ["sep", "altsep", "join", "splitroot", "splitdrive", "_get_sep", "os"] {
             cx.pin(&ppd, key, &rt.deps)?;
         }
-        let join = cx.get(&ppd, "join")?;
-        rt::check_fp(cx, crate::targets::posixpath::FPS, "posixpath.join", &join)?;
-        rt::check_fp(cx, crate::targets::posixpath::FPS, "posixpath._get_sep", &cx.get(&ppd, "_get_sep")?)?;
         cx.pin_global(&g, "len", &rt.deps)?;
-        // `posixpath.join` and `posixpath.splitdrive` call `os.fspath` (through
-        // `posixpath.os`) and `_get_sep` resolves `isinstance` / `bytes`.
-        if !cx.get(&ppd, "os")?.is(&cx.loaded_module("os")?) {
-            return Err(refuse!("posixpath.os is not the os module"));
-        }
-        cx.pin(&ppd, "os", &rt.deps)?;
         for name in ["isinstance", "bytes"] {
             cx.pin_global(&ppd, name, &rt.deps)?;
         }
@@ -681,48 +856,6 @@ fn prep(
     for name in builtins {
         cx.pin_global(&g, name, &rt.deps)?;
     }
-    // Slot offsets: object-typed, writable member descriptors of PurePath.
-    for (k, name) in SLOT_NAMES.iter().enumerate() {
-        let d = cx.get(&pd, name)?;
-        // SAFETY: type check, then the member definition of a member descriptor.
-        let off = unsafe {
-            if ffi::Py_TYPE(d.as_ptr()) != &raw mut ffi::PyMemberDescr_Type {
-                return Err(refuse!("{name} is not a slot"));
-            }
-            let m = (*d.as_ptr().cast::<ffi::PyMemberDescrObject>()).d_member;
-            if (*m).type_code != ffi::Py_T_OBJECT_EX || (*m).flags & ffi::Py_READONLY != 0 {
-                return Err(refuse!("{name} is not a writable object slot"));
-            }
-            (*m).offset
-        };
-        let prev = OFF[k].swap(off, Relaxed);
-        if prev != 0 && prev != off {
-            return Err(refuse!("slot layout changed"));
-        }
-    }
-    // Same layout for both classes (no extra slots before PurePath's).
-    for t in [&pure_posix, &posix] {
-        // SAFETY: ready types.
-        let ok = unsafe { ffi::PyType_IsSubtype(t.as_type_ptr(), pure.as_type_ptr()) != 0 };
-        if !ok {
-            return Err(refuse!("class hierarchy differs"));
-        }
-    }
-    store_type(&PURE_POSIX, &pure_posix);
-    store_type(&POSIX, &posix);
-    if DOT.load(Relaxed) == 0 {
-        DOT.store(rt::leak(PyString::new(py, ".").as_any()), Relaxed);
-    }
-    if !known && let Ok(mut v) = VALIDATED.lock() {
-        for f in &funcs {
-            rt::leak(f);
-        }
-        *v = ptrs;
-    }
-    let osd = cx.loaded_module("os")?.dict();
-    if !cx.get(&osd, "name")?.eq("posix")? {
-        return Err(refuse!("os.name is not 'posix'"));
-    }
     if globals.contains(&"os") {
         // `__new__` picks the flavour from `os.name` (when called on `PurePath`/`Path`).
         cx.pin(&osd, "name", &rt.deps)?;
@@ -730,19 +863,12 @@ fn prep(
     if globals.contains(&"os") || parses {
         // `__init__` calls `os.fspath(arg)` on every non-path argument; parsing reaches it
         // through `posixpath.join` / `posixpath.splitdrive`.
-        let fspath = cx.get(&osd, "fspath")?;
-        rt::check_c(cx, crate::targets::posixpath::FPS, "os.fspath", &fspath)?;
         cx.pin(&osd, "fspath", &rt.deps)?;
     }
-    store_type(&PURE_BASE, &pure);
-    store_type(&PATH_BASE, &path);
-    let od = if owner == "Path" { type_dict(&path)? } else { pd };
+    let od = type_dict(&ty(cx, &g, if owner == "Path" { "Path" } else { "PurePath" })?)?;
     let f = underlying(&cx.get(&od, attr)?)?;
     cx.vectorcall(&f, kernel, &accel::FUNCTION_VECTORCALL)
 }
-
-/// The function objects whose fingerprints all matched (strong references leaked).
-static VALIDATED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
 fn store_type(cell: &AtomicPtr<ffi::PyTypeObject>, t: &Bound<'_, PyType>) {
     let p = t.as_type_ptr();
@@ -940,6 +1066,9 @@ crate::paths_kernel!(k_relative_to, RT_RELATIVE_TO, RELATIVE_TO_T, |func, args, 
 unsafe fn relative_to(s: O, other: O) -> Option<O> {
     // SAFETY: attached thread; live objects.
     unsafe {
+        if !parents_intact() {
+            return None;
+        }
         if exact_str(other) {
             let raw = ffi::PyList_New(1);
             if raw.is_null() {
