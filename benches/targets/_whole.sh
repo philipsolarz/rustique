@@ -3,6 +3,8 @@
 # `.pth` line's loader, run with -c the way site runs it), RUSTIQUE=1 vs RUSTIQUE=1 with the
 # paths groups excluded: their share of every process start (posixpath is imported at
 # startup and installs eagerly; fnmatch/pathlib stay pending until imported).
+# A fixed hash seed: string hashing changes dict layouts and the Ir by ±0.15M otherwise.
+export PYTHONHASHSEED=${PYTHONHASHSEED:-0}
 L=$(python -c "import ast,sys; ns={}; t=open('tests/test_accel_startup.py').read(); exec(compile(ast.Module([n for n in ast.parse(t).body if isinstance(n, ast.Assign) and getattr(n.targets[0],'id','')=='LOADER'],[]),'x','exec'),ns); print(ns['LOADER'])")
 SD=$(python -c "import rustique,os; print(os.path.dirname(os.path.dirname(rustique.__file__)))")
 CODE="import os; sitedir='$SD'; os.environ.get('RUSTIQUE','0') != '0' and exec($(python -c "import sys; print(repr(sys.argv[1]))" "$L"))"

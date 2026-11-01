@@ -608,6 +608,7 @@ macro_rules! target {
             jit_safe: true,
             checkable: false,
             shared: Some(&SHARED),
+            release: Some(release),
             ..TargetSpec::DEFAULT
         };
     };
@@ -804,6 +805,38 @@ fn prep(
         cx.get(&g, if owner == "Path" { "Path" } else { "PurePath" })?.cast_into::<PyType>().map_err(PyErr::from)?;
     let f = underlying(&cx.get(&type_dict(&cls)?, attr)?)?;
     cx.vectorcall(&f, kernel, &accel::FUNCTION_VECTORCALL)
+}
+
+/// Exit release: the verified functions, the classes and their recorded attributes (the
+/// methods' globals are the pathlib module's). Kernels compare a receiver's type with the
+/// class cells before anything else (null: decline) and reach the attribute lists only
+/// for a matching type; `_PathParents` is checked for null; the accepted tags are reset.
+/// `DOT`/the empty str stay (they keep nothing alive).
+fn release(py: Python<'_>) {
+    rt::release(py);
+    let types: Vec<_> = [&PURE_POSIX, &POSIX, &PURE_BASE, &PATH_BASE]
+        .into_iter()
+        .map(|c| c.swap(std::ptr::null_mut(), Relaxed))
+        .filter(|p| !p.is_null())
+        .collect();
+    PARENTS_TYPE.store(std::ptr::null_mut(), Relaxed);
+    for tag in [&TAG_PURE_POSIX, &TAG_POSIX, &TAG_PARENTS] {
+        tag.store(0, Relaxed);
+    }
+    let mut refs = Vec::new();
+    for attrs in [&ORIG_POSIX, &ORIG_PURE_POSIX, &ORIG_PARENTS] {
+        refs.extend(std::mem::take(&mut *attrs.lock().unwrap_or_else(|p| p.into_inner())));
+    }
+    // SAFETY: attached thread; the references taken by `record_class` and `store_type`.
+    unsafe {
+        for (name, value) in refs {
+            ffi::Py_DECREF(name as O);
+            ffi::Py_DECREF(value as O);
+        }
+        for t in types {
+            ffi::Py_DECREF(t.cast());
+        }
+    }
 }
 
 fn store_type(cell: &AtomicPtr<ffi::PyTypeObject>, t: &Bound<'_, PyType>) {
