@@ -157,11 +157,29 @@ def test_env_exclude_adds_to_code_exclude(fake, monkeypatch):
     assert fake.installed == {"json.dumps", "json.loads"}
 
 
-def test_unknown_env_names_warn(fake, monkeypatch, capsys):
-    monkeypatch.setenv("RUSTIQUE_EXCLUDE", "jsn")
+def test_unknown_env_names_warn_and_are_dropped(fake, monkeypatch, capsys):
+    monkeypatch.setenv("RUSTIQUE_EXCLUDE", "jsn,re")
     rustique.enable()
     err = capsys.readouterr().err
-    assert "RUSTIQUE_EXCLUDE: no target or group named 'jsn'" in err and "copy, json, re" in err
+    assert "RUSTIQUE_EXCLUDE: no target or group named 'jsn', ignored" in err and "copy, json, re" in err
+    assert enables(fake)[-1]["exclude"] == ("re",)  # the framework raises on unknown names
+    monkeypatch.delenv("RUSTIQUE_EXCLUDE")
+    monkeypatch.setenv("RUSTIQUE_ONLY", "jsn")
+    rustique.enable()
+    assert enables(fake)[-1]["only"] == ()  # narrows to nothing, never to everything
+
+
+def test_unknown_env_names_never_raise_with_the_real_framework(monkeypatch):
+    for k in VARS:
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("RUSTIQUE_EXCLUDE", "no-such-group")
+    try:
+        st = rustique.enable()
+        assert any(t["state"] == "installed" for t in st["targets"])
+    finally:
+        rustique.disable()
+    with pytest.raises(ValueError):
+        rustique.enable(exclude=["no-such-group"])
 
 
 def test_names_parsing():

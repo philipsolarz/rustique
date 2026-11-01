@@ -126,7 +126,7 @@ are on with `RUSTIQUE_STATS=1`, `RUSTIQUE_REPORT`, `python -m rustique report`,
 
 ## Check in CI that nothing changed
 
-Two tools. Use either, or both.
+Two tools, plus a check mode. Use any of them, or all of them.
 
 **1. `python -m rustique diff -- <command>`** runs your command twice: plain (`RUSTIQUE=0`)
 and with `RUSTIQUE=1`. Then it compares:
@@ -192,6 +192,19 @@ session, because "this target is not validated on CPython 3.14" is normal on a m
 `pytest-xdist` every worker is accelerated and the summary adds up their counters. If
 plugin autoloading is off (`PYTEST_DISABLE_PLUGIN_AUTOLOAD`), use `-p rustique.pytest_plugin`.
 
+**3. Check mode** is for the paranoid CI job. With `RUSTIQUE_CHECK=1`, every fast path of
+a *checkable* target also runs CPython's original on the same arguments and compares the
+two results. A target is checkable when its exact subset calls no user code and has no
+side effects: `json.dumps` of plain data, float formatting, `strptime`, `os.path.join`, …
+A mismatch is a Rustique bug. The program still gets CPython's result, the mismatch is
+counted, and it fails the run. Expect roughly 2× the cost of each checked call.
+
+```bash
+RUSTIQUE_CHECK=1 python -m rustique diff -- pytest -q   # or: python -m rustique diff --check -- ...
+pytest --rustique --rustique-check                      # mismatches fail the session
+python -m rustique --check app.py                       # --check-raise: raise RustiqueCheckError
+```
+
 `--rustique` and `diff` answer different questions. `--rustique` asks: do my tests pass
 accelerated, and what ran? `diff` asks: is everything observable the same as without
 Rustique? Don't combine them: `diff` turns Rustique on itself, and refuses a command
@@ -209,6 +222,8 @@ containing `--rustique`.
 | `RUSTIQUE_STATS` | `1` | counters on when Rustique is enabled |
 | `RUSTIQUE_REPORT` | `1` / `stderr` | report at exit on stderr (implies `RUSTIQUE_STATS=1`) |
 | | a path (`{pid}` is replaced) | append the text report to the file; with `.json`, one JSON record per process (what `report`/`diff` use) |
+| `RUSTIQUE_CHECK` | `1` / `warn` | check mode: every fast path of a checkable target also runs CPython's original and compares. A mismatch is counted (`fallback["check"]`, shown as `CHECK MISMATCHES` in the report) and CPython's result is returned |
+| | `raise` | check mode where a mismatch raises `RustiqueCheckError` |
 
 All are read when Rustique is enabled, except `RUSTIQUE=1`, which is read at startup. All
 are ignored under `-E`/`-I`.
@@ -242,12 +257,12 @@ rustique.stats(enabled=None, reset=False) -> dict
 ## Reference: `python -m rustique`
 
 ```
-python -m rustique [run] [--only G,..] [--exclude G,..] [--report] [--native PATTERN]...
-                         [--no-builtins] (script.py | -m module | -c command) [args...]
+python -m rustique [run] [--only G,..] [--exclude G,..] [--report] [--check | --check-raise]
+                         [--native PATTERN]... [--no-builtins] (script.py | -m module | -c command) [args...]
 python -m rustique status [--json]
-python -m rustique report [--json] [-o FILE] [--limit N] -- <command...>
+python -m rustique report [--json] [-o FILE] [--limit N] [--check] -- <command...>
 python -m rustique diff [--repeat N] [--ignore REGEX]... [--no-normalize] [--keep DIR]
-                        [--timeout S] [--quiet] -- <command...>
+                        [--timeout S] [--quiet] [--check] -- <command...>
 ```
 
 `run` is the default subcommand. To run a script that is literally named `status`, write

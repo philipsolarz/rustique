@@ -122,16 +122,21 @@ def _narrow(code: tuple[str, ...] | None, env: tuple[str, ...] | None) -> tuple[
     return tuple(t["name"] for t in targets if _matches(t, code) and _matches(t, env))
 
 
-def _warn_unknown(var: str, sel: tuple[str, ...] | None) -> None:
+def _known(var: str, sel: tuple[str, ...] | None) -> tuple[str, ...] | None:
+    """``sel`` without the names no target or group has, with one warning on stderr for
+    those (an environment variable never raises; the framework raises on unknown names)."""
     if not sel:
-        return
+        return sel
     targets = _fw.status().get("targets", [])
+    if not targets:
+        return sel
     known = {t["name"] for t in targets} | {t["group"] for t in targets}
     unknown = [n for n in sel if n not in known]
-    if unknown and targets:
+    if unknown:
         groups = ", ".join(sorted({t["group"] for t in targets}))
-        sys.stderr.write(f"rustique: {var}: no target or group named {', '.join(map(repr, unknown))} "
+        sys.stderr.write(f"rustique: {var}: no target or group named {', '.join(map(repr, unknown))}, ignored "
                          f"(groups: {groups})\n")
+    return tuple(n for n in sel if n in known)
 
 
 def enable(*, only=None, exclude=None, native=None, builtins: bool = True, _source: str = "rustique.enable()") -> dict:
@@ -150,9 +155,9 @@ def enable(*, only=None, exclude=None, native=None, builtins: bool = True, _sour
     if killed():
         _state["killed_calls"] += 1
         return status()
-    env_only, env_exclude = names(getenv("RUSTIQUE_ONLY")), names(getenv("RUSTIQUE_EXCLUDE")) or ()
-    _warn_unknown("RUSTIQUE_ONLY", env_only)
-    _warn_unknown("RUSTIQUE_EXCLUDE", env_exclude)
+    # An unknown name in RUSTIQUE_ONLY narrows to nothing rather than to everything.
+    env_only = _known("RUSTIQUE_ONLY", names(getenv("RUSTIQUE_ONLY")))
+    env_exclude = _known("RUSTIQUE_EXCLUDE", names(getenv("RUSTIQUE_EXCLUDE")) or ())
     sel_only = _narrow(names(only), env_only)
     sel_exclude = tuple(dict.fromkeys((names(exclude) or ()) + env_exclude))
     check = check_mode()
