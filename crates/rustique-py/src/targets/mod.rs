@@ -10,6 +10,7 @@ use crate::accel::TargetSpec;
 pub mod _selftest;
 pub mod builtins;
 pub mod containers;
+pub mod copy;
 pub mod datetime;
 pub mod float;
 pub mod fnmatch;
@@ -38,6 +39,8 @@ pub static ALL: &[&[&TargetSpec]] = &[
     fnmatch::TARGETS,
     pathlib::TARGETS,
     datetime::TARGETS,
+    copy::TARGETS,
+    copy::dc::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,
@@ -52,5 +55,6 @@ pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {
     posixpath::register(accel)?;
     fnmatch::register(accel)?;
     datetime::register(accel)?;
+    copy::register(accel)?;
     Ok(())
 }
