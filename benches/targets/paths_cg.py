@@ -209,6 +209,8 @@ CELLS: list[tuple[str, str, str, str]] = [
     ("pathlib", "Path(p) == pp", "Path(p) == pp", ""),
     ("pathlib", "pp.as_posix()", "pp.as_posix()", ""),
     ("pathlib", "pp.is_absolute()", "pp.is_absolute()", ""),
+    ("pathlib", "PurePosixPath(d, f)", "PurePosixPath(d, f)", ""),
+    ("pathlib", "MyP(p) subclass", "MyP(p)", "class MyP(type(pp)): pass"),
     ("pathlib", "str(pp)", "str(pp)", ""),
     ("pathlib", "os.fspath(pp)", "os.fspath(pp)", ""),
     ("pathlib", "pp == pq", "pp == pq", "pq = Path(p); str(pq)"),

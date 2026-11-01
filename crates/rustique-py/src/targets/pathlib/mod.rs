@@ -107,6 +107,9 @@ const HASH: usize = 6;
 const SLOT_NAMES: [&str; 7] = ["_raw_paths", "_drv", "_root", "_tail_cached", "_str", "_str_normcase_cached", "_hash"];
 
 static PURE_POSIX: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(std::ptr::null_mut());
+/// `PurePath` and `Path` themselves (their `__new__` maps them to the POSIX classes).
+static PURE_BASE: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(std::ptr::null_mut());
+static PATH_BASE: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(std::ptr::null_mut());
 static POSIX: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(std::ptr::null_mut());
 static OFF: [AtomicIsize; 7] = [const { AtomicIsize::new(0) }; 7];
 /// `'.'` (the `or '.'` constant of `__str__` / `_from_parsed_string`).
@@ -444,11 +447,17 @@ static RT_PARTS: Rt = Rt::new();
 static RT_RELATIVE_TO: Rt = Rt::new();
 static RT_EQ: Rt = Rt::new();
 static RT_HASH: Rt = Rt::new();
+static RT_NEW_PURE: Rt = Rt::new();
+static RT_NEW_PATH: Rt = Rt::new();
+static RT_INIT: Rt = Rt::new();
 
 macro_rules! target {
     ($stat:ident, $prep:ident, $name:literal, $rt:ident, $attr:literal, $kernel:ident) => {
+        target!($stat, $prep, $name, $rt, "PurePath", $attr, $kernel);
+    };
+    ($stat:ident, $prep:ident, $name:literal, $rt:ident, $owner:literal, $attr:literal, $kernel:ident) => {
         fn $prep(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-            prep(cx, $attr, &$rt, $kernel)
+            prep(cx, $owner, $attr, &$rt, $kernel)
         }
         // `..DEFAULT` keeps the spec additive when the registry grows fields.
         #[allow(clippy::needless_update)]
@@ -478,8 +487,25 @@ target!(RELATIVE_TO_T, prep_relative_to, "pathlib.PurePath.relative_to", RT_RELA
 target!(EQ_T, prep_eq, "pathlib.PurePath.__eq__", RT_EQ, "__eq__", k_eq);
 target!(HASH_T, prep_hash, "pathlib.PurePath.__hash__", RT_HASH, "__hash__", k_hash);
 
-pub static TARGETS: &[&TargetSpec] =
-    &[&STR_T, &TRUEDIV_T, &PARENT_T, &NAME_T, &SUFFIX_T, &STEM_T, &PARTS_T, &RELATIVE_TO_T, &EQ_T, &HASH_T];
+target!(NEW_PURE_T, prep_new_pure, "pathlib.PurePath.__new__", RT_NEW_PURE, "PurePath", "__new__", k_new_pure);
+target!(NEW_PATH_T, prep_new_path, "pathlib.Path.__new__", RT_NEW_PATH, "Path", "__new__", k_new_path);
+target!(INIT_T, prep_init, "pathlib.PurePath.__init__", RT_INIT, "__init__", k_init);
+
+pub static TARGETS: &[&TargetSpec] = &[
+    &NEW_PURE_T,
+    &NEW_PATH_T,
+    &INIT_T,
+    &STR_T,
+    &TRUEDIV_T,
+    &PARENT_T,
+    &NAME_T,
+    &SUFFIX_T,
+    &STEM_T,
+    &PARTS_T,
+    &RELATIVE_TO_T,
+    &EQ_T,
+    &HASH_T,
+];
 
 /// The function behind a class attribute: functions as is, properties' `fget`,
 /// classmethods' `__func__`.
@@ -504,7 +530,13 @@ fn type_dict<'py>(ty: &Bound<'py, PyType>) -> Result<Bound<'py, PyDict>, Refusal
 }
 
 /// Validate the module (fingerprints, classes, slots, pins) once per target.
-fn prep(cx: &mut Prepare<'_>, attr: &str, rt: &'static Rt, kernel: ffi::vectorcallfunc) -> Result<(), Refusal> {
+fn prep(
+    cx: &mut Prepare<'_>,
+    owner: &str,
+    attr: &str,
+    rt: &'static Rt,
+    kernel: ffi::vectorcallfunc,
+) -> Result<(), Refusal> {
     let py = cx.py();
     if !rt::init_str_layout(py) {
         return Err(refuse!("str layout not calibrated"));
@@ -609,7 +641,22 @@ fn prep(cx: &mut Prepare<'_>, attr: &str, rt: &'static Rt, kernel: ffi::vectorca
         }
         *v = ptrs;
     }
-    let f = underlying(&cx.get(&pd, attr)?)?;
+    // `__new__` picks the flavour from `os.name` when called on `PurePath`/`Path` itself.
+    let osd = cx.loaded_module("os")?.dict();
+    if !cx.get(&osd, "name")?.eq("posix")? {
+        return Err(refuse!("os.name is not 'posix'"));
+    }
+    cx.pin(&osd, "name", &rt.deps)?;
+    for key in ["PurePosixPath", "PosixPath", "Path", "PureWindowsPath", "WindowsPath"] {
+        cx.pin(&g, key, &rt.deps)?;
+    }
+    for name in ["isinstance", "TypeError"] {
+        cx.pin_global(&g, name, &rt.deps)?;
+    }
+    store_type(&PURE_BASE, &pure);
+    store_type(&PATH_BASE, &path);
+    let od = if owner == "Path" { type_dict(&path)? } else { pd };
+    let f = underlying(&cx.get(&od, attr)?)?;
     cx.vectorcall(&f, kernel, &accel::FUNCTION_VECTORCALL)
 }
 
@@ -929,6 +976,118 @@ crate::paths_kernel!(k_hash, RT_HASH, HASH_T, |func, args, nargsf, n, kw| {
         Some(o)
     }))
 });
+
+/// `PurePath.__new__(cls, *args, **kwargs)` / `Path.__new__`: `object.__new__(cls)`, with
+/// `PurePath` → `PurePosixPath` and `Path` → `PosixPath` (`os.name` is 'posix', pinned).
+unsafe fn new_for(cls: O, base: &AtomicPtr<ffi::PyTypeObject>, posix: &AtomicPtr<ffi::PyTypeObject>) -> Option<O> {
+    // SAFETY: attached thread.
+    unsafe {
+        let c = cls.cast::<ffi::PyTypeObject>();
+        let target = if c == base.load(Relaxed) {
+            posix.load(Relaxed)
+        } else if c == PURE_POSIX.load(Relaxed) || c == POSIX.load(Relaxed) {
+            c
+        } else {
+            return None;
+        };
+        let object = &raw const ffi::PyBaseObject_Type;
+        let new = (*object).tp_new.expect("object.tp_new");
+        let empty = ffi::PyTuple_New(0);
+        let o = new(target, empty, std::ptr::null_mut());
+        ffi::Py_DECREF(empty);
+        Some(o)
+    }
+}
+
+crate::paths_kernel!(k_new_pure, RT_NEW_PURE, NEW_PURE_T, |func, args, nargsf, n, kw| {
+    if !kw.is_null() || n == 0 {
+        None
+    } else {
+        let cls = *args;
+        // PosixPath's `__new__` is Path's: only the pure classes come here.
+        if cls.cast::<ffi::PyTypeObject>() == POSIX.load(Relaxed) {
+            None
+        } else {
+            match rt::guards(&RT_NEW_PURE, func) {
+                Some(g) => Some(g),
+                None => new_for(cls, &PURE_BASE, &PURE_POSIX),
+            }
+        }
+    }
+});
+
+crate::paths_kernel!(k_new_path, RT_NEW_PATH, NEW_PATH_T, |func, args, nargsf, n, kw| {
+    if !kw.is_null() || n == 0 || (*args).cast::<ffi::PyTypeObject>() == PURE_POSIX.load(Relaxed) {
+        None
+    } else {
+        match rt::guards(&RT_NEW_PATH, func) {
+            Some(g) => Some(g),
+            None => new_for(*args, &PATH_BASE, &POSIX),
+        }
+    }
+});
+
+crate::paths_kernel!(k_init, RT_INIT, INIT_T, |func, args, nargsf, n, kw| {
+    // `__init__(self, *args)`: `_raw_paths` = the exact str arguments, and the raw paths of
+    // exact POSIX path arguments (same parser), in order.
+    if !kw.is_null() || n == 0 || !exact_path(*args) {
+        None
+    } else {
+        let s = *args;
+        let rest = std::slice::from_raw_parts(args.add(1), n - 1);
+        if !rest.iter().all(|&a| exact_str(a) || exact_path(a)) {
+            None
+        } else {
+            match rt::guards(&RT_INIT, func) {
+                Some(g) => Some(g),
+                None => init_raw(s, rest),
+            }
+        }
+    }
+});
+
+/// Build the new `_raw_paths` and store it (replacing an old value, as `self._raw_paths =
+/// paths` does); returns `None` (Python's result) or declines.
+unsafe fn init_raw(s: O, rest: &[O]) -> Option<O> {
+    // SAFETY: attached thread; live objects.
+    unsafe {
+        let l = ffi::PyList_New(0);
+        if l.is_null() {
+            return Some(l);
+        }
+        for &a in rest {
+            let rc = if exact_str(a) {
+                ffi::PyList_Append(l, a)
+            } else {
+                // `paths.extend(arg._raw_paths)` (read under the argument's lock).
+                let r = locked(a, || {
+                    let r = raw_list(a)?;
+                    Some(ffi::PyList_GetSlice(r, 0, ffi::PyList_GET_SIZE(r)))
+                });
+                match r {
+                    None => {
+                        ffi::Py_DECREF(l);
+                        return None;
+                    }
+                    Some(r) if r.is_null() => -1,
+                    Some(r) => {
+                        let n = ffi::PyList_GET_SIZE(l);
+                        let rc = ffi::PyList_SetSlice(l, n, n, r);
+                        ffi::Py_DECREF(r);
+                        rc
+                    }
+                }
+            };
+            if rc != 0 {
+                ffi::Py_DECREF(l);
+                return Some(std::ptr::null_mut());
+            }
+        }
+        let old = locked(s, || cell(s, RAW).swap(l, Release));
+        ffi::Py_XDECREF(old);
+        Some(ffi::Py_NewRef(ffi::Py_None()))
+    }
+}
 
 pub fn register(_accel: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())

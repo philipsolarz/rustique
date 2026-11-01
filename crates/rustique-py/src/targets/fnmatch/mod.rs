@@ -20,7 +20,7 @@ use rustique_core::paths::glob::Program;
 
 use crate::accel::{self, Fingerprints, Prepare, Refusal, TargetSpec};
 use crate::refuse;
-use crate::targets::posixpath::rt::{self, O, Rt, bytes_view, exact_bytes, exact_str, str_view};
+use crate::targets::posixpath::rt::{self, O, Rt, Unit, bytes_view, exact_bytes, exact_str, str_view};
 
 pub(crate) const FPS: &[(&str, Fingerprints)] = &[
     ("fnmatch.fnmatch", &[(3, 14, "5986cba5802aba46"), (3, 15, "517d6a638fefa7e6")]),
@@ -175,10 +175,73 @@ fn prep_filter(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 // Kernels
 // ---------------------------------------------------------------------------------------
 
+/// Compiled patterns of this thread, keyed by content (CPython keeps the regexes in the
+/// `lru_cache` of `_compile_pattern`; this cache is the kernel's own and private). Patterns
+/// outside the reproduced grammar are cached as `None`.
+struct Cached {
+    bytes: bool,
+    units: Vec<u32>,
+    prog: Option<Program>,
+}
+
+const CACHE_SIZE: usize = 32;
+
+#[derive(Default)]
+struct Cache {
+    entries: Vec<Cached>,
+    next: usize,
+}
+
 thread_local! {
-    /// Reused token buffers (compilation allocates nothing for simple patterns after the
-    /// first call on a thread).
-    static PROG: RefCell<Program> = RefCell::new(Program::default());
+    static CACHE: RefCell<Cache> = RefCell::new(Cache::default());
+}
+
+fn same<T: Unit>(units: &[u32], s: &[T]) -> bool {
+    units.len() == s.len() && units.iter().zip(s).all(|(&a, &b)| a == b.cp())
+}
+
+/// Run `f` on the compiled program of `pat`; `None` when the pattern is outside the
+/// reproduced grammar.
+unsafe fn with_program<R>(k: Kind, pat: O, f: impl FnOnce(&Program) -> R) -> Option<R> {
+    // SAFETY: live exact str/bytes; no Python code runs while the cache is borrowed.
+    unsafe {
+        CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            let bytes = k == Kind::Bytes;
+            let hit = match k {
+                Kind::Str => {
+                    let t = str_view(pat).text;
+                    c.entries.iter().position(|e| !e.bytes && crate::with_text!(t, |s| same(&e.units, s)))
+                }
+                Kind::Bytes => {
+                    let b = bytes_view(pat);
+                    c.entries.iter().position(|e| e.bytes && same(&e.units, b))
+                }
+            };
+            let i = match hit {
+                Some(i) => i,
+                None => {
+                    let mut prog = Program::default();
+                    let ok = compile(k, pat, &mut prog);
+                    let units: Vec<u32> = match k {
+                        Kind::Str => crate::with_text!(str_view(pat).text, |s| s.iter().map(|u| u.cp()).collect()),
+                        Kind::Bytes => bytes_view(pat).iter().map(|&u| u32::from(u)).collect(),
+                    };
+                    let entry = Cached { bytes, units, prog: ok.then_some(prog) };
+                    if c.entries.len() < CACHE_SIZE {
+                        c.entries.push(entry);
+                        c.entries.len() - 1
+                    } else {
+                        let i = c.next;
+                        c.entries[i] = entry;
+                        c.next = (i + 1) % CACHE_SIZE;
+                        i
+                    }
+                }
+            };
+            c.entries[i].prog.as_ref().map(f)
+        })
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -255,13 +318,7 @@ unsafe fn match_one(rt: &Rt, func: O, name: O, pat: O) -> Option<O> {
         if let Some(g) = rt::guards(rt, func) {
             return Some(g);
         }
-        PROG.with(|p| {
-            let mut prog = p.borrow_mut();
-            if !compile(k, pat, &mut prog) {
-                return None;
-            }
-            Some(bool_obj(matches(k, &prog, name)))
-        })
+        with_program(k, pat, |prog| bool_obj(matches(k, prog, name)))
     }
 }
 
@@ -292,11 +349,7 @@ unsafe fn filter(func: O, names: O, pat: O) -> Option<O> {
         if let Some(g) = rt::guards(&RT_FILTER, func) {
             return Some(g);
         }
-        PROG.with(|p| {
-            let mut prog = p.borrow_mut();
-            if !compile(k, pat, &mut prog) {
-                return None;
-            }
+        with_program(k, pat, |prog| {
             let py = Python::assume_attached();
             let seq = Bound::from_borrowed_ptr(py, names);
             // Hold the list's lock while reading it (free-threaded builds; a no-op with
@@ -317,7 +370,7 @@ unsafe fn filter(func: O, names: O, pat: O) -> Option<O> {
                 let mut out = Vec::new();
                 for i in 0..len {
                     let it = item(i);
-                    if matches(k, &prog, it) {
+                    if matches(k, prog, it) {
                         out.push(ffi::Py_NewRef(it));
                     }
                 }
@@ -336,6 +389,7 @@ unsafe fn filter(func: O, names: O, pat: O) -> Option<O> {
             }
             Some(list)
         })
+        .flatten()
     }
 }
 

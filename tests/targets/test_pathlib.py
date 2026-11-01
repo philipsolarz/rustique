@@ -87,7 +87,7 @@ class Sig:
 
 
 SEG = st.lists(st.sampled_from(["/", "/", "a", "b.c", ".", "..", "x.tar.gz", ".bashrc", "\xe9", "\u4f60", "\U0001f600", "", "//", "c."]), max_size=5).map("".join)
-OPS = ["str", "div", "rdiv", "parent", "name", "suffix", "stem", "parts", "rel", "rel_str", "hash", "eq", "fspath", "posix",
+OPS = ["new", "newpath", "str", "div", "rdiv", "parent", "name", "suffix", "stem", "parts", "rel", "rel_str", "hash", "eq", "fspath", "posix",
        "with_suffix", "parents", "repr", "pickle", "joinpath", "is_rel", "match"]
 
 
@@ -101,7 +101,11 @@ def run(script):
         p = objs[i % len(objs)]
         q = objs[j % len(objs)]
         try:
-            if op == "str":
+            if op == "new":
+                r = type(p)(p, s, q) if isinstance(q, type(p)) else type(p)(s, p)
+            elif op == "newpath":
+                r = Path(s, p) if not isinstance(p, PureWindowsPath) else PurePath(s)
+            elif op == "str":
                 r = str(p)
             elif op == "div":
                 r = p / s
@@ -154,7 +158,7 @@ def run(script):
 
 
 scripts = st.tuples(
-    st.sampled_from(["PurePosixPath", "PosixPath", "PurePosixPath", "PosixPath", "PureWindowsPath"]),
+    st.sampled_from(["PurePosixPath", "PosixPath", "PurePath", "Path", "PureWindowsPath"]),
     st.lists(SEG, max_size=3),
     st.lists(st.tuples(st.sampled_from(OPS), st.integers(0, 9), st.integers(0, 9), SEG), max_size=10),
 )
@@ -183,8 +187,10 @@ def test_kernels_hit():
     assert p.parts == ("/", "tmp", "project", "src", "main.py")
     assert p.relative_to("/tmp/project") == PurePosixPath("src/main.py")
     assert hash(p) == hash(PosixPath("/tmp/project/src/main.py"))
+    PurePosixPath("a", PurePosixPath("b"))
     s = rt.stats()
-    for name in ["__str__", "__truediv__", "parent", "name", "suffix", "stem", "parts", "relative_to", "__hash__", "__eq__"]:
+    assert s["pathlib.Path.__new__"]["hits"] >= 1
+    for name in ["__new__", "__init__", "__str__", "__truediv__", "parent", "name", "suffix", "stem", "parts", "relative_to", "__hash__", "__eq__"]:
         assert s[f"pathlib.PurePath.{name}"]["hits"] >= 1, name
 
 
