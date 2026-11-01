@@ -103,9 +103,18 @@ impl<'py> Prepare<'py> {
     /// `dict[key]` or `None` (exact dict read).
     pub fn get_opt(&self, dict: &Bound<'_, PyDict>, key: &str) -> Result<Option<Bound<'py, PyAny>>, Refusal> {
         let k = interned(self.py, key);
+        self.get_opt_s(dict, &k)
+    }
+
+    /// [`Self::get_opt`] with a pre-interned key.
+    pub fn get_opt_s(
+        &self,
+        dict: &Bound<'_, PyDict>,
+        key: &Bound<'_, PyString>,
+    ) -> Result<Option<Bound<'py, PyAny>>, Refusal> {
         let mut out: *mut ffi::PyObject = std::ptr::null_mut();
         // SAFETY: attached thread; exact dict and str key: no Python code runs.
-        let r = unsafe { ffi::PyDict_GetItemRef(dict.as_ptr(), k.as_ptr(), &mut out) };
+        let r = unsafe { ffi::PyDict_GetItemRef(dict.as_ptr(), key.as_ptr(), &mut out) };
         if r < 0 {
             return Err(PyErr::fetch(self.py).into());
         }
@@ -514,14 +523,43 @@ impl<'py> Prepare<'py> {
         name: &str,
         flag: &'static DepFlag,
     ) -> Result<Bound<'py, PyAny>, Refusal> {
-        if let Some(v) = self.get_opt(globals, name)? {
-            self.pin(globals, name, flag)?;
+        let k = interned(self.py, name);
+        self.pin_global_s(globals, &k, flag)
+    }
+
+    /// [`Self::pin_global`] with a pre-interned name.
+    pub fn pin_global_s(
+        &mut self,
+        globals: &Bound<'_, PyDict>,
+        name: &Bound<'_, PyString>,
+        flag: &'static DepFlag,
+    ) -> Result<Bound<'py, PyAny>, Refusal> {
+        if let Some(v) = self.get_opt_s(globals, name)? {
+            self.pins.push(PendingPin::Key {
+                dict: globals.clone().unbind(),
+                key: name.clone().unbind(),
+                expected: Some(v.clone().unbind()),
+                flag,
+                ty: None,
+            });
             return Ok(v);
         }
         let builtins = self.builtins_of(globals)?;
-        let v = self.get(&builtins, name)?;
-        self.pin_absent(globals, name, flag)?;
-        self.pin(&builtins, name, flag)?;
+        let v = self.get_opt_s(&builtins, name)?.ok_or_else(|| refuse_missing(&name.to_string_lossy()))?;
+        self.pins.push(PendingPin::Key {
+            dict: globals.clone().unbind(),
+            key: name.clone().unbind(),
+            expected: None,
+            flag,
+            ty: None,
+        });
+        self.pins.push(PendingPin::Key {
+            dict: builtins.unbind(),
+            key: name.clone().unbind(),
+            expected: Some(v.clone().unbind()),
+            flag,
+            ty: None,
+        });
         Ok(v)
     }
 
