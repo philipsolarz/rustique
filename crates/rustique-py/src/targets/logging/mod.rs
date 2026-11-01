@@ -91,7 +91,8 @@ fn function<'py>(
     let code = unsafe { (*f.as_ptr().cast::<pyo3::ffi::PyFunctionObject>()).func_code } as usize;
     if !verified(code, expected) {
         cx.fingerprint_code(f, expected)?;
-        remember(code, expected, f.getattr("__code__")?);
+        // SAFETY: the function's code object (alive: borrowed, then a new reference).
+        remember(code, expected, unsafe { Bound::from_borrowed_ptr(f.py(), code as *mut pyo3::ffi::PyObject) });
     }
     guard.set(f);
     Ok(())
