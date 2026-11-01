@@ -93,6 +93,10 @@ fn module_getattr(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
     }
     if SCALARS.contains(&name) {
         add_scalar(&m, name)?;
+    } else if name == "_builtins" {
+        builtins::register(&m)?;
+    } else if name == "_takeover" {
+        takeover::register(&m)?;
     } else {
         ensure_core(&m)?;
     }
@@ -110,6 +114,11 @@ fn module_getattr(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
 fn module_dir(py: Python<'_>) -> PyResult<Vec<String>> {
     let m = py.import("rustique._rustique")?;
     ensure_core(&m)?;
+    for sub in ["_builtins", "_takeover"] {
+        if !m.dict().contains(sub)? {
+            module_getattr(py, sub)?;
+        }
+    }
     for name in SCALARS {
         if !m.dict().contains(*name)? {
             add_scalar(&m, name)?;
@@ -133,10 +142,9 @@ fn _rustique(m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
     accel::guard::set_main_interpreter();
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    // Eager: the switch (registry, kernels) and the internal submodules. Everything else is
-    // created on first access (`__getattr__`).
-    builtins::register(m)?;
-    takeover::register(m)?;
+    // Eager: the switch (`_accel`: registry and its primitives). Everything else (the
+    // opt-in API, the test/benchmark submodules `_builtins` and `_takeover`) is created on
+    // first access (`__getattr__`).
     accel::py::register(m)?;
     m.add_function(wrap_pyfunction!(module_getattr, m)?)?;
     m.add_function(wrap_pyfunction!(module_dir, m)?)?;

@@ -142,18 +142,24 @@ unsafe extern "C" fn k_join(f: O, args: *const O, nargsf: usize, kw: O) -> O {
 - The registry lock is a CPython `PyMutex` (detaches while waiting); the `sys.modules`
   watcher only try-locks and queues.
 
-## 5. Python API (`rustique._takeover`; dx re-exports it as `rustique.*`)
+## 5. Python API
 
-- `enable(*, only=None, exclude=None, native=None, builtins=True) -> status()` — additive,
-  idempotent; names are groups or targets (list or `"a,b"`); unknown names → `ValueError`.
-  Reads no environment variables (the switches are the DX layer's).
-- `disable() -> status()`; `status() -> {"targets": [{name, group, state, reason, refusal,
-  sites, versions, checkable, [module, deps_intact, suspended]}], "process": {python,
-  hexversion, build, jit, rustique, interpreter, enabled, stats, check, only, exclude,
-  native}}`; `stats(enabled=None, reset=False) -> {name: {"hits", "fallback": {args, deps,
-  tools, interp, deopt, error, check}, "suspensions"}}`; `check(mode)`.
-- Low level: `rustique._rustique._accel` (`enable(only, exclude)`, `disable(names)`,
-  `installed(names)`, `fingerprint(obj)`, `fingerprint_report(only)`, `pins(name)`, …).
+The switch primitives live in the extension, `rustique._rustique._accel`, so the startup
+path imports only the package and the extension; `rustique.enable/disable/status/stats/
+check` (dx) and `rustique._takeover` (native tier, compatibility) are thin wrappers:
+
+- `enable(only=None, exclude=None, builtins=True, quiet=False) -> status() | None` —
+  additive, idempotent; names are groups or targets (list or `"a,b"`); unknown names →
+  `ValueError` before anything changes; `quiet=True` skips building the status dict (the
+  startup hook). Reads no environment variables, imports nothing.
+- `disable(names=None, quiet=False)`; `status() -> {"targets": [{name, group, state, reason,
+  refusal, sites, versions, checkable, [module, deps_intact, suspended]}], "process":
+  {python, hexversion, build, jit, rustique, interpreter, enabled, stats, check, only,
+  exclude, native}}`; `stats(enabled=None, reset=False) -> {name: {"hits", "fallback":
+  {args, deps, tools, interp, deopt, error, check}, "suspensions"}}`; `check(mode)` /
+  `check_mode()`; `RustiqueCheckError`.
+- Diagnostics: `installed(names)`, `targets()`, `fingerprint(obj)`,
+  `fingerprint_report(only)`, `pins(name)`, `func_version(f)`, `vectorcall_is_original(f)`.
 
 ## 6. Test and benchmark helpers
 
@@ -168,4 +174,28 @@ unsafe extern "C" fn k_join(f: O, args: *const O, nargsf: usize, kw: O) -> O {
 
 ## 7. Measured
 
-See the end of this file (filled by the accel-core measurements).
+**Per-call costs** (docs/atlas/mechanisms.md §1, unchanged): `ml_meth`/slot fallback +2 Ir,
+counters +3 Ir when off, tools guard 34 + ~4 Ir, a dependency flag one relaxed load, a
+vectorcall fallback +180–260 Ir (+250–350 under the JIT; hence deopt-while-unpinned and
+the fallback streak). Retrofitted kernels: docs/targets/containers.md.
+
+**`enable()`**, callgrind regions, 3.15.1 (`benches/startup_breakdown.py`): 0.36M Ir for
+the 13 `containers`+`builtins` targets including `status()` (0.14M; `quiet=True` skips
+it); a second `enable()` 0.14M. Lazy activation: one `sys.modules` callback per import
+event (a flag load when nothing is pending; a length/bytes compare per pending module name
+otherwise).
+
+**Startup** (`benches/startup.py`, whole process, `python -c pass` = 39.7M Ir / 9.8 ms,
+3.15.1, fat-LTO release build, CPU-pinned, 40 interleaved runs):
+
+| | callgrind | wall | page faults |
+|---|---:|---:|---:|
+| wave1 before (eager package and extension), dev-release | import 1.150, +enable 1.168 | 1.145 / 1.161 | |
+| release, extension lazy, package `__init__` eager (current dx file) | 1.157 / 1.167 | 1.151 / 1.163 | +144 / +154 |
+| release, extension lazy, lean package `__init__` (patch sent to dx) | **1.038 / 1.047** (quiet 1.046) | **1.060 / 1.070** | +66 / +84 |
+
+What remains in `import rustique` (lean): importlib's finder/loader floor for the package
+and an extension (a tiny two-module pure-Python package costs 0.65M Ir), dlopen of the
+5.4 MB `.so` (5756 relative + 322 symbol relocations, 0.36M Ir with the extension's
+`PyInit`), the extension's exec 0.2M; wall time adds the page faults of mapping and
+touching it.

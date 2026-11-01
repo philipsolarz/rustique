@@ -649,7 +649,13 @@ fn deactivate(reg: &mut Registry, i: usize) -> bool {
 }
 
 /// `sys._clear_internal_caches()`: 3.15's tier 2 copies `ml_meth` into traces (M§4).
+/// Only when the JIT is enabled: without it no executor (trace) exists, and the call
+/// would also flush the type attribute cache for nothing. (The JIT cannot be switched on
+/// after startup.)
 fn clear_internal_caches() {
+    if !JIT.load(Ordering::Relaxed) {
+        return;
+    }
     // SAFETY: attached thread; a C function from the sys module dict (no Python code).
     unsafe {
         let f = ffi::PySys_GetObject(c"_clear_internal_caches".as_ptr());
@@ -764,6 +770,7 @@ pub fn disable(py: Python<'_>, names: Option<Vec<String>>) -> PyResult<()> {
         check_names(n)?;
     }
     let mut g = REG.lock(py)?;
+    JIT.store(jit_enabled(py), Ordering::Relaxed);
     let reg = registry(&mut g);
     let mut ml = drain_deferred(py, reg);
     let mut any = false;
