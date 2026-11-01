@@ -575,9 +575,9 @@ fn ensure_group(
     release_sites(cx.sites.into_iter().map(|d| d.site));
     let st = &mut reg.groups[gi];
     match result {
-        Ok(owner) => {
+        Ok((owner, flags)) => {
             st.owner = owner;
-            st.flags = guard::flags_of(owner);
+            st.flags = flags;
             st.refused = None;
             Ok(gi)
         }
@@ -683,7 +683,7 @@ fn activate(
         }
         return refuse(reg, Refusal::with(Category::Conflict, f));
     }
-    let owner = match guard::activate(py, cx.pins) {
+    let (owner, own_flags) = match guard::activate(py, cx.pins) {
         Ok(o) => o,
         Err(e) => {
             for mut s in installed.into_iter().rev() {
@@ -702,7 +702,6 @@ fn activate(
         }
         None => Vec::new(),
     };
-    let own_flags = guard::flags_of(owner);
     let rt = &mut reg.rt[i];
     rt.group = group;
     rt.flags = own_flags;

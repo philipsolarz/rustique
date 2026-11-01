@@ -445,15 +445,8 @@ impl<'py> Prepare<'py> {
         key: &str,
         flag: &'static DepFlag,
     ) -> Result<&'static DepFlag, Refusal> {
-        let value = self.get(dict, key)?;
-        self.pins.push(PendingPin::Key {
-            dict: dict.clone().unbind(),
-            key: interned(self.py, key).unbind(),
-            expected: Some(value.unbind()),
-            flag,
-            ty: None,
-        });
-        Ok(flag)
+        let k = interned(self.py, key);
+        self.pin_s(dict, &k, flag)
     }
 
     /// [`Self::pin`] with a pre-interned key (e.g. `pyo3::intern!(py, "fspath")`): no key
@@ -493,12 +486,18 @@ impl<'py> Prepare<'py> {
         key: &str,
         flag: &'static DepFlag,
     ) -> Result<&'static DepFlag, Refusal> {
-        if self.get_opt(dict, key)?.is_some() {
+        let k = interned(self.py, key);
+        // SAFETY: attached thread; exact dict and str key: no Python code runs.
+        let r = unsafe { ffi::PyDict_Contains(dict.as_ptr(), k.as_ptr()) };
+        if r < 0 {
+            return Err(PyErr::fetch(self.py).into());
+        }
+        if r == 1 {
             return Err(Refusal::with(Category::Deps, format!("{key} is present (expected absent)")));
         }
         self.pins.push(PendingPin::Key {
             dict: dict.clone().unbind(),
-            key: interned(self.py, key).unbind(),
+            key: k.unbind(),
             expected: None,
             flag,
             ty: None,
