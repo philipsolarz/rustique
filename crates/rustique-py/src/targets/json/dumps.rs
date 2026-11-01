@@ -38,6 +38,10 @@ pub(super) static KWDEFAULTS: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr
 pub(super) static DEFAULT_ENCODER: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
 pub(super) static ENCODER_TYPE: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
 
+/// `JSONEncoder.encode` / `iterencode`: code and defaults unchanged.
+pub(super) static ENCODE: super::FnCheck = super::FnCheck::new();
+pub(super) static ITERENCODE: super::FnCheck = super::FnCheck::new();
+
 /// Interned keyword names, in `KW_*` order.
 pub(super) static KW: [AtomicPtr<ffi::PyObject>; 9] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 9];
 pub(super) const KW_NAMES: [&str; 9] =
@@ -233,6 +237,8 @@ pub(super) unsafe extern "C" fn kernel(
                 || (*f).func_code != CODE.load(Relaxed)
                 || (*f).func_kwdefaults != KWDEFAULTS.load(Relaxed)
                 || ffi::Py_TYPE(DEFAULT_ENCODER.load(Relaxed)).cast() != ENCODER_TYPE.load(Relaxed)
+                || !ENCODE.ok()
+                || !ITERENCODE.ok()
             {
                 break 'fallback Reason::Deps;
             }

@@ -105,3 +105,42 @@ pub(super) fn dumps_selftest(py: Python<'_>) -> PyResult<bool> {
     }
     Ok(true)
 }
+
+/// The decoder's objects for a probe document equal CPython's (values, types, key memo).
+pub(super) fn loads_selftest(py: Python<'_>) -> PyResult<bool> {
+    let doc = PyString::new(
+        py,
+        "{\"a\": [1, -2.5e-3, \"x\\u00e9\\ud83d\\ude00\", true, false, null, {}, [], 0, -0, 1E+2], \"k\": {\"k\": \"v\"}, \"big\": 123456789012345678901234567890, \"nl\": \"\\n\", \"\\u00e9\": \"\"}",
+    );
+    // SAFETY: attached thread; live string.
+    let Ok(o) = (unsafe { super::loads::loads(doc.as_ptr()) }) else {
+        return Ok(false);
+    };
+    // SAFETY: a new reference.
+    let o = unsafe { Bound::from_owned_ptr(py, o) };
+    let d = o.cast::<PyDict>()?;
+    let a = d.get_item("a")?.ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("a"))?;
+    let a = a.cast::<PyList>()?;
+    let f = a.get_item(1)?;
+    let ok = d.len() == 5
+        && a.len() == 11
+        && a.get_item(0)?.extract::<i64>()? == 1
+        && f.is_exact_instance_of::<PyFloat>()
+        && f.extract::<f64>()?.to_bits() == (-2.5e-3f64).to_bits()
+        && a.get_item(2)?.cast::<PyString>()?.to_cow()? == "x\u{e9}\u{1f600}"
+        && a.get_item(3)?.is(pyo3::types::PyBool::new(py, true))
+        && a.get_item(4)?.is(pyo3::types::PyBool::new(py, false))
+        && a.get_item(5)?.is_none()
+        && a.get_item(6)?.cast::<PyDict>()?.is_empty()
+        && a.get_item(7)?.cast::<PyList>()?.is_empty()
+        && a.get_item(8)?.is(&a.get_item(9)?) // small ints: the cached 0
+        && a.get_item(10)?.extract::<f64>()? == 100.0
+        && d.get_item("big")?.map(|b| b.to_string()).as_deref() == Some("123456789012345678901234567890")
+        && d.get_item("nl")?.map(|b| b.to_string()).as_deref() == Some("\n")
+        && d.get_item("\u{e9}")?.map(|b| b.to_string()).as_deref() == Some("");
+    // Repeated keys are one object (the scanner's memo).
+    let outer_k = d.keys().iter().find(|k| k.to_string() == "k");
+    let inner = d.get_item("k")?.ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("k"))?;
+    let inner_k = inner.cast::<PyDict>()?.keys().get_item(0)?;
+    Ok(ok && outer_k.is_some_and(|k| k.is(&inner_k)))
+}

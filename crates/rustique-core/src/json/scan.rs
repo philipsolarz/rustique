@@ -14,7 +14,44 @@ pub fn is_ws(c: u32) -> bool {
 /// Index of the first non-whitespace unit at or after `i`.
 #[inline(always)]
 pub fn skip_ws<T: Unit>(s: &[T], mut i: usize) -> usize {
+    // Common case first: no whitespace at all.
+    match s.get(i) {
+        Some(c) if c.get() > 0x20 => return i,
+        None => return i,
+        _ => {}
+    }
     while i < s.len() && is_ws(s[i].get()) {
+        i += 1;
+    }
+    i
+}
+
+/// Index of the first byte at or after `i` that is `"`, `\\` or a C0 control (or `len`).
+#[inline(always)]
+fn find_special_u8(b: &[u8], mut i: usize) -> usize {
+    const LO: u64 = 0x0101_0101_0101_0101;
+    const HI: u64 = 0x8080_8080_8080_8080;
+    while i + 8 <= b.len() {
+        let mut w = [0u8; 8];
+        w.copy_from_slice(&b[i..i + 8]);
+        let x = u64::from_le_bytes(w);
+        // Bytes < 0x20, == '"', == '\\' (exact SWAR tests; high-bit bytes never match).
+        let lt = x.wrapping_sub(LO * 0x20) & !x & HI;
+        let q = x ^ (LO * 0x22);
+        let q = q.wrapping_sub(LO) & !q & HI;
+        let bs = x ^ (LO * 0x5C);
+        let bs = bs.wrapping_sub(LO) & !bs & HI;
+        let m = lt | q | bs;
+        if m != 0 {
+            return i + (m.trailing_zeros() / 8) as usize;
+        }
+        i += 8;
+    }
+    while i < b.len() {
+        let c = b[i];
+        if c == b'"' || c == b'\\' || c < 0x20 {
+            return i;
+        }
         i += 1;
     }
     i
@@ -64,18 +101,27 @@ pub fn string<T: Unit>(s: &[T], start: usize, out: &mut Vec<u32>) -> Result<Str,
         // Find the end of the string or the next escape.
         let mut next = end;
         let mut c = 0u32;
-        while next < len {
-            c = s[next].get();
-            if c == u32::from(b'"') || c == u32::from(b'\\') {
-                break;
+        if T::MAX == 0xFF {
+            // SAFETY: `T` is `u8` (the only unit with MAX 0xFF).
+            let b = unsafe { std::slice::from_raw_parts(s.as_ptr().cast::<u8>(), s.len()) };
+            next = find_special_u8(b, next);
+            if next < len {
+                c = u32::from(b[next]);
             }
-            if c <= 0x1F {
-                return Err(Invalid); // Invalid control character
+        } else {
+            while next < len {
+                c = s[next].get();
+                if c == u32::from(b'"') || c == u32::from(b'\\') || c <= 0x1F {
+                    break;
+                }
+                next += 1;
             }
-            next += 1;
         }
         if next >= len {
             return Err(Invalid); // Unterminated string
+        }
+        if c <= 0x1F {
+            return Err(Invalid); // Invalid control character
         }
         if c == u32::from(b'"') && !escaped {
             return Ok(Str::Plain { end: next });
@@ -273,6 +319,28 @@ mod tests {
         // The pair needs `end + 6 < len`: at the very end there is no room for the quote.
         let u = units(r#""\ud83d\ude00"#);
         assert!(string(&u, 1, &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn special_scan_matches_naive() {
+        let mut b: Vec<u8> = (0u8..=255).collect();
+        b.extend_from_slice(b"abcdefghijklmnopqrstuvwxyz\"0123456789\\");
+        for start in 0..b.len() {
+            let naive = (start..b.len()).find(|&i| b[i] == b'"' || b[i] == b'\\' || b[i] < 0x20).unwrap_or(b.len());
+            let mut c = b.clone();
+            // Also with every byte before `start` special and none after up to the hit.
+            c[..start].fill(b'"');
+            assert_eq!(find_special_u8(&b, start), naive, "start {start}");
+            let naive_c = (start..c.len()).find(|&i| c[i] == b'"' || c[i] == b'\\' || c[i] < 0x20).unwrap_or(c.len());
+            assert_eq!(find_special_u8(&c, start), naive_c);
+        }
+        for n in 0..40 {
+            let v = vec![b'x'; n];
+            assert_eq!(find_special_u8(&v, 0), n);
+            let mut w = vec![0xE9u8; n];
+            w.push(b'"');
+            assert_eq!(find_special_u8(&w, 0), n);
+        }
     }
 
     #[test]
