@@ -1,0 +1,104 @@
+Benchmarks with tag 'apps':
+===========================
+
+Slower (1):
+- 2to3: 203 ms +- 1 ms -> 205 ms +- 1 ms: 1.01x slower
+
+Faster (1):
+- chameleon: 10.3 ms +- 0.1 ms -> 10.2 ms +- 0.1 ms: 1.01x faster
+
+Benchmark hidden because not significant (5): docutils, fastapi_http, html5lib, sphinx, tornado_http
+
+Geometric mean: 1.00x faster
+
+Benchmarks with tag 'asyncio':
+==============================
+
+Faster (1):
+- async_tree_eager: 74.5 ms +- 0.9 ms -> 73.4 ms +- 1.0 ms: 1.02x faster
+
+Benchmark hidden because not significant (20): async_generators, async_tree_none, async_tree_cpu_io_mixed, async_tree_cpu_io_mixed_tg, async_tree_eager_cpu_io_mixed, async_tree_eager_cpu_io_mixed_tg, async_tree_eager_io, async_tree_eager_io_tg, async_tree_eager_memoization, async_tree_eager_memoization_tg, async_tree_eager_tg, async_tree_io, async_tree_io_tg, async_tree_memoization, async_tree_memoization_tg, async_tree_none_tg, asyncio_tcp, asyncio_tcp_ssl, asyncio_websockets, coroutines
+
+Geometric mean: 1.00x faster
+
+Benchmarks with tag 'math':
+===========================
+
+Faster (1):
+- nbody: 74.5 ms +- 1.8 ms -> 73.6 ms +- 1.6 ms: 1.01x faster
+
+Benchmark hidden because not significant (2): float, pidigits
+
+Geometric mean: 1.00x faster
+
+Benchmarks with tag 'regex':
+============================
+
+Slower (1):
+- regex_compile: 74.7 ms +- 0.7 ms -> 75.6 ms +- 0.3 ms: 1.01x slower
+
+Benchmark hidden because not significant (3): regex_dna, regex_effbot, regex_v8
+
+Geometric mean: 1.00x slower
+
+Benchmarks with tag 'serialize':
+================================
+
+Slower (3):
+- unpickle_pure_python: 157 us +- 1 us -> 159 us +- 2 us: 1.02x slower
+- pickle: 7.61 us +- 0.08 us -> 7.72 us +- 0.05 us: 1.01x slower
+- base85_small: 199 us +- 1 us -> 201 us +- 4 us: 1.01x slower
+
+Faster (1):
+- unpickle_list: 2.86 us +- 0.11 us -> 2.81 us +- 0.07 us: 1.02x faster
+
+Benchmark hidden because not significant (21): base64_small, base64_large, urlsafe_base64_small, base32_small, base32_large, base16_small, base16_large, ascii85_small, ascii85_large, base85_large, json_dumps, json_loads, pickle_dict, pickle_list, pickle_pure_python, tomli_loads, unpickle, xml_etree_parse, xml_etree_iterparse, xml_etree_generate, xml_etree_process
+
+Geometric mean: 1.00x slower
+
+Benchmarks with tag 'startup':
+==============================
+
+Slower (1):
+- python_startup: 10.4 ms +- 0.0 ms -> 12.2 ms +- 0.0 ms: 1.17x slower
+
+Benchmark hidden because not significant (1): python_startup_no_site
+
+Geometric mean: 1.08x slower
+
+Benchmarks with tag 'template':
+===============================
+
+Benchmark hidden because not significant (2): django_template, mako
+
+Geometric mean: 1.00x faster
+
+All benchmarks:
+===============
+
+Slower (9):
+- python_startup: 10.4 ms +- 0.0 ms -> 12.2 ms +- 0.0 ms: 1.17x slower
+- create_gc_cycles: 1.62 ms +- 0.01 ms -> 1.65 ms +- 0.01 ms: 1.02x slower
+- unpickle_pure_python: 157 us +- 1 us -> 159 us +- 2 us: 1.02x slower
+- pickle: 7.61 us +- 0.08 us -> 7.72 us +- 0.05 us: 1.01x slower
+- base85_small: 199 us +- 1 us -> 201 us +- 4 us: 1.01x slower
+- gc_traversal: 3.88 ms +- 0.03 ms -> 3.93 ms +- 0.03 ms: 1.01x slower
+- typing_runtime_protocols: 110 us +- 2 us -> 111 us +- 2 us: 1.01x slower
+- regex_compile: 74.7 ms +- 0.7 ms -> 75.6 ms +- 0.3 ms: 1.01x slower
+- 2to3: 203 ms +- 1 ms -> 205 ms +- 1 ms: 1.01x slower
+
+Faster (10):
+- meteor_contest: 76.8 ms +- 0.6 ms -> 71.2 ms +- 0.4 ms: 1.08x faster
+- hexiom: 4.41 ms +- 0.02 ms -> 4.11 ms +- 0.02 ms: 1.07x faster
+- pyflate: 320 ms +- 5 ms -> 314 ms +- 3 ms: 1.02x faster
+- unpickle_list: 2.86 us +- 0.11 us -> 2.81 us +- 0.07 us: 1.02x faster
+- shortest_path: 503 ms +- 6 ms -> 495 ms +- 4 ms: 1.02x faster
+- async_tree_eager: 74.5 ms +- 0.9 ms -> 73.4 ms +- 1.0 ms: 1.02x faster
+- unpack_sequence: 36.3 ns +- 0.8 ns -> 35.8 ns +- 0.6 ns: 1.02x faster
+- sympy_str: 159 ms +- 2 ms -> 157 ms +- 2 ms: 1.01x faster
+- chameleon: 10.3 ms +- 0.1 ms -> 10.2 ms +- 0.1 ms: 1.01x faster
+- nbody: 74.5 ms +- 1.8 ms -> 73.6 ms +- 1.6 ms: 1.01x faster
+
+Benchmark hidden because not significant (103): many_optionals, subparsers, async_generators, async_tree_none, async_tree_cpu_io_mixed, async_tree_cpu_io_mixed_tg, async_tree_eager_cpu_io_mixed, async_tree_eager_cpu_io_mixed_tg, async_tree_eager_io, async_tree_eager_io_tg, async_tree_eager_memoization, async_tree_eager_memoization_tg, async_tree_eager_tg, async_tree_io, async_tree_io_tg, async_tree_memoization, async_tree_memoization_tg, async_tree_none_tg, asyncio_tcp, asyncio_tcp_ssl, asyncio_websockets, base64_small, base64_large, urlsafe_base64_small, base32_small, base32_large, base16_small, base16_large, ascii85_small, ascii85_large, base85_large, bpe_tokeniser, chaos, comprehensions, bench_mp_pool, bench_thread_pool, coroutines, coverage, crypto_pyaes, dask, deepcopy, deepcopy_reduce, deepcopy_memo, deltablue, django_template, docutils, dulwich_log, fannkuch, fastapi_http, float, generators, go, html5lib, json_dumps, json_loads, logging_format, logging_silent, logging_simple, mako, mdp, connected_components, k_core, nqueens, pathlib, pickle_dict, pickle_list, pickle_pure_python, pidigits, pprint_safe_repr, pprint_pformat, python_startup_no_site, raytrace, regex_dna, regex_effbot, regex_v8, richards, richards_super, scimark_fft, scimark_lu, scimark_monte_carlo, scimark_sor, scimark_sparse_mat_mult, spectral_norm, sphinx, sqlalchemy_declarative, sqlalchemy_imperative, sqlglot_v2_normalize, sqlglot_v2_optimize, sqlglot_v2_parse, sqlglot_v2_transpile, sqlite_synth, sympy_expand, sympy_integrate, sympy_sum, telco, tomli_loads, tornado_http, unpickle, xdsl_constant_fold, xml_etree_parse, xml_etree_iterparse, xml_etree_generate, xml_etree_process
+
+Geometric mean: 1.00x faster

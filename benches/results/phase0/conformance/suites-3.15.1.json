@@ -1,0 +1,961 @@
+{
+ "build": "3.15.1",
+ "gil": true,
+ "results": [
+  {
+   "suite": "list",
+   "status": "ran",
+   "outcomes": {
+    "test.test_list.RustiqueListTest.test_add": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_append": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_basic": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_bigrepeat": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_clear": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_cmp": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_constructor_exception_handling": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_constructors": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_contains": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_contains_fake": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_contains_order": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_copy": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_count": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_count_index_remove_crashes": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_delitem": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_delslice": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_deopt_from_append_list": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_empty_slice": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_equal_operator_modifying_operand": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_exhausted_iterator": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_extend": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_extendedslicing": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_free_after_iterating": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_getitem": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_getitem_error": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_getitemoverwriteiter": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_getslice": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_iadd": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_identity": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_imul": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_index": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_init": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_insert": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_iterator_pickle": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_keyword_args": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_keywords_in_subclass": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_len": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_list_index_modifing_operand": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_list_overwrite_local": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_list_resize_overflow": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_lt_operator_modifying_operand": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_minmax": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_mul": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_no_comdat_folding": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_no_memory": {
+     "outcome": "skip",
+     "detail": "No module named '_testcapi'"
+    },
+    "test.test_list.RustiqueListTest.test_overflow": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_pickle": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_pop": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_preallocation": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_remove": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_repeat": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_repr": {
+     "outcome": "fail",
+     "detail": "AssertionError: 'List([])' != '[]' (list_tests.py:52)"
+    },
+    "test.test_list.RustiqueListTest.test_repr_deep": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_repr_large": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_repr_mutate": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_reverse": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_reversed": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_reversed_pickle": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_set_subscript": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_setitem": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_setitem_error": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_setslice": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_slice": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_slice_assign_iterator": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_sort": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_step_overflow": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_subscript": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_tier2_invalidates_iterator": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_list.RustiqueListTest.test_truth": {
+     "outcome": "pass",
+     "detail": ""
+    }
+   },
+   "seconds": 0.2696638999998413
+  },
+  {
+   "suite": "tuple",
+   "status": "ran",
+   "outcomes": {
+    "test.test_tuple.RustiqueTupleTest.test_add": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_bigrepeat": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_bug7466": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_cmp": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_constructors": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_contains": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_contains_fake": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_contains_order": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_count": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_free_after_iterating": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_getitem": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_getitem_error": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_getitemoverwriteiter": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_getslice": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_hash_exact": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_hash_optional": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_iadd": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_imul": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_index": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_iterator_pickle": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_keyword_args": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_keywords_in_subclass": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_len": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_lexicographic_ordering": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_minmax": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_mul": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_no_comdat_folding": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_pickle": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_repeat": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_repr": {
+     "outcome": "fail",
+     "detail": "AssertionError: 'Tuple(())' != '()' (test_tuple.py:288)"
+    },
+    "test.test_tuple.RustiqueTupleTest.test_repr_large": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_reversed_pickle": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_subscript": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_track_dynamic": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_track_literals": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_track_subtypes": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_truth": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_tuple.RustiqueTupleTest.test_tupleresizebug": {
+     "outcome": "pass",
+     "detail": ""
+    }
+   },
+   "seconds": 0.38772711900014656
+  },
+  {
+   "suite": "dict",
+   "status": "ran",
+   "outcomes": {
+    "test.test_dict.RustiqueGeneralMappingTests.test_bool": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_dict.RustiqueGeneralMappingTests.test_constructor": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_dict.RustiqueGeneralMappingTests.test_get": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_dict.RustiqueGeneralMappingTests.test_getitem": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_dict.RustiqueGeneralMappingTests.test_items": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_dict.RustiqueGeneralMappingTests.test_keys": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_dict.RustiqueGeneralMappingTests.test_len": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_dict.RustiqueGeneralMappingTests.test_pop": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_dict.RustiqueGeneralMappingTests.test_popitem": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_dict.RustiqueGeneralMappingTests.test_read": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_dict.RustiqueGeneralMappingTests.test_setdefault": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_dict.RustiqueGeneralMappingTests.test_update": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_dict.RustiqueGeneralMappingTests.test_values": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_dict.RustiqueGeneralMappingTests.test_write": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_bool": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_clear": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_constructor": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_contains": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_copy": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_eq": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_fromkeys": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_get": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_getitem": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_items": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_keys": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_len": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_mutatingiteration": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_pop": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_popitem": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_read": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_repr": {
+     "outcome": "fail",
+     "detail": "AssertionError: 'Dict({})' != '{}' (mapping_tests.py:616)"
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_repr_deep": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_setdefault": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_update": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_values": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.mapping_tests.RustiqueTestHashMappingProtocol.test_write": {
+     "outcome": "pass",
+     "detail": ""
+    }
+   },
+   "seconds": 0.2439012869999715
+  },
+  {
+   "suite": "set",
+   "status": "ran",
+   "outcomes": {
+    "test.test_set.RustiqueTestSet.test_add": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_and": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_badcmp": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_clear": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_constructor_identity": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_container_iterator": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_contains": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_copy": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_cyclical_repr": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_deepcopy": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_difference": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_difference_update": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_discard": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_do_not_rehash_dict_keys": {
+     "outcome": "fail",
+     "detail": "AssertionError: 20 != 10 (test_set.py:341)"
+    },
+    "test.test_set.RustiqueTestSet.test_equality": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_free_after_iterating": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_gc": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_hash": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_hash_collision_remove_add": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_iand": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_init": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_inplace_on_self": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_intersection": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_intersection_update": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_ior": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_isdisjoint": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_isub": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_iterator_pickling": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_ixor": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_len": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_new_or_init": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_or": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_pickling": {
+     "outcome": "error",
+     "detail": "AttributeError: 'rustique.Set' object has no attribute 'x' and no __dict__ for setting new attributes (test_set.py:243)"
+    },
+    "test.test_set.RustiqueTestSet.test_pop": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_remove": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_remove_keyerror_set": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_remove_keyerror_unpacking": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_rich_compare": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_setOfFrozensets": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_set_literal": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_set_literal_evaluation_order": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_set_literal_insertion_order": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_set_membership": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_sub": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_sub_and_super": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_subclass_with_custom_hash": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_symmetric_difference": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_symmetric_difference_update": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_unhashable_element": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_union": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_uniquification": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_update": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_weakref": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestSet.test_xor": {
+     "outcome": "pass",
+     "detail": ""
+    }
+   },
+   "seconds": 0.10364981399993667
+  },
+  {
+   "suite": "frozenset",
+   "status": "ran",
+   "outcomes": {
+    "test.test_set.RustiqueTestFrozenSet.test_and": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_badcmp": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_constructor_identity": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_container_iterator": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_contains": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_copy": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_cyclical_repr": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_deepcopy": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_difference": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_do_not_rehash_dict_keys": {
+     "outcome": "fail",
+     "detail": "AssertionError: 20 != 10 (test_set.py:341)"
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_equality": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_free_after_iterating": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_frozen_as_dictkey": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_gc": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_hash": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_hash_caching": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_hash_effectiveness": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_init": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_intersection": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_isdisjoint": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_iterator_pickling": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_len": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_new_or_init": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_or": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_pickling": {
+     "outcome": "error",
+     "detail": "AttributeError: 'rustique.FrozenSet' object has no attribute 'x' and no __dict__ for setting new attributes (test_set.py:243)"
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_setOfFrozensets": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_sub": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_sub_and_super": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_subclass_with_custom_hash": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_symmetric_difference": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_union": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_uniquification": {
+     "outcome": "pass",
+     "detail": ""
+    },
+    "test.test_set.RustiqueTestFrozenSet.test_xor": {
+     "outcome": "pass",
+     "detail": ""
+    }
+   },
+   "seconds": 0.2650771670000722
+  }
+ ]
+}

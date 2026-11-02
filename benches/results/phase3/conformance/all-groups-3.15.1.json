@@ -1,0 +1,395 @@
+{
+ "python": "3.15.1",
+ "targets": [
+  "builtins",
+  "containers",
+  "copy",
+  "dataclasses",
+  "datetime",
+  "float",
+  "fnmatch",
+  "json",
+  "logging",
+  "pathlib",
+  "posixpath",
+  "random",
+  "statistics",
+  "textwrap",
+  "urllib"
+ ],
+ "modules": {
+  "test.test_list": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 68,
+    "skip": 1
+   },
+   "differences": [],
+   "seconds": [
+    1.0,
+    1.0
+   ],
+   "stderr": ""
+  },
+  "test.test_tuple": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 38
+   },
+   "differences": [],
+   "seconds": [
+    0.4,
+    0.4
+   ],
+   "stderr": ""
+  },
+  "test.test_sort": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 21
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_builtin": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 150,
+    "skip": 7
+   },
+   "differences": [],
+   "seconds": [
+    0.4,
+    0.4
+   ],
+   "stderr": ""
+  },
+  "test.test_json": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 232,
+    "skip": 1
+   },
+   "differences": [],
+   "seconds": [
+    2.8,
+    2.8
+   ],
+   "stderr": ""
+  },
+  "test.test_float": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 52,
+    "skip": 2
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_format": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 17,
+    "skip": 2
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_strtod": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 8,
+    "skip": 1
+   },
+   "differences": [],
+   "seconds": [
+    0.2,
+    0.2
+   ],
+   "stderr": ""
+  },
+  "test.test_fstring": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 95
+   },
+   "differences": [],
+   "seconds": [
+    0.7,
+    0.7
+   ],
+   "stderr": ""
+  },
+  "test.test_copy": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 84
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_copyreg": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 6
+   },
+   "differences": [],
+   "seconds": [
+    0.2,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_dataclasses": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 284,
+    "skip": 1
+   },
+   "differences": [],
+   "seconds": [
+    0.3,
+    0.3
+   ],
+   "stderr": ""
+  },
+  "test.test_strptime": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "skip": 94,
+    "pass": 49
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_datetime": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "skip": 54,
+    "pass": 3614
+   },
+   "differences": [],
+   "seconds": [
+    25.6,
+    26.1
+   ],
+   "stderr": ""
+  },
+  "test.test_time": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 49,
+    "skip": 16
+   },
+   "differences": [],
+   "seconds": [
+    3.1,
+    3.1
+   ],
+   "stderr": ""
+  },
+  "test.test_posixpath": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 93,
+    "skip": 3
+   },
+   "differences": [],
+   "seconds": [
+    0.3,
+    0.3
+   ],
+   "stderr": ""
+  },
+  "test.test_genericpath": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 26
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_fnmatch": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 24
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_glob": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 20,
+    "skip": 2
+   },
+   "differences": [],
+   "seconds": [
+    0.2,
+    0.2
+   ],
+   "stderr": ""
+  },
+  "test.test_pathlib": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 991,
+    "skip": 407
+   },
+   "differences": [],
+   "seconds": [
+    1.2,
+    1.2
+   ],
+   "stderr": ""
+  },
+  "test.test_os": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 472,
+    "skip": 77,
+    "fail": 3,
+    "error": 1
+   },
+   "differences": [],
+   "seconds": [
+    13.5,
+    13.4
+   ],
+   "stderr": ""
+  },
+  "test.test_logging": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 283,
+    "skip": 4
+   },
+   "differences": [],
+   "seconds": [
+    23.4,
+    23.0
+   ],
+   "stderr": ""
+  },
+  "test.test_random": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 114,
+    "skip": 2
+   },
+   "differences": [],
+   "seconds": [
+    1.2,
+    1.2
+   ],
+   "stderr": ""
+  },
+  "test.test_textwrap": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 68
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_urlparse": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 78,
+    "skip": 5
+   },
+   "differences": [],
+   "seconds": [
+    0.2,
+    0.2
+   ],
+   "stderr": ""
+  },
+  "test.test_urllib": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 104,
+    "skip": 2
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_statistics": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 400
+   },
+   "differences": [],
+   "seconds": [
+    14.1,
+    11.2
+   ],
+   "stderr": ""
+  }
+ },
+ "ok": true,
+ "not_installed": {}
+}

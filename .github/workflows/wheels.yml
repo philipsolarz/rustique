@@ -1,0 +1,202 @@
+# Wheels for every platform and build, each installed with pip into a clean venv and
+# smoke-tested (docs/targets/dx.md §5).
+#
+#   tags v*, manual dispatch: 8 platforms x cp314, cp314t, cp315, cp315t, plus the sdist
+#                             (and a wheel built from it), then a completeness check
+#   pull requests touching the build: linux x86_64 cp315 + cp315t only
+name: Wheels
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/**"
+      - "python/**"
+      - ".github/workflows/wheels.yml"
+      - ".github/scripts/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wheels-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        shell: python
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          import json, os
+          full = [
+              # name, runner, maturin target, manylinux (Linux), smoke ("host" | "alpine"), experimental
+              ("linux-x86_64", "ubuntu-24.04", "x86_64", "2_28", "host", False),
+              ("linux-aarch64", "ubuntu-24.04-arm", "aarch64", "2_28", "host", False),
+              ("musllinux-x86_64", "ubuntu-24.04", "x86_64-unknown-linux-musl", "musllinux_1_2", "alpine", False),
+              ("musllinux-aarch64", "ubuntu-24.04-arm", "aarch64-unknown-linux-musl", "musllinux_1_2", "alpine", False),
+              ("macos-arm64", "macos-15", "aarch64-apple-darwin", "", "host", False),
+              ("macos-x86_64", "macos-15-intel", "x86_64-apple-darwin", "", "host", False),
+              ("windows-x64", "windows-2025", "x86_64-pc-windows-msvc", "", "host", False),
+              ("windows-arm64", "windows-11-arm", "aarch64-pc-windows-msvc", "", "host", True),
+          ]
+          pythons = "3.14 3.14t 3.15 3.15t"
+          if os.environ["EVENT"] == "pull_request":
+              full, pythons = full[:1], "3.15 3.15t"
+          include = [dict(name=n, os=o, target=t, manylinux=m, smoke=s, experimental=x, pythons=pythons)
+                     for n, o, t, m, s, x in full]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"matrix={json.dumps({'include': include})}\n")
+
+  wheels:
+    name: ${{ matrix.name }}
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # Interpreters on the runner: the build uses them on macOS and Windows, the smoke test
+      # everywhere but musl. One step per build so each path is exact (python-path output).
+      - id: py314
+        if: contains(matrix.pythons, '3.14 ') && matrix.smoke == 'host'
+        uses: actions/setup-python@v6
+        with: { python-version: "3.14" }
+      - id: py314t
+        if: contains(matrix.pythons, '3.14t') && matrix.smoke == 'host'
+        uses: actions/setup-python@v6
+        with: { python-version: "3.14t" }
+      - id: py315
+        if: contains(matrix.pythons, '3.15 ') && matrix.smoke == 'host'
+        uses: actions/setup-python@v6
+        with: { python-version: "3.15" }
+      - id: py315t
+        if: matrix.smoke == 'host'
+        uses: actions/setup-python@v6
+        with: { python-version: "3.15t" }
+
+      - name: Interpreters to build for
+        id: interp
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.manylinux }}" ]; then
+            # manylinux/musllinux containers ship every CPython under /opt/python.
+            args=""
+            for v in ${{ matrix.pythons }}; do args="$args -i python$v"; done
+          else
+            args=""
+            for p in "${{ steps.py314.outputs.python-path }}" "${{ steps.py314t.outputs.python-path }}" \
+                     "${{ steps.py315.outputs.python-path }}" "${{ steps.py315t.outputs.python-path }}"; do
+              [ -n "$p" ] && args="$args -i $p"
+            done
+          fi
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+          echo "building for:$args"
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'auto' }}
+          args: --release --out dist ${{ steps.interp.outputs.args }}
+
+      - name: Wheels built
+        shell: bash
+        run: ls -l dist
+
+      - name: Smoke test (pip install into a clean venv, per interpreter)
+        if: matrix.smoke == 'host'
+        shell: bash
+        run: |
+          bash .github/scripts/smoke_all.sh dist \
+            "${{ steps.py314.outputs.python-path }}" "${{ steps.py314t.outputs.python-path }}" \
+            "${{ steps.py315.outputs.python-path }}" "${{ steps.py315t.outputs.python-path }}"
+
+      - name: Smoke test in Alpine (musl)
+        if: matrix.smoke == 'alpine'
+        shell: bash
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w alpine:3.22 sh -euc '
+            apk add --no-cache bash curl >/dev/null
+            curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null
+            export PATH=$HOME/.local/bin:$PATH
+            pys=""
+            for v in ${{ matrix.pythons }}; do
+              if uv python install "$v" >/dev/null 2>&1; then pys="$pys $(uv python find "$v")"; else echo "no musl CPython $v from uv"; fi
+            done
+            bash .github/scripts/smoke_all.sh dist $pys'
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wheels-${{ matrix.name }}
+          path: dist
+
+  sdist:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      # The sdist must be complete: build a wheel from it (Rust toolchain from
+      # rust-toolchain.toml inside) and smoke-test it.
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.15" }
+      - name: Wheel from the sdist
+        run: |
+          python -m pip wheel --no-deps -w sdist-wheel dist/*.tar.gz
+          bash .github/scripts/smoke_all.sh sdist-wheel python3.15
+      - uses: actions/upload-artifact@v6
+        with:
+          name: sdist
+          path: dist
+
+  complete:
+    if: github.event_name != 'pull_request'
+    needs: [wheels, sdist]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Every platform x build has a wheel
+        shell: python
+        run: |
+          import os, re, sys
+          files = sorted(os.listdir("dist"))
+          print("\n".join(files))
+          wheels = [f for f in files if f.endswith(".whl")]
+          need = {
+              "manylinux": ("x86_64", "aarch64"), "musllinux": ("x86_64", "aarch64"),
+              "macosx": ("arm64", "x86_64"), "win": ("amd64",),
+          }
+          missing = []
+          for tag in ("cp314-cp314", "cp314-cp314t", "cp315-cp315", "cp315-cp315t"):
+              for plat, arches in need.items():
+                  for arch in arches:
+                      if not any(f"-{tag}-" in w and plat in w and arch in w for w in wheels):
+                          missing.append(f"{tag} {plat} {arch}")
+          if not any(f.endswith(".tar.gz") for f in files):
+              missing.append("sdist")
+          if missing:
+              sys.exit("missing: " + ", ".join(missing))
+          print(f"{len(wheels)} wheels + sdist: complete")

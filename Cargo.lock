@@ -501,6 +501,7 @@ dependencies = [
  "hashbrown",
  "proptest",
  "rayon",
+ "zmij",
 ]
 
 [[package]]

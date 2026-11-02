@@ -205,6 +205,20 @@ impl Expr {
             CompareOp::Gt => BinaryOp::Gt,
             CompareOp::Ge => BinaryOp::Ge,
         };
+        if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+            && operand(other)?.is_none()
+            && other.is_instance(&py.import("numbers")?.getattr("Number")?)?
+        {
+            // For a number the engine can't represent (complex, Decimal, Fraction, ...),
+            // `NotImplemented` would let Python fall back to an identity comparison and
+            // silently build the constant `False`/`True` (e.g. `X / X == 1j` dropping the
+            // division and its ZeroDivisionError): refuse instead. Non-numbers keep
+            // Python's identity fallback (`(X == [1]) is False`).
+            return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                "an X expression cannot be compared with {}",
+                other.get_type().name()?
+            )));
+        }
         self.binary(py, other, op, false)
     }
 
@@ -290,7 +304,7 @@ fn cast_target(dtype: &Bound<'_, PyAny>) -> PyResult<ExprType> {
 
 /// The rustique scalar class of a fixed-width dtype (`rs.i8`, …).
 fn scalar_class<'py>(py: Python<'py>, dtype: DType) -> PyResult<Bound<'py, PyAny>> {
-    py.import("rustique._rustique")?.getattr(dtype.name())
+    crate::module(py)?.getattr(dtype.name())
 }
 
 fn math_isnan(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {

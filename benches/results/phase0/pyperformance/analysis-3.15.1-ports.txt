@@ -1,0 +1,9 @@
+plain 3 results, enabled 3 results, common 3
+| benchmark | plain mean | plain std | enabled mean | enabled std | ratio (enabled/plain) |
+|---|---:|---:|---:|---:|---:|
+| asyncio_tcp | 257 ms | 6.23 ms | 257 ms | 7.65 ms | 0.997 |
+| asyncio_tcp_ssl | 875 ms | 6.42 ms | 875 ms | 6.24 ms | 1.000 |
+| asyncio_websockets | 436 ms | 2.51 ms | 437 ms | 2.45 ms | 1.001 |
+geometric mean of mean ratios: 0.9991 over 3
+median ratio 0.9998; > 1.05: 0; < 0.95: 0
+sum of plain per-benchmark mean times (one iteration each): 1.569 s

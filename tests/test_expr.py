@@ -6,6 +6,7 @@ element; `List.map` / `List.filter` (native engine, fallbacks, object storage) a
 """
 
 import copy
+import fractions
 import math
 import operator
 import struct
@@ -496,3 +497,13 @@ def test_call_semantics():
     assert type((X + True)(1)) is int
     with pytest.raises(TypeError, match="must be real number"):
         X.is_nan()("a")
+
+
+def test_equality_with_unsupported_operand_raises():
+    # Python's fallback for `==` when both sides return NotImplemented is identity, which
+    # would silently fold `X / X == 1j` to the constant False and drop the division.
+    with pytest.raises(TypeError, match="cannot be compared with complex"):
+        X / X == (6.123233995736766e-17 + 1j)
+    with pytest.raises(TypeError, match="cannot be compared with Fraction"):
+        X != fractions.Fraction(1, 2)
+    assert (X == [1]) is False  # non-numbers keep Python's identity fallback

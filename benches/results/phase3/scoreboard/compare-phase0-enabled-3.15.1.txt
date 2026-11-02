@@ -1,0 +1,147 @@
+old builds ['3.15.1'] (5660 cells), new builds ['3.15.1'] (5660 cells)
+common cells 5660, only old 0, only new 0
+status changes: 0
+-- 0-100 elements (instruction-count ratios): 3814 cells
+   new-old: identical (2 dp) 2642, |d|<=0.01 3145, |d|<=0.02 3361, |d|>0.05 227
+   new/old: geomean 0.9232, median 1.0000, p05 0.933, p95 1.023
+   crossed the 1.05 bar: up 10, down 2
+     K 0.90 -> 1.07  tuple/x.count(hit)/object/1
+       1.10 -> 0.93  frozenset/hash(x)/mixed/1
+     K 0.92 -> 1.07  list/x.count(hit)/object/1
+       0.95 -> 1.08  set/for v in x/object/0
+       0.94 -> 1.06  tuple/repr(x)/float/0
+       0.98 -> 1.07  set/tuple(x)/object/0
+       1.00 -> 1.09  tuple/from list/float/100
+       1.00 -> 1.09  tuple/from list/int/100
+       1.07 -> 0.99  tuple/reversed/str/0
+       1.00 -> 1.06  dict/for v in x/float/0
+       1.00 -> 1.06  dict/tuple(x)/object/100
+       1.00 -> 1.06  tuple/repr(x)/mixed/0
+   kernel-path cells: 586, geomean old 0.6272, new 0.6319
+   largest relative changes (top 40):
+       1.00 -> 0.02 (0.020x)  tuple/copy.deepcopy/int/100
+       1.00 -> 0.02 (0.020x)  tuple/copy.deepcopy/mixed/100
+       1.00 -> 0.02 (0.020x)  tuple/copy.deepcopy/str/100
+       1.00 -> 0.03 (0.030x)  tuple/copy.deepcopy/float/100
+       1.00 -> 0.07 (0.070x)  tuple/copy.deepcopy/object/100
+       1.00 -> 0.08 (0.080x)  dict/json.dumps/float/0
+       1.00 -> 0.08 (0.080x)  dict/json.dumps/int/0
+       1.00 -> 0.08 (0.080x)  dict/json.dumps/str/0
+       1.00 -> 0.08 (0.080x)  list/copy.deepcopy/object/100
+       1.00 -> 0.08 (0.080x)  list/json.dumps/float/0
+       1.00 -> 0.08 (0.080x)  list/json.dumps/float/1
+       1.00 -> 0.08 (0.080x)  list/json.dumps/int/0
+       1.00 -> 0.08 (0.080x)  list/json.dumps/mixed/0
+       1.00 -> 0.08 (0.080x)  list/json.dumps/object/0
+       1.00 -> 0.08 (0.080x)  list/json.dumps/str/0
+       1.00 -> 0.08 (0.080x)  tuple/json.dumps/float/0
+       1.00 -> 0.08 (0.080x)  tuple/json.dumps/float/1
+       1.00 -> 0.08 (0.080x)  tuple/json.dumps/int/0
+       1.00 -> 0.08 (0.080x)  tuple/json.dumps/mixed/0
+       1.00 -> 0.08 (0.080x)  tuple/json.dumps/object/0
+       1.00 -> 0.08 (0.080x)  tuple/json.dumps/str/0
+       1.00 -> 0.09 (0.090x)  list/copy.deepcopy/object/8
+       1.00 -> 0.09 (0.090x)  list/json.dumps/float/8
+       1.00 -> 0.09 (0.090x)  list/json.dumps/float/100
+       1.00 -> 0.09 (0.090x)  list/json.dumps/int/1
+       1.00 -> 0.09 (0.090x)  list/json.dumps/mixed/1
+       1.00 -> 0.09 (0.090x)  list/json.dumps/str/1
+       1.00 -> 0.09 (0.090x)  tuple/copy.deepcopy/float/8
+       1.00 -> 0.09 (0.090x)  tuple/copy.deepcopy/int/8
+       1.00 -> 0.09 (0.090x)  tuple/copy.deepcopy/mixed/8
+       1.00 -> 0.09 (0.090x)  tuple/copy.deepcopy/object/8
+       1.00 -> 0.09 (0.090x)  tuple/copy.deepcopy/str/8
+       1.00 -> 0.09 (0.090x)  tuple/json.dumps/float/8
+       1.00 -> 0.09 (0.090x)  tuple/json.dumps/float/100
+       1.00 -> 0.09 (0.090x)  tuple/json.dumps/int/1
+       1.00 -> 0.09 (0.090x)  tuple/json.dumps/mixed/1
+       1.00 -> 0.09 (0.090x)  tuple/json.dumps/str/1
+       1.00 -> 0.10 (0.100x)  dict/json.dumps/float/1
+       1.00 -> 0.11 (0.110x)  dict/copy.deepcopy/object/100
+       1.00 -> 0.11 (0.110x)  dict/json.dumps/int/1
+-- 10k/1M (wall-time ratios): 1846 cells
+   new-old: identical (2 dp) 437, |d|<=0.01 920, |d|<=0.02 1168, |d|>0.05 354
+   new/old: geomean 0.9532, median 1.0000, p05 0.805, p95 1.100
+   crossed the 1.05 bar: up 80, down 77
+       1.19 -> 0.52  set/copy.deepcopy/int/10k
+       1.30 -> 0.65  dict/tuple(x)/str/10k
+       1.06 -> 0.44  dict/json.dumps/int/10k
+       1.45 -> 0.84  dict/tuple(x)/int/10k
+       1.06 -> 0.50  list/json.dumps/object/1M
+       1.51 -> 0.98  list/x.clear()/mixed/10k
+       1.46 -> 1.01  list/x.clear()/int/10k
+       1.00 -> 1.40  frozenset/x <= t/str/10k
+       1.40 -> 1.00  tuple/reversed/mixed/10k
+       0.81 -> 1.19  dict/tuple(x)/float/1M
+       1.01 -> 1.38  set/x.isdisjoint(t)/mixed/10k
+       1.03 -> 1.36  tuple/for v in x/int/10k
+       1.02 -> 1.34  frozenset/x <= t/object/10k
+       0.98 -> 1.30  tuple/copy C(x)/int/10k
+       1.13 -> 0.81  dict/tuple(x)/str/1M
+       1.31 -> 1.00  dict/hit in x/mixed/10k
+       0.90 -> 1.20  frozenset/x == t/mixed/10k
+       0.96 -> 1.25  dict/x[k]/object/1M
+       0.79 -> 1.08  set/x == t/object/10k
+       1.09 -> 0.80  dict/hit in x/str/1M
+       1.11 -> 0.84  set/hit in x/int/10k
+       0.98 -> 1.25  list/comprehension/int/10k
+       1.00 -> 1.26  frozenset/x.copy()/mixed/10k
+       1.23 -> 0.97  frozenset/x.isdisjoint(t)/str/1M
+       0.93 -> 1.19  set/x == t/mixed/10k
+       0.81 -> 1.06  set/x == t/object/1M
+       1.14 -> 0.89  set/x == t/str/10k
+       1.06 -> 0.82  dict/reversed/int/10k
+       1.01 -> 1.24  list/for v in x/float/10k
+       1.26 -> 1.03  dict/reversed/float/10k
+       1.18 -> 0.95  dict/tuple(x)/mixed/1M
+       1.24 -> 1.01  dict/x[k]/object/10k
+       1.18 -> 0.95  list/x[-1]/str/1M
+       0.89 -> 1.10  set/x.copy()/str/10k
+       1.01 -> 1.22  list/pickle.dumps/str/1M
+       1.19 -> 0.98  dict/tuple(x)/int/1M
+       1.18 -> 0.97  set/x == t/str/1M
+     K 0.99 -> 1.19  frozenset/all(x)/mixed/10k
+       0.97 -> 1.17  set/x.isdisjoint(t)/str/10k
+       1.22 -> 1.02  frozenset/x.copy()/str/1M
+   kernel-path cells: 328, geomean old 0.4596, new 0.4624
+   largest relative changes (top 40):
+       0.99 -> 0.01 (0.010x)  tuple/copy.deepcopy/str/10k
+       1.00 -> 0.02 (0.020x)  tuple/copy.deepcopy/int/10k
+       1.00 -> 0.02 (0.020x)  tuple/copy.deepcopy/mixed/10k
+       0.99 -> 0.02 (0.020x)  tuple/copy.deepcopy/float/10k
+       1.02 -> 0.07 (0.069x)  tuple/copy.deepcopy/object/10k
+       0.99 -> 0.07 (0.071x)  list/copy.deepcopy/object/10k
+       1.01 -> 0.12 (0.119x)  dict/copy.deepcopy/object/10k
+       1.00 -> 0.13 (0.130x)  list/copy.deepcopy/mixed/10k
+       1.00 -> 0.13 (0.130x)  list/json.dumps/float/10k
+       1.00 -> 0.13 (0.130x)  tuple/json.dumps/float/10k
+       1.00 -> 0.16 (0.160x)  list/copy.deepcopy/int/10k
+       1.00 -> 0.16 (0.160x)  list/copy.deepcopy/str/10k
+       0.99 -> 0.16 (0.162x)  list/json.dumps/float/1M
+       0.99 -> 0.16 (0.162x)  tuple/json.dumps/float/1M
+       1.00 -> 0.17 (0.170x)  list/copy.deepcopy/float/10k
+       0.99 -> 0.17 (0.172x)  set/copy.deepcopy/object/10k
+       1.01 -> 0.18 (0.178x)  frozenset/copy.deepcopy/object/10k
+       1.01 -> 0.18 (0.178x)  tuple/repr(x)/float/10k
+       1.00 -> 0.18 (0.180x)  tuple/repr(x)/float/1M
+       1.01 -> 0.19 (0.188x)  list/repr(x)/float/10k
+       1.00 -> 0.19 (0.190x)  list/repr(x)/float/1M
+       1.00 -> 0.24 (0.240x)  dict/copy.deepcopy/str/10k
+       1.00 -> 0.24 (0.240x)  tuple/json.dumps/mixed/10k
+       0.97 -> 0.24 (0.247x)  dict/json.dumps/float/10k
+       1.01 -> 0.25 (0.248x)  tuple/json.dumps/mixed/1M
+       1.00 -> 0.25 (0.250x)  list/json.dumps/mixed/10k
+       1.01 -> 0.26 (0.257x)  dict/copy.deepcopy/int/10k
+       1.00 -> 0.26 (0.260x)  list/json.dumps/mixed/1M
+       1.00 -> 0.27 (0.270x)  dict/copy.deepcopy/mixed/10k
+       1.01 -> 0.28 (0.277x)  dict/copy.deepcopy/float/10k
+       1.00 -> 0.28 (0.280x)  dict/json.dumps/float/1M
+       1.01 -> 0.33 (0.327x)  frozenset/repr(x)/float/10k
+       1.00 -> 0.33 (0.330x)  tuple/json.dumps/object/10k
+       0.99 -> 0.33 (0.333x)  list/json.dumps/object/10k
+       1.01 -> 0.34 (0.337x)  set/repr(x)/float/10k
+       1.00 -> 0.38 (0.380x)  dict/repr(x)/float/1M
+       0.97 -> 0.39 (0.402x)  dict/repr(x)/float/10k
+       1.06 -> 0.44 (0.415x)  dict/json.dumps/int/10k
+       1.00 -> 0.42 (0.420x)  tuple/json.dumps/object/1M
+       1.01 -> 0.44 (0.436x)  tuple/json.dumps/int/1M

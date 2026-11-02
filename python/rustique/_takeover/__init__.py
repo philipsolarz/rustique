@@ -1,22 +1,18 @@
-"""The takeover: ``rustique.enable()`` / ``rustique.disable()`` (docs/TAKEOVER.md).
+"""The switch: ``rustique.enable()`` / ``disable()`` / ``status()`` / ``stats()``
+(docs/ACCELERATION.md §3, §6, §8).
 
-Two tiers:
+``enable()`` installs the accelerated *targets* registered in the Rust extension
+(``crates/rustique-py/src/targets/``): Rust kernels behind CPython's existing entry points
+(builtin methods, type slots, C accelerator functions, pure-Python stdlib functions), each
+exact or falling back to CPython's original. Targets are grouped (``containers``,
+``builtins``, ``json``, ...); ``only=``/``exclude=`` take group or target names. Targets
+whose module is not imported yet are installed when it is (never imported eagerly).
 
-* **Safe tier (default, process-wide).** Containers stay exact builtins. ``enable()``
-  installs exact-semantics Rust kernels behind builtin container methods
-  (``list.sort`` - and so ``sorted`` -, ``list.index``/``count``, ``x in list``, the same for
-  ``tuple``; ``crates/rustique-py/src/takeover.rs``) and the replacement builtin functions of
-  ``rustique._builtins`` when that module is present. Every kernel falls back to the
-  original C implementation whenever its fast path does not provably apply, so behaviour
-  is CPython's in every observable respect. Code compiled before ``enable()`` (the
-  ``__main__`` script, earlier imports, C extensions) is covered too.
+The native tier (``native=``, the ``@native`` decorator) is separate and opt-in: it
+rewrites selected modules to build Rustique containers (docs/TAKEOVER.md).
 
-* **Native tier (opt-in, per module).** ``enable(native=["pkg.*"])`` (or
-  ``python -m rustique --native 'pkg.*' app.py``, or the ``@rustique.native`` decorator)
-  rewrites the selected modules so that literals, displays, comprehensions and
-  ``list()``/``dict()``/``set()`` calls build Rustique containers (``rustique.List`` etc.).
-  Those are *not* builtins: see docs/TAKEOVER.md for what breaks when they reach code that
-  did not opt in. Never the default.
+Nothing here imports a module at call time: ``enable()`` and ``status()`` run in the
+extension.
 """
 
 import sys
@@ -24,70 +20,79 @@ from _collections_abc import Iterable  # = collections.abc.Iterable, without imp
 
 from rustique import _rustique
 
-_kernels = _rustique._takeover
+_accel = _rustique._accel
 
-__all__ = ["disable", "enable", "native", "status"]
+__all__ = ["RustiqueCheckError", "check", "disable", "enable", "native", "stats", "status"]
 
-_state: dict[str, object] = {"safe": False, "builtins": False, "native": ()}
+#: Raised by a kernel's result check in ``check("raise")`` mode (an ``AssertionError``).
+RustiqueCheckError = _accel.RustiqueCheckError
 
-
-def _builtins_hooks():
-    """WS5's replacement builtin functions, when present: (install, uninstall) or None."""
-    try:
-        from rustique._builtins import install, uninstall  # type: ignore[import-not-found]
-    except ImportError:
-        return None
-    return install, uninstall
+_UNSET = object()
 
 
-def enable(*, native: str | Iterable[str] | None = None, builtins: bool = True) -> dict[str, object]:
-    """Turn the takeover on for this process. Idempotent.
+def enable(
+    *,
+    only: str | Iterable[str] | None = None,
+    exclude: str | Iterable[str] | None = None,
+    native: str | Iterable[str] | None = None,
+    builtins: bool = True,
+) -> dict[str, object]:
+    """Turn acceleration on for this process. Idempotent and additive.
 
-    ``native``: module-name patterns (``fnmatch`` style, e.g. ``"myapp.*"``) whose modules
-    are rewritten to build Rustique containers when they are imported from now on.
-    ``builtins``: also install the replacement builtin functions (``rustique._builtins``).
-    Returns :func:`status`.
+    ``only``: group or target names to install (default: every group); ``exclude``: names
+    to leave out. Both accept a list or a comma-separated string. ``builtins=False``
+    excludes the ``builtins`` group. ``native``: module-name patterns (``fnmatch`` style)
+    rewritten to build Rustique containers when imported (opt-in native tier).
+
+    Unknown names raise ``ValueError`` before anything changes. Reads no environment
+    variables (the switches of docs/ACCELERATION.md §8 are the DX layer's). Returns
+    :func:`status`.
     """
-    _kernels.install()
-    _state["safe"] = True
-    if builtins and not _state["builtins"]:
-        hooks = _builtins_hooks()
-        if hooks is not None:
-            hooks[0]()
-            _state["builtins"] = True
+    _accel.enable(only, exclude, builtins)
     if native:
         from rustique._takeover import _hook
 
         patterns = (native,) if isinstance(native, str) else tuple(native)
         _hook.install(patterns)
-        _state["native"] = _hook.patterns()
-    return status()
+        _accel._set_native(list(_hook.patterns()))
+    return _accel.status()
 
 
 def disable() -> dict[str, object]:
-    """Undo :func:`enable`: restore the original builtin implementations and stop rewriting
-    imports. Modules already rewritten keep their rewritten code."""
-    if _state["builtins"]:
-        hooks = _builtins_hooks()
-        if hooks is not None:
-            hooks[1]()
-        _state["builtins"] = False
-    _kernels.uninstall()
-    _state["safe"] = False
+    """Restore every original entry point and stop rewriting imports (modules already
+    rewritten by the native tier keep their rewritten code). Returns :func:`status`."""
     if "rustique._takeover._hook" in sys.modules:
         sys.modules["rustique._takeover._hook"].uninstall()
-    _state["native"] = ()
-    return status()
+    _accel._set_native([])
+    _accel.disable()
+    return _accel.status()
 
 
 def status() -> dict[str, object]:
-    """What is active: ``{"safe": bool, "kernels": [...], "builtins": bool, "native": (...)}``."""
-    return {
-        "safe": bool(_state["safe"]),
-        "kernels": list(_kernels.installed()),
-        "builtins": bool(_state["builtins"]),
-        "native": tuple(_state["native"]),  # type: ignore[arg-type]
-    }
+    """``{"targets": [{"name", "group", "state", "reason", "refusal", "sites", "versions",
+    ...}], "process": {...}}``. ``state`` is ``"installed"``, ``"pending-import"`` (its
+    module is not imported yet), ``"refused"`` (``reason``/``refusal`` say why) or
+    ``"disabled"``."""
+    return _accel.status()
+
+
+def stats(enabled: bool | None = None, reset: bool = False) -> dict[str, dict[str, object]]:
+    """Per-target counters ``{name: {"hits": n, "fallback": {reason: n}, "suspensions": n}}``.
+
+    ``enabled`` switches counting on or off (off by default); ``reset`` zeroes the
+    counters after taking the snapshot."""
+    return _accel.stats(enabled, reset)
+
+
+def check(mode: object = _UNSET) -> str | None:
+    """Check mode: run the original again after every fast path of a *checkable* target
+    and compare. ``"warn"``: a mismatch counts as ``fallback["check"]`` and the original's
+    result is returned; ``"raise"``: a mismatch raises :class:`RustiqueCheckError`;
+    ``None``/``False``/``"off"``: off. Without an argument, return the current mode;
+    otherwise set it and return the previous one."""
+    if mode is _UNSET:
+        return _accel.check_mode()
+    return _accel.check(mode)
 
 
 def native(obj=None, /):

@@ -1,0 +1,133 @@
+old builds ['3.15.1'] (5660 cells), new builds ['3.15.1'] (5660 cells)
+common cells 5660, only old 0, only new 0
+status changes: 0
+-- 0-100 elements (instruction-count ratios): 3762 cells
+   new-old: identical (2 dp) 2747, |d|<=0.01 3146, |d|<=0.02 3359, |d|>0.05 154
+   new/old: geomean 1.0006, median 1.0000, p05 0.983, p95 1.018
+   crossed the 1.05 bar: up 12, down 6
+       1.06 -> 0.89  list/insert(0, v)/object/100
+       0.94 -> 1.08  frozenset/hash(x)/float/100
+       0.94 -> 1.07  frozenset/hash(x)/float/8
+       1.02 -> 1.13  frozenset/hash(x)/mixed/1
+       0.98 -> 1.06  tuple/hash(x)/object/0
+       1.01 -> 1.08  frozenset/hash(x)/float/1
+       1.01 -> 1.08  tuple/reversed/str/0
+       1.04 -> 1.08  list/reversed/float/1
+       1.04 -> 1.08  list/reversed/int/1
+     K 1.02 -> 1.06  set/sum(x)/int/0
+       1.03 -> 1.07  tuple/repr(x)/object/100
+       1.06 -> 1.02  frozenset/hash(x)/str/8
+       1.04 -> 1.07  list/reversed/mixed/1
+       1.08 -> 1.05  list/copy C(x)/int/8
+       1.07 -> 1.04  tuple/reversed/float/1
+     K 1.07 -> 1.05  dict/sorted(x)/str/8
+       1.05 -> 1.06  frozenset/enumerate/mixed/8
+       1.06 -> 1.05  frozenset/x & t/str/100
+   kernel-path cells: 586, geomean old 0.8838, new 0.8834
+   largest relative changes (top 30):
+       0.24 -> 0.31 (1.292x)  tuple/x * 2/float/100
+       2.32 -> 2.89 (1.246x)  dict/x == t/str/100
+       1.64 -> 1.35 (0.823x)  list/insert(0, v)/int/0
+       1.62 -> 1.35 (0.833x)  list/insert(0, v)/float/0
+       1.06 -> 0.89 (0.840x)  list/insert(0, v)/object/100
+       1.51 -> 1.79 (1.185x)  list/insert(0, v)/str/0
+       2.67 -> 3.11 (1.165x)  tuple/(*x, *y)/mixed/8
+       0.94 -> 1.08 (1.149x)  frozenset/hash(x)/float/100
+       0.94 -> 1.07 (1.138x)  frozenset/hash(x)/float/8
+       1.02 -> 1.13 (1.108x)  frozenset/hash(x)/mixed/1
+       2.12 -> 2.34 (1.104x)  frozenset/x.isdisjoint(t)/str/100
+       0.88 -> 0.97 (1.102x)  tuple/hash(x)/mixed/100
+       2.27 -> 2.49 (1.097x)  list/insert(0, v)/str/1
+       0.94 -> 1.03 (1.096x)  tuple/reversed/float/0
+       0.94 -> 1.03 (1.096x)  tuple/reversed/int/0
+       3.52 -> 3.83 (1.088x)  tuple/repr(x)/int/0
+       1.37 -> 1.26 (0.920x)  frozenset/tuple(x)/str/0
+       1.59 -> 1.72 (1.082x)  frozenset/tuple(x)/str/1
+       0.98 -> 1.06 (1.082x)  tuple/hash(x)/object/0
+       1.40 -> 1.30 (0.929x)  frozenset/for v in x/str/0
+       2.51 -> 2.70 (1.076x)  tuple/(*x, *y)/float/8
+       0.94 -> 1.01 (1.074x)  frozenset/hash(x)/int/1
+       0.94 -> 1.01 (1.074x)  frozenset/hash(x)/int/8
+       0.94 -> 1.01 (1.074x)  frozenset/hash(x)/int/100
+       0.94 -> 1.01 (1.074x)  frozenset/hash(x)/object/1
+       0.96 -> 1.03 (1.073x)  frozenset/hash(x)/str/100
+       0.28 -> 0.30 (1.071x)  tuple/x * 2/int/100
+     K 1.55 -> 1.66 (1.071x)  set/max(x)/str/1
+       1.01 -> 1.08 (1.069x)  frozenset/hash(x)/float/1
+       1.01 -> 1.08 (1.069x)  tuple/reversed/str/0
+-- 10k/1M (wall-time ratios): 1820 cells
+   new-old: identical (2 dp) 376, |d|<=0.01 768, |d|<=0.02 984, |d|>0.05 480
+   new/old: geomean 1.0009, median 1.0000, p05 0.897, p95 1.105
+   crossed the 1.05 bar: up 33, down 54
+       1.33 -> 0.80  dict/tuple(x)/str/10k
+       0.94 -> 1.45  list/x.clear()/mixed/10k
+       0.96 -> 1.43  dict/miss in x/str/10k
+       1.37 -> 0.98  dict/hit in x/mixed/10k
+       1.25 -> 0.90  dict/tuple(x)/float/10k
+       1.15 -> 0.83  list/zip/float/1M
+       1.29 -> 0.98  dict/miss in x/str/1M
+       0.88 -> 1.18  set/add loop/int/1M
+       1.05 -> 1.30  tuple/enumerate/mixed/10k
+       1.17 -> 0.92  dict/x.get(k)/str/1M
+       1.09 -> 0.85  set/x == y/int/1M
+       1.18 -> 0.95  frozenset/from list/str/1M
+       1.14 -> 0.94  dict/for v in x.values()/float/10k
+       1.06 -> 0.87  tuple/x < y/float/10k
+       1.07 -> 0.89  dict/x | t/int/1M
+       1.00 -> 1.18  dict/x.copy()/mixed/10k
+       0.98 -> 1.15  tuple/hash(x)/str/1M
+       1.12 -> 0.96  dict/for v in x.values()/mixed/10k
+       1.06 -> 0.90  list/enumerate/object/1M
+       1.10 -> 0.95  set/x ^ t/float/1M
+       1.19 -> 1.04  dict/x.get(miss)/str/10k
+       1.05 -> 1.19  frozenset/genexpr ingest/mixed/1M
+       1.13 -> 1.00  dict/zip/object/10k
+       0.95 -> 1.07  frozenset/hash(x)/mixed/10k
+       1.12 -> 1.00  dict/hit in x/str/1M
+       1.14 -> 1.02  tuple/enumerate/mixed/1M
+       1.04 -> 1.15  dict/miss in x/mixed/10k
+       0.96 -> 1.06  set/genexpr ingest/str/1M
+       1.08 -> 0.98  frozenset/hash(x)/int/10k
+       1.13 -> 1.03  list/repr(x)/object/10k
+       1.14 -> 1.04  set/x & t/str/1M
+       1.01 -> 1.10  list/x[-1]/str/1M
+       1.02 -> 1.11  set/discard loop/mixed/1M
+       0.98 -> 1.07  tuple/len(x)/object/1M
+       1.09 -> 1.00  dict/for v in x/mixed/1M
+       1.04 -> 1.13  dict/for v in x.values()/object/10k
+       1.05 -> 1.14  set/len(x)/float/1M
+       1.00 -> 1.08  dict/x == y/mixed/10k
+       1.00 -> 1.08  list/x[-1]/float/1M
+       1.08 -> 1.00  frozenset/hash(x)/mixed/1M
+   kernel-path cells: 328, geomean old 0.2939, new 0.2965
+   largest relative changes (top 30):
+       0.03 -> 0.36 (12.000x)  list/x.clear()/float/10k
+       0.25 -> 0.65 (2.600x)  dict/x.clear()/int/10k
+     K 0.02 -> 0.01 (0.500x)  list/miss in x/float/10k
+     K 0.01 -> 0.02 (2.000x)  set/max(x)/int/1M
+     K 0.01 -> 0.02 (2.000x)  tuple/x.count(hit)/float/10k
+       0.87 -> 0.50 (0.575x)  dict/x.clear()/mixed/10k
+       9.84 -> 5.71 (0.580x)  list/[*x, *y]/mixed/10k
+       2.18 -> 1.27 (0.583x)  tuple/a, *b = x/str/10k
+       1.33 -> 0.80 (0.602x)  dict/tuple(x)/str/10k
+       3.82 -> 2.32 (0.607x)  tuple/(*x, *y)/mixed/10k
+       1.73 -> 1.07 (0.618x)  set/from list/str/1M
+       1.66 -> 2.64 (1.590x)  frozenset/x == t/mixed/10k
+       1.79 -> 1.15 (0.642x)  set/x <= t/str/10k
+       0.94 -> 1.45 (1.543x)  list/x.clear()/mixed/10k
+       1.99 -> 1.32 (0.663x)  list/x.clear()/str/10k
+     K 0.02 -> 0.03 (1.500x)  tuple/min(x)/int/1M
+     K 0.03 -> 0.02 (0.667x)  list/x.count(hit)/float/1M
+       0.96 -> 1.43 (1.490x)  dict/miss in x/str/10k
+       1.12 -> 1.63 (1.455x)  tuple/a, *b = x/object/10k
+       2.50 -> 3.63 (1.452x)  tuple/list(x)/object/10k
+       2.52 -> 1.77 (0.702x)  set/from list/object/1M
+       12.00 -> 8.43 (0.703x)  frozenset/x.isdisjoint(t)/object/10k
+       1.37 -> 0.98 (0.715x)  dict/hit in x/mixed/10k
+       1.25 -> 0.90 (0.720x)  dict/tuple(x)/float/10k
+       1.15 -> 0.83 (0.722x)  list/zip/float/1M
+       0.96 -> 0.70 (0.729x)  list/len(x)/str/1M
+       0.88 -> 1.18 (1.341x)  set/add loop/int/1M
+       1.94 -> 1.47 (0.758x)  tuple/for v in x/int/1M
+       1.29 -> 0.98 (0.760x)  dict/miss in x/str/1M
+       0.29 -> 0.38 (1.310x)  set/for v in x/int/1M

@@ -1,0 +1,7 @@
+frozenset/hash(x)/mixed/1: builtin 482.7 enabled 482.7 ratio 1.000 (isolated)
+list/repr(x)/float/0: builtin 625.7 enabled 625.7 ratio 1.000 (isolated)
+tuple/reversed/str/0: builtin 752.7 enabled 752.7 ratio 1.000 (isolated)
+frozenset/tuple(x)/mixed/1: builtin 793.7 enabled 793.7 ratio 1.000 (isolated)
+set/tuple(x)/object/1: builtin 769.7 enabled 783.7 ratio 1.018 (isolated)
+set/g(*x)/int/100: builtin 17158.7 enabled 17452.7 ratio 1.017 (isolated)
+frozenset/for v in x/float/0: builtin 579.7 enabled 579.7 ratio 1.000 (isolated)

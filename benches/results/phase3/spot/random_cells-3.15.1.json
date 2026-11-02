@@ -1,0 +1,170 @@
+{
+ "python": "3.15.1 (main, Oct 21 2026, 17:48:50) [Clang 23.1.3 ]",
+ "jit": false,
+ "rows": {
+  "randint(1, 6) [module]": {
+   "orig": 2195.036,
+   "rq": 805.124
+  },
+  "rng.randint(3, 7)": {
+   "orig": 2291.395,
+   "rq": 820.048
+  },
+  "rng.randint(0, 2**40)": {
+   "orig": 4691.288,
+   "rq": 1063.814
+  },
+  "rng.randrange(10)": {
+   "orig": 2212.395,
+   "rq": 783.048
+  },
+  "rng.randrange(0, 100, 5)": {
+   "orig": 3211.658,
+   "rq": 1089.048
+  },
+  "rng.choice(L6)": {
+   "orig": 1769.876,
+   "rq": 547.812
+  },
+  "rng.choice(T4)": {
+   "orig": 2156.573,
+   "rq": 585.92
+  },
+  "rng.choices(W, k=40)": {
+   "orig": 33643.1025,
+   "rq": 6842.82
+  },
+  "rng.choices(T4, weights=[50,30,15,5])": {
+   "orig": 8335.799,
+   "rq": 2500.804
+  },
+  "rng.choices(L6)": {
+   "orig": 3893.893,
+   "rq": 884.348
+  },
+  "rng.sample(W, 5)": {
+   "orig": 17249.374,
+   "rq": 2336.178
+  },
+  "rng.sample(range(10**6), 20)": {
+   "orig": 59230.95,
+   "rq": 17968.39
+  },
+  "rng.shuffle(L100)": {
+   "orig": 175740.605,
+   "rq": 8902.04
+  },
+  "sub.randint(1, 6) [subclass]": {
+   "orig": 2152.771,
+   "rq": 804.512
+  },
+  "sub.choice(L6) [subclass]": {
+   "orig": 1796.325,
+   "rq": 549.44
+  },
+  "own.randint(1, 6) [random() overridden]": {
+   "orig": 6330.13,
+   "rq": 6330.13
+  },
+  "own.choice(L6) [random() overridden]": {
+   "orig": 5973.714,
+   "rq": 5973.714
+  },
+  "own_bits.randint(1, 6) [Python getrandbits]": {
+   "orig": 3047.361,
+   "rq": 3047.361
+  },
+  "own_bits.choice(L6) [Python getrandbits]": {
+   "orig": 2690.957,
+   "rq": 2690.957
+  },
+  "own_bits.shuffle(L6) [Python getrandbits]": {
+   "orig": 17022.539,
+   "rq": 17022.539
+  },
+  "own_bits.choices(L6) [Python getrandbits]": {
+   "orig": 3898.877,
+   "rq": 883.868
+  },
+  "own.choices(L6) [Python random]": {
+   "orig": 4615.998,
+   "rq": 4615.998
+  },
+  "own.sample(L100, 2) [Python random]": {
+   "orig": 17947.383,
+   "rq": 17947.383
+  },
+  "sysr.randint(1, 6) [SystemRandom]": {
+   "orig": 5059.48,
+   "rq": 4996.951
+  },
+  "sysr.choice(L6) [SystemRandom]": {
+   "orig": 4750.087,
+   "rq": 4687.023
+  },
+  "mixed: rng.randint + own_bits.randint": {
+   "orig": 5607.657,
+   "rq": 4492.351
+  },
+  "mixed: rng.choice + sysr.choice": {
+   "orig": 6815.424,
+   "rq": 5730.449
+  },
+  "mixed: 4x rng.randint + own_bits.randint": {
+   "orig": 12221.986,
+   "rq": 6899.389
+  },
+  "rng.randint(True, 6) [bool]": {
+   "orig": 2168.412,
+   "rq": 808.764
+  },
+  "rng.randint(1, 2**70) [big]": {
+   "orig": 4782.156,
+   "rq": 1812.608
+  },
+  "rng.choice('abcdef') [str]": {
+   "orig": 1778.412,
+   "rq": 642.764
+  },
+  "rng.choice(range(10))": {
+   "orig": 2887.196,
+   "rq": 1505.496
+  },
+  "rng.randint(a=1, b=6) [kwargs]": {
+   "orig": 2354.412,
+   "rq": 984.924
+  },
+  "rng.randint(0, 2**64)": {
+   "orig": 4791.209,
+   "rq": 1680.111
+  },
+  "rng.choice(deque6) [C sequence]": {
+   "orig": 1905.792,
+   "rq": 780.351
+  },
+  "shadow.choice(L6) [instance attr shadows getrandbits]": {
+   "orig": 1641.782,
+   "rq": 1641.782
+  },
+  "own_bits.sample(L6, 2) [Python getrandbits]": {
+   "orig": 11419.561,
+   "rq": 11419.561
+  },
+  "rng.choices(L6, k=3) [Fraction weights: fallback]": {
+   "orig": 152314.837,
+   "rq": 152487.077
+  },
+  "rng.choice(UserList) [Python sequence: fallback]": {
+   "orig": 3629.316,
+   "rq": 3629.316
+  },
+  "rng.sample(L6, k=2, counts=[1]*6) [fallback]": {
+   "orig": 21338.22,
+   "rq": 12340.507
+  },
+  "rng.choices(L6, cum_weights=[1,2,3,4,5,6])": {
+   "orig": 6100.678,
+   "rq": 3270.414
+  }
+ }
+}

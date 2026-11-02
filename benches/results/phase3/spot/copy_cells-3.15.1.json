@@ -1,0 +1,370 @@
+{
+ "python": "3.15.1 (main, Oct 21 2026, 17:48:50) [Clang 23.1.3 ]",
+ "jit": false,
+ "rows": [
+  {
+   "cell": "deepcopy int",
+   "stmt": "deepcopy(7)",
+   "plain": 712.065,
+   "enabled": 301.43,
+   "ratio": 0.4233180959603407
+  },
+  {
+   "cell": "deepcopy str",
+   "stmt": "deepcopy('abc')",
+   "plain": 714.065,
+   "enabled": 301.43,
+   "ratio": 0.4221324389236274
+  },
+  {
+   "cell": "deepcopy record (10 fields)",
+   "stmt": "deepcopy(rec)",
+   "plain": 24225.141,
+   "enabled": 4241.43,
+   "ratio": 0.1750838106576965
+  },
+  {
+   "cell": "deepcopy list of 5 records",
+   "stmt": "deepcopy(recs)",
+   "plain": 119108.588,
+   "enabled": 20113.43,
+   "ratio": 0.16886632893339312
+  },
+  {
+   "cell": "deepcopy cfg (3 keys, nested)",
+   "stmt": "deepcopy(cfg)",
+   "plain": 25342.2715,
+   "enabled": 4610.43,
+   "ratio": 0.18192647016665417
+  },
+  {
+   "cell": "deepcopy tuple of immutables",
+   "stmt": "deepcopy(tup)",
+   "plain": 19329.134,
+   "enabled": 2484.43,
+   "ratio": 0.12853291823627483
+  },
+  {
+   "cell": "deepcopy small dataclass",
+   "stmt": "deepcopy(p)",
+   "plain": 29320.7325,
+   "enabled": 7641.43,
+   "ratio": 0.2606152489539612
+  },
+  {
+   "cell": "deepcopy dataclass tree",
+   "stmt": "deepcopy(order)",
+   "plain": 141194.28,
+   "enabled": 36627.43,
+   "ratio": 0.25941157106364365
+  },
+  {
+   "cell": "deepcopy plain object",
+   "stmt": "deepcopy(plain)",
+   "plain": 35430.433,
+   "enabled": 8839.43,
+   "ratio": 0.24948693119274046
+  },
+  {
+   "cell": "deepcopy slotted object",
+   "stmt": "deepcopy(slotted)",
+   "plain": 38174.923,
+   "enabled": 8793.43,
+   "ratio": 0.2303457167418517
+  },
+  {
+   "cell": "deepcopy enum member",
+   "stmt": "deepcopy(E.A)",
+   "plain": 3022.065,
+   "enabled": 1379.43,
+   "ratio": 0.45645278973152464
+  },
+  {
+   "cell": "deepcopy frozenset",
+   "stmt": "deepcopy(fs)",
+   "plain": 29079.632,
+   "enabled": 5579.43,
+   "ratio": 0.1918672836024885
+  },
+  {
+   "cell": "deepcopy set",
+   "stmt": "deepcopy(s)",
+   "plain": 27956.632,
+   "enabled": 5193.43,
+   "ratio": 0.18576736997503848
+  },
+  {
+   "cell": "deepcopy datetime",
+   "stmt": "deepcopy(dt)",
+   "plain": 13113.893,
+   "enabled": 4035.43,
+   "ratio": 0.30772174212493575
+  },
+  {
+   "cell": "deepcopy uuid",
+   "stmt": "deepcopy(u)",
+   "plain": 27249.8775,
+   "enabled": 23317.1625,
+   "ratio": 0.8556795347061652
+  },
+  {
+   "cell": "deepcopy Decimal (C __deepcopy__)",
+   "stmt": "deepcopy(dec)",
+   "plain": 2816.065,
+   "enabled": 997.43,
+   "ratio": 0.35419281870269326
+  },
+  {
+   "cell": "deepcopy __deepcopy__ hook (restart at the root)",
+   "stmt": "deepcopy(hook)",
+   "plain": 14000.9195,
+   "enabled": 8959.3935,
+   "ratio": 0.6399146498913875
+  },
+  {
+   "cell": "restart: 5 records then a hook",
+   "stmt": "deepcopy(recs_h)",
+   "plain": 131170.096,
+   "enabled": 64198.321,
+   "ratio": 0.4894280248144364
+  },
+  {
+   "cell": "restart: 5 records then a uuid",
+   "stmt": "deepcopy(recs_u)",
+   "plain": 144309.2365,
+   "enabled": 79293.09,
+   "ratio": 0.5494664923960012
+  },
+  {
+   "cell": "restart: hook last, 4 levels deep",
+   "stmt": "deepcopy(nest_h)",
+   "plain": 150513.2165,
+   "enabled": 87288.695,
+   "ratio": 0.5799404001176203
+  },
+  {
+   "cell": "same without the hook, 4 levels deep",
+   "stmt": "deepcopy(nest_ok)",
+   "plain": 138313.6275,
+   "enabled": 23995.43,
+   "ratio": 0.17348565310384909
+  },
+  {
+   "cell": "deepcopy registered copier",
+   "stmt": "deepcopy(disp)",
+   "plain": 13254.6525,
+   "enabled": 8000.3935,
+   "ratio": 0.6035913427379556
+  },
+  {
+   "cell": "deepcopy copyreg reductor",
+   "stmt": "deepcopy(reg)",
+   "plain": 18979.721,
+   "enabled": 13892.195,
+   "ratio": 0.7319493790240647
+  },
+  {
+   "cell": "deepcopy dict subclass",
+   "stmt": "deepcopy(dsub)",
+   "plain": 26056.7475,
+   "enabled": 22005.2945,
+   "ratio": 0.844514247221377
+  },
+  {
+   "cell": "deepcopy OrderedDict",
+   "stmt": "deepcopy(od)",
+   "plain": 22430.7795,
+   "enabled": 23095.0715,
+   "ratio": 1.0296151990616287
+  },
+  {
+   "cell": "deepcopy memo=OrderedDict (generic memo)",
+   "stmt": "deepcopy(cfg, collections.OrderedDict())",
+   "plain": 28357.9385,
+   "enabled": 26731.3765,
+   "ratio": 0.9426417403366609
+  },
+  {
+   "cell": "deepcopy explicit {} memo",
+   "stmt": "deepcopy(cfg, {})",
+   "plain": 25402.2715,
+   "enabled": 7547.814,
+   "ratio": 0.29713145928701695
+  },
+  {
+   "cell": "copy int",
+   "stmt": "copy.copy(7)",
+   "plain": 645.065,
+   "enabled": 414.43,
+   "ratio": 0.642462387511336
+  },
+  {
+   "cell": "copy list100",
+   "stmt": "copy.copy(lst100)",
+   "plain": 3123.065,
+   "enabled": 2736.43,
+   "ratio": 0.8762001431286252
+  },
+  {
+   "cell": "copy dict100",
+   "stmt": "copy.copy(dct100)",
+   "plain": 5074.065,
+   "enabled": 4671.43,
+   "ratio": 0.920648434736252
+  },
+  {
+   "cell": "copy record",
+   "stmt": "copy.copy(rec)",
+   "plain": 1688.065,
+   "enabled": 1293.43,
+   "ratio": 0.7662204950638749
+  },
+  {
+   "cell": "copy plain object",
+   "stmt": "copy.copy(plain)",
+   "plain": 12687.752,
+   "enabled": 4729.43,
+   "ratio": 0.37275555196854415
+  },
+  {
+   "cell": "copy small dataclass",
+   "stmt": "copy.copy(p)",
+   "plain": 12683.752,
+   "enabled": 4714.43,
+   "ratio": 0.37169049032179124
+  },
+  {
+   "cell": "copy enum member",
+   "stmt": "copy.copy(E.A)",
+   "plain": 1911.265,
+   "enabled": 837.63,
+   "ratio": 0.43825947736185195
+  },
+  {
+   "cell": "copy __copy__ hook",
+   "stmt": "copy.copy(hook)",
+   "plain": 2780.065,
+   "enabled": 2775.065,
+   "ratio": 0.9982014809006264
+  },
+  {
+   "cell": "copy set",
+   "stmt": "copy.copy(s)",
+   "plain": 1477.065,
+   "enabled": 1068.43,
+   "ratio": 0.7233466367424589
+  },
+  {
+   "cell": "copy datetime",
+   "stmt": "copy.copy(dt)",
+   "plain": 6643.9195,
+   "enabled": 2393.43,
+   "ratio": 0.36024367844914434
+  },
+  {
+   "cell": "copy (fallback args: kw)",
+   "stmt": "copy.copy(x=rec)",
+   "plain": 1840.065,
+   "enabled": 1840.065,
+   "ratio": 1.0
+  },
+  {
+   "cell": "asdict small dataclass",
+   "stmt": "dataclasses.asdict(p)",
+   "plain": 12627.072,
+   "enabled": 4882.41,
+   "ratio": 0.3866620860322963
+  },
+  {
+   "cell": "asdict dataclass tree",
+   "stmt": "dataclasses.asdict(order)",
+   "plain": 76336.024,
+   "enabled": 27436.41,
+   "ratio": 0.35941628293346795
+  },
+  {
+   "cell": "astuple small dataclass",
+   "stmt": "dataclasses.astuple(p)",
+   "plain": 12494.072,
+   "enabled": 4391.41,
+   "ratio": 0.35147948563126574
+  },
+  {
+   "cell": "asdict (fallback: dict_factory)",
+   "stmt": "dataclasses.asdict(p, dict_factory=collections.OrderedDict)",
+   "plain": 16542.272,
+   "enabled": 16465.272,
+   "ratio": 0.9953452584989535
+  },
+  {
+   "cell": "pair: deepcopy memo=OrderedDict + deepcopy int",
+   "stmt": "deepcopy(cfg, collections.OrderedDict()); deepcopy(7)",
+   "plain": 29064.1385,
+   "enabled": 27029.9415,
+   "ratio": 0.9300100706580379
+  },
+  {
+   "cell": "pair: copy kw + copy int",
+   "stmt": "copy.copy(x=rec); copy.copy(7)",
+   "plain": 2479.265,
+   "enabled": 2479.265,
+   "ratio": 1.0
+  },
+  {
+   "cell": "pair: restart (5 records then a hook) + deepcopy int",
+   "stmt": "deepcopy(recs_h); deepcopy(7)",
+   "plain": 131874.096,
+   "enabled": 64651.186,
+   "ratio": 0.4902493208370506
+  },
+  {
+   "cell": "pair: restart (hook at the root) + deepcopy int",
+   "stmt": "deepcopy(hook); deepcopy(7)",
+   "plain": 14704.9195,
+   "enabled": 9228.7585,
+   "ratio": 0.6275966692643234
+  },
+  {
+   "cell": "pair: restart (hook last, 4 levels deep) + deepcopy int",
+   "stmt": "deepcopy(nest_h); deepcopy(7)",
+   "plain": 151224.2165,
+   "enabled": 87574.56,
+   "ratio": 0.5791040749085316
+  },
+  {
+   "cell": "pair: copy __copy__ hook + copy int",
+   "stmt": "copy.copy(hook); copy.copy(7)",
+   "plain": 3500.265,
+   "enabled": 3441.265,
+   "ratio": 0.983144133372759
+  },
+  {
+   "cell": "pair: deepcopy OrderedDict + deepcopy int",
+   "stmt": "deepcopy(od); deepcopy(7)",
+   "plain": 23134.7795,
+   "enabled": 23317.4365,
+   "ratio": 1.0078953421622194
+  },
+  {
+   "cell": "policy: deepcopy 1 int per 3 OrderedDicts",
+   "stmt": "deepcopy(od); deepcopy(od); deepcopy(od); deepcopy(7)",
+   "plain": 68028.311,
+   "enabled": 69346.771,
+   "ratio": 1.0193810485754966
+  },
+  {
+   "cell": "policy: copy 1 int per 3 hooks (suspends)",
+   "stmt": "copy.copy(hook); copy.copy(hook); copy.copy(hook); copy.copy(7)",
+   "plain": 8996.265,
+   "enabled": 8948.265,
+   "ratio": 0.9946644524144187
+  },
+  {
+   "cell": "pair: asdict factory + asdict",
+   "stmt": "dataclasses.asdict(p, dict_factory=collections.OrderedDict); dataclasses.asdict(p)",
+   "plain": 29193.304,
+   "enabled": 21680.892,
+   "ratio": 0.7426666060134886
+  }
+ ]
+}

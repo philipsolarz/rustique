@@ -1,7 +1,9 @@
 //! Takeover, safe tier (docs/TAKEOVER.md): exact-semantics Rust kernels behind the builtin
 //! container methods and builtin functions, process-wide.
 //!
-//! OWNER: takeover workstream.
+//! OWNER: accel-core (group `containers` of docs/ACCELERATION.md: targets `list.sort`,
+//! `list.index`, `list.count`, `tuple.index`, `tuple.count`, `list.__contains__`,
+//! `tuple.__contains__`, registered as `TargetSpec`s in [`TARGETS`]).
 //!
 //! Mechanism. CPython reaches `list.sort`, `list.index`, `list.count`, `tuple.index` and
 //! `tuple.count` through the `ml_meth` pointer of a static `PyMethodDef`; every method
@@ -9,7 +11,8 @@
 //! that pointer at call time (`sorted()` calls `sort` on its fresh list, so it is covered
 //! too). The builtin *functions* (`sum`, `min`, `max`, `sorted`, `any`, `all`) belong to
 //! `rustique._builtins` (workstream 5), which `rustique.enable()` installs alongside. `x in list` / `x in tuple` go through the `sq_contains` slot.
-//! [`install`] swaps those function pointers for the kernels below and keeps the originals.
+//! The registry (`crate::accel`) swaps those function pointers for the kernels below and
+//! keeps the originals (`Original` statics), clearing the 3.15 JIT's traces afterwards.
 //! Nothing else changes: the objects stay exact builtins (every specializer and JIT fast
 //! path keeps firing), the descriptors and builtin functions keep their identity, `repr`,
 //! docs and pickling, and no type is modified (the fixed type version tags of `list`,
@@ -25,21 +28,23 @@
 //!
 //! Free-threading: `sort` holds the list's critical section like CPython's `list.sort`; per-element scans (`in`, `index`,
 //! `count`) take a strong reference per element with `PyList_GetItemRef`, like CPython's
-//! lock-free `list_contains`. Installing patches process-global function pointers: call
-//! `install` before starting threads.
+//! lock-free `list_contains`. Installing patches process-global function pointers (atomic
+//! stores: a concurrent call sees either function).
 
 use std::cmp::Ordering;
 use std::ffi::{CStr, c_int};
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+use std::sync::atomic::AtomicPtr;
 
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::sync::critical_section::with_critical_section;
 use pyo3::types::{PyDict, PyList, PySet, PyString, PyTuple};
 
-use crate::patch::writable;
+use crate::accel::{self, Counters, Original, Prepare, Reason, Refusal, SlotName, TargetSpec};
+use crate::refuse;
 
 /// Free-threaded build: the object header carries thread id and shared refcount fields.
 const FREE_THREADED: bool = size_of::<ffi::PyObject>() > 2 * size_of::<usize>();
@@ -577,6 +582,55 @@ impl Driver for Locked {
     }
 }
 
+/// Type flags of needles no fast path decides, rejected by one test: instances of classes
+/// defined in Python (heap types; Python subclasses of `int`/`str` too, which the scans'
+/// exact checks would reject anyway) and the builtin containers. These are the common
+/// non-scalar needles (`objs.count(o)`, `(a, b) in pairs`).
+const GENERIC_FLAGS: std::ffi::c_ulong = ffi::Py_TPFLAGS_HEAPTYPE
+    | ffi::Py_TPFLAGS_TUPLE_SUBCLASS
+    | ffi::Py_TPFLAGS_LIST_SUBCLASS
+    | ffi::Py_TPFLAGS_DICT_SUBCLASS
+    | ffi::Py_TPFLAGS_BYTES_SUBCLASS;
+
+/// `tp_flags` of a type, read once (an atomic on free-threaded builds).
+///
+/// # Safety
+/// `t` must be a live type object.
+#[inline(always)]
+unsafe fn type_flags(t: *mut ffi::PyTypeObject) -> std::ffi::c_ulong {
+    // SAFETY: a live type object.
+    #[cfg(not(Py_GIL_DISABLED))]
+    unsafe {
+        (*t).tp_flags
+    }
+    // SAFETY: a live type object; relaxed, as `PyType_HasFeature`.
+    #[cfg(Py_GIL_DISABLED)]
+    unsafe {
+        (*t).tp_flags.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// A needle no fast path can decide: [`GENERIC_FLAGS`], or anything [`maybe_scalar`]
+/// rejects. Such a needle delegates at once (the fallback stays a few instructions: the
+/// scoreboard's 1-element `objs.count(o)` costs CPython ~300 Ir).
+///
+/// # Safety
+/// `op` must be a live object.
+#[inline(always)]
+unsafe fn needs_generic(op: *mut ffi::PyObject) -> bool {
+    // SAFETY: type object reads of a live object; `Py_None` is a static object.
+    unsafe {
+        let t = ffi::Py_TYPE(op);
+        let f = type_flags(t);
+        if f & GENERIC_FLAGS != 0 {
+            return true;
+        }
+        !(f & (ffi::Py_TPFLAGS_LONG_SUBCLASS | ffi::Py_TPFLAGS_UNICODE_SUBCLASS) != 0
+            || t == float_type()
+            || op == ffi::Py_None())
+    }
+}
+
 /// A cheap pre-filter for the types the fast paths decide (exact `int`/`bool`/`float`/
 /// `str`/`None`): `int`/`bool`/`str` and their subclasses by type flag, exact `float`,
 /// `None`. Subclasses pass here and are rejected by the exact checks of the scan (which
@@ -759,7 +813,7 @@ unsafe fn ft_prelude(list: *mut ffi::PyObject, needle: *mut ffi::PyObject, mode:
                 return Some(Outcome::Done(Ok(Some(1))));
             }
         }
-        if !maybe_scalar(needle) {
+        if needs_generic(needle) {
             return Some(Outcome::Delegate);
         }
         // A heuristic peek at the first element's type, without a reference: it only picks
@@ -802,61 +856,58 @@ unsafe fn ft_item0(list: *mut ffi::PyObject) -> *mut ffi::PyObject {
 // Saved originals and patch sites.
 // ---------------------------------------------------------------------------------------
 
-struct Originals {
-    list_sort: FastKwFn,
-    list_index: FastFn,
-    list_count: OFn,
-    tuple_index: FastFn,
-    tuple_count: OFn,
-    list_contains: ContainsFn,
-    tuple_contains: ContainsFn,
-    /// Exception messages of the originals, captured at install time. Kept as C strings,
-    /// not Python objects: the patched tables are process-global, so kernels also run in
-    /// subinterpreters, which must never share objects with the main interpreter.
-    list_index_msg: std::ffi::CString,
-    tuple_index_msg: std::ffi::CString,
-}
+static ORIG_LIST_SORT: Original<FastKwFn> = Original::new();
+static ORIG_LIST_INDEX: Original<FastFn> = Original::new();
+static ORIG_LIST_COUNT: Original<OFn> = Original::new();
+static ORIG_TUPLE_INDEX: Original<FastFn> = Original::new();
+static ORIG_TUPLE_COUNT: Original<OFn> = Original::new();
+static ORIG_LIST_CONTAINS: Original<ContainsFn> = Original::new();
+static ORIG_TUPLE_CONTAINS: Original<ContainsFn> = Original::new();
 
-static ORIGINALS: OnceLock<Originals> = OnceLock::new();
+/// Exception messages of the original `index` methods, captured from the original's own
+/// `ValueError` at the first miss (which the original handles). Kept as C strings, not
+/// Python objects: the patched tables are process-global, so kernels also run in
+/// subinterpreters, which must never share objects with the main interpreter.
+static LIST_INDEX_MSG: OnceLock<std::ffi::CString> = OnceLock::new();
+static TUPLE_INDEX_MSG: OnceLock<std::ffi::CString> = OnceLock::new();
 
-/// The original `sq_contains` of `list` and `tuple`, for the cheapest possible delegation
-/// (set once at first install, before any kernel can run).
-static ORIG_LIST_CONTAINS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-static ORIG_TUPLE_CONTAINS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
+/// Record the message of the `ValueError` the original just raised (left raised).
+///
 /// # Safety
-/// `slot` holds a `ContainsFn` (set at install time, before the kernels are reachable).
-#[inline(always)]
-unsafe fn contains_fn(slot: &std::sync::atomic::AtomicUsize) -> ContainsFn {
-    // SAFETY: per the caller; a non-zero value is a valid function pointer.
-    unsafe { std::mem::transmute::<usize, ContainsFn>(slot.load(std::sync::atomic::Ordering::Relaxed)) }
-}
-
-/// A patched function pointer: its address, the original value and the kernel.
-struct Site {
-    name: &'static str,
-    slot: usize,
-    original: usize,
-    kernel: usize,
-}
-
-static INSTALLED: Mutex<Vec<Site>> = Mutex::new(Vec::new());
-
-#[inline(always)]
-fn originals() -> &'static Originals {
-    // SAFETY-free invariant: kernels are only reachable after ORIGINALS was set.
-    match ORIGINALS.get() {
-        Some(o) => o,
-        None => unreachable_originals(),
+/// Attached thread, an exception set by the original.
+#[cold]
+unsafe fn capture_index_message(cell: &'static OnceLock<std::ffi::CString>) {
+    // SAFETY: per the caller; str() of an exact ValueError runs no Python code.
+    unsafe {
+        let exc = ffi::PyErr_GetRaisedException();
+        if !exc.is_null() && ffi::Py_TYPE(exc) == ffi::PyExc_ValueError.cast() {
+            let s = ffi::PyObject_Str(exc);
+            if s.is_null() {
+                ffi::PyErr_Clear();
+            } else {
+                let mut len: ffi::Py_ssize_t = 0;
+                let p = ffi::PyUnicode_AsUTF8AndSize(s, &mut len);
+                if p.is_null() {
+                    ffi::PyErr_Clear();
+                } else if let Ok(c) =
+                    std::ffi::CString::new(std::slice::from_raw_parts(p.cast::<u8>(), len as usize).to_vec())
+                {
+                    let _ = cell.set(c);
+                }
+                ffi::Py_DECREF(s);
+            }
+        }
+        ffi::PyErr_SetRaisedException(exc);
     }
 }
 
-#[cold]
-fn unreachable_originals() -> ! {
-    // Kernels are installed strictly after ORIGINALS is initialised; abort rather than
-    // unwind across the C boundary if that invariant were ever broken.
-    std::process::abort()
-}
+static C_LIST_SORT: Counters = Counters::new();
+static C_LIST_INDEX: Counters = Counters::new();
+static C_LIST_COUNT: Counters = Counters::new();
+static C_TUPLE_INDEX: Counters = Counters::new();
+static C_TUPLE_COUNT: Counters = Counters::new();
+static C_LIST_CONTAINS: Counters = Counters::new();
+static C_TUPLE_CONTAINS: Counters = Counters::new();
 
 /// Run a kernel body, converting a Rust panic into a Python `SystemError` (never unwinds
 /// into CPython).
@@ -902,10 +953,18 @@ unsafe fn prelude(
         if n == 1 {
             return Some(Outcome::Done(Ok(Some(1))));
         }
+    }
+    // The needle first: a needle that needs CPython's comparison makes any scan wasted
+    // work (`objs.count(o)` would scan, then delegate).
+    // SAFETY: live objects.
+    if unsafe { needs_generic(needle) } {
+        return Some(Outcome::Delegate);
+    }
+    if first == needle {
         return None;
     }
-    // SAFETY: live objects.
-    if unsafe { !maybe_scalar(first) || !maybe_scalar(needle) } {
+    // SAFETY: live object.
+    if unsafe { !maybe_scalar(first) } {
         return Some(Outcome::Delegate);
     }
     None
@@ -952,22 +1011,31 @@ unsafe extern "C" fn k_list_contains(seq: *mut ffi::PyObject, el: *mut ffi::PyOb
     unsafe {
         if FREE_THREADED {
             match ft_prelude(seq, el, Scan::First) {
-                Some(Outcome::Done(Ok(found))) => return c_int::from(found.is_some()),
+                Some(Outcome::Done(Ok(found))) => {
+                    C_LIST_CONTAINS.hit();
+                    return c_int::from(found.is_some());
+                }
                 Some(Outcome::Done(Err(()))) => return -1,
-                Some(Outcome::Delegate) => return contains_fn(&ORIG_LIST_CONTAINS)(seq, el),
+                Some(Outcome::Delegate) => {
+                    C_LIST_CONTAINS.fallback(Reason::Args);
+                    return ORIG_LIST_CONTAINS.get()(seq, el);
+                }
                 None => {}
             }
         } else {
             let n = ffi::PyList_GET_SIZE(seq);
             if n == 0 {
+                C_LIST_CONTAINS.hit();
                 return 0;
             }
             let first = *(*seq.cast::<ffi::PyListObject>()).ob_item;
             if first == el {
+                C_LIST_CONTAINS.hit();
                 return 1;
             }
-            if !maybe_scalar(first) || !maybe_scalar(el) {
-                return contains_fn(&ORIG_LIST_CONTAINS)(seq, el);
+            if needs_generic(el) || !maybe_scalar(first) {
+                C_LIST_CONTAINS.fallback(Reason::Args);
+                return ORIG_LIST_CONTAINS.get()(seq, el);
             }
         }
         list_contains_scan(seq, el)
@@ -981,9 +1049,15 @@ unsafe extern "C" fn list_contains_scan(seq: *mut ffi::PyObject, el: *mut ffi::P
     // SAFETY: forwarded from `k_list_contains`.
     unsafe {
         match scan_list(seq, el, Scan::First) {
-            Outcome::Done(Ok(found)) => c_int::from(found.is_some()),
+            Outcome::Done(Ok(found)) => {
+                C_LIST_CONTAINS.hit();
+                c_int::from(found.is_some())
+            }
             Outcome::Done(Err(())) => -1,
-            Outcome::Delegate => contains_fn(&ORIG_LIST_CONTAINS)(seq, el),
+            Outcome::Delegate => {
+                C_LIST_CONTAINS.fallback(Reason::Deopt);
+                ORIG_LIST_CONTAINS.get()(seq, el)
+            }
         }
     }
 }
@@ -993,14 +1067,17 @@ unsafe extern "C" fn k_tuple_contains(seq: *mut ffi::PyObject, el: *mut ffi::PyO
     unsafe {
         let n = ffi::PyTuple_GET_SIZE(seq);
         if n == 0 {
+            C_TUPLE_CONTAINS.hit();
             return 0;
         }
         let first = ffi::PyTuple_GET_ITEM(seq, 0);
         if first == el {
+            C_TUPLE_CONTAINS.hit();
             return 1;
         }
-        if !maybe_scalar(first) || !maybe_scalar(el) {
-            return contains_fn(&ORIG_TUPLE_CONTAINS)(seq, el);
+        if needs_generic(el) || !maybe_scalar(first) {
+            C_TUPLE_CONTAINS.fallback(Reason::Args);
+            return ORIG_TUPLE_CONTAINS.get()(seq, el);
         }
         tuple_contains_scan(seq, el)
     }
@@ -1012,9 +1089,15 @@ unsafe extern "C" fn tuple_contains_scan(seq: *mut ffi::PyObject, el: *mut ffi::
     // SAFETY: forwarded from `k_tuple_contains`.
     unsafe {
         match scan_tuple(seq, el, Scan::First) {
-            Outcome::Done(Ok(found)) => c_int::from(found.is_some()),
+            Outcome::Done(Ok(found)) => {
+                C_TUPLE_CONTAINS.hit();
+                c_int::from(found.is_some())
+            }
             Outcome::Done(Err(())) => -1,
-            Outcome::Delegate => contains_fn(&ORIG_TUPLE_CONTAINS)(seq, el),
+            Outcome::Delegate => {
+                C_TUPLE_CONTAINS.fallback(Reason::Deopt);
+                ORIG_TUPLE_CONTAINS.get()(seq, el)
+            }
         }
     }
 }
@@ -1037,24 +1120,55 @@ unsafe fn index_result(r: Result<Option<isize>, ()>, msg: &CStr) -> *mut ffi::Py
     }
 }
 
+/// `index` after a decided scan: the result, or for a miss CPython's own `ValueError`
+/// (the first miss runs the original, which raises it, and its message is recorded).
+///
+/// # Safety
+/// Attached thread; the kernel's own METH_FASTCALL arguments.
+#[inline(always)]
+unsafe fn index_done(
+    r: Result<Option<isize>, ()>,
+    cell: &'static OnceLock<std::ffi::CString>,
+    original: FastFn,
+    slf: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+) -> *mut ffi::PyObject {
+    // SAFETY: per the caller.
+    unsafe {
+        match cell.get() {
+            Some(msg) => index_result(r, msg),
+            None if matches!(r, Ok(None)) => {
+                let res = original(slf, args, nargs);
+                if res.is_null() {
+                    capture_index_message(cell);
+                }
+                res
+            }
+            None => index_result(r, c""),
+        }
+    }
+}
+
 unsafe extern "C" fn k_list_index(
     slf: *mut ffi::PyObject,
     args: *const *mut ffi::PyObject,
     nargs: ffi::Py_ssize_t,
 ) -> *mut ffi::PyObject {
-    let o = originals();
     if nargs == 1 {
         // SAFETY: METH_FASTCALL guarantees `nargs` valid argument pointers.
         // SAFETY: as above.
         let outcome =
             unsafe { list_prelude(slf, *args, Scan::First).unwrap_or_else(|| scan_list_slow(slf, *args, Scan::First)) };
         if let Outcome::Done(r) = outcome {
-            // SAFETY: attached thread.
-            return unsafe { index_result(r, &o.list_index_msg) };
+            C_LIST_INDEX.hit();
+            // SAFETY: attached thread; the kernel's own arguments.
+            return unsafe { index_done(r, &LIST_INDEX_MSG, ORIG_LIST_INDEX.get(), slf, args, nargs) };
         }
     }
+    C_LIST_INDEX.fallback(Reason::Args);
     // SAFETY: same arguments to the original METH_FASTCALL function.
-    unsafe { (o.list_index)(slf, args, nargs) }
+    unsafe { ORIG_LIST_INDEX.get()(slf, args, nargs) }
 }
 
 unsafe extern "C" fn k_tuple_index(
@@ -1062,7 +1176,6 @@ unsafe extern "C" fn k_tuple_index(
     args: *const *mut ffi::PyObject,
     nargs: ffi::Py_ssize_t,
 ) -> *mut ffi::PyObject {
-    let o = originals();
     if nargs == 1 {
         // SAFETY: METH_FASTCALL guarantees `nargs` valid argument pointers.
         // SAFETY: as above.
@@ -1070,12 +1183,14 @@ unsafe extern "C" fn k_tuple_index(
             tuple_prelude(slf, *args, Scan::First).unwrap_or_else(|| scan_tuple_slow(slf, *args, Scan::First))
         };
         if let Outcome::Done(r) = outcome {
-            // SAFETY: attached thread.
-            return unsafe { index_result(r, &o.tuple_index_msg) };
+            C_TUPLE_INDEX.hit();
+            // SAFETY: attached thread; the kernel's own arguments.
+            return unsafe { index_done(r, &TUPLE_INDEX_MSG, ORIG_TUPLE_INDEX.get(), slf, args, nargs) };
         }
     }
+    C_TUPLE_INDEX.fallback(Reason::Args);
     // SAFETY: same arguments to the original METH_FASTCALL function.
-    unsafe { (o.tuple_index)(slf, args, nargs) }
+    unsafe { ORIG_TUPLE_INDEX.get()(slf, args, nargs) }
 }
 
 /// `count` result.
@@ -1091,23 +1206,65 @@ unsafe fn count_result(r: Result<Option<isize>, ()>) -> *mut ffi::PyObject {
 }
 
 unsafe extern "C" fn k_list_count(slf: *mut ffi::PyObject, value: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    // A needle that needs CPython's comparison: no scan can decide, delegate at once (a
+    // plain tail call: the fallback costs a few instructions).
+    // SAFETY: METH_O: a live object.
+    if unsafe { needs_generic(value) } {
+        C_LIST_COUNT.fallback(Reason::Args);
+        // SAFETY: same arguments to the original METH_O function.
+        return unsafe { ORIG_LIST_COUNT.get()(slf, value) };
+    }
+    // SAFETY: METH_O arguments, forwarded (a tail call: the entry above needs no frame).
+    unsafe { list_count_scan(slf, value) }
+}
+
+/// The scan behind `list.count` (out of line: see [`k_list_count`]). Panic-free.
+#[inline(never)]
+unsafe extern "C" fn list_count_scan(slf: *mut ffi::PyObject, value: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: METH_O: `slf` is a list, `value` a live object.
     match unsafe { list_prelude(slf, value, Scan::Count).unwrap_or_else(|| scan_list_slow(slf, value, Scan::Count)) } {
-        // SAFETY: attached thread.
-        Outcome::Done(r) => unsafe { count_result(r) },
-        // SAFETY: same arguments to the original METH_O function.
-        Outcome::Delegate => unsafe { (originals().list_count)(slf, value) },
+        Outcome::Done(r) => {
+            C_LIST_COUNT.hit();
+            // SAFETY: attached thread.
+            unsafe { count_result(r) }
+        }
+        Outcome::Delegate => {
+            C_LIST_COUNT.fallback(Reason::Args);
+            // SAFETY: same arguments to the original METH_O function.
+            unsafe { ORIG_LIST_COUNT.get()(slf, value) }
+        }
     }
 }
 
 unsafe extern "C" fn k_tuple_count(slf: *mut ffi::PyObject, value: *mut ffi::PyObject) -> *mut ffi::PyObject {
+    // A needle that needs CPython's comparison: no scan can decide, delegate at once (a
+    // plain tail call: the fallback costs a few instructions).
+    // SAFETY: METH_O: a live object.
+    if unsafe { needs_generic(value) } {
+        C_TUPLE_COUNT.fallback(Reason::Args);
+        // SAFETY: same arguments to the original METH_O function.
+        return unsafe { ORIG_TUPLE_COUNT.get()(slf, value) };
+    }
+    // SAFETY: METH_O arguments, forwarded (a tail call: the entry above needs no frame).
+    unsafe { tuple_count_scan(slf, value) }
+}
+
+/// The scan behind `tuple.count` (out of line: see [`k_tuple_count`]). Panic-free.
+#[inline(never)]
+unsafe extern "C" fn tuple_count_scan(slf: *mut ffi::PyObject, value: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: METH_O: `slf` is a tuple, `value` a live object.
     match unsafe { tuple_prelude(slf, value, Scan::Count).unwrap_or_else(|| scan_tuple_slow(slf, value, Scan::Count)) }
     {
-        // SAFETY: attached thread.
-        Outcome::Done(r) => unsafe { count_result(r) },
-        // SAFETY: same arguments to the original METH_O function.
-        Outcome::Delegate => unsafe { (originals().tuple_count)(slf, value) },
+        Outcome::Done(r) => {
+            C_TUPLE_COUNT.hit();
+            // SAFETY: attached thread.
+            unsafe { count_result(r) }
+        }
+        Outcome::Delegate => {
+            C_TUPLE_COUNT.fallback(Reason::Args);
+            // SAFETY: same arguments to the original METH_O function.
+            unsafe { ORIG_TUPLE_COUNT.get()(slf, value) }
+        }
     }
 }
 
@@ -1120,10 +1277,17 @@ unsafe extern "C" fn k_tuple_count(slf: *mut ffi::PyObject, value: *mut ffi::PyO
 /// # Safety
 /// `name` must be a `str`.
 #[inline]
-unsafe fn kw_is(name: *mut ffi::PyObject, s: &CStr) -> bool {
+unsafe fn kw_is(name: *mut ffi::PyObject, s: &CStr, interned: &AtomicPtr<ffi::PyObject>) -> bool {
+    // Keyword names compiled into code objects are interned: the same object as ours
+    // (`key`/`reverse` are CPython's static strings, shared by every interpreter).
     // SAFETY: str object, NUL-terminated ASCII literal; this comparison never fails.
-    unsafe { ffi::PyUnicode_CompareWithASCIIString(name, s.as_ptr()) == 0 }
+    name == interned.load(std::sync::atomic::Ordering::Relaxed)
+        || unsafe { ffi::PyUnicode_CompareWithASCIIString(name, s.as_ptr()) == 0 }
 }
+
+/// Interned `"key"` and `"reverse"` (set by the first `prepare`).
+static KW_KEY: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
+static KW_REVERSE: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Parse `sort(*, key=None, reverse=<exact bool or int>)` without running Python code.
 /// `None` means "let the original parse it".
@@ -1147,11 +1311,11 @@ unsafe fn sort_args(
         for j in 0..ffi::PyTuple_GET_SIZE(kwnames) {
             let name = ffi::PyTuple_GET_ITEM(kwnames, j);
             let value = *args.offset(nargs + j);
-            if kw_is(name, c"key") {
+            if kw_is(name, c"key", &KW_KEY) {
                 if value != ffi::Py_None() {
                     return None;
                 }
-            } else if kw_is(name, c"reverse") {
+            } else if kw_is(name, c"reverse", &KW_REVERSE) {
                 let t = ffi::Py_TYPE(value);
                 if t == bool_type() {
                     reverse = value == ffi::Py_True();
@@ -1316,11 +1480,11 @@ unsafe extern "C" fn k_list_sort(
     nargs: ffi::Py_ssize_t,
     kwnames: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
-    let o = originals();
     // SAFETY: vectorcall arguments from CPython.
     let Some(reverse) = (unsafe { sort_args(args, nargs, kwnames) }) else {
+        C_LIST_SORT.fallback(Reason::Args);
         // SAFETY: same arguments to the original.
-        return unsafe { (o.list_sort)(slf, args, nargs, kwnames) };
+        return unsafe { ORIG_LIST_SORT.get()(slf, args, nargs, kwnames) };
     };
     let done = guard(None, || {
         // SAFETY: attached thread, `slf` is a live list.
@@ -1335,10 +1499,16 @@ unsafe extern "C" fn k_list_sort(
         return std::ptr::null_mut();
     }
     match done {
-        // SAFETY: new reference to None.
-        Some(()) => unsafe { ffi::Py_NewRef(ffi::Py_None()) },
-        // SAFETY: same arguments to the original.
-        None => unsafe { (o.list_sort)(slf, args, nargs, kwnames) },
+        Some(()) => {
+            C_LIST_SORT.hit();
+            // SAFETY: new reference to None.
+            unsafe { ffi::Py_NewRef(ffi::Py_None()) }
+        }
+        None => {
+            C_LIST_SORT.fallback(Reason::Args);
+            // SAFETY: same arguments to the original.
+            unsafe { ORIG_LIST_SORT.get()(slf, args, nargs, kwnames) }
+        }
     }
 }
 
@@ -1346,81 +1516,124 @@ unsafe extern "C" fn k_list_sort(
 // Installation.
 // ---------------------------------------------------------------------------------------
 
-/// The static `PyMethodDef` behind a method descriptor or builtin function, checked for the
-/// expected name and calling convention.
-///
-/// # Safety
-/// Attached thread.
-unsafe fn method_def(obj: &Bound<'_, PyAny>, name: &CStr, flags: c_int) -> Option<*mut ffi::PyMethodDef> {
-    // SAFETY: type-checked layout reads.
-    unsafe {
-        let p = obj.as_ptr();
-        let def = if ffi::Py_TYPE(p) == &raw mut ffi::PyMethodDescr_Type {
-            (*p.cast::<ffi::PyMethodDescrObject>()).d_method
-        } else if ffi::PyCFunction_Check(p) != 0 {
-            (*p.cast::<ffi::PyCFunctionObject>()).m_ml
-        } else {
-            return None;
+// ---------------------------------------------------------------------------------------
+// Targets (docs/ACCELERATION.md §9): group `containers`.
+// ---------------------------------------------------------------------------------------
+
+const VERSIONS: &[(u8, u8)] = &[(3, 14), (3, 15)];
+
+// Fingerprints of the C originals (`ml_name`, `ml_flags`, `ml_doc`), recorded with
+// `python -m rustique._takeover._dev fingerprint list.sort ...` (format v2; identical on
+// 3.14.9, 3.14.9t, 3.15.1 and 3.15.1t).
+const FP_SORT: accel::Fingerprints = &[(3, 14, "e8c0ba48a89aa585"), (3, 15, "e8c0ba48a89aa585")];
+const FP_INDEX: accel::Fingerprints = &[(3, 14, "e401ffbd097a7175"), (3, 15, "e401ffbd097a7175")];
+const FP_COUNT: accel::Fingerprints = &[(3, 14, "e0cac92256fa864d"), (3, 15, "e0cac92256fa864d")];
+
+/// The method descriptor `ty.name`, checked for the expected `ml_name` and `ml_flags`.
+fn method<'py>(ty: &Bound<'py, pyo3::types::PyType>, name: &CStr, flags: c_int) -> Result<Bound<'py, PyAny>, Refusal> {
+    let m = ty.getattr(name.to_str().unwrap_or_default())?;
+    // SAFETY: attached thread; type-checked layout reads.
+    let def = unsafe { accel::site::method_def(m.as_ptr()) }
+        .ok_or_else(|| refuse!(Conflict: "{name:?}: not a method descriptor"))?;
+    // SAFETY: a live method def.
+    let (n, f) = unsafe { (CStr::from_ptr((*def).ml_name), (*def).ml_flags) };
+    if n != name || f != flags {
+        return Err(refuse!(Conflict: "{name:?}: unexpected method definition ({n:?}, {f:#x})"));
+    }
+    Ok(m)
+}
+
+/// Layouts the kernels read directly: int/float (required), str (calibrated, optional).
+fn calibrate(py: Python<'_>) -> Result<(), Refusal> {
+    static OK: OnceLock<bool> = OnceLock::new();
+    if !*OK.get_or_init(|| layouts_ok(py).unwrap_or(false)) {
+        return Err(Refusal::with(accel::Category::Layout, "unexpected int/float layout"));
+    }
+    if STR_LAYOUT.get().is_none()
+        && let Some(layout) = calibrate_str(py)
+    {
+        let _ = STR_LAYOUT.set(layout);
+    }
+    Ok(())
+}
+
+fn prepare_list_sort(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    calibrate(py)?;
+    for (cell, name) in [(&KW_KEY, "key"), (&KW_REVERSE, "reverse")] {
+        if cell.load(std::sync::atomic::Ordering::Relaxed).is_null() {
+            // Interned strings live as long as the interpreter; keep one reference forever.
+            cell.store(PyString::intern(py, name).into_ptr(), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    let m = method(&py.get_type::<PyList>(), c"sort", ffi::METH_FASTCALL | ffi::METH_KEYWORDS)?;
+    cx.fingerprint_c(&m, FP_SORT)?;
+    cx.ml_meth(&m, k_list_sort as FastKwFn, &ORIG_LIST_SORT)
+}
+
+fn prepare_list_index(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    calibrate(py)?;
+    let m = method(&py.get_type::<PyList>(), c"index", ffi::METH_FASTCALL)?;
+    cx.fingerprint_c(&m, FP_INDEX)?;
+    cx.ml_meth(&m, k_list_index as FastFn, &ORIG_LIST_INDEX)
+}
+
+fn prepare_list_count(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    calibrate(py)?;
+    let m = method(&py.get_type::<PyList>(), c"count", ffi::METH_O)?;
+    cx.fingerprint_c(&m, FP_COUNT)?;
+    cx.ml_meth(&m, k_list_count as OFn, &ORIG_LIST_COUNT)
+}
+
+fn prepare_tuple_index(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    calibrate(py)?;
+    let m = method(&py.get_type::<PyTuple>(), c"index", ffi::METH_FASTCALL)?;
+    cx.fingerprint_c(&m, FP_INDEX)?;
+    cx.ml_meth(&m, k_tuple_index as FastFn, &ORIG_TUPLE_INDEX)
+}
+
+fn prepare_tuple_count(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    calibrate(py)?;
+    let m = method(&py.get_type::<PyTuple>(), c"count", ffi::METH_O)?;
+    cx.fingerprint_c(&m, FP_COUNT)?;
+    cx.ml_meth(&m, k_tuple_count as OFn, &ORIG_TUPLE_COUNT)
+}
+
+fn prepare_list_contains(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    calibrate(py)?;
+    cx.slot(&py.get_type::<PyList>(), SlotName::SqContains, k_list_contains as ContainsFn, &ORIG_LIST_CONTAINS)
+}
+
+fn prepare_tuple_contains(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    calibrate(py)?;
+    cx.slot(&py.get_type::<PyTuple>(), SlotName::SqContains, k_tuple_contains as ContainsFn, &ORIG_TUPLE_CONTAINS)
+}
+
+macro_rules! target {
+    ($id:ident, $name:literal, $counters:ident, $prepare:ident) => {
+        pub static $id: TargetSpec = TargetSpec {
+            name: $name,
+            group: "containers",
+            module: None,
+            versions: VERSIONS,
+            free_threaded: true,
+            counters: &$counters,
+            prepare: $prepare,
+            ..TargetSpec::DEFAULT
         };
-        if def.is_null() || (*def).ml_meth.is_null() || (*def).ml_name.is_null() {
-            return None;
-        }
-        if CStr::from_ptr((*def).ml_name) != name || (*def).ml_flags != flags {
-            return None;
-        }
-        Some(def)
-    }
+    };
 }
 
-/// Address of the `ml_meth` field of a method def.
-fn ml_meth_slot(def: *mut ffi::PyMethodDef) -> usize {
-    // SAFETY: address computation only.
-    unsafe { (&raw mut (*def).ml_meth) as usize }
-}
+target!(LIST_SORT, "list.sort", C_LIST_SORT, prepare_list_sort);
+target!(LIST_INDEX, "list.index", C_LIST_INDEX, prepare_list_index);
+target!(LIST_COUNT, "list.count", C_LIST_COUNT, prepare_list_count);
+target!(TUPLE_INDEX, "tuple.index", C_TUPLE_INDEX, prepare_tuple_index);
+target!(TUPLE_COUNT, "tuple.count", C_TUPLE_COUNT, prepare_tuple_count);
+target!(LIST_CONTAINS, "list.__contains__", C_LIST_CONTAINS, prepare_list_contains);
+target!(TUPLE_CONTAINS, "tuple.__contains__", C_TUPLE_CONTAINS, prepare_tuple_contains);
 
-/// Address of `tp_as_sequence->sq_contains` of a static type.
-///
-/// # Safety
-/// `t` is a ready type object with a sequence table.
-unsafe fn sq_contains_slot(t: *mut ffi::PyTypeObject) -> Option<usize> {
-    // SAFETY: reads of a ready static type.
-    unsafe {
-        let seq = (*t).tp_as_sequence;
-        if seq.is_null() || (*seq).sq_contains.is_none() {
-            return None;
-        }
-        Some((&raw mut (*seq).sq_contains) as usize)
-    }
-}
-
-/// Atomically store a function pointer into a patch site.
-///
-/// # Safety
-/// `slot` is a valid, writable, pointer-aligned function-pointer field.
-unsafe fn store(slot: usize, value: usize) {
-    // SAFETY: per the caller; an aligned pointer-sized atomic store, so concurrent readers
-    // see either the old or the new function.
-    unsafe { (*(slot as *const std::sync::atomic::AtomicUsize)).store(value, std::sync::atomic::Ordering::Release) };
-}
-
-/// Capture the `ValueError` message the original `index` raises for a missing value.
-fn index_message(py: Python<'_>, original: FastFn, seq: &Bound<'_, PyAny>) -> PyResult<std::ffi::CString> {
-    let missing = PyTuple::empty(py); // never equal to an element of an empty sequence
-    let argv = [missing.as_ptr()];
-    // SAFETY: calling the original METH_FASTCALL function with one argument.
-    let r = unsafe { original(seq.as_ptr(), argv.as_ptr(), 1) };
-    if !r.is_null() {
-        // SAFETY: owned reference returned by the call.
-        unsafe { ffi::Py_DECREF(r) };
-        return Err(PyRuntimeError::new_err("index() of an empty sequence did not raise"));
-    }
-    let err = PyErr::fetch(py);
-    if !err.is_instance_of::<PyValueError>(py) {
-        return Err(err);
-    }
-    let text = err.value(py).str()?.to_string();
-    std::ffi::CString::new(text).map_err(|e| PyRuntimeError::new_err(e.to_string()))
-}
+/// The `containers` group.
+pub static TARGETS: &[&TargetSpec] =
+    &[&LIST_SORT, &LIST_INDEX, &LIST_COUNT, &TUPLE_INDEX, &TUPLE_COUNT, &LIST_CONTAINS, &TUPLE_CONTAINS];
 
 /// Sanity-check the raw int/float layouts against the running interpreter.
 fn layouts_ok(py: Python<'_>) -> PyResult<bool> {
@@ -1443,143 +1656,27 @@ fn layouts_ok(py: Python<'_>) -> PyResult<bool> {
     Ok(unsafe { float_value(f.as_ptr()) } == 2.5)
 }
 
-/// Install the safe-tier kernels. Idempotent. Returns the names of the active kernels.
-#[pyfunction]
-fn install(py: Python<'_>) -> PyResult<Vec<&'static str>> {
-    let mut installed = INSTALLED.lock().map_err(|_| PyRuntimeError::new_err("takeover state poisoned"))?;
-    if !installed.is_empty() {
-        return Ok(installed.iter().map(|s| s.name).collect());
-    }
-    if !layouts_ok(py)? {
-        return Err(PyRuntimeError::new_err("rustique takeover: unexpected int/float layout"));
-    }
-    if STR_LAYOUT.get().is_none()
-        && let Some(layout) = calibrate_str(py)
-    {
-        let _ = STR_LAYOUT.set(layout);
-    }
-    let list_t = py.get_type::<PyList>();
-    let tuple_t = py.get_type::<PyTuple>();
-    let fast_kw = ffi::METH_FASTCALL | ffi::METH_KEYWORDS;
-    // SAFETY: attached thread; descriptors/functions are kept alive by their owners.
-    let defs = unsafe {
-        [
-            ("list.sort", method_def(&list_t.getattr("sort")?, c"sort", fast_kw), k_list_sort as FastKwFn as usize),
-            (
-                "list.index",
-                method_def(&list_t.getattr("index")?, c"index", ffi::METH_FASTCALL),
-                k_list_index as FastFn as usize,
-            ),
-            ("list.count", method_def(&list_t.getattr("count")?, c"count", ffi::METH_O), k_list_count as OFn as usize),
-            (
-                "tuple.index",
-                method_def(&tuple_t.getattr("index")?, c"index", ffi::METH_FASTCALL),
-                k_tuple_index as FastFn as usize,
-            ),
-            (
-                "tuple.count",
-                method_def(&tuple_t.getattr("count")?, c"count", ffi::METH_O),
-                k_tuple_count as OFn as usize,
-            ),
-        ]
-    };
-    // SAFETY: ready static types.
-    let list_contains = unsafe { sq_contains_slot(&raw mut ffi::PyList_Type) };
-    // SAFETY: ready static type.
-    let tuple_contains = unsafe { sq_contains_slot(&raw mut ffi::PyTuple_Type) };
-
-    let mut sites = Vec::new();
-    for (name, def, kernel) in defs {
-        let Some(def) = def else { continue };
-        let slot = ml_meth_slot(def);
-        if writable(slot, size_of::<usize>()) {
-            // SAFETY: valid pointer-sized field.
-            let original = unsafe { *(slot as *const usize) };
-            sites.push(Site { name, slot, original, kernel });
-        }
-    }
-    for (name, slot, kernel) in [
-        ("x in list", list_contains, k_list_contains as ContainsFn as usize),
-        ("x in tuple", tuple_contains, k_tuple_contains as ContainsFn as usize),
-    ] {
-        let Some(slot) = slot else { continue };
-        if writable(slot, size_of::<usize>()) {
-            // SAFETY: valid pointer-sized field.
-            let original = unsafe { *(slot as *const usize) };
-            sites.push(Site { name, slot, original, kernel });
-        }
-    }
-    // Every kernel needs its original; install all or nothing.
-    let expected = ["list.sort", "list.index", "list.count", "tuple.index", "tuple.count", "x in list", "x in tuple"];
-    if sites.len() != expected.len() {
-        let found: Vec<_> = sites.iter().map(|s| s.name).collect();
-        let missing: Vec<_> = expected.iter().filter(|n| !found.contains(n)).collect();
-        return Err(PyRuntimeError::new_err(format!(
-            "rustique takeover: cannot patch {missing:?} on this interpreter"
-        )));
-    }
-    if ORIGINALS.get().is_none() {
-        let orig = |name: &str| sites.iter().find(|s| s.name == name).map(|s| s.original).unwrap_or(0);
-        // SAFETY: each original was read from a method def / slot with the matching
-        // calling convention, verified above.
-        let originals = unsafe {
-            Originals {
-                list_sort: std::mem::transmute::<usize, FastKwFn>(orig("list.sort")),
-                list_index: std::mem::transmute::<usize, FastFn>(orig("list.index")),
-                list_count: std::mem::transmute::<usize, OFn>(orig("list.count")),
-                tuple_index: std::mem::transmute::<usize, FastFn>(orig("tuple.index")),
-                tuple_count: std::mem::transmute::<usize, OFn>(orig("tuple.count")),
-                list_contains: std::mem::transmute::<usize, ContainsFn>(orig("x in list")),
-                tuple_contains: std::mem::transmute::<usize, ContainsFn>(orig("x in tuple")),
-                list_index_msg: index_message(
-                    py,
-                    std::mem::transmute::<usize, FastFn>(orig("list.index")),
-                    PyList::empty(py).as_any(),
-                )?,
-                tuple_index_msg: index_message(
-                    py,
-                    std::mem::transmute::<usize, FastFn>(orig("tuple.index")),
-                    PyTuple::empty(py).as_any(),
-                )?,
-            }
-        };
-        ORIG_LIST_CONTAINS.store(originals.list_contains as usize, std::sync::atomic::Ordering::Relaxed);
-        ORIG_TUPLE_CONTAINS.store(originals.tuple_contains as usize, std::sync::atomic::Ordering::Relaxed);
-        let _ = ORIGINALS.set(originals);
-    }
-    let o = originals();
-    // A second install after uninstall must find the same originals (nobody else patched).
-    for s in &sites {
-        let saved = match s.name {
-            "list.sort" => o.list_sort as usize,
-            "list.index" => o.list_index as usize,
-            "list.count" => o.list_count as usize,
-            "tuple.index" => o.tuple_index as usize,
-            "tuple.count" => o.tuple_count as usize,
-            "x in list" => o.list_contains as usize,
-            _ => o.tuple_contains as usize,
-        };
-        if saved != s.original {
-            return Err(PyRuntimeError::new_err(format!("rustique takeover: {} was patched by someone else", s.name)));
-        }
-    }
-    for s in &sites {
-        // SAFETY: writable, aligned function-pointer field verified above.
-        unsafe { store(s.slot, s.kernel) };
-    }
-    *installed = sites;
-    Ok(installed.iter().map(|s| s.name).collect())
+fn group() -> Vec<String> {
+    vec!["containers".to_owned()]
 }
 
-/// Restore every original function pointer. Idempotent.
+/// Install the `containers` group (kept for tests and benchmarks; `rustique.enable()` is
+/// the API). Idempotent. Returns the names of the installed targets of the group.
 #[pyfunction]
-fn uninstall() -> PyResult<()> {
-    let mut installed = INSTALLED.lock().map_err(|_| PyRuntimeError::new_err("takeover state poisoned"))?;
-    for s in installed.drain(..) {
-        // SAFETY: the site was verified writable at install time.
-        unsafe { store(s.slot, s.original) };
+fn install(py: Python<'_>) -> PyResult<Vec<&'static str>> {
+    accel::registry::enable(py, Some(group()), Vec::new())?;
+    let names = accel::registry::installed(py, Some(&group()))?;
+    if names.len() != TARGETS.len() {
+        let st = accel::registry::status(py)?;
+        return Err(PyRuntimeError::new_err(format!("rustique takeover: not every container target installed: {st}")));
     }
-    Ok(())
+    Ok(names)
+}
+
+/// Restore the `containers` group. Idempotent.
+#[pyfunction]
+fn uninstall(py: Python<'_>) -> PyResult<()> {
+    accel::registry::disable(py, Some(group()))
 }
 
 /// Whether `str` kind/data are read inline (a calibrated layout), for tests and reports.
@@ -1588,11 +1685,10 @@ fn inline_str_layout() -> bool {
     STR_LAYOUT.get().is_some()
 }
 
-/// Names of the active kernels (empty when not installed).
+/// Names of the installed `containers` targets.
 #[pyfunction]
-fn installed() -> PyResult<Vec<&'static str>> {
-    let installed = INSTALLED.lock().map_err(|_| PyRuntimeError::new_err("takeover state poisoned"))?;
-    Ok(installed.iter().map(|s| s.name).collect())
+fn installed(py: Python<'_>) -> PyResult<Vec<&'static str>> {
+    accel::registry::installed(py, Some(&group()))
 }
 
 // ---------------------------------------------------------------------------------------

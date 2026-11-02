@@ -1,0 +1,43 @@
+float repr(1.23)                                       2040        740   0.363
+float repr(123.456789)                                 3248        806   0.248
+float repr(1.2345678901234567e300)                    20550        716   0.035
+float str(2.5e-07)                                     2808        672   0.239
+float f'{x}'                                           2430        919   0.378
+float f'{x:.2f}' [not reached]                         1805       1832   1.015
+float f'v={x} t={xs}ms'                                6850       2672   0.390
+float repr(inf) [fallback]                              775        803   1.036
+float repr(F(1.5)) [subclass]                          1895       1895   1.000
+float '%s' % x                                         1957        671   0.343
+dumps record                                          31002       6305   0.203
+dumps small list                                      18078       2165   0.120
+dumps floats                                          37717       5984   0.159
+dumps nested                                          58407      16217   0.278
+dumps unicode                                         18467       3181   0.172
+dumps unicode ensure_ascii=False                      23905       4781   0.200
+dumps str                                              3290        866   0.263
+dumps int                                             11272        623   0.055
+dumps record indent=2                                 40212       7618   0.189
+dumps record sort_keys                                45852      12540   0.273
+dumps record separators                               36808       6695   0.182
+dumps record [json only]                              31002       6298   0.203
+dumps record default= [fallback]                      36645      31131   0.850
+dumps with Decimal default= [fallback]                39816      34283   0.861
+dumps OrderedDict [fallback]                          36587      30993   0.847
+dumps IntEnum                                         13098       1332   0.102
+dumps cls=JSONEncoder [fallback]                      36561      31047   0.849
+JSONEncoder().encode(record)                          28890      23376   0.809
+loads record                                          27844      12958   0.465
+loads record bytes                                    32525      13021   0.400
+loads small list                                      13107       2846   0.217
+loads floats                                          24443      10397   0.425
+loads nested                                          57241      32371   0.566
+loads unicode                                         16319       6228   0.382
+loads object_hook [fallback]                          40989      41035   1.001
+dumps Decimal no default [error fallback]             40366      34733   0.860
+dumps circular [error fallback]                       19920      19773   0.993
+dumps circular, kernel declines at once [floor]       20086      19939   0.993
+dumps Decimal, kernel declines at once [floor]        40532      34899   0.861
+loads invalid [error fallback]                        26293      26410   1.004
+loads valid+invalid alternating [error fallback]      54139      41787   0.772
+dumps valid+error alternating [error fallback]        71360      47319   0.663
+# 3.15.1 jit=False first64=False: worst ratio 1.036

@@ -1,0 +1,18 @@
+old builds ['3.15.1t'] (5660 cells), new builds ['3.15.1t'] (3814 cells)
+status changes: 0
+-- 0-100 elements (instruction-count ratios): 3762 cells
+   new-old: identical (2 dp) 3442, |d|<=0.01 3622, |d|<=0.02 3684, |d|>0.05 30
+   new/old: geomean 1.0000, median 1.0000, p05 1.000, p95 1.000
+   crossed the 1.05 bar: up 0, down 0
+   kernel-path cells: 586, geomean old 0.9142, new 0.9142
+   largest relative changes (top 10):
+       1.32 -> 1.16 (0.879x)  set/x.clear()/str/8
+       2.23 -> 2.50 (1.121x)  set/miss in x/str/100
+       2.18 -> 1.99 (0.913x)  frozenset/miss in x/str/1
+       2.77 -> 2.53 (0.913x)  set/hit in x/str/8
+       2.82 -> 3.04 (1.078x)  dict/x == t/float/100
+       0.32 -> 0.34 (1.062x)  set/x.copy()/str/100
+       2.35 -> 2.49 (1.060x)  frozenset/x.isdisjoint(t)/str/8
+       2.44 -> 2.31 (0.947x)  set/x.isdisjoint(t)/str/8
+       2.07 -> 2.18 (1.053x)  tuple/pickle.dumps/object/8
+       1.51 -> 1.58 (1.046x)  tuple/repr(x)/str/8

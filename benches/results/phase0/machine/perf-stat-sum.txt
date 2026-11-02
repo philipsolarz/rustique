@@ -1,0 +1,12 @@
+
+ Performance counter stats for 'taskset -c 9 python3 -c sum(range(10**7))':
+
+        2336125419      instructions:u                                                        
+         468827917      cycles:u                                                              
+
+       0.135315116 seconds time elapsed
+
+       0.128946000 seconds user
+       0.004997000 seconds sys
+
+

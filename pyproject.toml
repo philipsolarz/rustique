@@ -6,7 +6,10 @@ build-backend = "maturin"
 name = "rustique"
 description = "Python's data model, Rust's memory: typed native containers and zero-copy Rust/Python interop"
 readme = "README.md"
-requires-python = ">=3.14"
+# The upper bound is deliberate (docs/targets/dx.md §5): PyO3 0.30 cannot build for 3.16, and an
+# unknown interpreter must be refused at install time with a clear message, not by a failed
+# Rust build from the sdist. Raise it when a release is validated on the next minor.
+requires-python = ">=3.14,<3.16"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
@@ -16,6 +19,16 @@ classifiers = [
     "Typing :: Typed",
 ]
 dynamic = ["version"]
+
+[project.urls]
+Documentation = "https://github.com/philipsolarz/rustique/blob/main/docs/USAGE.md"
+Repository = "https://github.com/philipsolarz/rustique"
+
+# `pytest --rustique` (inactive unless the flag is given; docs/USAGE.md). The entry point is
+# named like the module so that `-p rustique.pytest_plugin` loads it through the entry point
+# instead of registering the module a second time.
+[project.entry-points.pytest11]
+"rustique.pytest_plugin" = "_rustique_pytest"
 
 [dependency-groups]
 dev = [
@@ -35,7 +48,14 @@ profile = "release"
 editable-profile = "dev"
 exclude = ["**/__pycache__", "**/*.pyc", "**/*.pyo"]
 # uv/pip build wheels from the sdist; ship the toolchain pin so they use Rust 1.99.1.
-include = [{ path = "rust-toolchain.toml", format = "sdist" }]
+include = [
+    { path = "rust-toolchain.toml", format = "sdist" },
+    # The startup switch (docs/USAGE.md): one .pth line at the root of site-packages. In the
+    # sdist too, so that wheels built from it ship it.
+    { path = "python/_rustique_startup.pth", format = ["sdist", "wheel"] },
+    # The pytest plugin, top-level so that autoloading it does not import the package.
+    { path = "python/_rustique_pytest.py", format = ["sdist", "wheel"] },
+]
 
 [tool.uv]
 cache-keys = [

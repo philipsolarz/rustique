@@ -1,0 +1,36 @@
+groups: builtins,containers,copy,dataclasses,datetime,float,fnmatch,json,logging,pathlib,posixpath,random,statistics,textwrap,urllib
+targets: builtins.all,builtins.any,builtins.max,builtins.min,builtins.sorted,builtins.sum,copy.copy,copy.deepcopy,dataclasses.asdict,dataclasses.astuple,datetime.date.isoformat,datetime.date.strftime,datetime.date.strptime,datetime.datetime.isoformat,datetime.datetime.strptime,datetime.time.isoformat,datetime.time.strftime,datetime.time.strptime,float.repr,fnmatch.filter,fnmatch.fnmatch,fnmatch.fnmatchcase,json.dumps,json.loads,list.__contains__,list.count,list.index,list.sort,logging.Formatter.format,logging.Formatter.formatTime,logging.LogRecord.__init__,logging.Logger.findCaller,logging.Logger.level,pathlib.Path.__new__,pathlib.PurePath.__eq__,pathlib.PurePath.__hash__,pathlib.PurePath.__init__,pathlib.PurePath.__new__,pathlib.PurePath.__str__,pathlib.PurePath.__truediv__,pathlib.PurePath.name,pathlib.PurePath.parent,pathlib.PurePath.parts,pathlib.PurePath.relative_to,pathlib.PurePath.stem,pathlib.PurePath.suffix,posixpath.abspath,posixpath.basename,posixpath.dirname,posixpath.isabs,posixpath.join,posixpath.relpath,posixpath.split,posixpath.splitext,random.choice,random.choices,random.randint,random.randrange,random.sample,random.shuffle,statistics.mean,statistics.pstdev,statistics.pvariance,statistics.stdev,statistics.variance,textwrap.TextWrapper.fill,textwrap.TextWrapper.wrap,textwrap.dedent,textwrap.fill,textwrap.indent,textwrap.shorten,textwrap.wrap,time.strftime,time.strptime,tuple.__contains__,tuple.count,tuple.index,urllib.parse._urlsplit,urllib.parse.parse_qs,urllib.parse.parse_qsl,urllib.parse.quote,urllib.parse.quote_plus,urllib.parse.unquote,urllib.parse.unquote_plus
+target conformance — 3.14.9 — targets builtins,containers,copy,dataclasses,datetime,float,fnmatch,json,logging,pathlib,posixpath,random,statistics,textwrap,urllib
+  test.test_list                           plain=ran        enabled=ran        pass=67 skip=1  differences=0 (0.6s/0.6s)
+  test.test_tuple                          plain=ran        enabled=ran        pass=38  differences=0 (0.3s/0.4s)
+  test.test_sort                           plain=ran        enabled=ran        pass=21  differences=0 (0.1s/0.1s)
+  test.test_builtin                        plain=ran        enabled=ran        pass=141 skip=6  differences=0 (0.4s/0.3s)
+  test.test_json                           plain=ran        enabled=ran        pass=220 skip=1  differences=0 (4.4s/4.4s)
+  test.test_float                          plain=ran        enabled=ran        pass=52 skip=2  differences=0 (0.1s/0.1s)
+  test.test_format                         plain=ran        enabled=ran        pass=17 skip=2  differences=0 (0.1s/0.1s)
+  test.test_strtod                         plain=ran        enabled=ran        pass=8 skip=1  differences=0 (0.2s/0.2s)
+  test.test_fstring                        plain=ran        enabled=ran        pass=94  differences=0 (0.7s/0.6s)
+  test.test_copy                           plain=ran        enabled=ran        pass=81  differences=0 (0.1s/0.1s)
+  test.test_copyreg                        plain=ran        enabled=ran        pass=6  differences=0 (0.1s/0.1s)
+  test.test_dataclasses                    plain=ran        enabled=ran        pass=279 skip=1  differences=0 (0.3s/0.3s)
+  test.test_strptime                       plain=ran        enabled=ran        pass=46 skip=94  differences=0 (0.1s/0.1s)
+  test.test_datetime                       plain=ran        enabled=ran        pass=3560 skip=54  differences=0 (26.8s/27.0s)
+  test.test_time                           plain=ran        enabled=ran        pass=48 skip=16  differences=0 (3.1s/3.1s)
+  test.test_posixpath                      plain=ran        enabled=ran        pass=91 skip=3  differences=0 (0.3s/0.3s)
+  test.test_genericpath                    plain=ran        enabled=ran        pass=25  differences=0 (0.1s/0.1s)
+  test.test_fnmatch                        plain=ran        enabled=ran        pass=24  differences=0 (0.1s/0.1s)
+  test.test_glob                           plain=ran        enabled=ran        pass=22 skip=2  differences=0 (0.2s/0.2s)
+  test.test_pathlib                        plain=ran        enabled=ran        pass=966 skip=403  differences=0 (1.3s/1.2s)
+  test.test_os                             plain=ran        enabled=ran        fail=2 pass=317 skip=66  differences=0 (12.9s/12.8s)
+  test.test_logging                        plain=ran        enabled=ran        pass=274 skip=3  differences=0 (22.2s/23.3s)
+  test.test_random                         plain=ran        enabled=ran        pass=114 skip=2  differences=0 (1.2s/1.2s)
+  test.test_textwrap                       plain=ran        enabled=ran        pass=68  differences=0 (0.1s/0.1s)
+  test.test_urlparse                       plain=ran        enabled=ran        pass=74 skip=5  differences=0 (0.2s/0.2s)
+  test.test_urllib                         plain=ran        enabled=ran        pass=104 skip=2  differences=0 (0.1s/0.1s)
+  test.test_statistics                     plain=ran        enabled=ran        pass=400  differences=0 (14.5s/11.7s)
+  NOT INSTALLED pathlib.PurePath.name: ['pending-import', None]
+  NOT INSTALLED pathlib.PurePath.parent: ['pending-import', None]
+  NOT INSTALLED pathlib.PurePath.parts: ['pending-import', None]
+  NOT INSTALLED pathlib.PurePath.stem: ['pending-import', None]
+  NOT INSTALLED pathlib.PurePath.suffix: ['pending-import', None]
+FAILED

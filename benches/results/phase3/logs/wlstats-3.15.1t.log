@@ -1,0 +1,68 @@
+== data/backup_archive
+{"workload": "data/backup_archive", "enabled": true, "times": [0.6072572960001708], "digest": "137230999ddd1c4b96bc044211c3a320e78c38cb242f73ec3e175ad996e450d8"}
+== data/billing_engine
+{"workload": "data/billing_engine", "enabled": true, "times": [0.7258201890035707], "digest": "038919bc240a3bd554aea2e3aaf91647a7c804c32de341d17a785347d1b8d883"}
+== data/config_merge
+{"workload": "data/config_merge", "enabled": true, "times": [0.6163616869998805], "digest": "d4183ecc4d1d6ebc9bf554e65a783fcfeba3029d70cf1fc5ca1ef3f34c58c91b"}
+== data/csv_etl
+{"workload": "data/csv_etl", "enabled": true, "times": [0.28289038200091454], "digest": "baf8dbd304a3f76391f89a4d748da4c539157c33d06e0a4848a64ff0053633bf"}
+== data/fs_inventory
+{"workload": "data/fs_inventory", "enabled": true, "times": [0.2430763600023056], "digest": "8b1011473495fcb803b473e2759e598117390bfbe7bb5607cee3e6e583b7aca5"}
+== data/log_analytics
+{"workload": "data/log_analytics", "enabled": true, "times": [0.4880529199981538], "digest": "a09430e3ccf377c7f90db10a1d2c9b1bb657855934a567ed2e6ef42628d89d31"}
+== data/pandas_etl
+{"workload": "data/pandas_etl", "enabled": true, "times": [0.6308901090014842], "digest": "128295b9dcd8644a4a48bc8c610551cdbe7a0e1c9e895f2bcd41f74a64c63982"}
+== data/report_render
+{"workload": "data/report_render", "enabled": true, "times": [0.20337449699945864], "digest": "b0d81bfd49ec5f46c92a754a353c2c5e73adbe9017768ac00cf364ac473f6deb"}
+== data/state_snapshot
+{"workload": "data/state_snapshot", "enabled": true, "times": [0.6436610100026883], "digest": "60ac4add24b433fd5afea2dd74cbfa51cc06d61c5c6858c27afb52521d69dc96"}
+== data/text_corpus
+{"workload": "data/text_corpus", "enabled": true, "times": [0.6436917720020574], "digest": "d7780277a55975b1cd8d32a4f079c5cc22f1ccef96011eca302dca9c45fa96e4"}
+== data/tz_events
+{"workload": "data/tz_events", "enabled": true, "times": [0.3773503329975938], "digest": "1dbceed30059a5c4d1330abe87e8eaf26f7964853cd23a8887e4e09e7d5a642d"}
+== data/xml_feeds
+{"workload": "data/xml_feeds", "enabled": true, "times": [0.5720963179992395], "digest": "c667051877f8a74fef671f8e9f595bedfff327ee6227140d72ee05da75c20442"}
+== devtools/black_format
+{"workload": "devtools/black_format", "enabled": true, "times": [1.3153236100006325], "digest": "70dd71bcd827dfa0aeb20d767f97cf0bb7ae7116445722e0e83135b075e27974"}
+== devtools/coverage_pyflakes_tests
+{"workload": "devtools/coverage_pyflakes_tests", "enabled": true, "times": [0.5128973149985541], "digest": "29e6e0aa481ec9274720c7d65388b38a7b016949819078d3c8697e2a399c7398"}
+== devtools/import_startup
+{"workload": "devtools/import_startup", "enabled": true, "times": [2.6820406490005553], "digest": "80b60af41db2a724ae01bcc21d64a029a5cedc5326cc91f8a0f08e503fe9870c"}
+== devtools/isort_stdlib
+{"workload": "devtools/isort_stdlib", "enabled": true, "times": [0.2340813539994997], "digest": "096dc47d564b581e18ed1e2f36d1e26a0b17cf7ef0dccaaee2f1a7e9be9b4dba"}
+== devtools/pip_resolve
+{"workload": "devtools/pip_resolve", "enabled": true, "times": [0.5975424680000287], "digest": "78904ec2084195ef51a88a5e9a86f400683c0c548cd56102a92f4a6dd90df328"}
+== devtools/pycodestyle_stdlib
+{"workload": "devtools/pycodestyle_stdlib", "enabled": true, "times": [1.0689790710021043], "digest": "d6167bcaa1114012f4deea1a6dda61cb45a7c2b7b9dcc3b2422344e1fa71895f"}
+== devtools/pyflakes_stdlib
+{"workload": "devtools/pyflakes_stdlib", "enabled": true, "times": [1.3046498679977958], "digest": "014667b4641eff88eb106921b814f060b412c7282c3b9900006a8bf8d6b8e607"}
+== devtools/pylint_stdlib
+{"workload": "devtools/pylint_stdlib", "enabled": true, "times": [0.9675150549992395], "digest": "3c32d793de97a8f8c02136538706b80507703aaa74eb3ca84df57b245cfe3129"}
+== devtools/pytest_networkx
+{"workload": "devtools/pytest_networkx", "enabled": true, "times": [0.6048038580011053], "digest": "4a86d28b258e14d4060bcd5ccb9b88a8c3da4c16aa1f5cb345d671cc0a915f37"}
+== devtools/rich_render
+{"workload": "devtools/rich_render", "enabled": true, "times": [0.32288715400136425], "digest": "9d18ee277d7c3ec6c94c98ba3350203354be687263697c10e72480534405811f"}
+== devtools/sphinx_autodoc
+{"workload": "devtools/sphinx_autodoc", "enabled": true, "times": [0.9214488409998012], "digest": "f2ccf511598ec21be6798d748e7ee5f6eba5ef2c0bdcf2fbaf6c21de5a587115"}
+== devtools/sqlglot_transpile
+{"workload": "devtools/sqlglot_transpile", "enabled": true, "times": [1.088366183998005], "digest": "bc431142ee59bdb7eafab77272d86f66b7079402d88e827324dade328e5e91ad"}
+== web/aiohttp_app
+{"workload": "web/aiohttp_app", "enabled": true, "times": [0.3065504879996297], "digest": "c84ff29cdf7b1b60b3f11e035b52dd32f26c473166ab9226bc88a6cef2f0b469"}
+== web/asyncio_http
+{"workload": "web/asyncio_http", "enabled": true, "times": [0.19576006300121662], "digest": "81aa1d85cd73b45f543b199ce818a49ac4e3bd9e290ea3d2f30497099d39820e"}
+== web/django_blog
+{"workload": "web/django_blog", "enabled": true, "times": [0.5622820589996991], "digest": "f0f3aa843abd291523e21761ef59b88ca5bd4b254fca93c1f638ecfe7a7a98c6"}
+== web/email_mime
+{"workload": "web/email_mime", "enabled": true, "times": [0.7347068000017316], "digest": "6e6f10b9398915e6541cb347d4c329efa7b0e0f1148070fd465a13166e2a76ce"}
+== web/fastapi_pydantic
+{"workload": "web/fastapi_pydantic", "enabled": true, "times": [0.42338293599823373], "digest": "90397e0ea9a28e2a7744db89e0c227bc6a6dbd8ee1862a485db7e5ab98a290f8"}
+== web/flask_jinja
+{"workload": "web/flask_jinja", "enabled": true, "times": [0.4542131700000027], "digest": "cd6ee1e469da0fbde72148f26794a8737f854c8e958558f1462dbed8946cb581"}
+== web/json_api
+{"workload": "web/json_api", "enabled": true, "times": [0.36920456099687726], "digest": "b415aa0582fc118b79dfbc9cb439dcfcb2a302322c87d28ba0f944c1e684e912"}
+== web/logging_service
+{"workload": "web/logging_service", "enabled": true, "times": [0.2578258130015456], "digest": "0658898c573e2759f2d454383d2dcdb71c320b7fc6f44a9e5096e8ff1991b103"}
+== web/requests_local
+{"workload": "web/requests_local", "enabled": true, "times": [0.2751200600032462], "digest": "c122b88ddebb0bc913794e2c071da6c8ed6aa52f2f54a9d2f9d0e9f3d4c6bf41"}
+== web/sqlalchemy_orm
+{"workload": "web/sqlalchemy_orm", "enabled": true, "times": [0.37597981599901686], "digest": "1fc4a37894e956ba47bb74f89ac12e26906f72c5e88abb500711b35ac9d7f8f2"}

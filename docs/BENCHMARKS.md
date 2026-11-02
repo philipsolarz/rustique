@@ -11,7 +11,61 @@ measured:
 
 Why the default tier keeps exact builtins: `docs/DECISIONS.md`, `docs/TAKEOVER.md`.
 
-## Setup
+Since wave 1 (November 2026) a third thing is measured, and it is the headline: **real
+programs** with every accelerated stdlib group on, below. The sections after it are the
+parity program's measurements (October 2026), re-run at the wave-1 commit where noted.
+
+## Wave 1: real workloads (Phase 3, `11bad29`)
+
+Full report: `docs/atlas/phase3.md`; raw data and the rerunnable script:
+`benches/results/phase3/` (`run_phase3.sh <stage>`); ground truth before wave 1:
+`docs/atlas/phase0.md`. Same box as below, fat-LTO release wheels installed with `pip`.
+
+**Method.** `benches/workloads/` holds 34 programs in three families (`data`, `devtools`,
+`web`; each pins its third-party requirements in `requirements.txt`), each a `setup()` and a
+`run()` returning a digest of its result. `python benches/workloads/run.py compare all -n 5
+-p 5` runs plain and enabled in fresh processes, interleaved, pinned to one L3 domain per
+build, and fails on any digest mismatch. Whole-process cells use `pyperf command` with
+`RUSTIQUE=1` through the shipped `.pth` (startup and imports included). Counters of one
+steady-state `run()` per workload (`RUSTIQUE_STATS`) show which targets hit and why others
+fell back. Per-target cells are each group's callgrind bench (`benches/targets/*`, region
+instrumented, plain vs `enable(only=[group])`).
+
+| | 3.15.1 | 3.15.1t |
+|---|---:|---:|
+| 34 workloads, geometric mean (enabled / plain) | **0.880** | **0.843** |
+| second replicate (every workload within 2% of the first) | 0.879 | 0.843 |
+| data (12) / devtools (12) / web (10) | 0.773 / 0.963 / 0.922 | 0.756 / 0.863 / 0.933 |
+| median; best; worst | 0.980; `report_render` 0.436; `config_merge` 1.013 | 0.986; `isort_stdlib` 0.196; `xml_feeds` 1.005 |
+| digest mismatches; workloads > 1.05 | 0; 0 | 0; 0 |
+| 6 whole processes, `RUSTIQUE=1` (geomean) | 0.756 | 0.712 |
+| scoreboard 0–100, cells ≤ 1.05 (after isolation re-runs); geomean | 3811 / 3814; 0.859 | 3811 / 3814; 0.864 |
+| `python -c pass`, `RUSTIQUE=1` vs unset (Ir / wall) | 1.045 / 1.078 | (3.14.9: 1.063 / 1.108) |
+
+**pyperformance 1.14.0**, full default suite, plain vs `rustique.enable()` (all groups)
+through `sitecustomize`, two replicate pairs per build (A: plain first, B: enabled first),
+one L3 domain each:
+
+| | 3.15.1 (A / B) | 3.15.1t (A / B) | Phase 0 (`5abd54c`) |
+|---|---|---|---|
+| geometric mean | **0.942 / 0.940** | **0.956 / 0.957** | 1.002 / 1.002 |
+| median | 0.998 / 0.998 | 0.999 / 1.000 | |
+| benchmarks < 0.95 | 13 / 12 | 9 / 10 | |
+| benchmarks > 1.05 | `python_startup` 1.098, `fannkuch` 1.114 (A only) / `python_startup` 1.078 | `python_startup` 1.092 / 1.098 | `python_startup` 1.18 |
+| per benchmark, A and B averaged (122 benchmarks) | **0.942** | **0.957** | 1.002 / 1.002 |
+
+Largest gains: `deepcopy_memo` 0.13 (3.15.1) / 0.18 (3.15.1t), `deepcopy` 0.23 / 0.28,
+`json_dumps` 0.25 / 0.33, `json_loads` 0.57 / 0.59, `logging_silent` 0.61–0.62,
+`logging_format` 0.65 / 0.77, `logging_simple` 0.67 / 0.79, `sympy_integrate` 0.83,
+`meteor_contest` 0.93, `hexiom` 0.93, `pathlib` 0.93–0.95. Raw files and `pyperf
+compare_to` tables: `benches/results/phase3/pyperformance/`.
+
+The three scoreboard cells still above 1.05 at `11bad29` (`count`/`in` with a 1-element
+list or tuple of tuples, 1.050–1.070) were fixed after Phase 3 (non-scalar needles rejected
+by one type-flag test, and a frameless delegation path): 1.026–1.045 on 3.15.1 and 3.15.1t
+(callgrind, dev box; `docs/targets/containers.md`).
+
+## Setup (parity program)
 
 AWS c7a.8xlarge (AMD EPYC 9R14, 32 cores, no SMT, 4 L3 domains), Ubuntu 24.04,
 python-build-standalone CPython 3.15.1 and 3.15.1t (GIL disabled), fat-LTO release builds

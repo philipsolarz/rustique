@@ -3,6 +3,19 @@
 Status of the `next` rewrite and where it goes from here. See `ARCHITECTURE.md` for the
 contract and `ARCHAEOLOGY.md` for the history that motivated it.
 
+## Done: wave 1, faster real programs (November 2026)
+
+See `DECISIONS.md` §5–§9, `IMPACT_ATLAS.md`, `ACCELERATION.md` (the contract) and
+`docs/atlas/phase3.md` (the measurements).
+
+| Area | State |
+|---|---|
+| Framework (`accel`) | one contract for every target: `ml_meth`/slot/vectorcall sites installed all-or-nothing, version gate and code fingerprints per CPython minor (unknown interpreter → refuse), lazy install when a module finishes importing, dependency pins through one dict watcher and one type watcher, tools guard, net-benefit suspension, counters and status, check mode, JIT cache clearing, subinterpreter refusal, release at exit |
+| Targets | 84 targets in 15 groups: json (+ exact float→text), copy + dataclasses, datetime text, posixpath, fnmatch, pathlib, logging, random, textwrap, urllib.parse, statistics, plus the parity program's containers and builtins |
+| Results | 34 real workloads: geometric mean 0.880 (3.15.1) / 0.843 (3.15.1t), stdlib-heavy programs 1.2–2.3× faster, none slower than 1.013 (two replicates agree within 2% per workload); pyperformance 0.942 / 0.957; CPython's own test modules of every group 0 differences with all groups on |
+| DX | `RUSTIQUE=1` (no code change), `RUSTIQUE=0` kill switch, `RUSTIQUE_ONLY`/`EXCLUDE`, `RUSTIQUE_STATS`/`REPORT`/`CHECK`, `python -m rustique status|report|diff`, `pytest --rustique`, wheels for 8 platforms × 3.14/3.14t/3.15/3.15t, `docs/USAGE.md` |
+| Known exceedances | startup with `RUSTIQUE=1` 1.045–1.063× instructions; a few install costs over budget; first ~64 calls of all-fallback streams (DECISIONS §5) |
+
 ## Done: parity program (October 2026)
 
 See `DECISIONS.md` for the decisions and `BENCHMARKS.md` for the numbers.
@@ -60,7 +73,16 @@ See `DECISIONS.md` for the decisions and `BENCHMARKS.md` for the numbers.
 
 ## Next steps
 
-Ranked by expected gain and risk (details and evidence: `DECISIONS.md` §4).
+**Wave 2** (ranked, with evidence: `DECISIONS.md` §9): startup and install cost (engine
+split, precompiled loader, deferred fingerprints); json `default=`/`cls=`; class-needle
+membership and `key=` fast paths; HTTP header/e-mail parsing; `re`; deeper coverage of the
+wave-1 targets (copy restarts, pathlib subclasses); platform coverage (Windows symbol
+lookup, `datetime` text on macOS/musl); bulk text kernels, `xml.etree`,
+`tokenize`, `csv`, `ipaddress`, `uuid`.
+
+Carried over from the parity program, ranked by expected gain and risk (details and
+evidence: `DECISIONS.md` §4; the atlas demoted the bulk `str`/`bytes` kernels, since real
+inputs are small, and wave 1 shipped the float→text core):
 
 1. **`str` method kernels** behind the existing C entry points (`find`, `count`, `split`,
    `replace`, `join`, ASCII case mapping): SIMD on PEP 393 buffers, exact semantics,

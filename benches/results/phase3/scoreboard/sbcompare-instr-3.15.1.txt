@@ -1,0 +1,45 @@
+
+### 3.15.1 — 0-100 elements, callgrind Ir
+
+cells 3814; mismatches/errors: 0 []
+
+| category | cells | ≤ 1.05 phase 3 | ≤ 1.05 phase 0 | geomean phase 3 | geomean phase 0 | median phase 3 | geomean phase3/phase0 per cell |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| kernel path | 586 | 583 | 586 | 0.6316 | 0.6270 | 0.7163 | 1.0073 |
+| wave-1 serial (json.dumps, copy.deepcopy) | 152 | 152 | 152 | 0.1542 | 1.0004 | 0.1751 | 0.1542 |
+| other ops | 3076 | 3063 | 3069 | 0.9920 | 0.9999 | 1.0000 | 0.9920 |
+| all | 3814 | 3798 | 3807 | 0.8593 | 0.9308 | 1.0000 | 0.9233 |
+
+cells > 1.05: 16
+  1.090 (phase 0 1.000)  [other ] tuple/from list/float/100
+  1.090 (phase 0 1.000)  [other ] tuple/from list/int/100
+  1.076 (phase 0 0.953)  [other ] set/for v in x/object/0
+  1.070 (phase 0 0.916)  [kernel] list/x.count(hit)/object/1
+  1.070 (phase 0 0.901)  [kernel] tuple/x.count(hit)/object/1
+  1.069 (phase 0 0.977)  [other ] set/tuple(x)/object/0
+  1.056 (phase 0 1.000)  [other ] dict/for v in x/float/0
+  1.056 (phase 0 1.000)  [other ] dict/tuple(x)/object/100
+  1.056 (phase 0 1.090)  [other ] list/repr(x)/float/0
+  1.056 (phase 0 0.941)  [other ] tuple/repr(x)/float/0
+  1.056 (phase 0 1.000)  [other ] tuple/repr(x)/mixed/0
+  1.054 (phase 0 1.000)  [other ] list/repr(x)/object/0
+  1.052 (phase 0 1.000)  [other ] list/insert(0, v)/float/100
+  1.051 (phase 0 1.003)  [other ] list/x * 2/mixed/100
+  1.051 (phase 0 1.043)  [kernel] list/miss in x/object/1
+  1.050 (phase 0 1.000)  [other ] tuple/hash(x)/mixed/8
+
+ops whose geomean moved > 3% vs phase 0: 14
+  tuple     copy.deepcopy                cells  20  phase 3 0.097  phase 0 1.000  change 0.097
+  list      json.dumps                   cells  20  phase 3 0.123  phase 0 0.999  change 0.123
+  tuple     json.dumps                   cells  20  phase 3 0.123  phase 0 1.000  change 0.123
+  dict      json.dumps                   cells  12  phase 3 0.142  phase 0 1.004  change 0.142
+  list      copy.deepcopy                cells  20  phase 3 0.168  phase 0 1.000  change 0.168
+  dict      copy.deepcopy                cells  20  phase 3 0.196  phase 0 0.999  change 0.196
+  set       copy.deepcopy                cells  20  phase 3 0.209  phase 0 1.001  change 0.208
+  frozenset copy.deepcopy                cells  20  phase 3 0.216  phase 0 1.001  change 0.216
+  list      repr(x)                      cells  20  phase 3 0.766  phase 0 1.010  change 0.758
+  tuple     repr(x)                      cells  20  phase 3 0.766  phase 0 0.996  change 0.769
+  set       repr(x)                      cells  20  phase 3 0.828  phase 0 0.999  change 0.829
+  frozenset repr(x)                      cells  20  phase 3 0.830  phase 0 1.000  change 0.829
+  dict      repr(x)                      cells  20  phase 3 0.836  phase 0 1.002  change 0.834
+  tuple     x.count(hit)                 cells  15  phase 3 0.530  phase 0 0.514  change 1.031

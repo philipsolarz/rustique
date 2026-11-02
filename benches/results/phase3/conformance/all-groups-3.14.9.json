@@ -1,0 +1,415 @@
+{
+ "python": "3.14.9",
+ "targets": [
+  "builtins",
+  "containers",
+  "copy",
+  "dataclasses",
+  "datetime",
+  "float",
+  "fnmatch",
+  "json",
+  "logging",
+  "pathlib",
+  "posixpath",
+  "random",
+  "statistics",
+  "textwrap",
+  "urllib"
+ ],
+ "modules": {
+  "test.test_list": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 67,
+    "skip": 1
+   },
+   "differences": [],
+   "seconds": [
+    0.6,
+    0.6
+   ],
+   "stderr": ""
+  },
+  "test.test_tuple": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 38
+   },
+   "differences": [],
+   "seconds": [
+    0.3,
+    0.4
+   ],
+   "stderr": ""
+  },
+  "test.test_sort": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 21
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_builtin": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 141,
+    "skip": 6
+   },
+   "differences": [],
+   "seconds": [
+    0.4,
+    0.3
+   ],
+   "stderr": ""
+  },
+  "test.test_json": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 220,
+    "skip": 1
+   },
+   "differences": [],
+   "seconds": [
+    4.4,
+    4.4
+   ],
+   "stderr": ""
+  },
+  "test.test_float": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 52,
+    "skip": 2
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_format": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 17,
+    "skip": 2
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_strtod": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 8,
+    "skip": 1
+   },
+   "differences": [],
+   "seconds": [
+    0.2,
+    0.2
+   ],
+   "stderr": ""
+  },
+  "test.test_fstring": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 94
+   },
+   "differences": [],
+   "seconds": [
+    0.7,
+    0.6
+   ],
+   "stderr": ""
+  },
+  "test.test_copy": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 81
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_copyreg": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 6
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_dataclasses": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 279,
+    "skip": 1
+   },
+   "differences": [],
+   "seconds": [
+    0.3,
+    0.3
+   ],
+   "stderr": ""
+  },
+  "test.test_strptime": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "skip": 94,
+    "pass": 46
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_datetime": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "skip": 54,
+    "pass": 3560
+   },
+   "differences": [],
+   "seconds": [
+    26.8,
+    27.0
+   ],
+   "stderr": ""
+  },
+  "test.test_time": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 48,
+    "skip": 16
+   },
+   "differences": [],
+   "seconds": [
+    3.1,
+    3.1
+   ],
+   "stderr": ""
+  },
+  "test.test_posixpath": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 91,
+    "skip": 3
+   },
+   "differences": [],
+   "seconds": [
+    0.3,
+    0.3
+   ],
+   "stderr": ""
+  },
+  "test.test_genericpath": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 25
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_fnmatch": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 24
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_glob": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 22,
+    "skip": 2
+   },
+   "differences": [],
+   "seconds": [
+    0.2,
+    0.2
+   ],
+   "stderr": ""
+  },
+  "test.test_pathlib": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 966,
+    "skip": 403
+   },
+   "differences": [],
+   "seconds": [
+    1.3,
+    1.2
+   ],
+   "stderr": ""
+  },
+  "test.test_os": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 317,
+    "skip": 66,
+    "fail": 2
+   },
+   "differences": [],
+   "seconds": [
+    12.9,
+    12.8
+   ],
+   "stderr": ""
+  },
+  "test.test_logging": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 274,
+    "skip": 3
+   },
+   "differences": [],
+   "seconds": [
+    22.2,
+    23.3
+   ],
+   "stderr": ""
+  },
+  "test.test_random": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 114,
+    "skip": 2
+   },
+   "differences": [],
+   "seconds": [
+    1.2,
+    1.2
+   ],
+   "stderr": ""
+  },
+  "test.test_textwrap": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 68
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_urlparse": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 74,
+    "skip": 5
+   },
+   "differences": [],
+   "seconds": [
+    0.2,
+    0.2
+   ],
+   "stderr": ""
+  },
+  "test.test_urllib": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 104,
+    "skip": 2
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_statistics": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 400
+   },
+   "differences": [],
+   "seconds": [
+    14.5,
+    11.7
+   ],
+   "stderr": ""
+  }
+ },
+ "ok": false,
+ "not_installed": {
+  "pathlib.PurePath.name": [
+   "pending-import",
+   null
+  ],
+  "pathlib.PurePath.parent": [
+   "pending-import",
+   null
+  ],
+  "pathlib.PurePath.parts": [
+   "pending-import",
+   null
+  ],
+  "pathlib.PurePath.stem": [
+   "pending-import",
+   null
+  ],
+  "pathlib.PurePath.suffix": [
+   "pending-import",
+   null
+  ]
+ }
+}

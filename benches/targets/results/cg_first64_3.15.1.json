@@ -1,0 +1,62 @@
+{
+ "build": "3.15.1",
+ "jit": false,
+ "first64": true,
+ "rows": {
+  "float repr(inf) [fallback]": {
+   "plain": 775.2,
+   "on": 796.2,
+   "ratio": 1.027
+  },
+  "dumps record default= [fallback]": {
+   "plain": 36670.5,
+   "on": 31475.0,
+   "ratio": 0.858
+  },
+  "dumps with Decimal default= [fallback]": {
+   "plain": 39841.5,
+   "on": 34631.0,
+   "ratio": 0.869
+  },
+  "dumps OrderedDict [fallback]": {
+   "plain": 36626.1,
+   "on": 31494.6,
+   "ratio": 0.86
+  },
+  "dumps cls=JSONEncoder [fallback]": {
+   "plain": 36600.1,
+   "on": 31399.6,
+   "ratio": 0.858
+  },
+  "loads object_hook [fallback]": {
+   "plain": 40894.9,
+   "on": 41477.9,
+   "ratio": 1.014
+  },
+  "dumps Decimal no default [error fallback]": {
+   "plain": 40405.4,
+   "on": 41286.9,
+   "ratio": 1.022
+  },
+  "dumps circular [error fallback]": {
+   "plain": 19959.4,
+   "on": 20777.9,
+   "ratio": 1.041
+  },
+  "dumps circular, kernel declines at once [floor]": {
+   "plain": 20125.4,
+   "on": 20257.9,
+   "ratio": 1.007
+  },
+  "dumps Decimal, kernel declines at once [floor]": {
+   "plain": 40571.4,
+   "on": 35221.9,
+   "ratio": 0.868
+  },
+  "loads invalid [error fallback]": {
+   "plain": 26293.4,
+   "on": 28719.9,
+   "ratio": 1.092
+  }
+ }
+}

@@ -1,0 +1,27 @@
+Show the system configuration
+
+System state
+============
+
+CPU: use 32 logical CPUs: 0-31
+Perf event: Maximum sample rate: 100000 per second
+ASLR: Full randomization
+Linux scheduler: No CPU is isolated
+IRQ affinity: irqbalance service: active
+IRQ affinity: Default IRQ affinity: CPU 0-31
+IRQ affinity: IRQ affinity: IRQ 0-15=CPU 0-31; IRQ 24,59=CPU 27; IRQ 25,70=CPU 9; IRQ 26,64=CPU 22; IRQ 27,78=CPU 5; IRQ 28,35=CPU 29; IRQ 29=CPU 14; IRQ 30=CPU 4; IRQ 31,39=CPU 20; IRQ 32=CPU 23; IRQ 33,57=CPU 10; IRQ 34=CPU 13; IRQ 36,77=CPU 11; IRQ 37,55=CPU 1; IRQ 38,76=CPU 18; IRQ 40,67=CPU 3; IRQ 41,46=CPU 8; IRQ 42=CPU 24; IRQ 43=CPU 17; IRQ 44,61=CPU 30; IRQ 45=CPU 2; IRQ 47=CPU 0; IRQ 48,54=CPU 19; IRQ 49=CPU 31; IRQ 50,63=CPU 6; IRQ 51,72=CPU 7; IRQ 52,66=CPU 12; IRQ 53,71=CPU 26; IRQ 56=CPU 25; IRQ 58,75=CPU 21; IRQ 60,74=CPU 28; IRQ 62,73=CPU 16; IRQ 65=CPU 15; IRQ 68=CPU 0-15; IRQ 69=CPU 16-31
+
+Advices
+=======
+
+Perf event: Set max sample rate to 1
+Linux scheduler: Use isolcpus=<cpu list> kernel parameter to isolate CPUs
+Linux scheduler: Use rcu_nocbs=<cpu list> kernel parameter (with isolcpus) to not schedule RCU on isolated CPUs
+
+Warnings
+========
+
+Turbo Boost (MSR): Failed to read MSR 0x1a0 from /dev/cpu/0/msr: [Errno 13] Permission denied: '/dev/cpu/0/msr'
+ERROR: At least one operation failed with permission error, retry as root
+
+Run "python -m pyperf system tune" to tune the system configuration to run benchmarks

@@ -1,0 +1,62 @@
+{
+ "build": "3.15.1",
+ "jit": false,
+ "rows": {
+  "float repr(1.23)": {
+   "plain": 2031.3,
+   "on": 753.2,
+   "ratio": 0.371
+  },
+  "float repr(123.456789)": {
+   "plain": 3248.3,
+   "on": 791.2,
+   "ratio": 0.244
+  },
+  "float repr(1.2345678901234567e300)": {
+   "plain": 20550.3,
+   "on": 719.2,
+   "ratio": 0.035
+  },
+  "float str(2.5e-07)": {
+   "plain": 2813.3,
+   "on": 690.2,
+   "ratio": 0.245
+  },
+  "float f'{x}'": {
+   "plain": 2435.2,
+   "on": 931.1,
+   "ratio": 0.382
+  },
+  "float f'{x:.2f}' [not reached]": {
+   "plain": 1824.2,
+   "on": 1827.1,
+   "ratio": 1.002
+  },
+  "float f'v={x} t={xs}ms'": {
+   "plain": 6855.3,
+   "on": 2668.2,
+   "ratio": 0.389
+  },
+  "float repr(inf) [fallback]": {
+   "plain": 794.3,
+   "on": 798.2,
+   "ratio": 1.005
+  },
+  "float repr(F(1.5)) [subclass]": {
+   "plain": 1914.3,
+   "on": 1900.2,
+   "ratio": 0.993
+  },
+  "float '%s' % x": {
+   "plain": 1962.2,
+   "on": 684.1,
+   "ratio": 0.349
+  },
+  "dumps floats": {
+   "error": "==28535== Using source line as position.\nTraceback (most recent call last):\n  File \"/work/json/src/benches/targets/json_cg.py\", line 263, in <module>\n    main()\n    ~~~~^^\n  File \"/work/json/src/benches/targets/json_cg.py\", line 230, in main\n    worker(sys.argv[2], sys.argv[3])\n    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/work/json/src/benches/targets/json_cg.py\", line 177, in worker\n    mod = getattr(_rustique, f\"_t_{g}\")\nAttributeError: module 'rustique._rustique' has no attribute '_t_json'\n"
+  },
+  "loads floats": {
+   "error": "==28537== Using source line as position.\nTraceback (most recent call last):\n  File \"/work/json/src/benches/targets/json_cg.py\", line 263, in <module>\n    main()\n    ~~~~^^\n  File \"/work/json/src/benches/targets/json_cg.py\", line 230, in main\n    worker(sys.argv[2], sys.argv[3])\n    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/work/json/src/benches/targets/json_cg.py\", line 177, in worker\n    mod = getattr(_rustique, f\"_t_{g}\")\nAttributeError: module 'rustique._rustique' has no attribute '_t_json'\n"
+  }
+ }
+}

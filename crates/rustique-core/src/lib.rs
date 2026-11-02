@@ -8,13 +8,22 @@
 //! Nothing in this crate links against Python; the `rustique-py` crate adds the bindings.
 
 pub mod column;
+pub mod datetime;
 pub mod dtype;
 pub mod expr;
+pub mod float_repr;
 pub mod index;
+pub mod json;
 pub mod kernels;
+pub mod logging;
+pub mod paths;
 pub mod pyfmt;
 pub mod pyhash;
+pub mod random;
 pub mod slice;
+pub mod stats;
+pub mod textwrap;
+pub mod urlparse;
 
 pub use column::{Column, ColumnError, Element, Value};
 pub use compact_str::CompactString;

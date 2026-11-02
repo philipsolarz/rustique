@@ -11,6 +11,8 @@ compact_str.workspace = true
 hashbrown.workspace = true
 foldhash.workspace = true
 rayon.workspace = true
+# Shortest round-trip float digits (MIT), behind `float_repr`.
+zmij = "1.0.23"
 
 [dev-dependencies]
 proptest.workspace = true

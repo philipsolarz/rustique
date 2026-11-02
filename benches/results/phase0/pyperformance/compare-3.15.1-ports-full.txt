@@ -1,0 +1,13 @@
+Benchmarks with tag 'asyncio':
+==============================
+
+Benchmark hidden because not significant (3): asyncio_tcp, asyncio_tcp_ssl, asyncio_websockets
+
+Geometric mean: 1.00x faster
+
+All benchmarks:
+===============
+
+Benchmark hidden because not significant (3): asyncio_tcp, asyncio_tcp_ssl, asyncio_websockets
+
+Geometric mean: 1.00x faster

@@ -1,0 +1,33 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+🍹 Building a mixed python/rust project
+🐍 Found CPython 3.15t at /home/ubuntu/phase3/venv/3.15.1t/bin/python
+🔗 Found pyo3 bindings
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+warning: static `INLINE_OK` is never used
+   --> crates/rustique-py/src/targets/logging/common.rs:292:8
+    |
+292 | static INLINE_OK: std::sync::atomic::AtomicBool = std::sync::atomic::At...
+    |        ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `TPFLAGS_INLINE_VALUES` is never used
+   --> crates/rustique-py/src/targets/logging/common.rs:293:7
+    |
+293 | const TPFLAGS_INLINE_VALUES: std::ffi::c_ulong = 1 << 2;
+    |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rustique-py` (lib) generated 2 warnings
+    Finished `release` profile [optimized] target(s) in 0.04s
+📦 Including files matching "python/_rustique_startup.pth"
+📦 Built wheel for CPython 3.15t to /home/ubuntu/phase3/dist/3.15.1t/rustique-0.2.0-cp315-cp315t-manylinux_2_34_x86_64.whl
+total 2312
+drwxrwxr-x 2 ubuntu ubuntu    4096 Nov  1 19:23 .
+drwxrwxr-x 6 ubuntu ubuntu    4096 Nov  1 19:22 ..
+-rw-rw-r-- 1 ubuntu ubuntu 2357282 Nov  1 19:23 rustique-0.2.0-cp315-cp315t-manylinux_2_34_x86_64.whl
+461 _rustique_startup.pth
+6754112 rustique/_rustique.cpython-315t-x86_64-linux-gnu.so

@@ -1,0 +1,96 @@
+Note: switching to '11bad29cb890420bac1f44fad0ca841da74003a9'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+Python 3.15.1 free-threading build (main, Oct 21 2026, 17:49:09) [Clang 23.1.3 ]
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+🍹 Building a mixed python/rust project
+🐍 Found CPython 3.15t at /home/ubuntu/phase3/venv/3.15.1t/bin/python
+🔗 Found pyo3 bindings
+Using Python 3.15.1 environment at: /home/ubuntu/phase3/venv/3.15.1t
+Resolved 16 packages in 45ms
+Installed 8 packages in 96ms
+ + ast-serialize==0.13.1
+ + librt==0.16.0
+ + mypy==2.4.1
+ + mypy-extensions==1.1.0
+ + nodeenv==1.12.0
+ + pathspec==1.1.1
+ + pyright==1.1.414
+ + typing-extensions==4.16.0
+    Blocking waiting for file lock on package cache
+   Compiling target-lexicon v0.13.5
+   Compiling crossbeam-utils v0.8.23
+   Compiling proc-macro2 v1.0.107
+   Compiling libc v0.2.191
+   Compiling unicode-ident v1.0.27
+   Compiling crossbeam-epoch v0.9.21
+   Compiling quote v1.0.47
+   Compiling crossbeam-deque v0.8.8
+   Compiling rustversion v1.0.23
+   Compiling zmij v1.0.23
+   Compiling rayon-core v1.13.0
+   Compiling pyo3-macros-backend v0.30.1
+   Compiling heck v0.5.0
+   Compiling foldhash v0.2.0
+   Compiling smallvec v1.16.4
+   Compiling equivalent v1.0.3
+   Compiling static_assertions v1.1.0
+   Compiling itoa v1.0.18
+   Compiling pyo3-build-config v0.30.1
+   Compiling allocator-api2 v0.2.21
+   Compiling castaway v0.2.4
+   Compiling cfg-if v1.0.5
+   Compiling scopeguard v1.2.0
+   Compiling either v1.19.0
+   Compiling lock_api v0.5.0
+   Compiling syn v3.0.9
+   Compiling compact_str v0.10.0
+   Compiling once_cell v1.21.4
+   Compiling hashbrown v0.17.1
+   Compiling pyo3-ffi v0.30.1
+   Compiling pyo3 v0.30.1
+   Compiling rustique-py v0.2.0 (/home/ubuntu/phase3/w/3.15.1t/crates/rustique-py)
+   Compiling parking_lot_core v0.10.0
+   Compiling rayon v1.12.0
+   Compiling parking_lot v0.13.0
+   Compiling rustique-core v0.2.0 (/home/ubuntu/phase3/w/3.15.1t/crates/rustique-core)
+   Compiling pyo3-macros v0.30.1
+warning: static `INLINE_OK` is never used
+   --> crates/rustique-py/src/targets/logging/common.rs:292:8
+    |
+292 | static INLINE_OK: std::sync::atomic::AtomicBool = std::sync::atomic::At...
+    |        ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `TPFLAGS_INLINE_VALUES` is never used
+   --> crates/rustique-py/src/targets/logging/common.rs:293:7
+    |
+293 | const TPFLAGS_INLINE_VALUES: std::ffi::c_ulong = 1 << 2;
+    |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rustique-py` (lib) generated 2 warnings
+    Finished `release` profile [optimized] target(s) in 1m 10s
+📦 Built wheel for CPython 3.15t to /tmp/.tmpXlD1Di/rustique-0.2.0-cp315-cp315t-linux_x86_64.whl
+✏️ Setting installed package as editable
+🛠 Installed rustique-0.2.0
+/home/ubuntu/phase3/w/3.15.1t/python/rustique/__init__.py 0.2.0
+enable ok
+Using Python 3.15.1 environment at: venv/3.15.1t

@@ -197,7 +197,7 @@ fn find_object_inline(py: Python<'_>, ki: &ObjectIndex, elem: &Bound<'_, PyAny>,
 
 // --- reading builtin sets ----------------------------------------------------------------
 
-unsafe extern "C" {
+python_extern! {
     /// CPython's `_PySet_NextEntry`: the next entry of a `set`/`frozenset` as a *borrowed*
     /// key and its stored hash. Exported by CPython 3.14 and 3.15 (declared in
     /// `pycore_setobject.h`); valid only while the set cannot change.

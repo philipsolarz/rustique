@@ -1,0 +1,89 @@
+{
+ "python": "3.15.1 free-threading build (main, Oct 21 2026, 17:49:09) [Clang 23.1.3 ]",
+ "rows": [
+  {
+   "workload": "devtools/black_format",
+   "plain_s": 1.2930988629959757,
+   "enabled_s": 1.292032637000375,
+   "ratio": 0.999175448972919,
+   "same_result": true
+  },
+  {
+   "workload": "devtools/coverage_pyflakes_tests",
+   "plain_s": 0.4945243330002995,
+   "enabled_s": 0.493887379001535,
+   "ratio": 0.9987119865368402,
+   "same_result": true
+  },
+  {
+   "workload": "devtools/import_startup",
+   "plain_s": 2.2461898940018727,
+   "enabled_s": 2.248188937002851,
+   "ratio": 1.0008899706148249,
+   "same_result": true
+  },
+  {
+   "workload": "devtools/isort_stdlib",
+   "plain_s": 1.1874199730009423,
+   "enabled_s": 0.23283584399905521,
+   "ratio": 0.19608550411242784,
+   "same_result": true
+  },
+  {
+   "workload": "devtools/pip_resolve",
+   "plain_s": 0.6248572039985447,
+   "enabled_s": 0.5918232740004896,
+   "ratio": 0.9471336334339004,
+   "same_result": true
+  },
+  {
+   "workload": "devtools/pycodestyle_stdlib",
+   "plain_s": 1.067917763000878,
+   "enabled_s": 1.0669949069997529,
+   "ratio": 0.999135836079239,
+   "same_result": true
+  },
+  {
+   "workload": "devtools/pyflakes_stdlib",
+   "plain_s": 1.1944025330012664,
+   "enabled_s": 1.200081984999997,
+   "ratio": 1.0047550568939765,
+   "same_result": true
+  },
+  {
+   "workload": "devtools/pylint_stdlib",
+   "plain_s": 0.8990492559969425,
+   "enabled_s": 0.8981493629980832,
+   "ratio": 0.9989990615165335,
+   "same_result": true
+  },
+  {
+   "workload": "devtools/pytest_networkx",
+   "plain_s": 0.6327139679997345,
+   "enabled_s": 0.6036840029992163,
+   "ratio": 0.9541183434083277,
+   "same_result": true
+  },
+  {
+   "workload": "devtools/rich_render",
+   "plain_s": 0.3102828339979169,
+   "enabled_s": 0.31034486400312744,
+   "ratio": 1.0001999143955576,
+   "same_result": true
+  },
+  {
+   "workload": "devtools/sphinx_autodoc",
+   "plain_s": 0.8988635630012141,
+   "enabled_s": 0.8882042960030958,
+   "ratio": 0.9881413960506664,
+   "same_result": true
+  },
+  {
+   "workload": "devtools/sqlglot_transpile",
+   "plain_s": 1.0299650250017294,
+   "enabled_s": 1.0031933409991325,
+   "ratio": 0.9740071911640379,
+   "same_result": true
+  }
+ ]
+}
