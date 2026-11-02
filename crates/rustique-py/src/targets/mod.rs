@@ -14,6 +14,7 @@ pub mod copy;
 pub mod datetime;
 pub mod float;
 pub mod fnmatch;
+pub mod interp;
 pub mod json;
 pub mod logging;
 pub mod pathlib;
@@ -41,6 +42,7 @@ pub static ALL: &[&[&TargetSpec]] = &[
     datetime::TARGETS,
     copy::TARGETS,
     copy::dc::TARGETS,
+    interp::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,
@@ -56,5 +58,6 @@ pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {
     fnmatch::register(accel)?;
     datetime::register(accel)?;
     copy::register(accel)?;
+    interp::register(accel)?;
     Ok(())
 }
