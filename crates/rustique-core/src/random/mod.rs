@@ -193,102 +193,98 @@ impl Mt<'_> {
     /// pick `j`, in order. No heap allocation for the usual sizes: the pool method's
     /// index pool (`n <= 512`) and the set method's selected-index table (`k <= 256`)
     /// live on the stack.
-    pub fn sample_each(&mut self, n: usize, k: usize, mut emit: impl FnMut(usize, usize)) {
+    pub fn sample_each(&mut self, n: usize, k: usize, emit: impl FnMut(usize, usize)) {
         if sample_uses_pool(n, k) {
-            // pool = list(population); result[i] = pool[j]; pool[j] = pool[n - i - 1]
-            let mut stack = [std::mem::MaybeUninit::<u32>::uninit(); POOL_STACK];
-            let mut heap: Vec<usize> = Vec::new();
-            if n <= POOL_STACK {
-                for (i, slot) in stack[..n].iter_mut().enumerate() {
-                    slot.write(i as u32);
-                }
-                // SAFETY: the first `n` entries were just initialised.
-                let pool = unsafe { &mut *(&raw mut stack[..n] as *mut [u32]) };
-                for i in 0..k {
-                    let j = self.randbelow((n - i) as u64) as usize;
-                    emit(i, pool[j] as usize);
-                    pool[j] = pool[n - i - 1];
-                }
-            } else {
-                heap.extend(0..n);
-                for i in 0..k {
-                    let j = self.randbelow((n - i) as u64) as usize;
-                    emit(i, heap[j]);
-                    heap[j] = heap[n - i - 1];
-                }
-            }
+            if n <= POOL_STACK { self.sample_pool_stack(n, k, emit) } else { self.sample_pool_heap(n, k, emit) }
+        } else if k <= SET_STACK / 4 {
+            self.sample_set_stack(n, k, emit)
         } else {
-            // selected = set(); j = randbelow(n) until not in selected
-            if k <= SET_STACK / 4 {
-                let mut table = SmallSet::new(k);
-                for i in 0..k {
-                    let mut j = self.randbelow(n as u64) as usize;
-                    while !table.insert(j) {
-                        j = self.randbelow(n as u64) as usize;
-                    }
-                    emit(i, j);
+            self.sample_set_heap(n, k, emit)
+        }
+    }
+
+    /// The pool method, `pool = list(population)`; `result[i] = pool[j]`;
+    /// `pool[j] = pool[n - i - 1]`, on a stack pool of indices.
+    #[inline(never)]
+    fn sample_pool_stack(&mut self, n: usize, k: usize, mut emit: impl FnMut(usize, usize)) {
+        let mut buf = [std::mem::MaybeUninit::<u32>::uninit(); POOL_STACK];
+        for (i, slot) in buf[..n].iter_mut().enumerate() {
+            slot.write(i as u32);
+        }
+        // SAFETY: the first `n` entries were just initialised (`n <= POOL_STACK`).
+        let pool = unsafe { &mut *(&raw mut buf[..n] as *mut [u32]) };
+        for i in 0..k {
+            let j = self.randbelow((n - i) as u64) as usize;
+            emit(i, pool[j] as usize);
+            pool[j] = pool[n - i - 1];
+        }
+    }
+
+    #[inline(never)]
+    fn sample_pool_heap(&mut self, n: usize, k: usize, mut emit: impl FnMut(usize, usize)) {
+        let mut pool: Vec<usize> = (0..n).collect();
+        for i in 0..k {
+            let j = self.randbelow((n - i) as u64) as usize;
+            emit(i, pool[j]);
+            pool[j] = pool[n - i - 1];
+        }
+    }
+
+    /// The set method, `selected = set()`; `j = randbelow(n)` until not in `selected`, on
+    /// a stack open-addressing table sized to a power of two at least `4k` (load factor
+    /// <= 1/4), Fibonacci hashing, linear probing, storing `j + 1` (0 = empty).
+    #[inline(never)]
+    fn sample_set_stack(&mut self, n: usize, k: usize, mut emit: impl FnMut(usize, usize)) {
+        let size = (4 * k).next_power_of_two().max(16);
+        debug_assert!(size <= SET_STACK);
+        let mut buf = [std::mem::MaybeUninit::<u64>::uninit(); SET_STACK];
+        for slot in &mut buf[..size] {
+            slot.write(0);
+        }
+        // SAFETY: the first `size` entries were just initialised.
+        let table = unsafe { &mut *(&raw mut buf[..size] as *mut [u64]) };
+        let (mask, shift) = (size - 1, 64 - size.trailing_zeros());
+        let mut insert = |j: usize| -> bool {
+            let key = j as u64 + 1;
+            let mut h = (key.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> shift) as usize;
+            loop {
+                let v = table[h];
+                if v == 0 {
+                    table[h] = key;
+                    return true;
                 }
-            } else {
-                let mut selected = hashbrown::HashSet::with_capacity(k);
-                for i in 0..k {
-                    let mut j = self.randbelow(n as u64) as usize;
-                    while !selected.insert(j) {
-                        j = self.randbelow(n as u64) as usize;
-                    }
-                    emit(i, j);
+                if v == key {
+                    return false;
                 }
+                h = (h + 1) & mask;
             }
+        };
+        for i in 0..k {
+            let mut j = self.randbelow(n as u64) as usize;
+            while !insert(j) {
+                j = self.randbelow(n as u64) as usize;
+            }
+            emit(i, j);
+        }
+    }
+
+    #[inline(never)]
+    fn sample_set_heap(&mut self, n: usize, k: usize, mut emit: impl FnMut(usize, usize)) {
+        let mut selected = hashbrown::HashSet::with_capacity(k);
+        for i in 0..k {
+            let mut j = self.randbelow(n as u64) as usize;
+            while !selected.insert(j) {
+                j = self.randbelow(n as u64) as usize;
+            }
+            emit(i, j);
         }
     }
 }
 
 /// Largest population whose index pool `sample` keeps on the stack (2 KiB).
 const POOL_STACK: usize = 512;
-/// Slots of the stack set of selected indices (8 KiB); used for `k <= SET_STACK / 4`.
-const SET_STACK: usize = 1024;
-
-/// An open-addressing set of indices on the stack, sized to a power of two at least `4k`
-/// (load factor <= 1/4), Fibonacci hashing, linear probing; stores `j + 1` (0 = empty).
-struct SmallSet {
-    slots: [std::mem::MaybeUninit<u64>; SET_STACK],
-    mask: usize,
-    shift: u32,
-}
-
-impl SmallSet {
-    fn new(k: usize) -> Self {
-        let size = (4 * k).next_power_of_two().max(16);
-        debug_assert!(size <= SET_STACK);
-        let mut s = SmallSet {
-            slots: [std::mem::MaybeUninit::uninit(); SET_STACK],
-            mask: size - 1,
-            shift: 64 - size.trailing_zeros(),
-        };
-        for slot in &mut s.slots[..size] {
-            slot.write(0);
-        }
-        s
-    }
-
-    /// Insert `j`; `false` if it was already there.
-    #[inline]
-    fn insert(&mut self, j: usize) -> bool {
-        let key = j as u64 + 1;
-        let mut h = (key.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> self.shift) as usize;
-        loop {
-            // SAFETY: slots `0..=mask` were initialised in `new`.
-            let v = unsafe { self.slots[h].assume_init() };
-            if v == 0 {
-                self.slots[h].write(key);
-                return true;
-            }
-            if v == key {
-                return false;
-            }
-            h = (h + 1) & self.mask;
-        }
-    }
-}
+/// Slots of the stack table of selected indices (4 KiB); used for `k <= SET_STACK / 4`.
+const SET_STACK: usize = 512;
 
 /// Upper bound of `|z|` for an accepted [`Mt::normal_z`]: `zz <= -log(u2)` with
 /// `u2 >= 2**-53` gives `|z| <= 2 * sqrt(53 * ln 2) = 12.12...`; rounded up.

@@ -390,6 +390,71 @@ unsafe extern "C" fn vc_lognormvariate(func: O, args: *const O, nargsf: usize, k
     }
 }
 
+/// Is the "inline values are valid" read calibrated? (Its own calibration, independent of
+/// `utils_kit::INST`, which also needs `_PyDictKeys_StringLookup`: not exported on 3.14.)
+static IV_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `Py_TPFLAGS_INLINE_VALUES` (3.13+).
+const TPFLAGS_INLINE_VALUES: std::ffi::c_ulong = 1 << 2;
+
+/// Calibrate [`inline_valid`] on `os.environ` (an `os._Environ`: a Python class whose
+/// `__init__` sets five attributes; `os` is imported at startup), C calls only: its type
+/// uses inline values (`struct _dictvalues { u8 capacity, size, embedded, valid; values[] }`
+/// after `tp_basicsize`, CPython 3.13–3.15), the values are valid, `size` is 5 within
+/// `capacity`, and the five attributes the generic getattr returns are the five slots.
+fn calibrate_inline_valid(cx: &Prepare<'_>) -> Result<(), Refusal> {
+    if IV_OK.load(R) {
+        return Ok(());
+    }
+    let py = cx.py();
+    let os = module_dict_s(cx, &key(py, "os"))?;
+    let env = get_s(cx, &os, &key(py, "environ"))?;
+    // SAFETY: layout reads of a live object after the flag check; the generic getattr of a
+    // class without `__getattr__` runs no Python code.
+    let ok = unsafe {
+        let o = env.as_ptr();
+        let tp = ffi::Py_TYPE(o);
+        if ffi::PyType_GetFlags(tp) & TPFLAGS_INLINE_VALUES == 0 || !generic_getattro(tp) {
+            false
+        } else {
+            let values = o.cast::<u8>().add((*tp).tp_basicsize as usize);
+            let (cap, size, valid) = (*values, *values.add(1), *values.add(3));
+            let slots = std::slice::from_raw_parts(values.add(8).cast::<O>(), usize::from(size.min(cap)));
+            let mut found = 0;
+            for n in ["_data", "encodekey", "decodekey", "encodevalue", "decodevalue"] {
+                let v = ffi::PyObject_GenericGetAttr(o, key(py, n).as_ptr());
+                if v.is_null() {
+                    ffi::PyErr_Clear();
+                    continue;
+                }
+                found += usize::from(slots.contains(&v));
+                ffi::Py_DECREF(v);
+            }
+            valid == 1 && size == 5 && cap >= 5 && found == 5
+        }
+    };
+    if ok {
+        IV_OK.store(true, R);
+    }
+    Ok(())
+}
+
+/// Does `obj` keep its attributes in valid inline values? Then they are exactly the
+/// non-NULL entries of its type's shared keys (all `str`), also when a `__dict__` was
+/// materialized: a key outside the shared keys or a replaced `__dict__` marks the values
+/// invalid (CPython 3.13–3.15, `Objects/dictobject.c`). A lookup of a `str` name then runs
+/// no Python code (no `__eq__` of a foreign key).
+#[inline(always)]
+unsafe fn inline_valid(obj: O) -> bool {
+    // SAFETY: calibrated layout, read only for inline-values types.
+    unsafe {
+        let tp = ffi::Py_TYPE(obj);
+        IV_OK.load(R)
+            && ffi::PyType_GetFlags(tp) & TPFLAGS_INLINE_VALUES != 0
+            && std::ptr::read_volatile(obj.cast::<u8>().add((*tp).tp_basicsize as usize + 3)) == 1
+    }
+}
+
 /// `self.gauss_next` can be read and written exactly like `LOAD_ATTR`/`STORE_ATTR` do,
 /// without running Python code: the instance keeps its attributes in valid inline values,
 /// the class has the generic `__setattr__` (the generic `__getattribute__` is checked by
@@ -401,8 +466,7 @@ unsafe fn gauss_next_plain(slf: O) -> bool {
         let tp = ffi::Py_TYPE(slf);
         if (*tp).tp_setattro.map(|f| f as usize) != Some(ffi::PyObject_GenericSetAttr as *const () as usize)
             || !generic_getattro(tp)
-            || INST.shared_keys(tp).is_null()
-            || !INST.inline_only(slf)
+            || !inline_valid(slf)
         {
             return false;
         }
@@ -510,6 +574,7 @@ fn prepare_variates<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), R
     if cls.as_ptr() != ld(&RANDOM_CLS) {
         prepare_statics(py, cx, &cls)?;
     }
+    calibrate_inline_valid(cx)?;
     let math = module_dict_s(cx, &key(py, "math"))?;
     let fns = [
         ("_log", "log", &LOG_FN),
@@ -589,8 +654,14 @@ fn prep_lognorm<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refus
     )
 }
 
+/// Net-benefit credits (contract §5.6) from the measured cells (docs/targets/random.md
+/// §7.3): a fallback in mixed traffic costs the caller 330–440 Ir; a hit saves ~800 Ir
+/// (`expovariate`, `paretovariate`: break-even at 31–35% hits, so a hit credits 2 and
+/// the target stays installed while at least a third of the calls hit), ~1,300 Ir
+/// (`gauss`: break-even 24%, credit 3) and ~3,100–3,400 Ir (`normalvariate`,
+/// `lognormvariate`: break-even 10%, the default 4).
 macro_rules! variate {
-    ($spec:ident, $prep:ident, $name:literal, $guard:ident) => {
+    ($spec:ident, $prep:ident, $name:literal, $guard:ident, $credit:expr) => {
         pub static $spec: TargetSpec = TargetSpec {
             name: $name,
             group: "random",
@@ -600,19 +671,29 @@ macro_rules! variate {
             counters: &$guard.counters,
             prepare: $prep,
             shared: Some(&VARIATES),
+            hit_credit: $credit,
             ..TargetSpec::DEFAULT
         };
     };
-    ($spec:ident, $prep:ident, $name:literal, $attr:literal, $kernel:ident, $guard:ident, $fp:expr) => {
+    ($spec:ident, $prep:ident, $name:literal, $attr:literal, $kernel:ident, $guard:ident, $fp:expr, $credit:expr) => {
         fn $prep<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
             prepare_target(py, cx, &key(py, $attr), $fp, &$guard, $kernel)
         }
-        variate!($spec, $prep, $name, $guard);
+        variate!($spec, $prep, $name, $guard, $credit);
     };
 }
 
-variate!(NORMALVARIATE, prep_normal, "random.normalvariate", "normalvariate", vc_normalvariate, G_NORMAL, FP_NORMAL);
-variate!(LOGNORMVARIATE, prep_lognorm, "random.lognormvariate", G_LOGNORM);
+variate!(
+    NORMALVARIATE,
+    prep_normal,
+    "random.normalvariate",
+    "normalvariate",
+    vc_normalvariate,
+    G_NORMAL,
+    FP_NORMAL,
+    crate::accel::stats::HIT_CREDIT
+);
+variate!(LOGNORMVARIATE, prep_lognorm, "random.lognormvariate", G_LOGNORM, crate::accel::stats::HIT_CREDIT);
 variate!(
     EXPOVARIATE,
     prep_expo,
@@ -620,7 +701,8 @@ variate!(
     "expovariate",
     vc_expovariate,
     G_EXPO,
-    &[(3, 14, "94f27fe3a4af3bd2"), (3, 15, "8d8014d7d1775e3d")]
+    &[(3, 14, "94f27fe3a4af3bd2"), (3, 15, "8d8014d7d1775e3d")],
+    2
 );
 variate!(
     PARETOVARIATE,
@@ -629,7 +711,8 @@ variate!(
     "paretovariate",
     vc_paretovariate,
     G_PARETO,
-    &[(3, 14, "1a130384d6ccb719"), (3, 15, "dce41532531c3cd2")]
+    &[(3, 14, "1a130384d6ccb719"), (3, 15, "dce41532531c3cd2")],
+    2
 );
 variate!(
     GAUSS,
@@ -638,7 +721,8 @@ variate!(
     "gauss",
     vc_gauss,
     G_GAUSS,
-    &[(3, 14, "faac491a958d3838"), (3, 15, "9bd699354dfa75aa")]
+    &[(3, 14, "faac491a958d3838"), (3, 15, "9bd699354dfa75aa")],
+    3
 );
 
 /// The five variate targets.

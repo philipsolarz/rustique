@@ -131,6 +131,10 @@ CELLS = {
     "mixed: rng.paretovariate + rng.paretovariate(NPF)": "rng.paretovariate(2.0); rng.paretovariate(NPF)",
     "mixed: rng.gauss + own.gauss": "rng.gauss(0.0, 1.0); own.gauss(0.0, 1.0)",
     "mixed: rng.normalvariate + own.normalvariate": "rng.normalvariate(); own.normalvariate()",
+    # one hit for two fallbacks: at the suspension threshold of expovariate (credit 2)
+    "mixed 1:2: rng.expovariate + 2x own.expovariate": "rng.expovariate(2.0); own.expovariate(2.0); own.expovariate(2.0)",
+    "mixed 1:3: rng.gauss + 3x own.gauss": "rng.gauss(); own.gauss(); own.gauss(); own.gauss()",
+    "mixed 1:4: rng.paretovariate + 4x rng.paretovariate(NPF)": "rng.paretovariate(2.0); rng.paretovariate(NPF); rng.paretovariate(NPF); rng.paretovariate(NPF); rng.paretovariate(NPF)",
 }
 
 N = {"rng.shuffle(L100)": 20, "rng.sample(range(10**6), 20)": 40, "rng.choices(W, k=40)": 40}
