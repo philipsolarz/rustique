@@ -243,6 +243,22 @@ unsafe fn quote_kernel(
                 if matches!(input, QIn::Str(u) if u.is_empty()) {
                     return checked(g, spec, ffi::Py_NewRef(string), func, args, nargsf, kw);
                 }
+                // A one-byte input that needs quoting: CPython returns the `_Quoter` cache's
+                // shared object; decide that before any other work.
+                let one = match input {
+                    QIn::Bytes(b) if b.len() == 1 => Some(u32::from(b[0])),
+                    QIn::Str(u) if u.len() == 1 && u.at(0) < 128 => Some(u.at(0)),
+                    _ => None,
+                };
+                if let Some(c) = one
+                    && !up::ALWAYS_SAFE_TABLE[c as usize]
+                    && !(c == u32::from(b'/') && !plus && safe.is_null())
+                    && !(c == 0x20 && plus)
+                    && (safe.is_null() || !safe_of(safe, None).is_some_and(|t| t[c as usize]))
+                {
+                    g.counters.fallback_streak(Reason::Args);
+                    return call_original(func, args, nargsf, kw);
+                }
                 let has_space = match input {
                     QIn::Bytes(b) => b.contains(&b' '),
                     QIn::Str(u) => with_units!(u, t => t.iter().any(|&c| c.cp() == 0x20)),

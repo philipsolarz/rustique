@@ -290,6 +290,21 @@ impl Opts {
         }
     }
 
+    /// `max_lines` with an empty placeholder: a cut can build a fresh one-character
+    /// `''.join` (not the singleton), `prev_line + ''` and `indent + ''` objects; CPython
+    /// runs these (decided before any other work: the module functions reach the method).
+    fn cut_with_empty_placeholder(&self) -> bool {
+        // SAFETY: a live exact str (kept by the caller / `held`).
+        self.max_lines.is_some()
+            && !self.placeholder.is_null()
+            && unsafe { ffi::PyUnicode_GET_LENGTH(self.placeholder) } == 0
+    }
+
+    /// The placeholder object (the argument, or `TextWrapper.__init__`'s default).
+    fn placeholder_obj(&self) -> O {
+        if self.placeholder.is_null() { ld(&DEFAULT_PLACEHOLDER_OBJ) } else { self.placeholder }
+    }
+
     /// Decode the `str` options into the scratch buffers.
     unsafe fn decode(&self, sc: &mut Scratch) {
         // SAFETY: live exact str objects (kept by the caller / `held`).
@@ -340,6 +355,9 @@ unsafe fn str_arg(o: O) -> Option<O> {
 /// `expandtabs` without tabs: all return their argument).
 fn wrap_into<T: Unit>(text: &[T], o: &Opts, sc: &mut Scratch) -> Option<bool> {
     let cls = Cls;
+    if o.cut_with_empty_placeholder() {
+        return None; // checked by the callers first; kept here for any other caller
+    }
     let munged_is_input = !o.replace_whitespace && (!o.expand_tabs || !text.iter().any(|&c| c.into() == 0x09));
     tw::munge_into(text, o.expand_tabs, o.tabsize, o.replace_whitespace, &mut sc.munged);
     let munged = &sc.munged;
@@ -367,9 +385,6 @@ fn wrap_into<T: Unit>(text: &[T], o: &Opts, sc: &mut Scratch) -> Option<bool> {
         Err(WrapError::InvalidWidth | WrapError::PlaceholderTooLarge | WrapError::NoProgress) => return None,
     }
     let w = &sc.wrapped;
-    if w.placeholder_identity {
-        return None; // a line that is the placeholder object (or a fresh 1-char str): CPython's
-    }
     let whole = munged_is_input
         && one_chunk
         && sc.initial.is_empty()
@@ -428,6 +443,8 @@ unsafe fn lines_list(sc: &Scratch, o: &Opts, text: O, whole: bool) -> O {
         for i in 0..n {
             let s = if whole {
                 ffi::Py_NewRef(text)
+            } else if i + 1 == n && sc.wrapped.last_is_placeholder {
+                ffi::Py_NewRef(o.placeholder_obj())
             } else {
                 let (len, max) = line_shape(sc, &opts, i, bound);
                 match StrWriter::new(len, max) {
@@ -458,6 +475,9 @@ unsafe fn lines_joined(sc: &Scratch, o: &Opts, text: O, whole: bool) -> O {
             return ffi::Py_NewRef(text);
         }
         let n = sc.wrapped.len();
+        if n == 1 && sc.wrapped.last_is_placeholder {
+            return ffi::Py_NewRef(o.placeholder_obj()); // `"\n".join([placeholder])`
+        }
         let opts = wrap_opts(sc, o);
         let bound = ascii_bound(sc);
         let (mut len, mut max) = (n.saturating_sub(1), if n > 1 { 0x0a } else { 0 });
@@ -488,6 +508,8 @@ unsafe fn lines_joined(sc: &Scratch, o: &Opts, text: O, whole: bool) -> O {
 static TW_CLS: AtomicPtr<ffi::PyObject> = null!();
 static INIT_DEFAULTS: AtomicPtr<ffi::PyObject> = null!();
 static INIT_KWDEFAULTS: AtomicPtr<ffi::PyObject> = null!();
+/// `TextWrapper.__init__.__kwdefaults__['placeholder']` (validated as `' [...]'`).
+static DEFAULT_PLACEHOLDER_OBJ: AtomicPtr<ffi::PyObject> = null!();
 static INIT_FUNC: AtomicPtr<ffi::PyObject> = null!();
 static TRANS: AtomicPtr<ffi::PyObject> = null!();
 static FILL_FUNC: AtomicPtr<ffi::PyObject> = null!();
@@ -627,7 +649,10 @@ unsafe fn parse_module_call(args: *const O, nargsf: usize, kw: O, kind: Kind) ->
                     text = v;
                     continue;
                 }
-                let j = (0..12).find(|&j| k == ld(&S_OPTS[j]) || ffi::PyUnicode_Compare(k, ld(&S_OPTS[j])) == 0)?;
+                // Keyword names are interned at the call site: identity first, value second.
+                let j = (0..12)
+                    .find(|&j| k == ld(&S_OPTS[j]))
+                    .or_else(|| (0..12).find(|&j| ffi::PyUnicode_Compare(k, ld(&S_OPTS[j])) == 0))?;
                 if j == 0 {
                     if !width.is_null() {
                         return None;
@@ -678,7 +703,9 @@ fn collapse_into<T: Unit>(text: &[T], out: &mut Vec<u32>) -> bool {
 unsafe fn module_kernel(g: &Guard, kind: Kind, func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments.
     unsafe {
-        if let Some((text, o)) = parse_module_call(args, nargsf, kw, kind) {
+        if let Some((text, o)) = parse_module_call(args, nargsf, kw, kind)
+            && !o.cut_with_empty_placeholder()
+        {
             if !g.ready(func) {
                 return call_original(func, args, nargsf, kw);
             }
@@ -825,8 +852,13 @@ unsafe fn instance_opts(slf: O) -> Option<Opts> {
         }
         let mut o = Opts::defaults();
         let mut h = 0;
-        for (i, name) in S_OPTS.iter().enumerate() {
-            let v = ffi::PyObject_GenericGetAttr(slf, ld(name));
+        // `max_lines` and `placeholder` first: a cut with an empty placeholder is CPython's,
+        // decided after two reads.
+        for (k, i) in [10, 11, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9].into_iter().enumerate() {
+            if k == 2 && o.cut_with_empty_placeholder() {
+                return None;
+            }
+            let v = ffi::PyObject_GenericGetAttr(slf, ld(&S_OPTS[i]));
             if v.is_null() {
                 ffi::PyErr_Clear();
                 return None;
@@ -853,8 +885,9 @@ unsafe fn method_kernel(g: &Guard, fill: bool, func: O, args: *const O, nargsf: 
                 if !g.ready(func) {
                     return call_original(func, args, nargsf, kw);
                 }
-                if class_state_ok()
-                    && let Some(o) = instance_opts(slf)
+                if let Some(o) = instance_opts(slf)
+                    && !o.cut_with_empty_placeholder()
+                    && class_state_ok()
                 {
                     let r = with_scratch(|sc| {
                         o.decode(sc);
@@ -1052,6 +1085,8 @@ fn prepare_common<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<Bound<'
     keep(&NEW_OBJ, &get_s(cx, &crate::accel::prepare::type_dict(&object)?, &name_of(&S_NEW))?);
     keep(&INIT_DEFAULTS, &defaults);
     keep(&INIT_KWDEFAULTS, &kwdefaults);
+    let ph = kwdefaults.cast::<PyDict>().map_err(PyErr::from)?.get_item("placeholder")?;
+    keep(&DEFAULT_PLACEHOLDER_OBJ, &ph.ok_or_else(|| Refusal::new("TextWrapper placeholder default"))?);
     keep(&TRANS, &trans);
     // SAFETY: probe of the table installed above (no Python code runs).
     if unsafe { !class_state_ok() } {

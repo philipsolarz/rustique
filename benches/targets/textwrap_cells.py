@@ -39,6 +39,7 @@ CELLS = {
     "fill(desc, Latin-1)": "textwrap.fill(DESC1, width=88)",
     "fill(desc, UCS-2)": "textwrap.fill(DESC2, width=88)",
     "shorten(title, 12) [max_lines cut]": "textwrap.shorten(TITLE, 12)",
+    "shorten(title, 5, '...') [line is the placeholder object]": "textwrap.shorten(TITLE, 5, placeholder='...')",
     # fallbacks
     "fill(max_lines, empty placeholder) [fallback]": "textwrap.fill(TITLE, 12, max_lines=1, placeholder='')",
     "wrap(str subclass) [fallback]": "textwrap.wrap(SS, 20)",
