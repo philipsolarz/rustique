@@ -220,19 +220,20 @@ polymorphic site (lead's ruling, 2026-11-02).
 ## 4. Measurements
 
 ### 4.1 Cells (M, `benches/interp/cells_cg.py`, callgrind Ir per operation, fresh process per
-cell, 3.15.1, PGO build; "per 4": a loop over 4 objects of 3 types)
+cell, 3.15.1, PGO build of the final code (isinstance rows) and of `0d73921` (others, unchanged
+within ±1%); "per 4": a loop over 4 objects of 3 types)
 
 | override | cell | plain | tier | ratio |
 |---|---|---:|---:|---:|
-| isinstance | exact type | 178 | 151 | 0.848 |
-| | subclass, positive | 271 | 266 | 0.981 |
-| | **negative, plain class** | 354 | 219 | **0.619** |
-| | negative, int instance | 358 | 221 | 0.618 |
-| | **metaclass, negative** | 727 | 236 | **0.325** |
-| | tuple `(Other, A)` | 630 | 495 | 0.786 |
-| | `__getattr__` class, negative (fallback) | 529 | 541 | 1.022 |
-| | ABCMeta negative (fallback) | 1665 | 1710 | 1.027 |
-| | union `int \| str` (fallback) | 3171 | 3217 | 1.014 |
+| isinstance | exact type | 178 | 161 | 0.904 |
+| | subclass, positive | 271 | 263 | 0.970 |
+| | **negative, plain class** | 354 | 221 | **0.624** |
+| | negative, int instance | 358 | 223 | 0.623 |
+| | **metaclass, negative** | 727 | 240 | **0.330** |
+| | tuple `(Other, A)` | 630 | 496 | 0.787 |
+| | `__getattr__` class, negative (fallback) | 529 | 539 | 1.019 |
+| | ABCMeta negative (fallback) | 1665 | 1713 | 1.029 |
+| | union `int \| str` (fallback) | 3171 | 3213 | 1.013 |
 | attribute cache | **polymorphic `o.x`** (per 4) | 1068 | 888 | **0.831** |
 | | polymorphic `o.m()` (per 4) | 2316 | 2055 | 0.887 |
 | | **polymorphic inherited `__slots__`** (per 4) | 1114 | 839 | **0.754** |
