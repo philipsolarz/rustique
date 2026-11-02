@@ -416,7 +416,17 @@ out-of-process; `pyinstrument`, `yappi`-style samplers are not) is exposed.
 
 - YAML parsing and a simulation of the `plan` step (8 wheel cells, 32 platform cells);
 - `check_wheels.py` on repacked and maturin-layout wheels;
-- `platform_tests.py` end to end on the box (Linux x86_64, release wheel, CPython 3.15.1 Lib/test): ⟨PLATFORM⟩.
+- the Linux x86_64 cell end to end on the box (`benches/dx/ci_local.sh`, M), with a
+  `maturin build --release` wheel for 3.15.1:
+  - the repack moved the extension to the root and dropped the shim, and the layout check
+    passed;
+  - smoke: all checks passed;
+  - coverage: 84/84 installed;
+  - Rustique's tests from the installed wheel: 1,773 passed (after one fix: a switch test
+    must run with `-S` when the interpreter's own startup line has already loaded the
+    extension);
+  - conformance: 26 CPython test modules, 0 differences;
+  - report: the floor is met.
 
 actionlint could not be fetched in this environment (the download was not permitted). Run it
 before the first dispatch.
@@ -426,7 +436,10 @@ before the first dispatch.
 - Coverage code is accel's (Windows `GetProcAddress` lookup, the `PyASCIIObject.state`
   accessor, the platform allowlist) and text's (datetime gating). Prototype patches: w2-dx
   §6 (`~/rustique-research/w2/dx/platform-*.patch`). dx owns the CI that validates it and
-  the coverage report above. Status at this branch's head: ⟨T10⟩.
+  the coverage report above. Status at this branch's head (wave2 c245899 merged): the
+  Windows and macOS/musl changes have not landed yet, so the floors stay at wave 1's counts
+  (Windows 30/28, macOS/musl 74). T10 is measured by the first platform-coverage artifact
+  after accel B and text are merged.
 - USAGE.md now documents:
   - `pip install --only-binary rustique` (uv: `--only-binary` / `no-build-package`) for CI
     and Docker;
@@ -441,8 +454,10 @@ before the first dispatch.
 
 Phase 1 (w2-dx §4): 14 projects' own suites showed 0 behaviour differences on 3.15.1 (6 again
 on 3.15.1t), with the release wheels of wave 1. `benches/dx/real_projects.py` re-runs them
-under `diff`. The final run on the integrated `wave2` is the lead's call, at the end:
-⟨REALPROJECTS⟩.
+under `diff`. The final run on the integrated `wave2` (14 suites on 3.15.1, 6 on 3.15.1t) is
+for when the lead asks, once the target workstreams are merged:
+`real_projects.py setup --wheels DIR` with a release wheel of the integrated branch, then
+`run` and `table`. Not run in this phase.
 
 ## 8. Tests
 
