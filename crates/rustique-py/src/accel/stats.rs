@@ -168,16 +168,21 @@ impl Counters {
         self.hit_check()
     }
 
-    /// [`Self::fallback`] for vectorcall kernels: every fallback except `Deps` (which
-    /// suspends through the pins) debits the net-benefit score; when it reaches its floor
-    /// the registry suspends the target (original vectorcall restored, so the remaining
-    /// calls cost what CPython's do) until the next `enable()`. From a fresh state that is
-    /// [`STREAK_LIMIT`] consecutive fallbacks; with default policy, traffic where fewer
-    /// than 20% of the calls hit gets there too, however the hits are interleaved.
+    /// [`Self::fallback`] for vectorcall kernels: every fallback debits the net-benefit
+    /// score; when it reaches its floor the calling thread suspends the target (original
+    /// vectorcall restored, so the remaining calls cost what CPython's do) until the next
+    /// `enable()`. From a fresh state that is [`STREAK_LIMIT`] consecutive fallbacks; with
+    /// default policy, traffic where fewer than 20% of the calls hit gets there too, however
+    /// the hits are interleaved. On GIL builds a `Deps` fallback does not debit: a changed
+    /// dependency suspends the target through its pins at once (this thread performs it)
+    /// and resumes it when the pins re-arm. Free-threaded builds swap nothing in steady
+    /// state for a dependency (a swap stops the world): there `Deps` debits like the others.
     #[inline(always)]
     pub fn fallback_streak(&self, why: Reason) {
         self.fallback(why);
-        if !matches!(why, Reason::Deps) {
+        if matches!(why, Reason::Deps) && !cfg!(Py_GIL_DISABLED) {
+            super::registry::deps_fallback();
+        } else {
             self.debit_fallback();
         }
     }
@@ -198,7 +203,7 @@ impl Counters {
     #[cold]
     fn request_suspend(&self) {
         self.suspend_requested.store(true, Ordering::Release);
-        super::registry::schedule_resync();
+        super::registry::suspend_from_kernel();
     }
 
     #[inline(always)]
