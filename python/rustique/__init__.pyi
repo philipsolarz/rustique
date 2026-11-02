@@ -16,10 +16,12 @@ def enable(
     *,
     only: str | Iterable[str] | None = None,
     exclude: str | Iterable[str] | None = None,
+    tiers: str | Iterable[str] | None = None,
     builtins: bool = True,
 ) -> dict[str, Any]:
     """Put Rust kernels behind CPython's own entry points, process-wide (groups or target
-    names in ``only``/``exclude``). A no-op under ``RUSTIQUE=0``. Returns :func:`status`."""
+    names in ``only``/``exclude``; opt-in ``tiers`` such as ``["interp", "gc"]``). A no-op
+    under ``RUSTIQUE=0``. Returns :func:`status`."""
 
 def disable() -> dict[str, Any]:
     """Undo :func:`enable`. Returns :func:`status`."""

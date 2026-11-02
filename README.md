@@ -127,7 +127,10 @@ CPython's. Full report: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 | scoreboard, 0–100 elements: cells within 1.05 (instructions) | 3810/3814 — 3814/3814 (every result identical) |
 | scoreboard, 10k/1M elements: geometric mean (wall time) | 0.88 — 0.88 (kernel paths 0.46 — 0.48; untouched code 1.00) |
 | 1M elements: `max(floats)`, `min(ints)`, `ints.sort()`, `x in ints`, `ints.count(v)` | 0.13, 0.17, 0.18, 0.26, 0.25 — 0.21, 0.21, 0.15, 0.33, 0.33 |
-| process startup (`import rustique; rustique.enable()`) | +1.7 ms (1.17×) — +2.2 ms (1.18×) |
+| process startup (`import rustique; rustique.enable()`), 0.2 | +1.7 ms (1.17×) — +2.2 ms (1.18×) |
+
+Startup since 0.3 (instructions, dev box): `RUSTIQUE=1` adds 2.8% to `python -c pass` over an
+installed-but-off start, on 3.15.1 and 3.14.9 alike ([docs/targets/engine.md](docs/targets/engine.md)).
 
 ## Develop
 
