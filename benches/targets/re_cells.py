@@ -84,6 +84,11 @@ COMPILE = {
     "compile error [fallback]": "bad()",
     "compile flags=RegexFlag [fallback]": "_compiler.compile(SMALL, re.I)",
     "compile str subclass flags [fallback]": "_compiler.compile(SMALL, IFLAG)",
+    # unsuspended declines: each mixed with a hit on SMALL (the hit saves the "compile small"
+    # difference; the decline's own overhead is the rest)
+    "compile error + small [fallback+hit]": "bad(); _compiler.compile(SMALL, 0)",
+    "compile FutureWarning + small [fallback+hit]": "_compiler.compile('[[a]', 0); _compiler.compile(SMALL, 0)",
+    "compile \\N{...} + small [fallback+hit]": "_compiler.compile(r'\\N{EM DASH}+', 0); _compiler.compile(SMALL, 0)",
 }
 
 FUNCS = {

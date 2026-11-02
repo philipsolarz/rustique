@@ -298,7 +298,7 @@ unsafe fn repl_kind(st: &state::Funcs, p: O, repl: O, istext: bool) -> Repl {
 /// # Safety
 /// Attached thread; `p` an exact Pattern; `repl` an exact str or bytes.
 unsafe fn template_checked(st: &state::Funcs, p: O, repl: O, _istext: bool) -> bool {
-    // SAFETY: C getters of an exact Pattern (member/getset descriptors); dict reads.
+    // SAFETY: a C getter of an exact Pattern (member descriptor).
     unsafe {
         let g = ffi::PyObject_GetAttr(p, st.n_groups);
         if g.is_null() {
@@ -312,41 +312,12 @@ unsafe fn template_checked(st: &state::Funcs, p: O, repl: O, _istext: bool) -> b
             return false;
         }
         let maxgroups = state::compile_state().map_or(i32::MAX as u32 / 2, |c| c.maxgroups);
-        let mut gi: O = std::ptr::null_mut();
-        let mut index = |name: &[u32]| -> Option<u32> {
-            if gi.is_null() {
-                gi = ffi::PyObject_GetAttr(p, st.n_groupindex);
-                if gi.is_null() {
-                    ffi::PyErr_Clear();
-                    return None;
-                }
-            }
-            // an ASCII identifier: its code units as UCS1
-            let mut buf = [0u8; 64];
-            if name.len() > buf.len() {
-                return None;
-            }
-            for (d, &c) in buf.iter_mut().zip(name) {
-                *d = c as u8;
-            }
-            let k = ffi::PyUnicode_FromStringAndSize(buf.as_ptr().cast(), name.len() as ffi::Py_ssize_t);
-            let v = if k.is_null() { std::ptr::null_mut() } else { ffi::PyObject_GetItem(gi, k) };
-            ffi::Py_XDECREF(k);
-            if v.is_null() {
-                ffi::PyErr_Clear();
-                return None;
-            }
-            let x = ffi::PyLong_AsLong(v);
-            ffi::Py_DECREF(v);
-            if x < 0 {
-                ffi::PyErr_Clear();
-                return None;
-            }
-            Some(x as u32)
-        };
+        // `\g<name>`: looking a name up in `Pattern.groupindex` (a mapping proxy built per
+        // access) costs more than the kernel saves (measured 1.09): such templates decline
+        // and run the original; numeric references (`\1`, `\g<1>`) are checked here.
+        let mut index = |_name: &[u32]| -> Option<u32> { None };
         let ok = with_units(repl, |units, _| template::check(units, groups as u32, maxgroups, &mut index).is_ok())
             .unwrap_or(false);
-        ffi::Py_XDECREF(gi);
         ok
     }
 }
