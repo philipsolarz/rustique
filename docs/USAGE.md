@@ -291,7 +291,9 @@ rustique 0.3.0 on CPython 3.15.1 (GIL), 5 processes (4 forked): enabled by RUSTI
   original. For `fallback` suspensions that lasts until the next `enable()`; for `deps`
   suspensions, until the dependency is back. Remaining calls cost what CPython's do.
 - **armed**: the target's entry point is swapped and it validates at its first call (then
-  installed, or refused).
+  installed, or refused). A target that is never called costs no validation. `status`
+  validates every armed target before printing, so it shows the final verdicts;
+  `RUSTIQUE_VALIDATE=eager` does the same for a whole process.
 - **refused**: grouped by category, each with what to do:
 
   | category | meaning | what to do |
@@ -453,6 +455,7 @@ rustique:
 | `RUSTIQUE_TIERS` | `interp,gc` | turn these opt-in tiers on too (added to `enable(tiers=)`) |
 | | `none`/`0`/empty | every tier off, even ones the code asked for |
 | `RUSTIQUE_UNVALIDATED_PATCH` | `1` | on a patch release this Rustique release did not validate, install the targets whose code matches a validated release (reported `unvalidated`) |
+| `RUSTIQUE_VALIDATE` | `first-call` (default) / `eager` | when a target is validated: at its first call (a program pays only for what it calls; targets show as `armed` until then), or at enable/import (every verdict at once: CI, `python -m rustique status`). Free-threaded builds always validate eagerly |
 | `RUSTIQUE_STATS` | `1` | counters on when Rustique is enabled |
 | `RUSTIQUE_REPORT` | `1` / `stderr` | report at exit on stderr (implies `RUSTIQUE_STATS=1`) |
 | | a path (`{pid}` is replaced) | append the text report to the file; with `.json`, one JSON record per process, plus live counter files `<path>.<pid>.cnt` (what `report`/`diff`/`report --from` read) |

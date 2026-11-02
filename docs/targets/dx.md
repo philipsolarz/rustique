@@ -383,13 +383,22 @@ out-of-process; `pyinstrument`, `yappi`-style samplers are not) is exposed.
 
   The sdist job checks its wheel with `--layout shim` (maturin's layout, loaded through
   `_rustique.py`).
-- **interp tier** (interp's request): the Linux x86_64 job installs `clang` + `llvm` in the
-  manylinux_2_28 container (`before-script-linux`, version ≥ 19 checked). It passes
-  `RUSTIQUE_INTERP_REQUIRE=1`, so a missing compiler fails the build. The smoke test asserts
-  `interp` is *installable* (state `disabled`, opt-in reason) on python-build-standalone
-  3.15/3.15t (`uv python install`), and *refused, "built without handlers"* on every other
-  platform's wheels. setup-python's interpreters on Linux x86_64 get no interp assertion:
-  they are not PBS builds.
+- **interp tier** (crates/rustique-interp, merged in 0d73921):
+  - The Linux x86_64 job installs `clang` + `llvm` in the manylinux_2_28 container
+    (`before-script-linux`, version ≥ 19 checked). It passes `RUSTIQUE_INTERP_REQUIRE=1`, so
+    a missing compiler or `llvm-profdata` (PGO) fails the build.
+  - Every other job builds the empty handler set: the crate's build script compiles nothing
+    off x86_64 Linux glibc and needs no clang there (it reads the target cfg; musl is
+    excluded too).
+  - Smoke, every wheel: without `tiers=` every interp target is `disabled` with the opt-in
+    reason.
+  - Linux x86_64: asked for (`enable(tiers=["interp"])`), they install. This runs on the
+    python-build-standalone builds of every release in `src/builds.rs` (3.15.1, 3.15.2, GIL
+    and t), installed with uv 0.13.6: the tier recognises a binary by its ELF build-id, and
+    each uv version pins one PBS build per release.
+  - Everywhere else, asked for, they refuse ("validated on x86_64 Linux (glibc) only", or
+    "built without handlers").
+  - setup-python's interpreters are not PBS builds and get no interp assertion.
 - **`platform` job** (new): 8 platforms × 4 builds (PRs: Linux x86_64 × 3.15, 3.15t). Each
   cell runs `.github/scripts/platform_tests.py` (stdlib only):
   1. a fresh venv with the platform's wheel from the `wheels` job;
@@ -502,11 +511,15 @@ The CI cell above ran CPython's test modules for all 84 targets against the rele
    `RUSTIQUE_TIERS`, status and report). Until `interp`/`gc` merge there is no tier target,
    so `--tiers gc` warns "no tier named 'gc'".
 4. **wheels.yml has never run on GitHub** (no push from here). The first tag or dispatch is
-   the proof for: the repack on Windows (`.pyd`), the interp-tier clang install in
-   manylinux_2_28 (needs `crates/rustique-interp` merged; until then the Linux x86_64
-   "installable" assertion fails, so drop `interp: True` if interp does not land this wave),
-   `--fetch-cpython` on every runner, and the platform job's run time (estimated 10–40 min
-   per cell, I). Please run actionlint first.
+   the proof for:
+   - the repack on Windows (`.pyd`);
+   - the clang 19+/llvm install with `dnf` in manylinux_2_28 (AlmaLinux 8; if its clang is
+     older, use `RUSTIQUE_INTERP_CC` with a toolset clang);
+   - uv 0.13.6 still serving the PBS builds that `src/builds.rs` records;
+   - `--fetch-cpython` on every runner;
+   - the platform job's run time (estimated 10–40 min per cell, I).
+
+   Please run actionlint first.
 5. **Platform floors** are wave 1's counts. Raise `.github/platform-floors.json` to T10
    (Windows 48, macOS/musl 77) when accel's and text's platform changes are merged, and update
    USAGE.md's platform table (today's coverage: Windows refuses `copy`/`logging`/`random`/
