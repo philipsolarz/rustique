@@ -265,13 +265,16 @@ def test_threads_stress():
     for t in ts:
         t.start()
     try:
+        # Registering while other threads dispatch is not thread-safe in CPython itself
+        # (`_find_impl` iterates the registry): clear the cache and add dispatchers only.
         for _ in range(30):
             f._clear_cache()
 
-            class N:
-                pass
+            @functools.singledispatch
+            def g(x):
+                return x
 
-            f.register(N, lambda x: "n")
+            g(1)
     finally:
         stop.set()
         for t in ts:
