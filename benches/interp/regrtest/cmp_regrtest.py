@@ -35,4 +35,28 @@ if "tier" in runs and "noop" in runs:
     gate = 1 if only_tier else 0
 if "noop" in runs and "plain" in runs:
     print(f"harness footprint (noop vs plain): {sorted(runs['noop'][0] - runs['plain'][0])}")
+
+
+def outcomes(path):
+    """{test id: outcome} from a regrtest --junit-xml file."""
+    import xml.etree.ElementTree as ET
+    out = {}
+    for case in ET.parse(path).iter("testcase"):
+        tid = f"{case.get('classname')}.{case.get('name')}"
+        st = "pass"
+        for child in case:
+            if child.tag in ("failure", "error", "skipped"):
+                st = child.tag
+        out[tid] = st
+    return out
+
+
+xml = {n: os.path.join(d, n + ".xml") for n in ("noop", "tier")}
+if all(os.path.exists(p) for p in xml.values()):
+    a, b = outcomes(xml["noop"]), outcomes(xml["tier"])
+    diff = sorted((t, a.get(t), b.get(t)) for t in set(a) | set(b) if a.get(t) != b.get(t))
+    print(f"per-test outcomes: noop {len(a)}, tier {len(b)}; differences: {len(diff)}")
+    for t, x, y in diff[:40]:
+        print(f"   {t}: noop={x} tier={y}")
+    gate |= 1 if diff else 0
 sys.exit(gate)

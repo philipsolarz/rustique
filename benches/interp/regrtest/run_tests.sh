@@ -21,6 +21,7 @@ printf '%s\n%s\n' "$TP" \
   "import os, sys; os.environ.get('RQ_TIER_TEST') and (sys.path.insert(0, '$HERE/site'), __import__('rq_tier_autoload'), sys.path.remove('$HERE/site'))" \
   > "$SP/rq_testpkg.pth"
 args=${*:-"-j8 -q"}
+args="$args --junit-xml $out/$v.xml"
 rm -f "$out/installed.$v"
 if [ "$v" = plain ]; then
   env -u RQ_TIER_TEST python -m test $args > "$out/$v.log" 2>&1
