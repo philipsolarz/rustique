@@ -304,6 +304,11 @@ fn fn_fp_name(module: &str, f: &str) -> &'static str {
 /// table, the `_EXTRA_CASES` table.
 fn shared_compile(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     use rustique_core::re::consts as k;
+    if cx.arming() {
+        // Armed until the first call (accel's first-call validation): the targets only
+        // declare their sites now; everything below runs at the full prepare.
+        return Ok(());
+    }
     let red = cx.module()?.dict();
     let co_m = cx.loaded_module("re._compiler")?;
     let pa_m = cx.loaded_module("re._parser")?;
@@ -503,6 +508,9 @@ fn prep_compile(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 /// `Pattern` type) and on a template `sub` (`parse_template`, `_compile_template`). The
 /// fingerprints are checked on the first call ([`funcs_ready`]).
 fn shared_funcs(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    if cx.arming() {
+        return Ok(()); // see `shared_compile`
+    }
     let red = cx.module()?.dict();
     let pa_m = cx.loaded_module("re._parser")?;
     let pa = pa_m.dict();

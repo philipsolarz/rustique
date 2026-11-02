@@ -11,6 +11,9 @@ EXPECT=re._compiler.compile,re.match,re.fullmatch,re.search,re.sub,re.subn,re.sp
 # directories in the working directory, and a concurrent `rbox` sync (rsync --delete) of the
 # source tree would remove them mid-test.
 SRC=$(pwd)
+# Every target validated at install (not armed until its first call): the kernels run from the
+# first call of every test module.
+export RUSTIQUE_VALIDATE=eager
 mkdir -p /work/w2ws-re/conf-cwd-$B && cd /work/w2ws-re/conf-cwd-$B
 python "$SRC/tests/conformance/run_target_suites.py" --targets re --modules "$MODS" --expect-installed "$EXPECT" \
     --json "$OUT/re-conformance-$B.json" --timeout 2400 > "$OUT/re-conformance-$B.log" 2>&1
