@@ -1,0 +1,78 @@
+=== 3.15.1 containers
+  test.test_list                           plain=ran        enabled=ran        pass=68 skip=1  differences=0 (1.0s/1.0s)
+  test.test_tuple                          plain=ran        enabled=ran        pass=38  differences=0 (0.4s/0.4s)
+  test.test_sort                           plain=ran        enabled=ran        pass=21  differences=0 (0.1s/0.1s)
+  test.test_builtin                        plain=ran        enabled=ran        pass=150 skip=7  differences=0 (0.4s/0.4s)
+  test.test_contains                       plain=ran        enabled=ran        pass=4  differences=0 (0.1s/0.1s)
+=== 3.15.1 json
+  test.test_json                           plain=ran        enabled=ran        pass=232 skip=1  differences=0 (3.2s/3.0s)
+  test.test_float                          plain=ran        enabled=ran        pass=52 skip=2  differences=0 (0.2s/0.1s)
+  test.test_format                         plain=ran        enabled=ran        pass=17 skip=2  differences=0 (0.1s/0.1s)
+  test.test_strtod                         plain=ran        enabled=ran        pass=8 skip=1  differences=0 (0.3s/0.3s)
+=== 3.15.1 copy
+  test.test_copy                           plain=ran        enabled=ran        pass=84  differences=0 (0.2s/0.2s)
+  test.test_copyreg                        plain=ran        enabled=ran        pass=6  differences=0 (0.4s/0.2s)
+  test.test_dataclasses                    plain=ran        enabled=ran        pass=284 skip=1  differences=0 (0.5s/0.5s)
+  test.test_uuid                           plain=ran        enabled=ran        pass=103 skip=17  differences=0 (0.3s/0.3s)
+=== 3.15.1 set
+  test.test_set                            plain=ran        enabled=ran        pass=644  differences=0 (1.5s/1.5s)
+=== 3.15.1t containers
+  test.test_list                           plain=ran        enabled=ran        pass=68 skip=1  differences=0 (0.7s/0.7s)
+  test.test_tuple                          plain=ran        enabled=ran        pass=38  differences=0 (0.8s/0.7s)
+  test.test_sort                           plain=ran        enabled=ran        pass=21  differences=0 (0.2s/0.2s)
+  test.test_builtin                        plain=ran        enabled=ran        pass=150 skip=7  differences=0 (0.7s/0.7s)
+  test.test_contains                       plain=ran        enabled=ran        pass=4  differences=0 (0.1s/0.1s)
+=== 3.15.1t json
+  test.test_json                           plain=ran        enabled=ran        pass=232 skip=1  differences=0 (3.8s/4.3s)
+  test.test_float                          plain=ran        enabled=ran        pass=52 skip=2  differences=0 (0.1s/0.1s)
+  test.test_format                         plain=ran        enabled=ran        pass=17 skip=2  differences=0 (0.1s/0.1s)
+  test.test_strtod                         plain=ran        enabled=ran        pass=8 skip=1  differences=0 (0.2s/0.2s)
+=== 3.15.1t copy
+  test.test_copy                           plain=ran        enabled=ran        pass=84  differences=0 (0.1s/0.1s)
+  test.test_copyreg                        plain=ran        enabled=ran        pass=6  differences=0 (0.5s/0.1s)
+  test.test_dataclasses                    plain=ran        enabled=ran        pass=284 skip=1  differences=0 (0.4s/0.6s)
+  test.test_uuid                           plain=ran        enabled=ran        pass=103 skip=17  differences=0 (0.4s/0.3s)
+=== 3.15.1t set
+  test.test_set                            plain=ran        enabled=ran        pass=644  differences=0 (1.6s/1.6s)
+  test.test_copy                           plain=ran        enabled=ran        pass=84  differences=0 (0.1s/0.1s)
+  test.test_pickle                         plain=ran        enabled=ran        pass=1039 skip=47  differences=0 (4.2s/4.1s)
+=== 3.14.9 containers
+  test.test_list                           plain=ran        enabled=ran        pass=67 skip=1  differences=0 (0.6s/0.6s)
+  test.test_tuple                          plain=ran        enabled=ran        pass=38  differences=0 (0.4s/0.4s)
+  test.test_sort                           plain=ran        enabled=ran        pass=21  differences=0 (0.1s/0.2s)
+  test.test_builtin                        plain=ran        enabled=ran        pass=141 skip=6  differences=0 (0.5s/0.5s)
+  test.test_contains                       plain=ran        enabled=ran        pass=4  differences=0 (0.1s/0.1s)
+=== 3.14.9 json
+  test.test_json                           plain=ran        enabled=ran        pass=220 skip=1  differences=0 (5.6s/5.6s)
+  test.test_float                          plain=ran        enabled=ran        pass=52 skip=2  differences=0 (0.1s/0.1s)
+  test.test_format                         plain=ran        enabled=ran        pass=17 skip=2  differences=0 (0.1s/0.1s)
+  test.test_strtod                         plain=ran        enabled=ran        pass=8 skip=1  differences=0 (0.2s/0.2s)
+=== 3.14.9 copy
+  test.test_copy                           plain=ran        enabled=ran        pass=81  differences=0 (0.2s/0.1s)
+  test.test_copyreg                        plain=ran        enabled=ran        pass=6  differences=0 (0.7s/0.4s)
+  test.test_dataclasses                    plain=ran        enabled=ran        pass=279 skip=1  differences=0 (0.5s/0.4s)
+  test.test_uuid                           plain=ran        enabled=ran        pass=103 skip=17  differences=0 (0.3s/0.3s)
+=== 3.14.9 set
+  test.test_set                            plain=ran        enabled=ran        pass=630  differences=0 (1.3s/1.4s)
+=== 3.14.9t containers
+  test.test_list                           plain=ran        enabled=ran        pass=67 skip=1  differences=0 (0.9s/0.9s)
+  test.test_tuple                          plain=ran        enabled=ran        pass=38  differences=0 (0.4s/0.4s)
+  test.test_sort                           plain=ran        enabled=ran        pass=21  differences=0 (0.2s/0.2s)
+  test.test_builtin                        plain=ran        enabled=ran        pass=141 skip=6  differences=0 (0.5s/0.5s)
+  test.test_contains                       plain=ran        enabled=ran        pass=4  differences=0 (0.1s/0.1s)
+=== 3.14.9t json
+  test.test_json                           plain=ran        enabled=ran        pass=220 skip=1  differences=0 (5.5s/5.7s)
+  test.test_float                          plain=ran        enabled=ran        pass=52 skip=2  differences=0 (0.2s/0.2s)
+  test.test_format                         plain=ran        enabled=ran        pass=17 skip=2  differences=0 (0.1s/0.1s)
+  test.test_strtod                         plain=ran        enabled=ran        pass=8 skip=1  differences=0 (0.2s/0.3s)
+=== 3.14.9t copy
+  test.test_copy                           plain=ran        enabled=ran        pass=81  differences=0 (0.2s/0.1s)
+  test.test_copyreg                        plain=ran        enabled=ran        pass=6  differences=0 (0.6s/0.3s)
+  test.test_dataclasses                    plain=ran        enabled=ran        pass=279 skip=1  differences=0 (0.5s/0.5s)
+  test.test_uuid                           plain=ran        enabled=ran        pass=103 skip=17  differences=0 (0.4s/0.3s)
+=== 3.14.9t set
+  test.test_set                            plain=ran        enabled=ran        pass=630  differences=0 (1.5s/1.5s)
+  test.test_copy                           plain=ran        enabled=ran        pass=81  differences=0 (0.2s/0.2s)
+  test.test_pickle                         plain=ran        enabled=ran        pass=960 skip=55  differences=0 (4.5s/4.2s)
+=== DONE
+ALL-DONE

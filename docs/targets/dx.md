@@ -1,524 +1,533 @@
-STATUS: wave 1, workstream `dx`, 2026-11-01. Design decisions and measurements of the user-facing
-layer. Usage: [`docs/USAGE.md`](../USAGE.md). Every number is **M** (measured; how) or
-**I** (inferred; from what).
+STATUS: wave 2, workstream `dx`, 2026-11-03. Design decisions and measurements of the
+user-facing layer. Usage: [`docs/USAGE.md`](../USAGE.md). Phase-1 evidence:
+[`docs/atlas/w2-dx.md`](../atlas/w2-dx.md). The wave-1 version of this file (the switch's
+history, the `.start` measurements, the wave-1 wheel proof) is at commit 9e1eb4a. Every
+number is **M** (measured: how, where) or **I** (inferred: from what). "Box" = the shared
+wave-2 dev box (c7a.8xlarge, shared by nine workstreams: wall times are indicative).
 
-# dx: turning Rustique on, off, inside out, and in CI
+# dx: on, off, inside out, predicted, and proven in CI
 
 ## Summary
 
 | deliverable | what ships | key measurement / decision |
 |---|---|---|
-| zero-code switch | one `_rustique_startup.pth` line at the site-packages root (in the wheel and the sdist); with `RUSTIQUE=1` it loads only the extension and calls `_accel.startup()` | no PEP 829 `.start` file: on 3.15.1 it costs **1.72×** `python -c pass` (§1.2). Installed but unset: **1.026× Ir** (3.15), **1.047×** (3.14) in a bare venv; **≤ 1.014×** where any other `.pth` exists. `RUSTIQUE=1` vs unset in the same venv: 1.030 Ir / 1.05 wall (3.15), 1.043 / 1.07 (3.14), an accepted exceedance (§1.4) |
-| control | `RUSTIQUE=0` kill switch (overrides code), `RUSTIQUE_ONLY` / `RUSTIQUE_EXCLUDE` (narrow only), `-E`/`-I` honoured | §2 |
-| visibility | `RUSTIQUE_STATS`, `RUSTIQUE_REPORT` (stderr / file / JSON), `python -m rustique status`, `python -m rustique report -- <cmd>` | §3 |
-| CI | `python -m rustique diff -- <cmd>` (exit code, stdout/stderr, per-test outcomes, timing); pytest plugin `--rustique` (fails on unexpected refusals or check mismatches, xdist-aware); check mode `RUSTIQUE_CHECK=1\|raise` | §4 |
-| wheels | `.github/workflows/wheels.yml`: 8 platforms × cp314/cp314t/cp315/cp315t + sdist, each wheel `pip install`ed into a clean venv and smoke-tested; PR subset | local proof: manylinux_2_28 wheels (zig, release) on all 4 builds, 14/14 checks each (§5) |
-| no-wheel interpreters | `requires-python = ">=3.14,<3.16"` | pip on PyPy 3.11 and CPython 3.16.0a1: "requires a different python version" (§5.3) |
-| docs | README top rewritten; `docs/USAGE.md` | placeholders `⟨Phase 3⟩` for the lead's measured numbers |
-| real projects | attrs, rich, sqlglot test suites: plain, `RUSTIQUE=1`, `--rustique`, `diff` | §7 |
+| zero-code switch | `RUSTIQUE=1` through `_rustique_startup.pth`, which imports the top-level `_rustique` extension (engine's loader; wheels repacked in CI) | unchanged semantics; wave-1 switch tests now layout-agnostic (§1) |
+| control | `RUSTIQUE=0` kill switch over everything (tiers too), `RUSTIQUE_ONLY`/`_EXCLUDE`, **`RUSTIQUE_TIERS`** (`--tiers`, `--rustique-tiers`), `RUSTIQUE_UNVALIDATED_PATCH`; `python -m rustique app.py` is `python app.py` (`__file__`, tracebacks, SIGINT, children); `--native` removed with a pointer to MIGRATION.md | §2 |
+| visibility | reports count **every process once**: forked children start at zero, `os._exit`/killed workers counted from live counter files (accel), `report --from FILE.json`; suspensions, `continue`/`abandon` restarts, armed/unvalidated targets, tiers; each fallback reason and refusal category says **what to do** | §3 |
+| CI proof | `diff`: 0 false alarms on 14 real suites (volatile-output rule, masks), **test node ids from the plugin and confirmation re-runs** (a test flaky without Rustique is not a difference); plugin: `--rustique-tiers`, `unvalidated-patch` expected, `--rustique-outcomes` | §4 |
+| "will it help me?" | `python -m rustique estimate -- <cmd>`: CPU-time stack sampler (signal timer, safe on free-threaded builds), C-level targets sampled at their call sites, stacks of targets split by how often each kernel takes the call, entry points from `status()`, thread-CPU profiler for threaded programs | 50–51/65 within ±0.03 on the loaded box (T13 asks 52); 47/55 without the threaded and service families (§5.2) |
+| wheels and platforms | `wheels.yml`: repack to top-level `_rustique` + layout check on all 32 wheels; interp tier built with clang ≥ 19 on Linux x86_64 and asserted; **per-platform job**: Rustique's tests + CPython's test modules for every installed target on 8 platforms × 4 builds; coverage table + floors; windows-arm64 promoted | §6 |
+| docs | `docs/USAGE.md` rewritten (platforms, versions, patch releases, tiers, estimate, reports, CI recipes, troubleshooting, migration) | — |
 
 ## 1. Zero-code switch
 
-### 1.1 Mechanism
+The `.pth` line is engine's (DECISIONS §10.7):
+`import os; os.environ.get('RUSTIQUE', '0') != '0' and __import__('_rustique').startup()`.
+Release wheels carry the extension as a top-level `_rustique.<abi>.{so,pyd}` (repacked in CI,
+§6). sdist and editable builds keep maturin's in-package layout behind a top-level
+`_rustique.py` shim. The extension registers as both `_rustique` and `rustique._rustique`.
+OFF values other than `0`, and `-E`/`-I`, unregister it again, so "nothing loaded" still holds.
+The startup cost is w2-startup's and engine's to report.
 
-The wheel and the sdist put one file at the root of site-packages: `_rustique_startup.pth`.
-It is a maturin `include` with format `["sdist", "wheel"]`; `python/` is the python-source,
-so `python/X` lands at the wheel root. `site` runs its single import line at every
-interpreter start. The loader below is accel-core's (ece21e2, tested in
-`tests/test_accel_startup.py`); the gate in front of it is dx's:
+dx's part:
 
-```
-import os; os.environ.get('RUSTIQUE', '0') != '0' and exec("import sys,_imp;p=sitedir+'/rustique/_rustique'+_imp.extension_suffixes()[0];os.environ['RUSTIQUE'].strip().lower() in ('', 'off', 'false', 'no') or sys.flags.ignore_environment or (sys.modules['_frozen_importlib']._load(sys.modules['_frozen_importlib_external'].spec_from_file_location('rustique._rustique',p)) if os.path.isfile(p) else __import__('rustique._rustique')._rustique)._accel.startup()")
-```
-
-What each `RUSTIQUE` value does:
-
-| `RUSTIQUE` | effect | cost |
-|---|---|---|
-| unset or `0` | nothing is loaded | only the gate is compiled; the loader is a string literal, tokenised, never parsed |
-| set, under `-E`/`-I` | nothing is loaded | gate + loader compile |
-| `1`/`true`/`yes`/`on` | `_accel.startup()` runs the quiet enable | extension load + enable |
-| `off`/`false`/`no`, empty (any case, spaces) | nothing is loaded: the kill switch, like `0` (lead's ruling) | gate + loader compile; the OFF test sits at the head of the exec'd loader, not in the gate, because the gate is compiled on every start (+97k Ir there, accel-core f189e6c) |
-| anything else | `_accel.startup()` warns on one line, enables nothing | extension load |
-
-When RUSTIQUE is set, the loader:
-
-1. loads `sitedir/rustique/_rustique<ABI suffix>` with importlib's own `_load(spec)`;
-2. registers it as `sys.modules['rustique._rustique']` **without importing the
-   `rustique` package**. A later `import rustique` reuses that module;
-3. calls `_accel.startup()`.
-
-The environment semantics (§2) have one implementation, in the extension
-(`crates/rustique-py/src/accel/switch.rs`, accel-core). The startup path and
-`rustique.enable()` (`_accel.switch_enable`) both use it. `rustique/__init__.py` is a thin
-layer: the lazy opt-in API, plus `enable`/`disable`/`status`/`stats`/`check`/`native` over
-`_accel`.
-
-- **Broken install**: if `rustique/_rustique<suffix>` is not next to the `.pth` (editable
-  layouts), the loader imports `rustique._rustique` through the package instead. If that
-  fails (no wheel for this interpreter, a broken install), `site` prints the failing line
-  with its traceback and the interpreter starts plain. Tested with a `rustique` package
-  that raises on import.
-- **History**, each step measured, §1.3–1.4:
-  1. A top-level `_rustique_startup` module took the decision with `os`/`sys` only.
-  2. The line imported the `rustique` package and called `rustique._startup()`, with the
-     semantics in Python.
-  3. The extension-only line with the semantics in Rust. The startup budget made each
-     Python module (~0.3M Ir) and the package import (~0.25M Ir plus `__init__` code) too
-     expensive.
-
-`maturin develop` (editable) does not install `include` files, so development venvs have no
-startup file and `RUSTIQUE=1` does nothing there (`python -m rustique status` says so). The
-tests exercise the shipped line in subprocesses through `site.addsitedir(<dir>)`, where
-`<dir>` holds the `.pth` and a link to the extension under test.
-
-### 1.2 Why no PEP 829 `.start` file (yet) — an upstream issue to file
-
-On 3.15 a `.start` file is the sanctioned replacement for `.pth` import lines, and a
-matching `.start` file disables the `.pth`'s import lines. But `site` resolves each entry
-point with `pkgutil.resolve_name(entrypoint, strict=True)` (`Lib/site.py`,
-`_execute_start_entrypoints`), and `pkgutil` is imported lazily on first use: one `.start`
-file imports `pkgutil` (→ `collections`, `functools`, `importlib.util`,
-`importlib.machinery`) and `re` (→ `enum`, `re._compiler`, `re._parser`) and compiles
-`resolve_name`'s regex.
-
-`benches/dx/startup.py synthetic`, fresh `python -m venv` per variant, `python -c pass`,
-callgrind whole-process Ir (PYTHONHASHSEED=0) and wall medians of 150–300 interleaved runs,
-dev box (**M**):
-
-| variant | 3.15.1 Ir | wall | 3.15.1t Ir | wall | 3.14.9 Ir | wall |
-|---|---:|---:|---:|---:|---:|---:|
-| empty venv | 38 666 921 | 9.41 ms | 51 239 107 | 11.75 ms | 40 610 825 | 9.43 ms |
-| `.start` → `_rustique_startup:start` | **1.724×** | **1.685×** (+6.4 ms) | 1.707× | 1.692× | 1.000× (3.14 ignores `.start`) | 1.001× |
-| `.pth` import line (shipped) | 1.026× | 1.033× | ~1.00× | 1.013× | 1.045× | 1.049× |
-
-`-X importtime` of the `.start` variant (3.15.1): `pkgutil` 2.97 ms cumulative, `re`
-2.19 ms (of which `enum` 0.92 ms). **Upstream**: any package adopting `.start` (as PEP 829
-asks) makes every Python process ~6 ms slower until another import pays for `re`/`pkgutil`.
-Suggested fix for CPython: resolve `pkg.mod:callable` in `site` with
-`importlib.import_module` + `getattr` (both already loaded) and keep `pkgutil` for the
-error path. To file (lead), with this table.
-
-Plan: ship `_rustique_startup.start` once `site` stops
-paying this, or for 3.18+ where `.pth` import lines are silently ignored (PEP 829 schedule;
-`Lib/site.py` `_warn_future_us(..., remove=(3, 18))`). Wheels are per-minor (cp314, cp315),
-so the `.start` file can be added for the minors that need it without touching the others.
-A `.start` entry point always imports its module, so it will name a tiny top-level module
-again (e.g. `_rustique_startup:start`, testing `RUSTIQUE` with `os` only): naming
-`rustique:_startup` would load the extension at every interpreter start.
-
-### 1.3 What the `.pth` line costs (`RUSTIQUE` unset)
-
-Most of it is not the line: **any** `.pth` (or `.start`) file makes `site` decode it with
-`utf-8-sig`, which imports `encodings.utf_8_sig` (+770k Ir on 3.15, +1.44M on 3.14). Venvs
-that already have a `.pth` (editable installs of the project itself — `uv sync`, `pip install
--e .` —, setuptools' `distutils-precedence.pth`, virtualenv's `_virtualenv.pth`) pay that
-already. Decomposition (**M**, same method, Ir ratio vs empty venv):
-
-| variant | 3.15.1 | 3.14.9 |
-|---|---:|---:|
-| a `.pth` with only a comment | 1.0199 | 1.0355 |
-| `import os` | 1.0228 | 1.0404 |
-| shipped line | 1.0249 | 1.0445 |
-| alternatives: `os.environ.get(...)` / `posix.environ` bytes test / no spaces / with `.start()` call | 1.0254 / 1.0248 / 1.0250 / 1.0255 | 1.0451 / 1.0440 / 1.0444 / 1.0452 |
-| another `.pth` present, without → with ours | 1.0068 | 1.0119 |
-
-All line variants are within 0.1% of each other: the exec/compile of any statement dominates
-(the shipped one is the cheapest portable variant; `posix.environ` would not work on
-Windows). 3.15t: within noise (Ir 0.997, wall 1.003 with another `.pth`).
-
-**With the real wheel** (`pip install` of the zig-built manylinux_2_28 wheel into a fresh
-`python -m venv`, against an identical venv without it; `benches/dx/startup.py venvs`,
-3 callgrind runs, 300 interleaved wall runs; **M**):
-
-| build | `RUSTIQUE` unset: Ir | wall | `RUSTIQUE=1`: Ir | wall |
-|---|---:|---:|---:|---:|
-| 3.15.1 | 1.0251 | 1.033 (+0.31 ms) | 1.249 | 1.257 (+2.42 ms) |
-| 3.15.1t | 0.996 | 1.014 (+0.16 ms) | 1.230 | 1.235 (+2.77 ms) |
-| 3.14.9 | 1.0443 | 1.046 (+0.45 ms) | 1.252 | 1.271 (+2.63 ms) |
-| 3.14.9t | 1.001 | 1.020 (+0.24 ms) | 1.220 | 1.237 (+2.88 ms) |
-
-Unset: within the ≤ 1.05 bar on every build; the ≤ 1.01 target is met only where another
-`.pth` exists — impossible on a bare venv for any `.pth`/`.start` mechanism (the codec
-import is in `site`). Lead ruling (2026-11-01): ship the `.pth`.
-
-**`RUSTIQUE=1` cost 1.22–1.25×** with the first layout (`python -c pass`, dev-release
-wheel, 13 wave-0 targets; table above). Decomposition on 3.15.1 (callgrind Ir, **M**):
-`import rustique` +7.46M (the extension: dlopen of a 6.4 MB `.so` and PyO3 module init with
-every opt-in type — 86%), `enable()` +1.0M, `status()` +0.26M, and every pure-Python module
-on the path ~0.3M Ir (~0.75%; re-import timing: 35–60 µs each, mostly import machinery).
-The lead made startup the binding constraint (`import rustique; rustique.enable()` ≤ 1.05),
-so:
-
-- **Module budget**: the `RUSTIQUE=1` path loads the extension only (§1.1).
-  `import rustique` loads `rustique` + `rustique._rustique`, and `enable()` loads nothing
-  more; `tests/test_dx.py` checks this with a `sys.modules` diff.
-- **Where things live**: the switch semantics are in the extension (`_accel`). Report
-  formatting (`rustique._report`) is imported by the `atexit` hook only. The CLI and the
-  native tier are imported on use. Neither path builds `status()`.
-- **Lazy opt-in API**: `List`, `Dict`, `X`, scalars, … are module `__getattr__` (PEP 562)
-  over the extension, which accel-core made lazy (types and ABC registrations created on
-  first use).
-
-The steps in between, each measured (§1.4):
-
-1. Slimming `rustique/__init__.py`, with configured paths moved to a lazy module: −235k Ir.
-2. Dropping the hook module: −0.3M Ir.
-3. The semantics moving into Rust, with the startup line loading only the extension.
-
-### 1.4 Startup cells, release build (**M**)
-
-`benches/dx/startup.py cells PLAIN RUSTIQUE`: `maturin build --release --zig` (fat LTO,
-4.2 MB `.so`) wheels `pip install`ed into fresh venvs; every ratio against `python -c pass`
-in an identical venv without Rustique; callgrind median of 3, wall median (p10–p90) of 60
-interleaved rounds, pinned to one CPU (`taskset -c 3`), dev box. Bare venv = no other
-`.pth`; "other .pth" = both venvs carry one comment-only `.pth` (what an editable install or
-setuptools brings).
-
-**Before**: the line imported the `rustique` package, with the semantics in Python, the
-`__init__` slim and configured paths in a lazy `rustique._switch`. Extension of wave1 at
-41fe7e6.
-
-| cell | 3.15.1 bare: Ir | wall | other .pth: Ir | wall | 3.14.9 bare: Ir | wall | other .pth: Ir | wall |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| installed, `RUSTIQUE` unset | 1.026 | 1.032 | 1.008 | 1.011 | 1.047 | 1.047 | 1.013 | 1.014 |
-| `RUSTIQUE=1` | 1.073 | 1.105 | 1.053 | 1.083 | 1.092 | 1.126 | 1.057 | 1.092 |
-| `import rustique` | 1.070 | 1.099 | 1.051 | 1.076 | 1.086 | 1.110 | 1.051 | 1.074 |
-| `import rustique; rustique.enable()` | 1.083 | 1.113 | 1.063 | 1.090 | 1.098 | 1.124 | 1.063 | 1.089 |
-| marginal: `RUSTIQUE=1` vs unset, same venv | 1.045 | 1.072 (+0.70 ms) | 1.045 | 1.070 (+0.69 ms) | 1.043 | 1.075 (+0.75 ms) | 1.043 | 1.077 (+0.77 ms) |
-
-**After** (wave1 ece21e2: the startup line loads only the extension and calls
-`_accel.startup()`; semantics in Rust; thin `rustique/__init__.py`; release wheels of
-this layout, same method):
-
-| cell | 3.15.1 bare: Ir | wall | other .pth: Ir | wall | 3.14.9 bare: Ir | wall | other .pth: Ir | wall |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| installed, `RUSTIQUE` unset | **1.026** | 1.030 | **1.008** | 1.010 | **1.047** | 1.047 | **1.014** | 1.014 |
-| `RUSTIQUE=1` | 1.057 | 1.085 | 1.038 | 1.062 | 1.092 | 1.117 | 1.057 | 1.084 |
-| `import rustique` | 1.065 | 1.094 | 1.046 | 1.071 | 1.081 | 1.106 | 1.046 | 1.071 |
-| `import rustique; rustique.enable()` | 1.075 | 1.107 | 1.056 | 1.085 | 1.091 | 1.120 | 1.056 | 1.083 |
-| **marginal: `RUSTIQUE=1` vs unset, same venv** | **1.030** | **1.053 (+0.52 ms)** | **1.030** | **1.051 (+0.50 ms)** | **1.043** | **1.067 (+0.67 ms)** | **1.043** | **1.069 (+0.69 ms)** |
-
-Installed-but-off stays where it was: ≤ 1.05 everywhere, ≤ 1.014 next to another `.pth`.
-Turning Rustique on costs 3.0% Ir and ~0.5 ms on 3.15.1, and 4.3% Ir and ~0.7 ms on 3.14.9.
-On 3.14 the loader string compiles slower, so the `RUSTIQUE=1` path costs more than an
-explicit `import rustique`; on 3.15 it costs less. Lead ruling (2026-11-01): the
-`RUSTIQUE=1` startup cost (~1.05–1.07 wall in the same venv) is accepted for wave 1 as a
-documented exceedance of the 1.05 bar. Installed-but-off must stay ≤ 1.05 on every build.
-
-Before slimming `__init__.py` (hook module already gone): 3.15.1 bare `RUSTIQUE=1` 1.079 /
-1.112, `import + enable()` 1.089 / 1.119. Decomposition on 3.15.1 (callgrind, **M**):
-
-| part | Ir |
-|---|---:|
-| `site`'s `utf-8-sig` codec import for any `.pth` | +770k |
-| the `.pth` line (compile + test) | +240k |
-| extension load (dlopen, relocations, lazy PyO3 module init) | +964k |
-| package import machinery (finder, `rustique/__init__` pyc read) | ~+250k |
-| `rustique/__init__.py` content beyond a one-line `__init__` | +389k (was +624k) |
-| quiet enable (`_accel.enable(..., quiet=True)`, 13 targets) | +240–270k |
-| `status()` (built by `enable()`) | +260k |
-
-Wall exceeds Ir because loading the extension is mostly page faults and relocations
-(kernel time, not counted by callgrind). The lead's conclusion (2026-11-01): the Python
-package cannot reach wall ≤ 1.05, so the `RUSTIQUE=1` path will load **only the extension**,
-and the environment semantics move into `_accel` in Rust (one implementation for the startup
-path and explicit `enable()`). The semantics are specified in this doc (§2) and
-`docs/USAGE.md`, and `tests/test_dx.py` is their contract, independent of which layer
-implements them. dx sent the spec to accel-core; the numbers after that change are theirs
-to report with this bench.
+- `tests/test_dx.py` is still the contract of the switch semantics, run against the shipped
+  `.pth` line through `site.addsitedir`. Engine adapted its layout tests to the top-level
+  module during the merge.
+- `wheel_smoke.py` asserts the same in installed wheels: `RUSTIQUE=1` loads exactly
+  `{_rustique, rustique._rustique}`, one module object, never the package.
 
 ## 2. Control
 
-dx owns the semantics below. accel-core implements them once, in the extension
-(`crates/rustique-py/src/accel/switch.rs`: `_accel.startup`, `switch_enable`, `killed`,
-`report_to`, and `status()["process"]["switch"]`). `tests/test_dx.py` is their contract:
-the public API, environment variables and the shipped `.pth` line, independent of the
-implementing layer. Before ece21e2 the same tests passed against dx's Python implementation.
-
-| path | `RUSTIQUE=0` | `RUSTIQUE_ONLY` / `RUSTIQUE_EXCLUDE` | `RUSTIQUE_STATS` / `_REPORT` / `_CHECK` |
-|---|---|---|---|
-| `RUSTIQUE=1` at startup | n/a (0 is not 1) | applied | applied |
-| `python -m rustique app.py` | no-op, runs plain | applied (∩ / ∪ with `--only`/`--exclude`) | applied |
-| `rustique.enable()` in code | **no-op** | applied (∩ / ∪ with `only=`/`exclude=`) | applied |
-| `rustique.native(f)` | returns `f` unchanged | – | – |
-| `pytest --rustique` | no-op; summary says "disabled by RUSTIQUE=0" | applied | applied |
-| `report` / `diff` commands | refuse (exit 2): they exist to enable | passed to the enabled run | set by the command |
+| path | `RUSTIQUE=0` | `RUSTIQUE_ONLY`/`_EXCLUDE` | `RUSTIQUE_TIERS` | `RUSTIQUE_STATS`/`_REPORT`/`_CHECK` |
+|---|---|---|---|---|
+| `RUSTIQUE=1` at startup | n/a | applied | applied | applied |
+| `python -m rustique [--tiers T] app.py` | no-op, runs plain | applied (∩ / ∪ with `--only`/`--exclude`) | `--tiers` ∪ env (env `none` wins) | applied |
+| `rustique.enable(tiers=...)` | no-op | applied | ∪ env (env `none` wins) | applied |
+| `pytest --rustique [--rustique-tiers T]` | no-op; summary says so | applied | as the CLI | applied |
+| `report`/`diff`/`estimate` | refuse (exit 2) / plain side | passed to the enabled run | `--tiers`, passed to the enabled run | set by the command |
 
 Decisions:
 
-- **The kill switch overrides an explicit `rustique.enable()`** (recommended in the brief;
-  the contract says "every enable path"). It also disables the native tier: under
-  `RUSTIQUE=0` a process is plain CPython, even for code that opted into Rustique
-  containers through `native=` (such code still works with explicit `rustique.List`).
-  `status()["process"]["switch"]` records `killed` and how many enable calls were ignored.
-- **The environment narrows, never widens**: env `only` ∩ code `only` (resolved to target
-  names through `status()` when both mix groups and targets), env `exclude` ∪ code
-  `exclude`. An operator can always switch a group off without touching code; nothing in
-  the environment can turn on what the code excluded.
-- **Unknown names**: from the environment → one stderr warning listing the groups, nothing
-  installed extra (never an exception at startup); from code → `ValueError` (accel-core).
-- **`-E`/`-I`**: all `RUSTIQUE*` variables are ignored, like `PYTHON*` ones (so
-  `python -I` helpers in CI do not start Rustique).
-- **Values**: `1/true/yes/on` (on), `0/false/no/off` or empty (the kill switch),
-  case-insensitive with surrounding spaces ignored; anything else warns and enables nothing.
-- **Per-project config** (`[tool.rustique]` in pyproject.toml): not added. Reading it would
-  mean locating and parsing a TOML file at every enable (I: `tomllib` import alone is
-  ~1 ms), the environment and `enable()` arguments cover every case met in §7, and a file
-  that silently changes behaviour per directory works against "the environment can only
-  turn things off". Revisit if users ask.
+- **Tiers are opt-in, and the environment can still turn them off.** `RUSTIQUE_TIERS=interp,gc`
+  is added to the code's `tiers=` (the union). `none`/`0`/empty turns every tier off, even
+  one the code asked for. `RUSTIQUE_EXCLUDE=interp` removes one, and `RUSTIQUE=0` kills all.
+  Unknown tier names warn like unknown groups. Agreed with accel through the lead;
+  implemented in `accel/switch.rs` (wave2 a000743), with `rustique.enable(tiers=)` (74eeb03).
+  The CLI and the plugin pass `--tiers` as the
+  environment variable (`_cli.add_tiers`). So spawned children get the same tiers, and an
+  operator's `RUSTIQUE_TIERS=none` wins over the flag, with a warning.
+- **`--native` is gone** (DECISIONS §10.1). `python -m rustique --native …` exits 2 with one
+  line pointing to `docs/MIGRATION.md`. A `--native` after the program is the program's own
+  argument (tested).
+- **The runner is `python app.py`** (Phase-1 fixes, now shipped): absolute `__file__`, the
+  traceback starts at the program's frame, exit 1 / death by SIGINT as CPython,
+  `RUSTIQUE=1` and the selection exported to child interpreters.
+  `test_run_is_like_python_script` compares bytes with `python script.py`.
+- Value options of `report`/`diff`/`estimate` (`--repeat 3`, `--from F`, …) no longer swallow
+  their value as the command (`split_command`, a latent wave-1 bug).
 
 ## 3. Visibility
 
-- `status()` = the framework's `{"targets": [...], "process": {...}}`. It includes
-  `process["switch"]` = `{source, killed, killed_calls, only, exclude, stats, report, check,
-  env}` (specified by dx, built by the extension); `source` is the first enable path (`RUSTIQUE=1`, `rustique.enable()`,
-  `python -m rustique`, `pytest --rustique`, `python -m rustique status`).
-- Report (`rustique/_report.py`): header (version, CPython and build, pid, how enabled),
-  state counts, check-mode line, then installed targets sorted by hits with fallbacks by
-  reason, pending imports, refusals with `[category] reason`, groups not selected. Killed
-  processes say so.
-- `RUSTIQUE_REPORT`: `1`/`stderr` → text on stderr at exit (`atexit`); a path → appended
-  (`{pid}` substituted; one `os.write` of `O_APPEND` per process, so concurrent processes
-  don't interleave in practice); `*.json` → one JSON record per process
-  (`{pid, argv, status, stats, counters}`), which `report`/`diff` merge (counters add up; a
-  target counts as installed if it was in any process). Processes ending in `os._exit`
-  (forked `multiprocessing` children) write nothing (documented).
-- `python -m rustique status [--json]`: interpreter, Rustique location, whether the startup
-  file is installed, the `RUSTIQUE*` variables, process-level refusal (e.g.
-  "CPython 3.16 pre-release"), JIT, then per group the targets by state and every refusal.
-- `python -m rustique report [--json] [-o F] [--check] -- <cmd>`: runs the command with
-  `RUSTIQUE=1 RUSTIQUE_STATS=1 RUSTIQUE_REPORT=<tmp>.json`, prints the merged report on
-  stderr (the command's stdout stays clean), exits with the command's exit code; says so
-  when no Python process reported (wrong interpreter).
+### 3.1 Every process once (interface agreed with accel through the lead)
 
-## 4. CI verification
+Phase 1 measured three ways the report lied about multi-process programs:
 
-### 4.1 `python -m rustique diff -- <cmd>` (`rustique/_diff.py`)
+- a fork `Pool` doing 8 accelerated calls reported 0 (workers end in `os._exit`, or are
+  SIGTERMed by `Pool.__exit__`);
+- uvicorn's 2 workers served 50 requests and reported 1 hit;
+- a forked child with 10 calls reported 110, its parent's 100 included.
 
-Plain run with `RUSTIQUE=0` (so a `rustique.enable()` in the program is neutralised too —
-a true baseline), enabled run with `RUSTIQUE=1` + counters + JSON report; same
-`PYTHONHASHSEED` (0 unless set). Compared: exit code, stdout, stderr after normalisation
-(addresses `0x…`, pytest `in 1.23s`, `--durations` lines, `pytest-of-<user>/pytest-<n>`,
-`--randomly-seed=`; `--ignore REGEX` adds, `--no-normalize` removes), and for pytest
-commands (`pytest`, `py.test`, `python -m pytest`) the outcome of every test from an added
-`--junitxml` (`-o junit_family=xunit2`; `-p no:cacheprovider` unless the user passes
-`--lf`/`--ff`/`--sw`…, so run 1 cannot steer run 2). Outcomes: passed / failed / error /
-skipped / xfailed; tests present on one side only are listed. Timing: wall per run,
-medians with `--repeat N` (pairs interleaved). The enabled run's report is printed, and an
-"identical" with **no accelerated call** is called out — and if no Python process reported
-at all (Rustique not installed in the command's interpreter), exit 2, so CI cannot pass
-vacuously. `--check` adds check mode to the enabled run (mismatches → exit 1). Refuses a
-command containing `--rustique` (the plugin's summary would differ between runs).
+The interface:
 
-### 4.2 pytest plugin (`_rustique_pytest.py`, alias `rustique/pytest_plugin.py`)
-
-Entry point `pytest11: "rustique.pytest_plugin" = "_rustique_pytest"` — a top-level module
-shipped next to `_rustique_startup.pth`, so that autoloading it does not import the
-`rustique` package (whose `__init__` loads the extension: ≈ 1.5M instructions / 0.65 ms per
-pytest process, found in Phase 3, `docs/atlas/phase3.md` §4.1). The entry point keeps the
-name `rustique.pytest_plugin`, so `-p rustique.pytest_plugin` (needed with
-`PYTEST_DISABLE_PLUGIN_AUTOLOAD`) loads the entry point instead of registering the module
-twice (pluggy would raise "Plugin already registered under a different name");
-`rustique/pytest_plugin.py` re-exports the hooks for direct imports. Inactive without
-`--rustique`: no output, and nothing imported but pytest
-(`tests/test_dx_cli.py::test_plugin_without_flag_imports_nothing`).
-
-- `--rustique`: counters on, `enable()` in `pytest_configure` (before collection).
-- Terminal summary: `=== rustique ===` section with the report (`--rustique-report-limit`).
-- Session fails (exit 1, if it would otherwise pass) when a selected target is refused with
-  a category other than `version`/`build`/`jit`/`platform` (accel-core's `refusal` field), unless
-  `--rustique-allow-refused NAMES|all`; or when check mode found a mismatch.
-- `--rustique-only` / `--rustique-exclude`; `--rustique-check` / `--rustique-check-raise`.
-- xdist: each worker enables Rustique (the option is forwarded) and returns its record via
-  `workeroutput`; the controller merges them (`pytest_testnodedown`, an optional hook).
-
-### 4.3 Check mode
-
-Agreed with the lead and implemented by accel-core (`TargetSpec.checkable`, a CHECK flag
-sharing the counters' byte, `accel::check::verify`, fallback reason `check`). dx wires
-`RUSTIQUE_CHECK=1|warn|raise|0`, `python -m rustique --check|--check-raise`, `report
---check`, `diff --check`, `pytest --rustique-check[-raise]`, the report's check-mode line
-and `CHECK MISMATCHES` (any mismatch fails `diff` and the pytest session).
-
-## 5. Wheels
-
-### 5.1 CI (`.github/workflows/wheels.yml`)
-
-- Triggers: tags `v*` and manual dispatch → full matrix + sdist + completeness check; pull
-  requests touching the build (`pyproject.toml`, `Cargo.*`, `crates/**`, `python/**`, the
-  workflow) → linux x86_64 cp315 + cp315t only. The old tag-only `wheels`/`sdist` jobs of
-  `ci.yml` are replaced.
-- Matrix: manylinux_2_28 x86_64 (`ubuntu-24.04`) and aarch64 (`ubuntu-24.04-arm`, native),
-  musllinux_1_2 x86_64 and aarch64, macOS arm64 (`macos-15`) and x86_64 (`macos-15-intel`),
-  Windows x64 (`windows-2025`), Windows arm64 (`windows-11-arm`, `continue-on-error`) ×
-  cp314, cp314t, cp315, cp315t, built with `PyO3/maturin-action` (`--release`). Linux builds
-  run in the manylinux/musllinux containers (`-i python3.14t` …); macOS/Windows build
-  against `actions/setup-python` interpreters by exact path.
-- Smoke (`.github/scripts/smoke_all.sh` + `wheel_smoke.py`, stdlib only): for each
-  interpreter, a fresh `python -m venv`, **`pip install --no-index --find-links dist
-  rustique`**, then from outside the source tree: import; enable + a battery
-  (`sorted`/`max`/`sum`/`in`/`index`/`count`, `json.dumps/loads`, `copy.deepcopy`,
-  `posixpath.join`, `datetime.strptime`, float reprs) identical to plain; `RUSTIQUE` unset
-  imports nothing; `RUSTIQUE=1` enables at startup through the shipped `.pth` with targets
-  installed; same battery output; `RUSTIQUE=0` makes `enable()` a no-op; `python -m rustique
-  status`; `python -m rustique diff` identical. musl wheels are smoke-tested in `alpine:3.22`
-  with uv-provided musl CPythons (an interpreter uv cannot provide is skipped with a
-  warning).
-- sdist job: `maturin sdist`, then `pip wheel` from the sdist and the same smoke test (the
-  sdist must be complete: it carries the startup files and `rust-toolchain.toml`).
-- `complete` job: fails unless every (cp314, cp314t, cp315, cp315t) × (manylinux,
-  musllinux) × (x86_64, aarch64), macOS × 2, win_amd64 wheel and the sdist exist.
-- Validated with `actionlint` 1.7.12 (no findings). Not run on GitHub from here (no push);
-  the first tag/dispatch run is the real proof (§9).
-
-### 5.2 Local proof (**M**, dev box)
-
-`maturin build --profile dev-release --zig --compatibility manylinux_2_28` (ziglang 0.17
-from PyPI) for 3.15.1, 3.15.1t, 3.14.9, 3.14.9t → `rustique-0.2.0-cp31{4,5}-cp31{4,5}{,t}
--manylinux_2_28_x86_64.whl`; `smoke_all.sh` with real `pip` into fresh venvs: **11/11
-checks on each of the 4 builds** (44 ok). The sdist contains `python/_rustique_startup.pth`.
-
-Final layout (extension-only startup), release wheels (`--release --zig`, fat LTO) for
-the 4 builds, same script. The smoke test now also checks that `RUSTIQUE=0` loads
-nothing, that `RUSTIQUE=1` loads only `rustique._rustique`, that `RUSTIQUE=1 pytest` adds
-no warning, and that `pytest --rustique` loads through the entry point: **14/14 on each of
-the 4 builds**.
-
-### 5.3 Interpreters without a wheel
-
-Decision: **`requires-python = ">=3.14,<3.16"`** — refuse at install time, never by a failed
-Rust build. Measured with a PEP 503 index that carries Requires-Python like PyPI
-(`benches/dx/simple_index.py`) serving the 4 wheels and the sdist:
-
-| interpreter | pip | uv |
+| piece | owner | contract |
 |---|---|---|
-| PyPy 3.11.17 | `ERROR: Ignored the following versions that require a different python version: 0.2.0 Requires-Python >=3.14,<3.16` | "the current Python version (3.11.17) does not satisfy Python>=3.14,<3.16" |
-| CPython 3.16.0a1 | same message as PyPy | **builds from the sdist** (uv lets 3.16 pre-releases satisfy `<3.16`); with Rust available the build succeeds (PyO3 0.30.1 does build for 3.16.0a1) and every target is refused at runtime: `status()["process"]["interpreter"] = "CPython 3.16 pre-release (0x31000a1)"`, nothing accelerated, never wrong |
-| CPython 3.15 (control) | installs the cp315 wheel | installs |
+| fork reset | accel | a `pthread_atfork` child handler zeroes every target's counters (hits, fallbacks, suspensions) and drops the inherited mapping; kernel state (score, suspension) stays. `status()["process"]["ppid"]` = the parent's pid for a process forked after enable |
+| live counter file | accel | while counters run into a JSON report `P`, each process keeps its counters in a `MAP_SHARED` file `P.<pid>.cnt` (Linux, macOS; Windows: exit-hook JSON only this wave). A fork child creates its own file (`posix.register_at_fork`). Children started by `subprocess` (vfork/exec) create none until they enable |
+| layout | both | header of 8 native-endian u64: magic `b"RQCNT\0\0" + version`, pid, ppid, n_targets, names_off, counters_off, flags (bit 0: the JSON record was written at exit), row_words. Names: NUL-terminated UTF-8. Rows v1: hits, args, deps, tools, interp, deopt, error, check, suspensions. v2 adds `continue`, `abandon` |
+| reader | dx | `_report.collect(P)`: the JSON records, plus a counters-only record for each `.cnt` whose pid wrote none (`os._exit`, killed). A file still being created, or a layout with more columns than the reader knows, is read safely (the known columns) |
+| merge/render | dx | counters add up (each process counts its own calls); the header says "N processes (k forked, m ended without exit hooks, counted from their live counters)" |
 
-Without an index (plain `--find-links`), pip cannot see Requires-Python before building the
-sdist and fails with a build error instead; PyPI provides the metadata, so users get the
-messages above. Alternatives rejected: no cap (pip on PyPy/3.16 attempts a Rust build and
-fails with cargo/PyO3 errors, or without Rust "Cargo is not installed" — misleading); a pure
-fallback wheel (installs silently where nothing can work; `rustique.List` would fail later).
-Cost of the cap: projects resolving for `python >=3.14` without an upper bound (Poetry, PDM)
-need a marker (`rustique; python_version < "3.16"`); raise the cap when a release validates
-the next minor.
+Tests: `test_collect_reads_live_counter_files` (v1 and v2 rows, exit flag, torn files,
+forked pid), `test_counter_file_longer_rows`, `test_merge_adds_counters`, and
+`test_report_counts_fork_pool_workers_once`. That last test runs a fork pool of 2 workers ×
+40 tasks: 81 calls must be counted, once each. It skips until the extension reports
+`ppid`, i.e. until accel's change is merged.
 
-## 6. Docs
+### 3.2 What the report says, and what a developer can do about it
 
-README top: one-line pitch, five-line quick start, "What gets faster" (atlas numbers, tagged,
-with `⟨Phase 3⟩` columns for the lead), "The catch" (exactness and fallback, out-of-reach
-time, startup with measured numbers, supported interpreters/platforms, off switches, CI),
-then the opt-in containers further down. `docs/USAGE.md`: install, on/off, fine-grained
-control, report, CI recipes (diff, plugin, check mode), env var and API reference, CLI
-reference, FAQ, troubleshooting.
+- Only targets that ran are listed, with a `fast` column (hits / calls). "N installed
+  targets were not called" goes on one line, and the targets waiting for their module are a
+  count with their modules. `--verbose` lists every name.
+- **What the fallbacks mean here**: one line per fallback reason that occurred, naming the
+  top three targets and saying what the reason means and what to do (table in USAGE.md).
+  Reasons the reader does not know are printed as they come.
+- **Suspensions** (Phase 1: sqlglot's `deepcopy` was suspended and restarted 49% of the
+  time, invisibly): `suspended Nx` per target, `suspended now (fallback|deps|conflict)`, and
+  the meaning of each.
+- **Refusals by category**, unexpected categories first, each with "what to do".
+  `unvalidated-patch` names `RUSTIQUE_UNVALIDATED_PATCH=1`. `armed` (validated at the first
+  call) and `unvalidated` targets are marked.
+- **Tiers**: "opt-in tiers: gc on (1 of 1 targets active), interp off (…);
+  RUSTIQUE_TIERS=interp turns it on". `status` marks tier groups.
+- `status` reads "N available here (A active now, P activate when their module is
+  imported)", the Phase-1 wording fix. It also names `python -S` and "no startup file"
+  (editable, `--target`) as causes when `RUSTIQUE=1` would do nothing.
+- Per-call-site attribution (`RUSTIQUE_STATS=sites`) is not in this wave. Accel ruled that
+  finding the caller would materialise frame objects, which is observable. So the advice
+  is per reason.
+
+## 4. Proving "nothing changed except speed" in CI
+
+### 4.1 `diff`
+
+Phase-1 fixes, now shipped:
+
+- one JUnit path for both runs;
+- ISO-8601 / common-log timestamps and local ports masked;
+- pytest progress characters dropped;
+- test ids that differ only in digits paired;
+- output that also differs between two plain runs reported as *volatile*
+  (`--strict-output` to compare it anyway).
+
+Measured on the 14 real suites: 6 false alarms before, 0 after (w2-dx §3.2).
+
+New in Phase 2:
+
+- **Node ids**: the plugin's `--rustique-outcomes PATH` records `{node id: outcome}` from
+  `pytest_runtest_logreport` on the controller (xdist included). It is inactive and imports
+  nothing unless asked. `diff` passes `-p rustique.pytest_plugin --rustique-outcomes=…`, and
+  falls back to the JUnit file when the plugin is absent.
+- **Confirmation re-runs** (`--confirm N`, default 2). Tests whose outcome differs are re-run
+  alone, N times per side, interleaved. A re-run keeps the original command's interpreter,
+  `pytest` and its `-p/-o/-c/-W/--rootdir/--confcutdir/--import-mode` options.
+  - A test whose outcome also varies without Rustique is **flaky**: it is listed, not
+    compared, and the 0/1 exit code and failure-report output it causes are not counted.
+  - Anything else stays a difference. This includes a difference that does not reproduce in
+    isolation: it may be order-dependent, which is not proof of innocence.
+  - It answers Phase 1's Django `test_reporting_frames_for_cyclic_reference` case: it failed
+    in 7 of 12 plain runs on 3.15.1t.
+  - Tested: `test_diff_flaky_test_is_not_a_difference`, a test failing every third run, and
+    `test_diff_pytest_outcome_change`, a real difference, confirmed.
+
+### 4.2 Plugin, check mode
+
+- The plugin adds `--rustique-tiers` and `--rustique-outcomes`.
+- `unvalidated-patch` joins `version`/`build`/`jit`/`platform` as an expected refusal (never
+  fails a session).
+- Check mode is unchanged from wave 1.
+
+## 5. `python -m rustique estimate`
+
+### 5.1 Design
+
+Three runs of the command, in this order:
+
+1. **Enabled, counters on**: hit and fallback counts per target, and the **manifest** of entry
+   points from `status()["targets"][i]["sites"]`. `name (vectorcall)` + `module` → a
+   Python-level function; `owner.name (ml_meth)` → a C-level method; `(slot)` → counted
+   only. So targets added by other workstreams are found without a table here. Known
+   targets keep their hand-written entries (`strptime` is timed through its Python helper;
+   `logging` never replays). The hook enables through `sitecustomize`, so editable installs
+   without a startup file work too.
+2. **Plain, profiled** (`sys.monitoring`, tool 4): calls and per-call times of every target, a
+   systematic sample of 24 calls' arguments per Python-level target, the longest outermost
+   call, **the call sites (file, qualname, first line, CALL offset) of C-level targets**,
+   and, at exit, the **replay**. Each kept call is timed with CPython's original and with
+   `enable(only=<target>)`; each side is the fastest of 5 batch means (interference only adds
+   time). Once the program has a second thread, intervals are taken in thread CPU time,
+   because wall intervals include waiting for the GIL. The profiler's own cost is calibrated
+   for that clock too.
+3. **Plain, sampled** (`Sampler`, signal mode): `setitimer(ITIMER_PROF)` fires every 0.5 ms
+   of *process CPU time*. The handler runs in the main thread and walks the main thread's
+   own frames, which is safe on free-threaded builds.
+   - Waiting (I/O, sleeps, locks) is not sampled, and samples do not cluster where the GIL
+     is released.
+   - A frame stopped at a CALL that the profiled run saw call a C-level target is inside
+     that target: the handler runs at the CALL's own periodic check. So C-level targets are
+     sampled too, with no per-call cost to subtract (2 µs per call on the box, more than
+     many of the calls themselves).
+   - With several threads, each sample is split by every thread's CPU time since the
+     previous one (`pthread_getcpuclockid`). Other threads' stacks come from
+     `sys._current_frames()` on GIL builds, where they are parked. On free-threaded builds
+     their CPU is unattributed, reported, and not promised.
+
+**Prediction**: `ratio = 1 − Σ_t T_t (1 − r_t) / max(wall, CPU)`.
+
+- `T_t` comes from samples: each sampled stack of distinct targets (outer → inner) gives its
+  time to the outermost target in the proportion of calls its kernel takes (counters). A
+  kernel that takes the call replaces everything under it. The rest goes to the next target
+  inside. A `Logger.info` that always deopts leaves its time to `findCaller`, `LogRecord`
+  and `Formatter.format` inside it. `relative_to`, which always hits, keeps the `PurePath`
+  calls under it.
+- `r_t` is the replayed ratio (Python-level); the measured per-call ratio × hit rate for
+  C-level targets (`C_RATIO`; `sort`/`sorted` 1.0, §5.3); or hits × saving per hit (`in` on
+  tuples/lists, `float.__repr__`). A target with no model saves nothing.
+- Threaded programs use the profiler's thread-CPU times instead of the other threads'
+  samples, which are biased toward GIL hand-offs at system calls. That bias was measured: in
+  `job_worker`, 92% of the samples landed in the flush of a log handler.
+- The printed range is the other time source. Notes say when the program waited, when
+  threads went unattributed, which tiers are not predicted, and which targets fall back on
+  ≥ 30% of ≥ 100 calls.
+
+### 5.2 Validation on the 65 workloads (T13: within ±0.03 of the measured ratio on ≥ 80%)
+
+`benches/dx/est_setup.sh` (one venv per family, a release wheel), `est_validate.sh` (per
+family, one core each), `estimate_workloads.py all|measure`. "Measured" = Phase 3's
+quiet-box ratio (`docs/atlas/phase3.md` §4) for wave 1's 34 workloads. For the 31 new ones,
+it is the dev-box `measure` (5 interleaved fresh-process pairs × 5 runs, median wall; two
+rounds averaged where both exist). The prediction ran on the loaded box (M).
+
+**Result (3.15.1, M):**
+
+- Final code (v5): **50/65 within ±0.03 (77%)**, 47 within ±0.02, 57 within ±0.05, median
+  |error| 0.011, mean 0.027, bias +0.009.
+- A second run of the same model (v4): 51/65 (78%), 58 within ±0.05.
+- T13 asks for ≥ 80% (52). **Not met on the dev box**, by 1–2 workloads.
+- The run-to-run spread at load 50–100 is ±2 workloads. Two of the box references disagree
+  between their two rounds by 0.08 (`cache_service`) and 0.22 (`django_admin`).
+- The systematic gap is threaded programs: 3 of the 5 `threads` workloads and 3 of the 4
+  `services` miss (§5.3).
+- Without the `threads` and `services` families and the reference that varies by 0.22:
+  47/55 (85%). Per family: `custom` 10/10, `libs` 6/6, `devtools` 10/12, `data` 9/12,
+  `web` 8/10, `frameworks` 4/6.
+
+How the model got there (same 65 workloads, same references):
+
+| version | change | within ±0.03 |
+|---|---|---:|
+| Phase 1 | wall-clock sampler thread, outermost target, profiler for C-level targets | 46 |
+| v2 | CPU-time signal sampler, innermost target, thread-CPU clock with threads | 50 |
+| v3 | stacks split by hit rate, C-level targets sampled at their call sites, replay = fastest of 5 batches | 48 |
+| v4 | run-queue delay out of the denominator, C-level targets only when innermost, threads sample C-level targets | 51 |
+| v5 | CPU, wall and delay from the timed runs (validation harness) | 50 |
+
+What the signal sampler fixed (Phase 1 → v5):
+
+| workload | Phase 1 error | v5 error |
+|---|---:|---:|
+| `fs_inventory` (I/O) | +0.250 | within 0.03 |
+| `asyncio_http` | +0.206 | within 0.03 |
+| `json_api` (`default=` → `asdict`) | +0.077 | within 0.03 |
+| `logging_service` | +0.003 | −0.040 |
+| `state_snapshot` | −0.138 | within 0.03 |
+
+Per workload (v5; `P3` = Phase 3 quiet box; `box ×n` = n rounds on the dev box; **x** =
+outside ±0.03):
+
+| workload | measured | source | predicted | error | under targets | top saver |
+|---|---:|---|---:|---:|---:|---|
+| custom/di_plugins | 0.991 | box ×1 | 0.998 | +0.007 | 0% | tuple.__contains__ (0%) |
+| custom/ecs_arena | 0.987 | box ×1 | 0.998 | +0.011 | 6% | builtins.min (0%) |
+| custom/event_ledger | 0.982 | box ×1 | 1.000 | +0.018 | 0% | dataclasses.asdict (0%) |
+| custom/fulfilment_sim | 0.995 | box ×1 | 0.997 | +0.002 | 0% | random.randrange (0%) |
+| custom/mini_interp | 0.988 | box ×1 | 1.000 | +0.012 | 0% | tuple.__contains__ (0%) |
+| custom/order_domain | 1.001 | box ×1 | 0.995 | -0.005 | 1% | builtins.min (0%) |
+| custom/orm_mapper | 0.971 | box ×1 | 0.979 | +0.008 | 3% | datetime.date.isoformat (1%) |
+| custom/report_engine | 0.900 | box ×1 | 0.916 | +0.016 | 9% | datetime.date.strftime (3%) |
+| custom/rules_engine | 0.998 | box ×1 | 0.996 | -0.002 | 1% | float.repr (0%) |
+| custom/task_planner | 0.997 | box ×1 | 0.996 | -0.001 | 5% | builtins.max (0%) |
+| data/backup_archive | 0.996 | P3 | 0.991 | -0.005 | 2% | builtins.sum (0%) |
+| data/billing_engine | 0.970 | P3 | 0.905 | -0.065 **x** | 16% | builtins.min (1%) |
+| data/config_merge | 1.013 | P3 | 0.997 | -0.016 | 4% | json.loads (0%) |
+| data/csv_etl | 0.625 | P3 | 0.642 | +0.017 | 50% | json.dumps (5%) |
+| data/fs_inventory | 0.743 | P3 | 0.749 | +0.006 | 33% | pathlib.PurePath.relative_to (6%) |
+| data/log_analytics | 0.594 | P3 | 0.637 | +0.043 **x** | 41% | datetime.datetime.strptime (7%) |
+| data/pandas_etl | 1.000 | P3 | 1.000 | -0.000 | 0% | tuple.__contains__ (0%) |
+| data/report_render | 0.436 | P3 | 0.457 | +0.021 | 71% | textwrap.fill (9%) |
+| data/state_snapshot | 0.651 | P3 | 0.624 | -0.027 | 83% | copy.deepcopy (9%) |
+| data/text_corpus | 1.000 | P3 | 0.994 | -0.006 | 2% | builtins.min (0%) |
+| data/tz_events | 0.591 | P3 | 0.531 | -0.060 **x** | 58% | datetime.date.strftime (14%) |
+| data/xml_feeds | 1.000 | P3 | 1.000 | -0.000 | 3% | tuple.__contains__ (0%) |
+| devtools/black_format | 0.990 | P3 | 0.997 | +0.007 | 1% | tuple.__contains__ (0%) |
+| devtools/coverage_pyflakes_tests | 0.995 | P3 | 0.989 | -0.006 | 2% | textwrap.dedent (0%) |
+| devtools/import_startup | 1.000 | P3 | 1.000 | +0.000 | 0% | - |
+| devtools/isort_stdlib | 0.771 | P3 | 0.686 | -0.085 **x** | 50% | copy.deepcopy (6%) |
+| devtools/pip_resolve | 0.949 | P3 | 0.963 | +0.014 | 9% | pathlib.PurePath.relative_to (0%) |
+| devtools/pycodestyle_stdlib | 0.985 | P3 | 0.989 | +0.004 | 0% | list.__contains__ (0%) |
+| devtools/pyflakes_stdlib | 0.997 | P3 | 0.999 | +0.002 | 0% | tuple.__contains__ (0%) |
+| devtools/pylint_stdlib | 1.002 | P3 | 0.998 | -0.004 | 1% | posixpath.abspath (0%) |
+| devtools/pytest_networkx | 0.948 | P3 | 0.979 | +0.031 **x** | 10% | pathlib.PurePath.__eq__ (1%) |
+| devtools/rich_render | 0.998 | P3 | 0.992 | -0.006 | 4% | builtins.max (0%) |
+| devtools/sphinx_autodoc | 0.977 | P3 | 0.989 | +0.012 | 5% | logging.LogRecord.__init__ (0%) |
+| devtools/sqlglot_transpile | 0.968 | P3 | 0.952 | -0.016 | 19% | copy.deepcopy (4%) |
+| frameworks/django_admin | 1.052 | box ×2, spread 0.22 | 0.985 | -0.067 **x** | 5% | urllib.parse.parse_qsl (0%) |
+| frameworks/drf_api | 1.018 | box ×2 | 0.984 | -0.033 **x** | 9% | copy.deepcopy (0%) |
+| frameworks/falcon_api | 0.801 | box ×2 | 0.794 | -0.007 | 27% | json.dumps (5%) |
+| frameworks/fastapi_sqlalchemy | 0.998 | box ×2 | 0.993 | -0.004 | 1% | json.dumps (0%) |
+| frameworks/flask_marshmallow | 1.005 | box ×2 | 0.992 | -0.013 | 4% | datetime.date.isoformat (0%) |
+| frameworks/strawberry_graphql | 0.989 | box ×2 | 1.000 | +0.010 | 2% | float.repr (0%) |
+| libs/attrs_cattrs | 0.912 | box ×2, spread 0.03 | 0.892 | -0.020 | 23% | json.dumps (2%) |
+| libs/boto3_client | 0.980 | box ×2 | 0.972 | -0.008 | 6% | json.loads (0%) |
+| libs/bs4_scrape | 0.985 | box ×2 | 0.997 | +0.013 | 0% | tuple.__contains__ (0%) |
+| libs/jsonschema_validate | 0.993 | box ×2 | 0.999 | +0.006 | 1% | urllib.parse.unquote (0%) |
+| libs/pydantic_payloads | 1.000 | box ×2 | 0.992 | -0.008 | 2% | copy.deepcopy (0%) |
+| libs/yaml_config | 1.010 | box ×2 | 0.999 | -0.010 | 0% | datetime.datetime.isoformat (0%) |
+| services/cache_service | 0.962 | box ×2, spread 0.08 | 0.999 | +0.038 **x** | 0% | tuple.__contains__ (0%) |
+| services/job_worker | 0.628 | box ×2 | 0.876 | +0.248 **x** | 116% | json.dumps (4%) |
+| services/uvicorn_fastapi | 1.003 | box ×2 | 0.967 | -0.036 **x** | 11% | copy.copy (1%) |
+| services/waitress_flask | 0.971 | box ×2 | 0.985 | +0.014 | 13% | logging.Logger.findCaller (1%) |
+| threads/compute_pool | 0.978 | box ×2 | 0.960 | -0.018 | 7% | builtins.min (4%) |
+| threads/http_server | 0.909 | box ×2 | 0.936 | +0.028 | 11% | json.dumps (5%) |
+| threads/pipeline_queue | 0.558 | box ×2, spread 0.03 | 0.889 | +0.331 **x** | 26% | datetime.datetime.strptime (6%) |
+| threads/request_pool | 0.591 | box ×2 | 0.698 | +0.106 **x** | 51% | json.dumps (13%) |
+| threads/shared_cache | 0.679 | box ×2 | 0.770 | +0.091 **x** | 35% | json.dumps (14%) |
+| web/aiohttp_app | 0.910 | P3 | 0.944 | +0.034 **x** | 9% | json.dumps (0%) |
+| web/asyncio_http | 0.791 | P3 | 0.773 | -0.018 | 31% | json.dumps (3%) |
+| web/django_blog | 0.997 | P3 | 0.993 | -0.004 | 4% | urllib.parse.quote (0%) |
+| web/email_mime | 0.995 | P3 | 0.996 | +0.001 | 2% | datetime.date.strftime (0%) |
+| web/fastapi_pydantic | 0.983 | P3 | 0.977 | -0.006 | 6% | json.dumps (1%) |
+| web/flask_jinja | 0.990 | P3 | 0.985 | -0.005 | 8% | json.loads (0%) |
+| web/json_api | 0.835 | P3 | 0.843 | +0.008 | 63% | json.loads (2%) |
+| web/logging_service | 0.817 | P3 | 0.777 | -0.040 **x** | 93% | logging.Logger.level (4%) |
+| web/requests_local | 0.941 | P3 | 0.952 | +0.011 | 9% | json.dumps (2%) |
+| web/sqlalchemy_orm | 0.997 | P3 | 0.998 | +0.001 | 1% | datetime.datetime.isoformat (0%) |
+
+Raw data: `~/rustique-research/w2/ws-dx/est/v{1..5}-3.15.1/` (predictions with their
+inputs), `m2/` and `v1-3.15.1/measured-*.json` (box measurements). Not repeated on 3.15.1t this
+phase (box time). There, the sampler's safety is what was tested: `tests/test_dx_estimate.py`
+passes on 3.15.1t, and the estimate command runs end to end in that suite.
+
+### 5.3 Limits
+
+- **Threaded programs** (`threads/*`, `services/job_worker`) are the weakest family.
+  - On GIL builds, other threads are sampled where they handed the GIL over: system calls,
+    the flush of a log handler.
+  - The profiler's thread-CPU clock costs a system call per reading; its calibration is
+    noisy under load (1.6–7.5 µs per event measured on the box) and is subtracted from small
+    calls.
+  - The result under-predicts: `job_worker` is predicted 0.88 and measured 0.63. That is the
+    safe direction, but it is wrong.
+  - Fix: per-thread CPU-time sampling (a per-thread timer, `timer_create` with
+    `SIGEV_THREAD_ID`), which needs native code. On free-threaded builds other threads are
+    not sampled at all (§5.4).
+- **One huge call** (`state_snapshot`: one `deepcopy` of a big graph is most of the run):
+  the replay runs the call repeatedly with warm caches and allocator, so it flatters the
+  kernel (−0.03).
+- **C-level targets cannot be replayed**: `CALL` events carry no arguments. The per-call
+  ratio is a table (`C_RATIO`, from `benches/dx/c_ratios.py`) × the hit rate.
+  - `strftime` formats vary (`tz_events` −0.05).
+  - `sort`/`sorted` is set to 1.0 (presorted input was slower; now fixed by `core`).
+- **A C-level target that calls back Python** (`any(genexpr)`, `min(key=...)`) is credited
+  only with samples taken inside it, not inside the callback. The kernel cannot make the
+  callback faster (`pip_resolve`: −0.07 → −0.01 with this rule).
+- **Opt-in tiers** have no entry points: counted, not predicted.
+- **Cost**: three runs. The profiled one is 1–5× slower than plain, and the replay adds
+  0–3 s.
+
+### 5.4 Free-threaded builds, and an upstream item
+
+Phase 1 crashed CPython 3.15.1t with an in-process sampler thread: 1 crash in 3 runs of
+`data/xml_feeds`, in the walk of another thread's `f_back` chain (M, w2-dx §5.2).
+`sys._current_frames()` stops the world only while it collects the frame pointers. Walking
+`f_back` of a frame that another thread is still running is a data race on free-threaded
+builds (I, from `Python/pystate.c` `_PyThread_CurrentFrames`).
+
+The signal sampler never does that: the handler walks the main thread's own stack, and other
+threads count as unattributed (`test_signal_sampler_is_safe_with_threads` runs on 3.15.1t).
+**Upstream item (to file, lead)**: document that the frames returned by
+`sys._current_frames()` must not be walked while their threads run on free-threaded builds,
+or return snapshots there. Every sampling profiler written in Python (py-spy is
+out-of-process; `pyinstrument`, `yappi`-style samplers are not) is exposed.
+
+## 6. Wheels and platforms
+
+### 6.1 `wheels.yml`
+
+- **Repack**: right after `maturin-action`, `tools/repack_wheel.py dist/*.whl` (engine's,
+  stdlib-only, idempotent). Then `.github/scripts/check_wheels.py --layout top` checks:
+  - exactly one root `_rustique.<abi>.{so,pyd}`;
+  - nothing at `rustique/_rustique.*`, and no shim;
+  - `_rustique_startup.pth` at the root;
+  - every RECORD hash and size.
+
+  The sdist job checks its wheel with `--layout shim` (maturin's layout, loaded through
+  `_rustique.py`).
+- **interp tier** (crates/rustique-interp, merged in 0d73921):
+  - The Linux x86_64 job installs `clang` + `llvm` in the manylinux_2_28 container
+    (`before-script-linux`, version ≥ 19 checked). It passes `RUSTIQUE_INTERP_REQUIRE=1`, so
+    a missing compiler or `llvm-profdata` (PGO) fails the build.
+  - Every other job builds the empty handler set: the crate's build script compiles nothing
+    off x86_64 Linux glibc and needs no clang there (it reads the target cfg; musl is
+    excluded too).
+  - Smoke, every wheel: without `tiers=` every interp target is `disabled` with the opt-in
+    reason.
+  - Linux x86_64: asked for (`enable(tiers=["interp"])`), they install. This runs on the
+    python-build-standalone builds of every release in `src/builds.rs` (3.15.1, 3.15.2, GIL
+    and t), installed with uv 0.13.6: the tier recognises a binary by its ELF build-id, and
+    each uv version pins one PBS build per release.
+  - Everywhere else, asked for, they refuse ("validated on x86_64 Linux (glibc) only", or
+    "built without handlers").
+  - setup-python's interpreters are not PBS builds and get no interp assertion.
+- **`platform` job** (new): 8 platforms × 4 builds (PRs: Linux x86_64 × 3.15, 3.15t). Each
+  cell runs `.github/scripts/platform_tests.py` (stdlib only):
+  1. a fresh venv with the platform's wheel from the `wheels` job;
+  2. the **coverage probe**: enable, import every target module, record each target's state
+     and refusal. A category outside version/build/jit/platform/unvalidated-patch fails;
+  3. **Rustique's tests** for every fully installed group (`tests/targets/test_<group>*.py`),
+     from a copy of `tests/` outside the source tree, plus `tests/test_dx*.py` off Windows;
+  4. **CPython's own test modules** of every installed group, plain against enabled
+     (`run_target_suites.py`). They come from the exact source release of the runner's
+     interpreter (`--fetch-cpython`).
+
+  This replaces the ~17 smoke calls that were the only validation off Linux (w2-dx §6).
+- **`platform-report`**: `platform_report.py` tabulates every cell (installed / total,
+  refusals by category, partly-on groups) into the job summary and a `platform-coverage`
+  artifact, and fails a cell below its floor in `.github/platform-floors.json`.
+  - The floors are wave 1's measured counts (glibc 84/79, musl and macOS 74/69, Windows
+    30/28).
+  - T10's bar (Windows ≥ 48, macOS/musl ≥ 77) is raised there when accel's Windows symbol
+    lookup and allowlist and text's datetime gating are merged.
+- windows-arm64 is promoted from experimental (all smoke cells passed in run 41362578712),
+  and the `complete` job requires its wheels.
+- `ci.yml`: the native-tier `Examples` and C-API capsule steps are removed (engine).
+
+**Not run on GitHub from here** (no push). Validated locally:
+
+- YAML parsing and a simulation of the `plan` step (8 wheel cells, 32 platform cells);
+- `check_wheels.py` on repacked and maturin-layout wheels;
+- the Linux x86_64 cell end to end on the box (`benches/dx/ci_local.sh`, M), with a
+  `maturin build --release` wheel for 3.15.1:
+  - the repack moved the extension to the root and dropped the shim, and the layout check
+    passed;
+  - smoke: all checks passed;
+  - coverage: 84/84 installed;
+  - Rustique's tests from the installed wheel: 1,773 passed (after one fix: a switch test
+    must run with `-S` when the interpreter's own startup line has already loaded the
+    extension);
+  - conformance: 26 CPython test modules, 0 differences;
+  - report: the floor is met.
+
+actionlint could not be fetched in this environment (the download was not permitted). Run it
+before the first dispatch.
+
+### 6.2 Platform coverage (T10) and install guidance
+
+- Coverage code is accel's (Windows `GetProcAddress` lookup, the `PyASCIIObject.state`
+  accessor, the platform allowlist) and text's (datetime gating). Prototype patches: w2-dx
+  §6 (`~/rustique-research/w2/dx/platform-*.patch`). dx owns the CI that validates it and
+  the coverage report above. Status at this branch's head (wave2 c245899 merged): the
+  Windows and macOS/musl changes have not landed yet, so the floors stay at wave 1's counts
+  (Windows 30/28, macOS/musl 74). T10 is measured by the first platform-coverage artifact
+  after accel B and text are merged.
+- USAGE.md now documents:
+  - `pip install --only-binary rustique` (uv: `--only-binary` / `no-build-package`) for CI
+    and Docker;
+  - the 1.4 GB toolchain download an sdist build triggers;
+  - unvalidated platforms refusing as `platform`;
+  - the uv/3.16-pre-release sdist pick;
+  - the `rustique; python_version < "3.16"` marker and "never import rustique
+    unconditionally", as the 3.16 upgrade path;
+  - patch releases and `RUSTIQUE_UNVALIDATED_PATCH=1`.
 
 ## 7. Real projects
 
-`benches/dx/real_projects.sh` (re-run it at integration with all targets merged): for each
-project a fresh venv of python-build-standalone 3.15.1, `pip install` of the rustique wheel
-(so the startup `.pth` is there, as for users), the project at its default-branch HEAD
-(shallow clone; commit recorded) installed editable with its test dependencies, one warm-up
-run (compiles the `.pyc` files), then `pytest` plain, `RUSTIQUE=1 pytest`,
-`pytest --rustique` and `python -m rustique diff -- pytest`. 13 wave-0 targets (containers,
-builtins) — the stdlib targets were not merged yet. Dev box, shared, 2 CPUs (wall times are
-indicative only; **M**).
-
-| project (commit) | tests | plain | `RUSTIQUE=1` | `--rustique` | `diff` |
-|---|---|---:|---:|---:|---|
-| attrs (c8bb9bf, 2026-10-24) | 1413 | 6.96 s | 7.09 s | 7.14 s | identical (1413 outcomes), 7.58 vs 7.62 s (1.006) |
-| rich (9d8f9a3, 2026-06-23) | 981 | 3.78 s | 3.79 s | 3.79 s | identical (981 outcomes), 4.19 vs 4.18 s (0.998) |
-| sqlglot (6de2df3, 2026-10-31) | 1452 (+22,683 subtests) | 70.91 s | 69.41 s | 69.19 s | identical (1452 outcomes; 8 processes reported), 72.39 vs 70.52 s (0.974) |
-
-Rerun with the final layout (release cp315 wheel; `RUSTIQUE=1` loads only the extension),
-attrs and rich: identical again, `diff` ratio 1.005 and 1.000.
-
-Same pass/fail sets in every mode. attrs fails 2 packaging-metadata tests, rich 14 and
-sqlglot 21 tests in the *plain* runs as well (editable install / 3.15 environment); `diff` reports
-"identical" and exits 0 — it compares, it does not judge.
-
-What the experience surfaced, and what changed:
-
-1. **False alarm, fixed**: under `RUSTIQUE=1` every pytest run printed two
-   `PytestAssertRewriteWarning: Module already imported so cannot be rewritten; rustique`
-   (and the then-separate `_rustique_startup` module). pytest marks every top-level module of a distribution that
-   has a `pytest11` entry point for assertion rewriting and warns when one is already
-   imported — and the startup switch imports both before pytest starts. `diff` flagged it
-   on attrs and rich (stdout and the warnings count differed). Fix: `PYTEST_DONT_REWRITE`
-   in the package docstring (pytest's documented opt-out), and the `.pth` line imports
-   nothing under `RUSTIQUE=0`. The wheel smoke test now checks that
-   `RUSTIQUE=1 pytest` adds no warning and that `pytest --rustique` loads through the entry
-   point.
-2. **Timing skew, fixed in the runner**: the first run of a fresh checkout compiles every
-   `.pyc` (attrs: 11.4 s vs 7.0 s). The runner does a warm-up run; `diff --repeat N`
-   interleaves pairs for users.
-3. **Project quirks, not Rustique**: attrs needs `-p no:mypy-plugins` without mypy; sqlglot's
-   `tests/test_sqlglotc.py` needs the compiled `sqlglotc` extension (ignored) and its other
-   tests need `pytz`, `duckdb`, `pandas`.
-4. **Signals for accel-core** from the reports (counters on): in attrs `builtins.min` took
-   35,968 fast paths and **27,425 `deopt` restarts** (43% of calls start in Rust and restart
-   in CPython); `tuple.__contains__` falls back on 39% of calls (`args`); in rich
-   `builtins.sum` falls back on 85% (`args`, 14,196 of 16,707); in sqlglot
-   `tuple.__contains__` falls back on **86%** of 1.88M calls (1,245,390 `args`, **375,948
-   `deopt`**) and `builtins.sum` on 89%. Restarts cost time; these are the
-   inputs to look at.
-5. No friction with the switches themselves: `RUSTIQUE=1` reached pytest through the `.pth`
-   in every project, `--rustique` printed the report, `diff` needed no `--ignore`.
+Phase 1 (w2-dx §4): 14 projects' own suites showed 0 behaviour differences on 3.15.1 (6 again
+on 3.15.1t), with the release wheels of wave 1. `benches/dx/real_projects.py` re-runs them
+under `diff`. The final run on the integrated `wave2` (14 suites on 3.15.1, 6 on 3.15.1t) is
+for when the lead asks, once the target workstreams are merged:
+`real_projects.py setup --wheels DIR` with a release wheel of the integrated branch, then
+`run` and `table`. Not run in this phase.
 
 ## 8. Tests
 
-`tests/test_dx.py` is the contract of the switches. It goes through the public API, the
-real framework, environment variables and the shipped `.pth` line, so it holds whichever
-layer implements them. It covers:
+- `tests/test_dx.py` — the switch contract, the report renderer and merger, live counter
+  files.
+- `tests/test_dx_cli.py` — the runner (`--native`, `--tiers`), status, report (`--from`,
+  fork pools), diff (outcome changes, flaky tests, re-run commands, volatile output, masks),
+  and the plugin (tiers, outcomes, refusal categories, check mode, xdist).
+- `tests/test_dx_estimate.py` — the manifest, chain attribution, prediction arithmetic, the
+  signal sampler (CPU not waiting, threads, handler restored, steps aside for a program's
+  own SIGPROF), the profiler (C children, thread clock), and the command.
 
-- the kill switch: values, no side effects, the native tier;
-- selection, and the environment narrowing the code's selection;
-- unknown names: warnings from variables, `ValueError` from code;
-- `RUSTIQUE_STATS`, `RUSTIQUE_CHECK` and `RUSTIQUE_REPORT` values;
-- the switch state in `status()` and the first-source rule;
-- report rendering and merging;
-- the startup line, run by `site.addsitedir` in subprocesses against a site dir holding
-  the `.pth` and a link to the extension. Unset and `0` load nothing; other off values,
-  invalid values and `-E`/`-I` enable nothing; `1` loads only `rustique._rustique`, and a
-  later `import rustique` reuses it; selection works; a broken install falls back through
-  the package and Python still starts;
-- the module budget, as a `sys.modules` diff;
-- the report at exit: stderr, text file, JSON with `{pid}`, under the kill switch.
+Full suite per build, at 8aadff7 (wave2 74eeb03 merged; dev box, `pytest -q tests`, M):
 
-`tests/test_dx_cli.py` covers:
+| build | result |
+|---|---|
+| 3.15.1 | 2,234 passed, 6 skipped |
+| 3.15.1t | 2,234 passed, 6 skipped |
+| 3.14.9 | 2,236 passed, 4 skipped |
+| 3.14.9t | 2,236 passed, 4 skipped |
 
-- the runner, `status`, `report`;
-- `diff`, including pytest outcome changes, normalisation, `--check`, and a command with
-  no Rustique;
-- the plugin: inactive by default, report, selection, kill switch, refusal categories,
-  check mode, mismatches, xdist.
+Skips that are dx's:
+- the fork-pool counter test, until accel D;
+- the xdist test, where `pytest-xdist` is not installed.
 
-Together about 100 tests, ~7 s. accel-core's `tests/test_accel_startup.py` runs the same
-`.pth` text exactly as `site` does. Full suites: §9 and the final report.
+dx changes no Rust and no target, so there is no conformance or callgrind cell of its own.
+The CI cell above ran CPython's test modules for all 84 targets against the release wheel:
+0 differences.
 
 ## 9. Open issues and decisions for the lead
 
-1. **`RUSTIQUE=1` startup.** Turning Rustique on costs +0.5 ms (1.05 wall) on 3.15.1 and
-   +0.7 ms (1.07) on 3.14.9. The lead accepted this for wave 1 as a documented exceedance
-   (README "The catch"). The dx side is at its floor: the startup path loads the extension
-   only, and `import rustique` loads the package + extension. What remains is the
-   extension's load (page faults, relocations) and enable. A further step would be a
-   smaller startup-only extension (accel-core ranked split options in
-   docs/targets/framework.md). Numbers: §1.4.
-2. **File the CPython issue** about `.start` resolution importing `pkgutil` + `re` (§1.2),
-   and add `_rustique_startup.start` when it is fixed (or for 3.18+).
-3. **`wheels.yml` has not run on GitHub** (no push from here): the first tag or manual
-   dispatch is the proof for Windows arm64 (`windows-11-arm`, free-threaded availability),
-   `macos-15-intel`, cp315t in the manylinux/musllinux images, and uv's musl free-threaded
-   CPythons for the Alpine smoke test. No PyPI publish job (trusted publishing) is included:
-   the lead's call.
-4. **`requires-python = ">=3.14,<3.16"`** (§5.3): revert to `>=3.14` if you prefer
-   "installs, refuses at runtime" over "refuses to install" on future minors.
-5. **Kill switch scope**: `RUSTIQUE=0` also disables the native tier (`native=`,
-   `@rustique.native`), per "every enable path"; confirm.
-6. **Deopt-heavy wave-0 kernels** seen on real suites (§7.4): `builtins.min` 43% `deopt` in
-   attrs, `tuple.__contains__` 86% fallbacks (20% `deopt`) in sqlglot.
-7. `docs/USAGE.md` and README carry `⟨Phase 3⟩` placeholders for the measured target numbers
-   and the `RUSTIQUE=1` startup cost.
+1. **T13** (§5.2): the remaining misses are threaded programs (§5.3) and references measured
+   on the loaded box. Two references disagree between two measurement rounds by 0.08 and
+   0.22. Please re-measure the 31 new workloads' ratios on the quiet box in Phase 3 and run
+   `benches/dx/est_validate.sh` (STEPS=est) there: it prints the table of §5.2.
+2. **Accel D** (counters): `test_report_counts_fork_pool_workers_once` skips until
+   `status()["process"]["ppid"]` exists. The reader and renderer already handle the
+   agreed `.cnt` layout v1/v2 (tested with synthetic files). Windows gets the exit-hook JSON
+   only this wave, so a killed Windows worker is not counted (documented).
+3. **Tiers**: done end to end (accel's switch, `enable(tiers=)`, the CLI and plugin through
+   `RUSTIQUE_TIERS`, status and report). Until `interp`/`gc` merge there is no tier target,
+   so `--tiers gc` warns "no tier named 'gc'".
+4. **wheels.yml has never run on GitHub** (no push from here). The first tag or dispatch is
+   the proof for:
+   - the repack on Windows (`.pyd`);
+   - the clang 19+/llvm install with `dnf` in manylinux_2_28 (AlmaLinux 8; if its clang is
+     older, use `RUSTIQUE_INTERP_CC` with a toolset clang);
+   - uv 0.13.6 still serving the PBS builds that `src/builds.rs` records;
+   - `--fetch-cpython` on every runner;
+   - the platform job's run time (estimated 10–40 min per cell, I).
+
+   Please run actionlint first.
+5. **Platform floors** are wave 1's counts. Raise `.github/platform-floors.json` to T10
+   (Windows 48, macOS/musl 77) when accel's and text's platform changes are merged, and update
+   USAGE.md's platform table (today's coverage: Windows refuses `copy`/`logging`/`random`/
+   `textwrap` for want of run-time symbol lookup, macOS/musl refuse `isoformat` with the
+   rest of datetime text) from the first platform-coverage artifact.
+6. **Upstream** (to file): `sys._current_frames()` frames must not be walked on
+   free-threaded builds (§5.4). The earlier items stand: the `.pth` `utf-8-sig` decode, and
+   `.start` entry points importing `pkgutil` (w2-startup §6).
+7. Not done, ranked: `diff --from-ci plain.xml` (compare with the JUnit file the normal CI
+   job already produced, halving the cost); a fixed `pytest-randomly` seed in `diff` (today
+   the recipe passes `-p no:randomly`); per-thread CPU sampling for `estimate` (native).

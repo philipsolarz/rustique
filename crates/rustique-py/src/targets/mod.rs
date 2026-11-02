@@ -47,11 +47,11 @@ pub static ALL: &[&[&TargetSpec]] = &[
     datetime::TARGETS,
     copy::TARGETS,
     copy::dc::TARGETS,
+    set::TARGETS,
     r#enum::TARGETS,
     generated::TARGETS,
     contextlib::TARGETS,
     functools::TARGETS,
-    set::TARGETS,
     interp::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.

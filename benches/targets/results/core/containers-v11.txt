@@ -1,0 +1,25 @@
+3 in ints                                     fast         275.5     220.5  0.800
+4 in ints (miss)                              fast        1142.5     409.5  0.358
+o in objs (first is not a scalar)             fallback     145.5     116.5  0.801
+1 in mixed                                    fast         149.5     125.5  0.839
+o in mixed (needle not a scalar)              fallback     473.5     229.5  0.485
+ints.index(7)                                 fast         778.2     441.2  0.567
+ints.index(7, 1) (extra arg)                  fallback     700.2     713.2  1.019
+objs.index(o)                                 fallback     263.2     244.2  0.928
+ints.count(3)                                 fast         978.2     490.2  0.501
+objs.count(o)                                 fallback     536.2     368.2  0.687
+t.index(1)                                    fast         679.2     406.2  0.598
+tobjs.count(o)                                fallback     389.2     334.2  0.859
+9 in t                                        fast         380.5     243.5  0.640
+ints[:].sort()                                fast        1931.2    1598.2  0.828
+strs[:].sort(key=len) (key)                   fallback    1852.4    1896.4  1.024
+sum(small)                                    fast         659.3     446.3  0.677
+sum(fl)                                       fast         998.3     801.3  0.803
+min(3, 4)                                     fast         442.3     327.3  0.740
+max(ints)                                     fast        1791.3     538.3  0.300
+max(ints, key=abs) (key)                      fallback    3058.3    3129.3  1.023
+sorted(small)                                 fallback    1331.3     822.3  0.618
+any(small)                                    fast         443.3     319.3  0.720
+any(d) (dict: direct fallback)                fallback     598.3     622.3  1.040
+all(strs)                                     fast         708.3     375.3  0.530
+sum(range(3)) (iterator: direct fallback)     fallback    1146.3    1168.3  1.019

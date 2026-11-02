@@ -12,22 +12,44 @@ test's outcome), reporting any difference and the timing.
 import os
 import sys
 
-COMMANDS = ("run", "status", "report", "diff")
+COMMANDS = ("run", "status", "report", "diff", "estimate")
 USAGE = """\
-usage: python -m rustique [run] [--only G,..] [--exclude G,..] [--report] [--check|--check-raise] [--native PATTERN]...
+usage: python -m rustique [run] [--only G,..] [--exclude G,..] [--tiers T,..] [--report] [--check|--check-raise]
                           [--no-builtins] (script.py | -m module | -c command) [args...]
-       python -m rustique status [--json]
-       python -m rustique report [--json] [-o FILE] [--limit N] [--check] -- <command...>
-       python -m rustique diff [--repeat N] [--ignore REGEX]... [--no-normalize] [--keep DIR] [--check] -- <command...>
+       python -m rustique status [--json] [--verbose]
+       python -m rustique report [--json] [-o FILE] [--limit N] [--verbose] [--check] [--tiers T,..] -- <command...>
+       python -m rustique report --from FILE.json [--json] [--verbose]
+       python -m rustique diff [--repeat N] [--ignore REGEX]... [--no-normalize] [--keep DIR] [--check]
+                               [--tiers T,..] [--confirm N] -- <command...>
+       python -m rustique estimate [--json] [--tiers T,..] -- <command...>
 
   run      run a Python program with Rustique enabled (RUSTIQUE=0 still turns it off)
   status   what Rustique accelerates on this interpreter, and why anything is refused
-  report   run a command with RUSTIQUE=1 and counters on; print the per-target report
+  report   run a command with RUSTIQUE=1 and counters on; print the per-target report of every process
   diff     run a command plain and with RUSTIQUE=1; compare exit code, output, test outcomes
+  estimate predict what Rustique would do for a command's run time, from the command itself
 
-Environment: RUSTIQUE=1|0, RUSTIQUE_ONLY, RUSTIQUE_EXCLUDE, RUSTIQUE_STATS, RUSTIQUE_REPORT, RUSTIQUE_CHECK
-(docs/USAGE.md).
+Opt-in tiers (--tiers, RUSTIQUE_TIERS): interp (opcode handlers), gc (adaptive collection policy).
+Environment: RUSTIQUE=1|0, RUSTIQUE_ONLY, RUSTIQUE_EXCLUDE, RUSTIQUE_TIERS, RUSTIQUE_STATS, RUSTIQUE_REPORT,
+RUSTIQUE_CHECK, RUSTIQUE_UNVALIDATED_PATCH (docs/USAGE.md).
 """
+MIGRATION = ("rustique: --native was removed with Rustique's own container types (List, Dict, ...): "
+             "the standard types are accelerated in place. See docs/MIGRATION.md.")
+TIERS_OFF = ("", "0", "none", "off", "false", "no")
+
+
+def add_tiers(tiers: str | None) -> None:
+    """``--tiers interp,gc``: opt in to tiers for this process and its children (union with
+    ``RUSTIQUE_TIERS``). ``RUSTIQUE_TIERS=none`` in the environment wins: it turns every tier off."""
+    if not tiers:
+        return
+    cur = os.environ.get("RUSTIQUE_TIERS")
+    if cur is not None and cur.strip().lower() in TIERS_OFF:
+        sys.stderr.write(f"rustique: --tiers {tiers} ignored: RUSTIQUE_TIERS={cur!r} turns every tier off\n")
+        return
+    names = [n.strip() for n in (cur or "").split(",") + tiers.split(",") if n.strip()]
+    os.environ["RUSTIQUE_TIERS"] = ",".join(dict.fromkeys(names))
+
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -49,6 +71,10 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(status_cmd(argv))
     elif cmd == "report":
         raise SystemExit(report_cmd(argv))
+    elif cmd == "estimate":
+        from rustique import _estimate
+
+        raise SystemExit(_estimate.main(argv))
     else:
         from rustique import _diff
 
@@ -57,7 +83,7 @@ def main(argv: list[str] | None = None) -> None:
 
 # --- run ---------------------------------------------------------------------------------------
 
-_VALUE_OPTS = ("--native", "--only", "--exclude")
+_VALUE_OPTS = ("--only", "--exclude", "--tiers")
 
 
 def _parse_run(argv: list[str]):
@@ -70,9 +96,7 @@ def _parse_run(argv: list[str]):
     p.add_argument("--check", action="store_true",
                    help="check mode (RUSTIQUE_CHECK=1): compare checkable fast paths with CPython's original")
     p.add_argument("--check-raise", action="store_true", help="check mode, a mismatch raises (RUSTIQUE_CHECK=raise)")
-    p.add_argument("--native", action="append", default=[], metavar="PATTERN",
-                   help="rewrite modules matching PATTERN (and the main program) to Rustique containers")
-    p.add_argument("--native-main", action="store_true", help="rewrite the main program only")
+    p.add_argument("--tiers", metavar="T,..", help="opt-in tiers to turn on too (interp, gc; RUSTIQUE_TIERS)")
     p.add_argument("--no-builtins", action="store_true", help="do not accelerate the builtin functions")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("-m", dest="module", metavar="MODULE", help="run library module as a script")
@@ -101,6 +125,9 @@ def _fresh_main(path: str | None):
 
 
 def run(argv: list[str]) -> None:
+    if any(a == "--native" or a.startswith(("--native=", "--native-main")) for a in argv[: _program_index(argv)]):
+        sys.stderr.write(MIGRATION + "\n")
+        raise SystemExit(2)
     opts, rest = _parse_run(argv)
     import rustique
 
@@ -108,48 +135,76 @@ def run(argv: list[str]) -> None:
         rustique._accel.report_to("stderr")
     if (opts.check or opts.check_raise) and not rustique._killed():
         rustique.check("raise" if opts.check_raise else "warn")
-    rustique._enable(opts.only, opts.exclude, opts.native or None, not opts.no_builtins, source="python -m rustique")
-    native_main = (bool(opts.native) or opts.native_main) and not rustique._killed()
-    if native_main:
-        from rustique._takeover import _rewrite
-
-        helpers = _rewrite.helpers()
-    else:
-        helpers = {}
+    add_tiers(opts.tiers)
+    rustique._enable(opts.only, opts.exclude, builtins=not opts.no_builtins, source="python -m rustique")
+    if not rustique._killed() and "RUSTIQUE" not in os.environ:
+        # child interpreters (multiprocessing spawn/forkserver, subprocess) start through the
+        # startup switch, like under RUSTIQUE=1; the selection goes with them (env narrows)
+        os.environ["RUSTIQUE"] = "1"
+        if opts.only and "RUSTIQUE_ONLY" not in os.environ:
+            os.environ["RUSTIQUE_ONLY"] = opts.only
+        if opts.exclude:
+            os.environ["RUSTIQUE_EXCLUDE"] = ",".join(filter(None, [os.environ.get("RUSTIQUE_EXCLUDE"), opts.exclude]))
 
     if opts.module is not None:
         import runpy
 
         sys.argv = [opts.module, *rest]
-        if native_main:
-            from rustique._takeover import _hook
-
-            _hook.install((opts.module,))
-        runpy.run_module(opts.module, run_name="__main__", alter_sys=True, init_globals=helpers or None)
+        _as_main(lambda: runpy.run_module(opts.module, run_name="__main__", alter_sys=True), skip_runpy=True)
         return
     if opts.command is not None:
         sys.argv = ["-c", *rest]
         sys.path.insert(0, "")
-        if native_main:
-            code = _rewrite.compile_rewritten(opts.command, "<string>")
-        else:
-            code = compile(opts.command, "<string>", "exec")
+        code = compile(opts.command, "<string>", "exec")
         mod = _fresh_main(None)
-        mod.__dict__.update(helpers)
-        exec(code, mod.__dict__)
+        _as_main(lambda: exec(code, mod.__dict__))
         return
-    path = opts.script
-    sys.argv = [path, *rest]
-    sys.path.insert(0, os.path.dirname(os.path.abspath(path)))
+    sys.argv = [opts.script, *rest]
+    path = os.path.abspath(opts.script)  # like `python script.py`: __file__ and code paths are absolute
+    sys.path.insert(0, os.path.dirname(path))
     with open(path, "rb") as f:
         source = f.read()
-    if native_main:
-        code = _rewrite.compile_rewritten(source, path)
-    else:
-        code = compile(source, path, "exec", dont_inherit=True)
+    code = compile(source, path, "exec", dont_inherit=True)
     mod = _fresh_main(path)
-    mod.__dict__.update(helpers)
-    exec(code, mod.__dict__)
+    _as_main(lambda: exec(code, mod.__dict__))
+
+
+def _program_index(argv: list[str]) -> int:
+    """Index of the program (script, ``-m``, ``-c``) in the run options: options after it are
+    the program's own."""
+    for i, a in enumerate(argv):
+        if a in ("-m", "-c") or (not a.startswith("-") and (i == 0 or argv[i - 1] not in _VALUE_OPTS)):
+            return i
+    return len(argv)
+
+
+def _as_main(body, skip_runpy: bool = False) -> None:
+    """Run the program like the interpreter runs ``__main__``: an uncaught exception prints
+    a traceback that starts at the program's own frame (not at this runner's), exit status 1;
+    ``KeyboardInterrupt`` ends the process by SIGINT, as CPython does."""
+    try:
+        body()
+    except SystemExit:
+        raise
+    except BaseException as exc:  # noqa: BLE001
+        tb = exc.__traceback__.tb_next  # drop this function's frame
+        if tb is not None:
+            tb = tb.tb_next  # and the lambda's
+        here = os.path.dirname(os.path.abspath(__file__))
+        while skip_runpy and tb is not None and (tb.tb_frame.f_code.co_filename.startswith(here)
+                                                 or tb.tb_frame.f_code.co_filename == "<frozen runpy>"):
+            tb = tb.tb_next
+        if tb is not None:
+            exc.__traceback__ = tb  # the default hook prints the exception's own traceback
+        sys.excepthook(type(exc), exc, exc.__traceback__)
+        if isinstance(exc, KeyboardInterrupt):
+            import signal
+
+            sys.stdout.flush()
+            sys.stderr.flush()
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            os.kill(os.getpid(), signal.SIGINT)
+        raise SystemExit(1) from None
 
 
 # --- status ------------------------------------------------------------------------------------
@@ -177,11 +232,15 @@ def status_cmd(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="python -m rustique status",
                                 description="What Rustique accelerates on this interpreter, and why anything is refused.")
     p.add_argument("--json", action="store_true", help="print rustique.status() as JSON")
+    p.add_argument("--verbose", "-v", action="store_true", help="every target name and refusal reason")
     opts = p.parse_args(argv)
     import rustique
     from rustique import _report
 
     rustique._enable(source="python -m rustique status")
+    validate = getattr(rustique._accel, "validate", None)
+    if validate is not None:  # verdicts now: targets are otherwise validated at their first call
+        validate()
     st = rustique.status()
     hooks = startup_files()
     if opts.json:
@@ -191,17 +250,24 @@ def status_cmd(argv: list[str]) -> int:
         st["process"]["executable"] = sys.executable
         print(json.dumps(st, indent=1, default=list))
         return 0
+    import platform
+
     proc = st["process"]
     sw = proc["switch"]
     print(f"Python      {sys.executable}")
     print(f"            CPython {proc['python']} ({'free-threaded' if proc['free_threaded'] else 'GIL'}"
-          f"{', debug build' if hasattr(sys, 'gettotalrefcount') else ''}), {sys.platform}")
+          f"{', debug build' if hasattr(sys, 'gettotalrefcount') else ''}), {sys.platform} {platform.machine()}"
+          f"{' ' + ' '.join(platform.libc_ver()).strip() if sys.platform.startswith('linux') else ''}")
     print(f"Rustique    {proc['rustique']} at {os.path.dirname(rustique.__file__)}")
-    if hooks:
+    if not sys.flags.no_site and hooks:
         print(f"Startup     RUSTIQUE=1 enables at startup ({', '.join(os.path.basename(h) for h in hooks)} "
               f"in {os.path.dirname(hooks[0])})")
+    elif sys.flags.no_site:
+        print("Startup     python -S: no site packages are processed, so RUSTIQUE=1 does nothing at startup "
+              "(use `python -m rustique app.py` or rustique.enable())")
     else:
-        print("Startup     no startup file found: RUSTIQUE=1 does nothing at startup here "
+        print("Startup     no startup file in this interpreter's site directories (an editable/development install, "
+              "or `pip install --target`): RUSTIQUE=1 does nothing at startup here "
               "(use `python -m rustique app.py` or rustique.enable())")
     env = sw.get("env") or {}
     print(f"Environment {' '.join(f'{k}={v}' for k, v in env.items()) if env else '(no RUSTIQUE* variables set)'}"
@@ -212,7 +278,7 @@ def status_cmd(argv: list[str]) -> int:
     if proc.get("interpreter"):
         print(f"Refused     {proc['interpreter']}: no target installs on this interpreter")
     if proc.get("jit"):
-        print("JIT         on (sys._jit): targets marked not JIT-safe are refused")
+        print("JIT         on (sys._jit): targets not validated with the JIT are refused")
     print()
     print(_report.render_status(st), end="")
     return 0
@@ -221,13 +287,18 @@ def status_cmd(argv: list[str]) -> int:
 # --- report ------------------------------------------------------------------------------------
 
 
+# Options of report/diff/estimate that take a value (so the value is not the command).
+VALUE_OPTIONS = ("-o", "--output", "--limit", "--tiers", "--from", "--repeat", "--ignore", "--keep", "--timeout",
+                 "--max-lines", "--confirm", "--mode")
+
+
 def split_command(argv: list[str]) -> tuple[list[str], list[str]]:
     """Options before ``--`` (or before the first non-option) and the command after it."""
     if "--" in argv:
         i = argv.index("--")
         return argv[:i], argv[i + 1 :]
     for i, a in enumerate(argv):
-        if not a.startswith("-"):
+        if not a.startswith("-") and (i == 0 or argv[i - 1] not in VALUE_OPTIONS):
             return argv[:i], argv[i:]
     return argv, []
 
@@ -240,20 +311,11 @@ def resolve_command(cmd: list[str]) -> list[str]:
 
 
 def read_records(path: str) -> list[dict]:
-    import json
+    """JSON lines of ``path`` (a report file: :func:`rustique._report.collect` adds the processes
+    that left only live counters)."""
+    from rustique import _report
 
-    if not os.path.exists(path):
-        return []
-    out = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    out.append(json.loads(line))
-                except ValueError:
-                    pass  # a process killed mid-write
-    return out
+    return _report.read_json_records(path)
 
 
 NO_RECORDS = ("rustique: the command wrote no report: Rustique was not enabled in any Python process "
@@ -272,17 +334,31 @@ def report_cmd(argv: list[str]) -> int:
                                 description="Run a command with RUSTIQUE=1 and counters on; print the per-target report.")
     p.add_argument("--json", action="store_true", help="print the merged record as JSON")
     p.add_argument("-o", "--output", help="write the report to FILE instead of stderr")
-    p.add_argument("--limit", type=int, default=None, help="show at most N installed targets")
+    p.add_argument("--limit", type=int, default=None, help="show at most N targets")
+    p.add_argument("--verbose", "-v", action="store_true", help="every installed target and every name")
     p.add_argument("--check", action="store_true", help="check mode in the command (RUSTIQUE_CHECK=1)")
+    p.add_argument("--tiers", metavar="T,..", help="opt-in tiers to turn on too (RUSTIQUE_TIERS)")
+    p.add_argument("--from", dest="source", metavar="FILE.json",
+                   help="render the records a run with RUSTIQUE_REPORT=FILE.json left (no command)")
     opts = p.parse_args(opts_argv)
+    from rustique import _report
+
+    if opts.source:
+        if cmd:
+            p.error("--from takes no command")
+        records = _report.collect(opts.source)
+        if not records:
+            sys.stderr.write(f"rustique report: no record in {opts.source} (nor live counter files next to it)\n")
+            return 2
+        return _emit(_report.merge(records), opts, "")
     if not cmd:
         p.error("missing command (python -m rustique report -- <command...>)")
     import rustique
-    from rustique import _report
 
     if rustique._killed():
         sys.stderr.write("rustique report: RUSTIQUE=0 (kill switch) is set; unset it to report.\n")
         return 2
+    add_tiers(opts.tiers)
     with tempfile.TemporaryDirectory(prefix="rustique-report-") as tmp:
         path = os.path.join(tmp, "report.json")
         env = {**os.environ, "RUSTIQUE": "1", "RUSTIQUE_STATS": "1", "RUSTIQUE_REPORT": path}
@@ -295,21 +371,29 @@ def report_cmd(argv: list[str]) -> int:
             sys.stderr.write(f"rustique report: {exc}\n")
             return 127
         elapsed = time.perf_counter() - t0
-        records = read_records(path)
-    if not records:
+        records = _report.collect(path)
+    if not records or not any(r.get("status") for r in records):
         sys.stderr.write(NO_RECORDS)
         return rc
-    rec = _report.merge(records)
+    _emit(_report.merge(records), opts,
+          f"  command exit code {rc}, {elapsed:.2f} s wall, {len(records)} Python process(es) reported\n")
+    return rc
+
+
+def _emit(rec: dict, opts, footer: str) -> int:
+    from rustique import _report
+
     if opts.json:
         import json
 
         text = json.dumps(rec, indent=1, default=list) + "\n"
     else:
-        text = (f"\n{_report.render(rec, limit=opts.limit)}"
-                f"  command exit code {rc}, {elapsed:.2f} s wall, {len(records)} Python process(es) reported\n")
+        text = f"\n{_report.render(rec, limit=opts.limit, verbose=opts.verbose)}{footer}"
     if opts.output:
         with open(opts.output, "w") as f:
             f.write(text)
-    else:
+    elif opts.source:  # nothing else writes: the report is the output
+        sys.stdout.write(text.lstrip("\n"))
+    else:  # after the command: its stdout stays clean
         sys.stderr.write(text)
-    return rc
+    return 0
