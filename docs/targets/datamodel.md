@@ -240,10 +240,25 @@ the module is imported) and compares every test id's outcome.
 
 ## 5. Free-threading
 
-All kernels are validated on 3.14t/3.15t: dict scans under the dict's critical section,
-verdict caches in atomics (a class modified while a verdict is computed is never cached
-under the old tag), new references taken before anything can run. Dynamic sites use
-`PyFunction_SetVectorcall` (stop-the-world) per the lead's ruling.
+On 3.14t/3.15t this wave: `enum.EnumType.__call__`, `enum.Enum.__hash__`,
+`enum.Flag.operators` and `functools.singledispatchmethod.__get__` (static sites,
+installed at enable/import). Refused there (`build`):
+- the dynamic-site targets (`collections.namedtuple`, `dataclasses.__init__`,
+  `dataclasses.__init__.positional`, `contextlib.contextmanager`,
+  `functools.singledispatch`): per the lead's ruling they must use the official
+  `PyFunction_SetVectorcall`, which stops the world for every generated function; with
+  busy threads each stop waits until every thread reaches a safe point
+  (`benches/datamodel/ft_create.py`: creating 1,000 namedtuples next to 8 busy threads
+  did not finish in minutes enabled on the loaded dev box, against well under a second
+  plain);
+- `enum.property.__get__`: its per-call `fget` check takes a reference to a shared function
+  object that CPython's own path never touches (deferred reference counting): `m.value`
+  1.139× CPU per call at 8 threads (`ft_scaling.py`).
+Kernels compare cached objects by pointer without taking references (`cell_is`,
+`dict_item_is`) so they add no reference-count traffic on shared objects; dict scans run
+under the dict's critical section; verdict caches are atomics (a class modified while a
+verdict is computed is never cached under the old tag); arguments get new references
+before anything can run. The 8-thread rule results are in the final report.
 
 ## 6. Not in this wave: `inspect.signature` / `getfullargspec`
 
