@@ -266,7 +266,34 @@ PBS binary (the core inlines them); `c/rq_inline.h` fixed both.
 
 ### 4.2 Whole runs
 
-WHOLERUNS
+M, `benches/interp/wl_cg.py`: callgrind, exact Ir of one steady-state `run()` after `setup()`
+and two warm-up runs, fresh process, `PYTHONHASHSEED=0`, 3.15.1. Families (geometric means):
+
+| family | tier alone | default groups | default + tier |
+|---|---:|---:|---:|
+| frameworks (6) | 0.977 | 0.960 | **0.939** (T5 ≤ 0.96: met) |
+| custom (10) | 0.945 | 0.988 | **0.930** (T5 ≤ 0.90: not met) |
+
+Best: falcon_api 0.817 (default + tier), report_engine 0.830, order_domain 0.864, sqlglot 0.876
+(tier alone), pytest_networkx 0.914, rules_engine 0.893. The other 47 workloads, tier alone:
+0.97–1.00 (rows in `/work/w2ws-interp/out/wlcg-rest2.txt` on the dev box).
+
+**T1 (whole run ≤ 1.00) is not met on 5 workloads**, tier alone vs plain, final build:
+task_planner 1.0007, pandas_etl 1.0007, tz_events 1.0022, billing_engine 1.0025 (identical in 3
+repeats), pycodestyle_stdlib 1.0043 (earlier build). Attribution (`_accel._t_interp.info()`,
+callgrind per function):
+- by the measured run every group except isinstance (and kwinit in billing, 50 executions)
+  has suspended itself and the handlers are verifiably restored; the remaining differences
+  are in CPython's own generic method lookups and dict lookups (`_PyObject_GetMethodStackRef`,
+  `_Py_dict_lookup_threadsafe_stackref`) and allocator calls;
+- the same functions move by 0.07–0.3% when Rustique is only imported (`noop`) or when the
+  harness changes (tz_events: tier/plain 1.0022 with `wl_cg.py`, 1.00015 with a per-function
+  harness; tier/noop 1.0008): single-run instruction counts of these workloads are not
+  resolvable at the 0.1% level, and the effect that remains after suspension (state left by
+  the active phase, or Rustique's own footprint) is not yet attributed;
+- pycodestyle keeps its attribute group (59% hits, few fills): its 0.43% is the cost of the
+  family copies there and needs a different rule (e.g. never swapping the specialized members
+  on programs without polymorphic sites).
 
 **Digests.** Every workload gives the same digest plain and with the tier in normal runs.
 Under valgrind, sphinx_autodoc's digest differs between plain and tier runs, and from normal
