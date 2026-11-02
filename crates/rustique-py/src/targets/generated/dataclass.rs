@@ -56,6 +56,7 @@ pub static TARGET: TargetSpec = TargetSpec {
     counters: &COUNTERS,
     prepare,
     release: Some(release),
+    on_disable: Some(on_disable),
     ..TargetSpec::DEFAULT
 };
 
@@ -641,6 +642,20 @@ unsafe fn adopt(cls: P, cap: Captured) {
                 return Ok(None);
             }
             let Some(plan) = build_plan(py, &func, &parsed)? else { return Ok(None) };
+            // A factory the kernel cannot call (anything but list/dict/set) would make it
+            // fall back on every call that needs it: no kernel for such classes.
+            for st in &plan.steps {
+                if matches!(st.kind, Value::Factory | Value::FactoryOrParam) {
+                    let fac = cell(func.as_ptr(), st.cell);
+                    let ok = !fac.is_null() && is_builtin_factory(fac);
+                    if !fac.is_null() {
+                        ffi::Py_DECREF(fac);
+                    }
+                    if !ok {
+                        return Ok(None);
+                    }
+                }
+            }
             let plan = Box::into_raw(Box::new(plan));
             if !set_plan(func_code(func.as_ptr()), plan.cast()) {
                 return Ok(None);
@@ -654,6 +669,125 @@ unsafe fn adopt(cls: P, cap: Captured) {
             Ok(None) => {}
             Err(_) => ffi::PyErr_Clear(),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Positional calls: route them to the kernel
+// ---------------------------------------------------------------------------------------
+
+/// `tp_alloc` of a class whose `__init__` carries the kernel: `PyType_GenericAlloc` (the
+/// same allocation), under another address. The specializer inlines `__init__` into the
+/// caller (`CALL_ALLOC_AND_ENTER_INIT`) only for classes whose `tp_alloc` is
+/// `PyType_GenericAlloc`; with this one, `Cls(a, b)` goes through `type_call` →
+/// `slot_tp_init` → the kernel. A type reaching here whose `__init__` does not carry the
+/// kernel (a subclass with its own `__init__`, a disabled target) gets
+/// `PyType_GenericAlloc` back, so its call sites specialize again.
+unsafe extern "C" fn k_alloc(t: Tp, n: ffi::Py_ssize_t) -> P {
+    // SAFETY: CPython's tp_alloc protocol; MRO lookup runs no Python code.
+    unsafe {
+        let init = lookup(t, N_INIT.get());
+        let ours = !init.is_null() && is_function(init) && vectorcall_of(init) == k_dc_init as *const () as usize;
+        if !init.is_null() {
+            ffi::Py_DECREF(init);
+        }
+        // Under a tool the kernel falls back: let the specializer inline the calls again.
+        if !ours || !TOOLS.quiet() {
+            let cell = &*(&raw const (*t).tp_alloc).cast::<std::sync::atomic::AtomicUsize>();
+            let _ = cell.compare_exchange(
+                k_alloc as *const () as usize,
+                ffi::PyType_GenericAlloc as *const () as usize,
+                AcqRel,
+                Relaxed,
+            );
+        }
+        ffi::PyType_GenericAlloc(t, n)
+    }
+}
+
+/// Classes given `k_alloc` (weak references): `on_disable` gives them
+/// `PyType_GenericAlloc` back (a class creation costs ~2.8M Ir; the registry ~300).
+static ROUTED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+/// `disable()`/exit: every routed class gets `PyType_GenericAlloc` back.
+fn on_disable(_py: Python<'_>) {
+    let v = match ROUTED.lock() {
+        Ok(mut v) => std::mem::take(&mut *v),
+        Err(_) => return,
+    };
+    // SAFETY: attached thread; our weak references.
+    unsafe {
+        for wr in v {
+            let mut t: P = null_mut();
+            if PyWeakref_GetRef(wr as P, &mut t) > 0 && !t.is_null() {
+                let cell = &*(&raw const (*t.cast::<ffi::PyTypeObject>()).tp_alloc).cast::<std::sync::atomic::AtomicUsize>();
+                let _ = cell.compare_exchange(
+                    k_alloc as *const () as usize,
+                    ffi::PyType_GenericAlloc as *const () as usize,
+                    AcqRel,
+                    Relaxed,
+                );
+                ffi::Py_DECREF(t);
+            } else {
+                ffi::PyErr_Clear();
+            }
+            ffi::Py_DECREF(wr as P);
+        }
+    }
+}
+
+/// `dataclasses._process_class(...)`: CPython's; then, if the final class's `__init__`
+/// carries the kernel, its positional calls are routed to it (`k_alloc`).
+unsafe extern "C" fn k_process_class(f: P, args: *const P, nargsf: usize, kw: P) -> P {
+    // SAFETY: CPython's vectorcall protocol.
+    unsafe {
+        let cls = orig(f, args, nargsf, kw);
+        if !cls.is_null() && ffi::PyType_Check(cls) != 0 && DEPS.ok() && DYN.alive() {
+            let t = cls.cast::<ffi::PyTypeObject>();
+            let init = lookup(t, N_INIT.get());
+            if !init.is_null() {
+                if is_function(init)
+                    && vectorcall_of(init) == k_dc_init as *const () as usize
+                    && ffi::PyType_GetFlags(t) & ffi::Py_TPFLAGS_HEAPTYPE != 0
+                {
+                    let cell = &*(&raw const (*t).tp_alloc).cast::<std::sync::atomic::AtomicUsize>();
+                    if cell
+                        .compare_exchange(
+                            ffi::PyType_GenericAlloc as *const () as usize,
+                            k_alloc as *const () as usize,
+                            AcqRel,
+                            Relaxed,
+                        )
+                        .is_ok()
+                    {
+                        let wr = ffi::PyWeakref_NewRef(cls, null_mut());
+                        if wr.is_null() {
+                            ffi::PyErr_Clear();
+                        } else if let Ok(mut v) = ROUTED.lock() {
+                            v.push(wr as usize);
+                            if v.len().is_power_of_two() && v.len() >= 64 {
+                                // Forget classes that died.
+                                v.retain(|&w| {
+                                    let mut o: P = null_mut();
+                                    let live = PyWeakref_GetRef(w as P, &mut o) > 0;
+                                    if live {
+                                        ffi::Py_DECREF(o);
+                                    } else {
+                                        ffi::PyErr_Clear();
+                                        ffi::Py_DECREF(w as P);
+                                    }
+                                    live
+                                });
+                            }
+                        } else {
+                            ffi::Py_DECREF(wr);
+                        }
+                    }
+                }
+                ffi::Py_DECREF(init);
+            }
+        }
+        cls
     }
 }
 
@@ -709,6 +843,8 @@ fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     N_QUALNAME.name(py, "__qualname__");
     extra_index().ok_or_else(|| Refusal::new("no code-extra index available"))?;
     cx.vectorcall(&add, k_add_fns, &accel::FUNCTION_VECTORCALL)?;
+    let pc = cx.module_attr("_process_class")?;
+    cx.vectorcall(&pc, k_process_class, &accel::FUNCTION_VECTORCALL)?;
     DYN.set_hook(add.as_ptr(), k_add_fns);
     Ok(())
 }

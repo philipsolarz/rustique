@@ -29,7 +29,16 @@ fn datamodel_dynamic_sites(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::Py
     Ok(d)
 }
 
+/// `_accel.datamodel_generic_alloc(cls)`: the class allocates with `PyType_GenericAlloc`
+/// (not routed to the dataclass `__init__` kernel) — tests.
+#[pyfunction]
+fn datamodel_generic_alloc(cls: &Bound<'_, pyo3::types::PyType>) -> bool {
+    // SAFETY: a live type object.
+    unsafe { (*cls.as_type_ptr()).tp_alloc.map_or(0, |f| f as usize) == pyo3::ffi::PyType_GenericAlloc as *const () as usize }
+}
+
 pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {
     accel.add_function(wrap_pyfunction!(datamodel_dynamic_sites, accel)?)?;
+    accel.add_function(wrap_pyfunction!(datamodel_generic_alloc, accel)?)?;
     Ok(())
 }

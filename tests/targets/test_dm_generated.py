@@ -384,6 +384,51 @@ def test_disable_restores_generated_functions():
         assert A.vectorcall_is_original(f), f
 
 
+def test_positional_calls_routed_and_restored():
+    enable(["generated"])
+
+    @dataclasses.dataclass(frozen=True)
+    class F:
+        a: int
+        b: int = 0
+
+    class Own(F):
+        def __init__(self, a):
+            super().__init__(a, 1)
+
+    class Inherit(F):
+        pass
+
+    assert not A.datamodel_generic_alloc(F)
+    assert A.datamodel_generic_alloc(Own) and A.datamodel_generic_alloc(Inherit)
+    with Counting(DC) as c:
+        for _ in range(3):
+            assert F(1, 2) == F(a=1, b=2)
+            assert Own(5).b == 1
+    assert c.hits(DC) == 9
+    seen = []
+    old = sys.getprofile()
+    sys.setprofile(lambda *a: seen.append(1))
+    try:
+        F(1)
+    finally:
+        sys.setprofile(old)
+    assert A.datamodel_generic_alloc(F)  # a tool: the specializer inlines again
+    disable()
+    assert A.datamodel_generic_alloc(F)
+
+    enable(["generated"])
+
+    @dataclasses.dataclass(frozen=True)
+    class G:
+        a: int
+
+    assert not A.datamodel_generic_alloc(G)
+    disable()  # on_disable restores eagerly
+    assert A.datamodel_generic_alloc(G)
+    assert G(1).a == 1
+
+
 def test_adoption_of_classes_created_before_enable():
     if not getattr(sys, "_is_gil_enabled", lambda: True)():
         pytest.skip("adoption is GIL-builds only this wave")
