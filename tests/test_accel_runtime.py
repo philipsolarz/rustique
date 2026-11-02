@@ -14,7 +14,7 @@ import threading
 import pytest
 
 from rustique import _rustique
-from rustique import _takeover as rt
+import rustique as rt
 
 A = _rustique._accel
 FREE_THREADED = not getattr(sys, "_is_gil_enabled", lambda: True)()
@@ -41,7 +41,8 @@ jit = getattr(sys, "_jit", None)
 if not (jit and jit.is_available() and jit.is_enabled()):
     print("NOJIT")
     raise SystemExit
-from rustique import _rustique, _takeover as rt
+import rustique as rt
+from rustique import _rustique
 A = _rustique._accel
 
 def f(l, n):
