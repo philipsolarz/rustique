@@ -15,7 +15,7 @@ pub mod common;
 pub mod dataclass;
 pub mod namedtuple;
 
-pub static TARGETS: &[&TargetSpec] = &[&namedtuple::TARGET, &dataclass::TARGET];
+pub static TARGETS: &[&TargetSpec] = &[&namedtuple::TARGET, &dataclass::TARGET, &dataclass::ROUTE];
 
 /// `_accel.datamodel_dynamic_sites()`: live functions carrying a kernel, per target
 /// (tests and diagnostics).

@@ -5,7 +5,9 @@ set -u
 out=${1:?outdir}
 mkdir -p "$out"
 T=enum,generated,contextlib,functools
-E_ENUM=enum.property.__get__,enum.EnumType.__call__,enum.Enum.__hash__,enum.Flag.operators
+E_ENUM=enum.EnumType.__call__,enum.Enum.__hash__,enum.Flag.operators
+# enum.property.__get__ is not validated on free-threaded builds this wave.
+python -c 'import sys; sys.exit(0 if sys._is_gil_enabled() else 1)' && E_ENUM=enum.property.__get__,$E_ENUM
 run() { # module expect
   python tests/conformance/run_target_suites.py --targets $T --modules "$1" --expect-installed "$2" \
     --json "$out/${1#test.}.json" --timeout 3000 > "$out/${1#test.}.log" 2>&1

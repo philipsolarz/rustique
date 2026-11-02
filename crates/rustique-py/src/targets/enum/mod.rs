@@ -50,12 +50,15 @@ static C_FLAG: Counters = Counters::new();
 static DEPS: DepFlag = DepFlag::new();
 static TOOLS: Tools = Tools::new();
 
+/// Not on free-threaded builds this wave: checking `fget` per call takes a reference to a
+/// shared function object (CPython's own path does not: deferred reference counting), and
+/// eight threads contending on it made `m.value` 1.139 in CPU per call (8-thread rule).
 static PROP: TargetSpec = TargetSpec {
     name: "enum.property.__get__",
     group: "enum",
     module: Some("enum"),
     versions: VERSIONS,
-    free_threaded: true,
+    free_threaded: false,
     counters: &C_PROP,
     prepare: prepare_prop,
     shared: Some(&SHARED),

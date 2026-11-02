@@ -56,6 +56,21 @@ pub static TARGET: TargetSpec = TargetSpec {
     counters: &COUNTERS,
     prepare,
     release: Some(release),
+    ..TargetSpec::DEFAULT
+};
+
+static C_ROUTE: Counters = Counters::new();
+
+/// Routing of positional calls to the `__init__` kernel through `tp_alloc`
+/// (docs/targets/generated.md; a separate target so it can be excluded on its own).
+pub static ROUTE: TargetSpec = TargetSpec {
+    name: "dataclasses.__init__.positional",
+    group: "generated",
+    module: Some("dataclasses"),
+    versions: &[(3, 14), (3, 15)],
+    free_threaded: true,
+    counters: &C_ROUTE,
+    prepare: prepare_route,
     on_disable: Some(on_disable),
     ..TargetSpec::DEFAULT
 };
@@ -753,6 +768,7 @@ unsafe extern "C" fn k_process_class(f: P, args: *const P, nargsf: usize, kw: P)
                     && vectorcall_of(init) == k_dc_init as *const () as usize
                     && ffi::PyType_GetFlags(t) & ffi::Py_TPFLAGS_HEAPTYPE != 0
                 {
+                    C_ROUTE.hit();
                     let cell = &*(&raw const (*t).tp_alloc).cast::<std::sync::atomic::AtomicUsize>();
                     if cell
                         .compare_exchange(
@@ -763,6 +779,12 @@ unsafe extern "C" fn k_process_class(f: P, args: *const P, nargsf: usize, kw: P)
                         )
                         .is_ok()
                     {
+                        // A call site specialized while user code ran inside
+                        // `_process_class` (`__init_subclass__` of a base on a slots class)
+                        // must not keep `CALL_ALLOC_AND_ENTER_INIT` for a class whose
+                        // `tp_alloc` is no longer `PyType_GenericAlloc` (bytecodes.c asserts
+                        // it): a new version tag deopts it.
+                        ffi::PyType_Modified(t);
                         let wr = ffi::PyWeakref_NewRef(cls, null_mut());
                         if wr.is_null() {
                             ffi::PyErr_Clear();
@@ -846,10 +868,14 @@ fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     N_QUALNAME.name(py, "__qualname__");
     extra_index().ok_or_else(|| Refusal::new("no code-extra index available"))?;
     cx.vectorcall(&add, k_add_fns, &accel::FUNCTION_VECTORCALL)?;
-    let pc = cx.module_attr("_process_class")?;
-    cx.vectorcall(&pc, k_process_class, &accel::FUNCTION_VECTORCALL)?;
     DYN.set_hook(add.as_ptr(), k_add_fns);
     Ok(())
+}
+
+fn prepare_route(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    N_INIT.name(py, "__init__");
+    let pc = cx.module_attr("_process_class")?;
+    cx.vectorcall(&pc, k_process_class, &accel::FUNCTION_VECTORCALL)
 }
 
 /// Number of live `__init__` functions with the kernel (tests).

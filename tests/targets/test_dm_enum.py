@@ -10,7 +10,7 @@ import sys
 import threading
 
 import pytest
-from _dm_support import A, Counting, both, disable, enable, outcome
+from _dm_support import FREE_THREADED, NOT_ON_FT, A, Counting, both, disable, enable, outcome
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -30,7 +30,8 @@ def test_installed():
     st_ = {t["name"]: t for t in rt.status()["targets"] if t["group"] == "enum"}
     assert sorted(st_) == sorted(NAMES)
     for n in NAMES:
-        assert st_[n]["state"] == "installed", st_[n]
+        want = "refused" if FREE_THREADED and n in NOT_ON_FT else "installed"
+        assert st_[n]["state"] == want, st_[n]
 
 
 # ---------------------------------------------------------------------------------------
@@ -75,7 +76,7 @@ def test_basic_differential():
         plain, fast = both(scenario_basic, ["enum"])
     assert plain == fast
     assert c.hits("enum.EnumType.__call__") > 0
-    assert c.hits("enum.property.__get__") > 0
+    assert c.hits("enum.property.__get__") > 0 or FREE_THREADED
     assert c.hits("enum.Enum.__hash__") > 0
 
 
@@ -374,7 +375,8 @@ def test_slots_restored_by_disable():
     enable(["enum"])
     with Counting(*NAMES) as c:
         assert Planet(2) is Planet.VENUS and Planet.VENUS.value == 2
-    assert c.hits("enum.EnumType.__call__") == 1 and c.hits("enum.property.__get__") == 1
+    assert c.hits("enum.EnumType.__call__") == 1
+    assert c.hits("enum.property.__get__") == (0 if FREE_THREADED else 1)
     disable()
     with Counting(*NAMES) as c:
         assert Planet(2) is Planet.VENUS and Planet.VENUS.value == 2

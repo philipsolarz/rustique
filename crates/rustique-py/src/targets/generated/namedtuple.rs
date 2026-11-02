@@ -175,14 +175,7 @@ unsafe extern "C" fn k_nt_new(f: P, args: *const P, nargsf: usize, kw: P) -> P {
             return orig(f, args, nargsf, kw);
         }
         let g = (*f.cast::<ffi::PyFunctionObject>()).func_globals;
-        let mut tn: P = null_mut();
-        if ffi::PyDict_CheckExact(g) == 0 || ffi::PyDict_GetItemRef(g, N_TUPLE_NEW.get(), &mut tn) <= 0 {
-            ffi::PyErr_Clear();
-            COUNTERS.fallback(Reason::Deps);
-            return orig(f, args, nargsf, kw);
-        }
-        ffi::Py_DECREF(tn);
-        if tn != TUPLE_NEW.get() {
+        if ffi::PyDict_CheckExact(g) == 0 || !dict_item_is(g, N_TUPLE_NEW.get(), TUPLE_NEW.get()) {
             COUNTERS.fallback(Reason::Deps);
             return orig(f, args, nargsf, kw);
         }

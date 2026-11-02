@@ -14,7 +14,7 @@ The tp_alloc routing of positional dataclass calls (proposed contract amendment)
 CPython machinery that custom and framework code leans on, written in Python and reached
 mostly from C slots: enum member access and lookup, the methods `namedtuple()` and
 `@dataclass` generate, `@contextmanager` construction and the `singledispatch` cache. Nine
-targets in four groups; all on by default, validated on 3.14 and 3.15 (GIL and
+targets in four groups (plus the `tp_alloc` routing of positional dataclass calls, under review); all on by default, validated on 3.14 and 3.15 (GIL and
 free-threaded); 3.16 refuses (`enum.py` changed: version gate).
 
 | target | group | site(s) | reached from | fallback cost |
@@ -24,7 +24,8 @@ free-threaded); 3.16 refuses (`enum.py` changed: version gate).
 | `enum.Enum.__hash__` | enum | vectorcall of `Enum.__hash__` | `slot_tp_hash` (`hash(m)`, `d[m]`) | C caller |
 | `enum.Flag.operators` | enum | vectorcall of `Flag.__or__/__and__/__xor__/__invert__/__contains__` | `slot_nb_*`, `slot_sq_contains` | C caller |
 | `collections.namedtuple` | generated | hook: vectorcall of `namedtuple`; dynamic: each class's `__new__`, `_make`, `_replace` | `slot_tp_new`; bytecode (`_make`, `_replace`) | C caller / +180–260 Ir |
-| `dataclasses.__init__` | generated | hooks: `_FuncBuilder.add_fns_to_class`, `_process_class`; dynamic: each frozen class's `__init__` | `slot_tp_init` (keyword calls, `super().__init__`), positional calls via `tp_alloc` routing | C caller |
+| `dataclasses.__init__` | generated | hook: `_FuncBuilder.add_fns_to_class`; dynamic: each frozen class's `__init__` | `slot_tp_init` (keyword calls, `kw_only` classes, `super().__init__`) | C caller |
+| `dataclasses.__init__.positional` | generated | hook: `_process_class`; the routed class's `tp_alloc` | positional calls (`docs/targets/generated.md`: needs a contract amendment) | — |
 | `contextlib.contextmanager` | contextlib | hook: vectorcall of `contextmanager`; dynamic: each `helper` | bytecode (`cm(...)`) | +180–260 Ir |
 | `functools.singledispatch` | functools | hook: vectorcall of `singledispatch`; dynamic: each `dispatch` closure | bytecode (`wrapper`, `f.dispatch`) | +180–260 Ir |
 | `functools.singledispatchmethod.__get__` | functools | vectorcall of `singledispatchmethod.__get__` | `slot_tp_descr_get` (`h.handle`) | C caller |

@@ -11,6 +11,7 @@ side-effect logs of user hooks.
 from __future__ import annotations
 
 import re
+import sys
 import traceback
 from collections.abc import Callable
 from typing import Any
@@ -26,11 +27,19 @@ def group_targets(group: str) -> dict[str, dict[str, Any]]:
     return {t["name"]: t for t in rt.status()["targets"] if t["group"] == group}
 
 
+FREE_THREADED = not getattr(sys, "_is_gil_enabled", lambda: True)()
+#: Targets not validated on free-threaded builds this wave (refused there by the gate).
+NOT_ON_FT = {"enum.property.__get__"}
+
+
 def enable(groups: list[str] | None = None) -> None:
     groups = groups or GROUPS
     rt.enable(only=groups)
     for g in groups:
         for name, t in group_targets(g).items():
+            if FREE_THREADED and name in NOT_ON_FT:
+                assert t["state"] == "refused", (name, t)
+                continue
             assert t["state"] in ("installed", "pending-import"), (name, t)
 
 

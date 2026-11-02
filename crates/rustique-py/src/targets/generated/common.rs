@@ -187,16 +187,45 @@ pub(crate) unsafe fn cell(func: P, i: usize) -> P {
     }
 }
 
-/// Cell `i` of `func` holds exactly `expected`.
+/// Cell `i` of `func` holds exactly `expected` (a pointer comparison of the cell's
+/// content, read without a reference: no reference-count traffic on shared objects, which
+/// would make threads contend on free-threaded builds; the content is never dereferenced).
 #[inline(always)]
 pub(crate) unsafe fn cell_is(func: P, i: usize, expected: P) -> bool {
-    // SAFETY: per `cell`.
+    // SAFETY: a live function object; field reads of its closure tuple and cell.
     unsafe {
-        let v = cell(func, i);
-        if v.is_null() {
+        let cl = (*func.cast::<ffi::PyFunctionObject>()).func_closure;
+        if cl.is_null() || ffi::PyTuple_CheckExact(cl) == 0 || i >= ffi::PyTuple_GET_SIZE(cl) as usize {
             return false;
         }
-        ffi::Py_DECREF(v);
+        let c = ffi::PyTuple_GET_ITEM(cl, i as ffi::Py_ssize_t);
+        if ffi::Py_TYPE(c) != &raw mut ffi::PyCell_Type {
+            return false;
+        }
+        let v = std::ptr::read_volatile(&raw const (*c.cast::<RawCell>()).ob_ref);
+        !v.is_null() && v == expected
+    }
+}
+
+#[repr(C)]
+struct RawCell {
+    ob_base: ffi::PyObject,
+    ob_ref: P,
+}
+
+/// `dict[key]` is exactly `expected` (borrowed read, pointer comparison only; see
+/// [`cell_is`]). `dict` an exact dict, `key` an interned str: no Python code.
+#[inline(always)]
+pub(crate) unsafe fn dict_item_is(dict: P, key: P, expected: P) -> bool {
+    // SAFETY: attached thread; the value is never dereferenced.
+    unsafe {
+        let v = ffi::PyDict_GetItemWithError(dict, key);
+        if v.is_null() {
+            if !ffi::PyErr_Occurred().is_null() {
+                ffi::PyErr_Clear();
+            }
+            return false;
+        }
         v == expected
     }
 }
