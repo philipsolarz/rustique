@@ -233,6 +233,7 @@ class Profiler:
         self.mt = False
         self.clock = NS
         self.kappa_t = None
+        self.csites: dict = {}  # (code, CALL offset) -> C-level target
         self.c_child: dict[str, int] = {}
         self.c_child_calls: dict[str, int] = {}
 
@@ -289,6 +290,9 @@ class Profiler:
                 return sys.monitoring.DISABLE
             self.misses[key] = n
             return None
+        site = (code, off)
+        if site not in self.csites:  # where the program calls a C-level target (for the sampler)
+            self.csites[site] = name
         tid = _thread.get_ident()
         st = self.stacks.get(tid)
         if st is None:
@@ -496,8 +500,10 @@ class Profiler:
                          "ns_outer": max(outer, 0.0), "calls_outer": co, "c_child_ns": max(c_child, 0.0),
                          "nested_events": self.events.get(name, 0),
                          "samples": len(self.kept.get(name, []))}
+        sites = [[c.co_filename, c.co_qualname, c.co_firstlineno, off, name]
+                 for (c, off), name in self.csites.items()]
         return {"targets": out, "wall_ns_instrumented": self.wall, "kappa": k, "events": self.total_events,
-                "thread_clock": self.mt}
+                "thread_clock": self.mt, "c_call_sites": sites}
 
 
 class Sampler:
@@ -524,6 +530,13 @@ class Sampler:
         self.interval = interval
         self.tid = thread_id
         self.py_sites = (manifest or {}).get("py", PY_SITES)
+        # where the program calls C-level targets, as the profiled run saw it: (file, qualname,
+        # first line) -> {CALL offset: target}. A frame stopped at such a CALL is inside that
+        # target (the timer's handler runs at the check after the call: same instruction).
+        self.csite_index: dict = {}
+        for f, q, line, off, name in (manifest or {}).get("c_call_sites", []):
+            self.csite_index.setdefault((f, q, line), {})[off] = name
+        self.csite_cache: dict = {}
         self.codes: dict = {}
         self.weights: dict[str, float] = {}
         self.total = 0.0
@@ -563,9 +576,20 @@ class Sampler:
         whose kernel takes the call, as often as it does, and the rest to the targets inside
         it. A recursive target (``deepcopy``) appears once."""
         codes = self.codes
+        index = self.csite_index
+        cache = self.csite_cache
         chain = []
         while f is not None:
-            n = codes.get(f.f_code)
+            code = f.f_code
+            if index:
+                sites = cache.get(code, False)
+                if sites is False:
+                    sites = cache[code] = index.get((code.co_filename, code.co_qualname, code.co_firstlineno))
+                if sites:
+                    c = sites.get(f.f_lasti)
+                    if c is not None and c not in chain:
+                        chain.append(c)
+            n = codes.get(code)
             if n is not None and n not in chain:
                 chain.append(n)
             f = f.f_back
@@ -695,6 +719,7 @@ class Sampler:
             inner[chain[-1]] = inner.get(chain[-1], 0.0) + w
         t = self.total or 1.0
         out = {"samples": self.samples, "mode": self.mode, "cpu_ns": self.cpu_ns, "wall_ns": self.wall_ns,
+               "c_sites": bool(self.csite_index),
                "shares": {n: w / t for n, w in inner.items()} if self.total else {},
                "chains": {">".join(c): w / t for c, w in self.weights.items()} if self.total else {},
                "unattributed": self.unattributed / self.total if self.total else 0.0}
@@ -773,25 +798,34 @@ def _replayable(name, prof=None):
     return name not in NO_REPLAY_RATIO and name not in C_SITES
 
 
-def _time_call(f, args, kwargs, name, budget_ns=40_000, max_reps=2000):
-    """ns per call of f(*args, **kwargs), repeated until budget_ns; None if it raises."""
+def _time_call(f, args, kwargs, name, budget_ns=40_000, max_reps=2000, batches=5):
+    """ns per call of f(*args, **kwargs): the fastest of ``batches`` batch means, each batch
+    repeated until ``budget_ns / batches`` (at least once): interference from other processes
+    only ever adds time. None if a call raises."""
     a, kw = _clone_args(name, args, kwargs)
     try:
         f(*a, **kw)  # warm-up: first calls pay lazy initialisation and cold caches
     except BaseException:
         return None
-    reps = 0
-    total = 0
-    while (total < budget_ns or reps < 3) and reps < max_reps:
-        a, kw = _clone_args(name, args, kwargs)
-        t0 = NS()
-        try:
-            f(*a, **kw)
-        except BaseException:
-            return None
-        total += NS() - t0
-        reps += 1
-    return total / reps, reps
+    best = None
+    reps_all = 0
+    per = budget_ns / batches
+    for _ in range(batches):
+        reps = 0
+        total = 0
+        while (total < per or reps < 1) and reps < max_reps // batches + 1:
+            a, kw = _clone_args(name, args, kwargs)
+            t0 = NS()
+            try:
+                f(*a, **kw)
+            except BaseException:
+                return None
+            total += NS() - t0
+            reps += 1
+        mean = total / reps
+        best = mean if best is None else min(best, mean)
+        reps_all += reps
+    return best, reps_all
 
 
 def _entry_for(name, func, args):
@@ -901,11 +935,17 @@ def predict(profile: dict, replayed: dict, counters: dict | None, total_ns: floa
         mode = "hybrid"
     if sampled is not None:
         shares = assign_chains(sampled, counters, replayed) if sampled.get("chains") else sampled.get("shares", {})
+        c_sampled = bool(sampled.get("c_sites")) and mode == "samples"
         for n, p in targets.items():
-            if p["kind"] == "py" and (mode == "samples" or p.get("nested_events", 0) > 4 * max(p["calls"], 1)):
-                # samples see C-level targets' time under the innermost Python-level target:
-                # the profiler timed those calls, so they count there, not twice
-                p["ns"] = max(shares.get(n, 0.0) * basis - p.get("c_child_ns", 0.0), 0.0)
+            if p["kind"] == "c" and c_sampled:
+                # the sampler saw the calls of C-level targets at their call sites: no
+                # per-call profiler cost to subtract (it is larger than many of these calls)
+                p["ns"] = shares.get(n, 0.0) * basis
+                p["from_samples"] = True
+            elif p["kind"] == "py" and (mode == "samples" or p.get("nested_events", 0) > 4 * max(p["calls"], 1)):
+                # without C call sites, samples see C-level targets' time under the innermost
+                # Python-level target: the profiler timed those calls, so they count there once
+                p["ns"] = max(shares.get(n, 0.0) * basis - (0.0 if c_sampled else p.get("c_child_ns", 0.0)), 0.0)
                 p["from_samples"] = True
         if mode == "samples":
             for n, sh in shares.items():  # seen by the sampler only (imported after the profiler looked)
@@ -1163,7 +1203,7 @@ def main(argv: list[str]) -> int:
         with open(man_path, "w") as f:
             json.dump(manifest, f)
         outs = {}
-        for mode in ("sample", "profile"):
+        for mode in ("profile", "sample"):  # the profiled run finds where C-level targets are called
             outs[mode] = os.path.join(tmp, f"{mode}.json")
             # RUSTIQUE=0: a rustique.enable() in the program is a no-op, so these runs are plain
             env = dict(base, RUSTIQUE="0", RUSTIQUE_ESTIMATE_OUT=outs[mode], RUSTIQUE_ESTIMATE_MODE=mode,
@@ -1171,6 +1211,10 @@ def main(argv: list[str]) -> int:
             t0 = time.perf_counter()
             subprocess.call(cmd, env=env, stdout=subprocess.DEVNULL)
             walls[mode] = time.perf_counter() - t0
+            if mode == "profile":
+                manifest["c_call_sites"] = [s for r in read_records(outs["profile"]) for s in r.get("c_call_sites", [])]
+                with open(man_path, "w") as f:
+                    json.dump(manifest, f)
         samples = read_records(outs["sample"])
         profiles = read_records(outs["profile"])
     if not profiles or not samples:

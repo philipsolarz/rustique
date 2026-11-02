@@ -9,8 +9,8 @@ with counters, and compare with the measured ratios (docs/atlas/w2-dx.md §5).
 Same order as the CLI: ``counters`` first (enable() before the workload is imported, setup(),
 warm-up, counters reset, one run(), stats(), and the manifest of entry points from status());
 then ``plain`` with that manifest: setup(), warm-up run(), 3 timed run()s (median: the total
-time), 3 run()s under the stack sampler, one run() under the profiler, then the replay of the
-sampled calls. Measured ratios: Phase 3 (docs/atlas/phase3.md §4, first replicate, run.py
+time), one run() under the profiler (it also finds the call sites of C-level targets), 3 run()s
+under the stack sampler, then the replay of the sampled calls. Measured ratios: Phase 3 (docs/atlas/phase3.md §4, first replicate, run.py
 compare -n 5 -p 5, 3.15.1 and 3.15.1t), or ``--measured file.json`` (``run.py compare -o``, or
 ``measure`` below).
 
@@ -62,15 +62,17 @@ def side_plain(name: str, manifest_path: str | None = None) -> dict:
         t0 = time.perf_counter_ns()
         mod.run(state)
         times.append(time.perf_counter_ns() - t0)
-    sampler = _estimate.Sampler(manifest=manifest).start()
-    for _ in range(3):
-        mod.run(state)
-    sampler.stop()
+    # as the CLI: the profiled run first (it finds the call sites of C-level targets), then
+    # the sampled runs
     prof = _estimate.Profiler(manifest=manifest).start()
     mod.run(state)
     prof.stop()
     res = prof.result(plain_ns=statistics.median(times))
-    res["unscaled"] = prof.result()
+    sampler = _estimate.Sampler(manifest=dict(manifest or _estimate.manifest_from_status(None),
+                                              c_call_sites=res["c_call_sites"])).start()
+    for _ in range(3):
+        mod.run(state)
+    sampler.stop()
     t0 = time.perf_counter()
     res["replay"] = _estimate.replay(prof)
     res["replay_s"] = time.perf_counter() - t0

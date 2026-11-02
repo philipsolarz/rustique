@@ -155,8 +155,9 @@ def test_report_from_file(tmp_path):
         assert r.returncode == 0, r.stderr
     r = rq("report", "--from", str(path))
     assert r.returncode == 0 and r.stdout.splitlines()[0].endswith("2 processes: enabled by rustique.enable()"), r.stdout
-    row = next(ln for ln in r.stdout.splitlines() if ln.startswith("  builtins.sorted"))
-    assert row.split()[2] == "5"
+    assert any(ln.startswith("  builtins.sorted") for ln in r.stdout.splitlines())
+    c = json.loads(rq("report", "--from", str(path), "--json").stdout)["stats"]["builtins.sorted"]
+    assert c["hits"] + sum(c["fallback"].values()) == 5  # every call of both processes, once
     assert rq("report", "--from", str(tmp_path / "none.json")).returncode == 2
 
 
