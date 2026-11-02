@@ -1,5 +1,6 @@
 """Exact instruction count (callgrind, client requests) of one steady-state run() of a workload,
-plain vs the interp tier (and/or Rustique's default groups): the arbiter when perf-stat
+plain vs the interp tier (and/or Rustique's default groups; "noop" imports Rustique and enables
+nothing, separating the tier from the import's own footprint): the arbiter when perf-stat
 counts are within their noise (about ±0.5% per run).
 
     python benches/interp/wl_cg.py <family/name> [--variant plain --variant tier ...] [--venvs DIR]
@@ -21,10 +22,10 @@ import _callgrind
 h = _callgrind.helper()
 v = {variant!r}
 if v != "plain":
-    import _tier, rustique
+    import _tier, rustique      # "noop": Rustique imported, nothing enabled
     if v == "default":
         rustique.enable()
-    else:
+    elif v in ("tier", "default+tier"):
         _tier.enable_tier(default=(v == "default+tier"))
 import importlib.util, os
 p = {wl!r}

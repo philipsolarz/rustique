@@ -68,8 +68,9 @@ rq_lookup_ref(PyTypeObject *tp, PyObject *name, PyObject **descr, unsigned int *
  *  - early, after the first window of RQ_WINDOW executions: a group whose hits are below
  *    1/(RQ_EARLY_FACTOR x ratio) of its steady executions -- far below break-even, its cost is
  *    already visible -- gives the core's handlers back;
- *  - final, after RQ_DECIDE windows (about 1M executions), the same test at 1/ratio: a horizon
- *    long enough to average out start-up phases for borderline groups.
+ *  - final, after RQ_DECIDE windows (about 1M executions), the same test at 1/ratio with every
+ *    cache fill debited RQ_FILL_WEIGHT times: a horizon long enough to average out start-up
+ *    phases for borderline groups.
  * Suspending asks the registry (Counters::request_suspend through rq_on_suspend), which
  * restores the core's handlers and reports the target `suspended`; only which, equivalent,
  * handler runs changes. A window that ends while the group is suspended means the registry
@@ -84,6 +85,10 @@ enum { RQ_G_ATTR = 0, RQ_G_SETATTR = 1, RQ_G_KWINIT = 2, RQ_G_ISINSTANCE = 3, RQ
 #define RQ_WINDOW 65536u
 #define RQ_DECIDE 16
 #define RQ_EARLY_FACTOR 4
+/* Final decision: a cache fill (classification, MRO lookup, store) costs about this many
+ * plain executions of the overridden path; a group whose fills keep coming (types created or
+ * modified per run, conflicting entries) pays for them (billing_engine: 22% of executions). */
+#define RQ_FILL_WEIGHT 16
 #define RQ_MAXOPS 64
 
 typedef struct {
@@ -139,9 +144,16 @@ rq_window_end(rq_group_t *g)
         return;
     }
     unsigned long long total = RQ_LD(g->total), fills = RQ_LD(g->fills);
-    unsigned long long steady = total > fills ? total - fills : 0;
-    unsigned long long need = (unsigned long long)g->ratio * (w == 1 ? RQ_EARLY_FACTOR : 1);
-    if (RQ_LD(g->hits) * need >= steady) {
+    unsigned long long cost;
+    if (w == 1) {
+        /* Early: the warm-up fills are an investment, not a cost. */
+        cost = total > fills ? total - fills : 0;
+        cost /= RQ_EARLY_FACTOR;
+    }
+    else {
+        cost = total + fills * RQ_FILL_WEIGHT;
+    }
+    if (RQ_LD(g->hits) * g->ratio >= cost) {
         return;
     }
     RQ_ST(g->suspended, 1);
