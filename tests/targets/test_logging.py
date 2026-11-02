@@ -9,6 +9,7 @@ results, `record.__dict__` (keys *and* order), exceptions and side effects.
 from __future__ import annotations
 
 import copy
+import decimal
 import io
 import logging
 import pickle
@@ -179,7 +180,14 @@ ARGS_SHAPES = [
     (b"x",),
     (0,),
     (2**80,),
+    (decimal.Decimal("1.50"),),
+    (decimal.Decimal("NaN"), 2),
 ]
+
+
+class DecSub(decimal.Decimal):
+    def __str__(self):
+        return "sub"
 
 
 @pytest.mark.parametrize("args", ARGS_SHAPES, ids=repr)
@@ -670,6 +678,12 @@ MESSAGES = [
     (12345, ()),
     (None, ()),
     ("%(x)s", ({"x": object()},)),
+    ("total %s", (decimal.Decimal("12.50"),)),
+    ("%s %s|%r", (decimal.Decimal("1E+3"), "x", decimal.Decimal("-0"))),
+    ("%d %.1f", (decimal.Decimal("7.9"), decimal.Decimal("2.25"))),
+    ("%(a)s", ({"a": decimal.Decimal("3")},)),
+    ("%s", (DecSub("4"),)),
+    ("%s", (decimal.Decimal("sNaN"),)),
 ]
 
 
@@ -938,3 +952,51 @@ def test_enable_disable_under_load():
     lines = sio.getvalue().splitlines()
     assert len(lines) == sum(count)
     assert all(l.startswith("INFO v") for l in lines)
+
+
+def test_decimal_arguments_follow_the_thread_context():
+    """`str(Decimal)` reads the current decimal context (exponent letter): the kernel calls
+    the C `str` at the same point CPython's getMessage does."""
+    def run():
+        out = []
+        with decimal.localcontext() as ctx:
+            ctx.capitals = 0
+            for d in (decimal.Decimal("1E+3"), decimal.Decimal("12.5")):
+                out.append(logging.Formatter("%(message)s").format(fixed_record(msg="v=%s", args=(d,))))
+        out.append(logging.Formatter("%(message)s").format(fixed_record(msg="v=%s", args=(decimal.Decimal("1E+3"),))))
+        return out
+
+    a, b = both(run)
+    assert a == b == ["v=1e+3", "v=12.5", "v=1E+3"]
+    A.stats(True, True)
+    logging.Formatter("%(message)s").format(fixed_record(msg="v=%s", args=(decimal.Decimal("2"),)))
+    assert hits("logging.Formatter.format") == 1
+
+
+def test_record_subclass_presetting_attributes_keeps_dict_order():
+    """Fast inline stores apply only to fresh records; a subclass that stores first gets
+    CPython's generic stores (same keys, same order)."""
+    class Pre(logging.LogRecord):
+        def __init__(self, *a):
+            self.request = "r1"
+            self.name = "early"
+            super().__init__(*a)
+
+    def mk():
+        return [record_view(Pre("n", 20, "/p.py", 1, "m %s", (i,), None)) for i in range(3)]
+
+    a, b = both(mk)
+    assert a == b
+
+
+def test_level_target_steps_aside_when_enabled_calls_dominate():
+    lg, h = make_logger("t.busy")
+    lg.isEnabledFor(20)
+    A.stats(True, True)
+    for i in range(200):
+        lg.info("busy %d", i)
+    settle()
+    st = {t["name"]: t for t in rt.status()["targets"]}
+    assert len(h.records) == 200 and h.records[-1][1] == "busy 199"
+    assert st["logging.Logger.level"].get("suspended") == "fallback"
+    assert stats("logging.Logger.level")["fallback"]["deopt"] < 200

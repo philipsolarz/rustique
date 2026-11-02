@@ -135,11 +135,20 @@ fn mapping_slot(t: Tp) -> Option<usize> {
         &raw mut ffi::PyList_Type,
         &raw mut ffi::PyDict_Type,
     ];
-    tys.iter().position(|&x| x == t)
+    if let Some(i) = tys.iter().position(|&x| x == t) {
+        return Some(i);
+    }
+    // The C `decimal.Decimal` (immutable C type; `bool()` is C): one slot per type object.
+    // SAFETY: attached thread; live type.
+    if unsafe { is_c_decimal(t) } {
+        return decimal_index(t).map(|i| 9 + i);
+    }
+    None
 }
 
-/// Per slot: `token << 2 | known << 1 | is_mapping`.
-static MAPPING: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
+/// Per slot: `token << 2 | known << 1 | is_mapping` (9 builtin types, then the remembered
+/// `_decimal.Decimal` types).
+static MAPPING: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
 
 /// Truthiness of a whitelisted type (no Python code).
 unsafe fn plain_truth(o: O) -> bool {

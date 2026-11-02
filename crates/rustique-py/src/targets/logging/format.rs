@@ -53,12 +53,34 @@ pub static FORMAT_CODES: [FnGuard; 8] = [const { FnGuard::new() }; 8];
 
 /// Reads converter, default_time_format, default_msec_format.
 pub static TIME_FORMATTERS: TypeCache<3> = TypeCache::new(validate_time_formatter);
-/// Reads converter, default_time_format, default_msec_format, _style, datefmt.
-pub static FORMATTERS: TypeCache<5> = TypeCache::new(validate_formatter);
-/// Reads _fmt, asctime_search, _defaults.
-pub static STYLES: TypeCache<3> = TypeCache::new(validate_style);
-/// Reads msg, args (the early purity check).
-pub static FMT_RECORDS: TypeCache<2> = TypeCache::new(validate_fmt_record);
+/// Reads converter, default_time_format, default_msec_format, _style, datefmt; checks
+/// usesTime, formatTime, formatMessage are not shadowed.
+pub static FORMATTERS: TypeCache<8> = TypeCache::new(validate_formatter);
+pub const F_STYLE: usize = 3;
+pub const F_DATEFMT: usize = 4;
+pub const F_USES_TIME_K: usize = 5;
+pub const F_FORMAT_TIME_K: usize = 6;
+pub const F_FORMAT_MESSAGE_K: usize = 7;
+/// Reads _fmt, asctime_search, _defaults; checks usesTime, format, _format.
+pub static STYLES: TypeCache<6> = TypeCache::new(validate_style);
+pub const S_FMT: usize = 0;
+pub const S_SEARCH: usize = 1;
+pub const S_DEFAULTS: usize = 2;
+pub const S_USES_TIME_K: usize = 3;
+pub const S_FORMAT_K: usize = 4;
+pub const S_FORMAT__K: usize = 5;
+/// Reads msg, args, exc_info, exc_text, stack_info, created, msecs; checks getMessage.
+pub static FMT_RECORDS: TypeCache<8> = TypeCache::new(validate_fmt_record);
+pub const R_MSG: usize = 0;
+pub const R_ARGS: usize = 1;
+pub const R_GET_MESSAGE_K: usize = 2;
+pub const R_EXC_INFO: usize = 3;
+pub const R_EXC_TEXT: usize = 4;
+pub const R_STACK_INFO: usize = 5;
+pub const R_CREATED: usize = 6;
+pub const R_MSECS: usize = 7;
+/// `PercentStyle.asctime_search` (the class attribute), for the per-format usesTime answer.
+pub static ASCTIME_SEARCH: Cap = Cap::new();
 
 /// `converter`, `default_time_format`, `default_msec_format` are plain values.
 unsafe fn validate_time_formatter(t: Tp) -> bool {
@@ -417,7 +439,7 @@ unsafe fn to_val(v: O, conv: u8, temps: &mut Held) -> Option<Val<'static>> {
             if v == ffi::Py_False() {
                 return Some(Val::Text(b"False"));
             }
-            if t == &raw mut ffi::PyFloat_Type || t == &raw mut ffi::PyLong_Type {
+            if t == &raw mut ffi::PyFloat_Type || t == &raw mut ffi::PyLong_Type || is_c_decimal(t) {
                 let s = ffi::PyObject_Str(v);
                 if s.is_null() {
                     ffi::PyErr_Clear();
@@ -561,6 +583,10 @@ impl Drop for Held {
 pub struct Parsed {
     pieces: Vec<Piece>,
     keys: Vec<usize>,
+    /// `fmt.find(search_for) >= 0`, for `search_for` = `PercentStyle.asctime_search` as
+    /// captured when the plan was made (kept alive by the capture).
+    uses_time: bool,
+    search_for: usize,
     /// Owns the key references (temporary plans); table entries live for the process.
     owned: bool,
 }
@@ -613,7 +639,17 @@ unsafe fn parse_plan(fmt: O) -> Option<Parsed> {
     unsafe {
         let b = latin1(fmt)?;
         let pieces = parse_format(b)?;
-        let mut p = Parsed { pieces: Vec::new(), keys: Vec::new(), owned: true };
+        let search = ASCTIME_SEARCH.get();
+        let uses_time = !search.is_null() && {
+            let pos = ffi::PyUnicode_Find(fmt, search, 0, ffi::PY_SSIZE_T_MAX, 1);
+            if pos < -1 {
+                ffi::PyErr_Clear();
+                return None;
+            }
+            pos >= 0
+        };
+        let mut p =
+            Parsed { pieces: Vec::new(), keys: Vec::new(), uses_time, search_for: search as usize, owned: true };
         for d in dirs(&pieces) {
             let (x, y) = d.key?;
             let k = ffi::PyUnicode_DecodeLatin1(b[x..].as_ptr().cast(), (y - x) as _, std::ptr::null());
@@ -653,12 +689,13 @@ unsafe fn parse_fmt_miss(fmt: O) -> Option<Plan> {
         p.owned = false;
         let keys = p.keys.clone();
         let pieces = p.pieces.clone();
+        let (uses_time, search_for) = (p.uses_time, p.search_for);
         match FMT_TABLE.insert(fmt, Some(p)) {
             Some(v) => v.as_ref().map(Plan::Static),
             None => {
                 // Full (or inserted by another thread meanwhile): this call's own plan; its
                 // references were moved into the table only if the insert succeeded.
-                Some(Plan::Temp(Parsed { pieces, keys, owned: true }))
+                Some(Plan::Temp(Parsed { pieces, keys, uses_time, search_for, owned: true }))
             }
         }
     }
@@ -670,7 +707,7 @@ unsafe fn parse_fmt_miss(fmt: O) -> Option<Plan> {
 unsafe fn plain_message(re: usize, record: O) -> bool {
     // SAFETY: attached thread; record of a validated type.
     unsafe {
-        let msg = FMT_RECORDS.read(re, record, 0);
+        let msg = FMT_RECORDS.read(re, record, R_MSG);
         if msg.is_null() {
             return false;
         }
@@ -679,14 +716,14 @@ unsafe fn plain_message(re: usize, record: O) -> bool {
         if !ok {
             return false;
         }
-        let args = FMT_RECORDS.read(re, record, 1);
+        let args = FMT_RECORDS.read(re, record, R_ARGS);
         if args.is_null() {
             return false;
         }
         let ok = if exact_tuple(args) {
             (0..ffi::PyTuple_GET_SIZE(args)).all(|i| pure_scalar(ffi::PyTuple_GET_ITEM(args, i)))
         } else if exact_dict(args) {
-            ffi::PyDict_Size(args) <= 64 && dict_all(args, |_, v| pure_scalar(v))
+            ffi::PyDict_Size(args) <= 64 && dict_all(args, |_, v| pure_scalar_cs(v))
         } else {
             args == ffi::Py_None()
         };
@@ -739,7 +776,7 @@ unsafe fn message(msg: O, args: O) -> Option<O> {
             {
                 return None; // `%s` would format the whole dict
             }
-            if pieces.is_none() && !dict_all(args, |_, v| pure_scalar(v)) {
+            if pieces.is_none() && !dict_all(args, |_, v| pure_scalar_cs(v)) {
                 return None;
             }
             let fb = latin1(s.0);
@@ -786,7 +823,7 @@ unsafe fn dget(d: O, key: O) -> Option<O> {
     }
 }
 
-unsafe fn format(fe: usize, me: O, record: O) -> Fmt {
+unsafe fn format(fe: usize, me: O, re: usize, record: O) -> Fmt {
     // SAFETY: attached thread; `me`, `record` of validated types.
     unsafe {
         let n = n();
@@ -795,62 +832,59 @@ unsafe fn format(fe: usize, me: O, record: O) -> Fmt {
                 return Fmt::Fallback($r)
             };
         }
-        // `record.__dict__` (CPython materialises it in PercentStyle._format; doing it first
-        // is unobservable). Record attributes are read from it: the record class has no
-        // descriptor for them (validated), so the instance dict is what getattr reads.
-        let d = ffi::PyObject_GenericGetDict(record, std::ptr::null_mut());
-        if d.is_null() {
-            ffi::PyErr_Clear();
+        // Record attributes are read through the validated record class (no descriptor for
+        // them: what getattr and `record.__dict__[...]` both give). The message first:
+        // arguments that are not plain are the most common reason to fall back.
+        let msg = FMT_RECORDS.read(re, record, R_MSG);
+        if msg.is_null() {
             fb!(Reason::Args);
         }
-        let d = Owned1(d);
-        if !exact_dict(d.0) || !str_keyed(d.0, 256) {
-            fb!(Reason::Args);
-        }
-        // The message first: arguments that are not plain are the most common reason to
-        // fall back, and the check is cheap.
-        let Some(msg) = dget(d.0, o(n.msg)) else { fb!(Reason::Args) };
         let msg_o = Owned1(msg);
-        let Some(args) = dget(d.0, o(n.args)) else { fb!(Reason::Args) };
+        let args = FMT_RECORDS.read(re, record, R_ARGS);
+        if args.is_null() {
+            fb!(Reason::Args);
+        }
         let args_o = Owned1(args);
         let Some(message) = message(msg_o.0, args_o.0) else { fb!(Reason::Args) };
         let message = Owned1(message);
         // exc_info / exc_text / stack_info must all be false: formatException and
         // formatStack (traceback formatting) stay CPython's.
-        for a in [n.exc_info, n.exc_text, n.stack_info] {
-            let Some(v) = dget(d.0, o(a)) else { fb!(Reason::Args) };
+        for k in [R_EXC_INFO, R_EXC_TEXT, R_STACK_INFO] {
+            let v = FMT_RECORDS.read(re, record, k);
+            if v.is_null() {
+                fb!(Reason::Args);
+            }
             let t = pure_truth(v);
             ffi::Py_DECREF(v);
             if t != Some(false) {
                 fb!(Reason::Args);
             }
         }
-        if !bound_to(me, o(n.uses_time), F_USES_TIME.get())
-            || !bound_to(me, o(n.format_time), F_FORMAT_TIME.get())
-            || !bound_to(me, o(n.format_message), F_FORMAT_MESSAGE.get())
-            || !bound_to(record, o(n.get_message), R_GET_MESSAGE.get())
+        if !FORMATTERS.bound(fe, me, F_USES_TIME_K, F_USES_TIME.get())
+            || !FORMATTERS.bound(fe, me, F_FORMAT_TIME_K, F_FORMAT_TIME.get())
+            || !FORMATTERS.bound(fe, me, F_FORMAT_MESSAGE_K, F_FORMAT_MESSAGE.get())
+            || !FMT_RECORDS.bound(re, record, R_GET_MESSAGE_K, R_GET_MESSAGE.get())
         {
             fb!(Reason::Args);
         }
-        let style = FORMATTERS.read(fe, me, 3);
+        let style = FORMATTERS.read(fe, me, F_STYLE);
         if style.is_null() {
             fb!(Reason::Args);
         }
         let style = Owned1(style);
         let Some(se) = STYLES.entry(ffi::Py_TYPE(style.0)) else { fb!(Reason::Args) };
-        if !bound_to(style.0, o(n.uses_time), S_USES_TIME.get())
-            || !bound_to(style.0, o(n.format), S_FORMAT.get())
-            || !bound_to(style.0, o(n.format_), S_FORMAT_.get())
+        if !STYLES.bound(se, style.0, S_USES_TIME_K, S_USES_TIME.get())
+            || !STYLES.bound(se, style.0, S_FORMAT_K, S_FORMAT.get())
+            || !STYLES.bound(se, style.0, S_FORMAT__K, S_FORMAT_.get())
         {
             fb!(Reason::Args);
         }
-        // usesTime: self._style._fmt.find(self._style.asctime_search) >= 0
-        let sfmt = STYLES.read(se, style.0, 0);
+        let sfmt = STYLES.read(se, style.0, S_FMT);
         if sfmt.is_null() {
             fb!(Reason::Args);
         }
         let sfmt = Owned1(sfmt);
-        let search = STYLES.read(se, style.0, 1);
+        let search = STYLES.read(se, style.0, S_SEARCH);
         if search.is_null() {
             fb!(Reason::Args);
         }
@@ -858,21 +892,34 @@ unsafe fn format(fe: usize, me: O, record: O) -> Fmt {
         if !exact_str(sfmt.0) || !exact_str(search.0) {
             fb!(Reason::Args);
         }
-        let pos = ffi::PyUnicode_Find(sfmt.0, search.0, 0, ffi::PY_SSIZE_T_MAX, 1);
-        if pos < -1 {
-            ffi::PyErr_Clear();
-            fb!(Reason::Args);
-        }
-        let uses_time = pos >= 0;
+        let Some(plan) = parse_fmt(sfmt.0) else { fb!(Reason::Args) };
+        // usesTime: self._style._fmt.find(self._style.asctime_search) >= 0 (computed once per
+        // format for PercentStyle's own search string)
+        let uses_time = if search.0 as usize == plan.search_for {
+            plan.uses_time
+        } else {
+            let pos = ffi::PyUnicode_Find(sfmt.0, search.0, 0, ffi::PY_SSIZE_T_MAX, 1);
+            if pos < -1 {
+                ffi::PyErr_Clear();
+                fb!(Reason::Args);
+            }
+            pos >= 0
+        };
         let asctime = if uses_time {
-            let datefmt = FORMATTERS.read(fe, me, 4);
+            let datefmt = FORMATTERS.read(fe, me, F_DATEFMT);
             if datefmt.is_null() {
                 fb!(Reason::Args);
             }
             let datefmt = Owned1(datefmt);
-            let rnames = [n.created, n.msecs];
-            let Some(a) = format_time_with(&|k| FORMATTERS.read(fe, me, k), &|k| dget(d.0, o(rnames[k])), datefmt.0)
-            else {
+            let rk = [R_CREATED, R_MSECS];
+            let Some(a) = format_time_with(
+                &|k| FORMATTERS.read(fe, me, k),
+                &|k| {
+                    let v = FMT_RECORDS.read(re, record, rk[k]);
+                    (!v.is_null()).then_some(v)
+                },
+                datefmt.0,
+            ) else {
                 fb!(Reason::Args)
             };
             Owned1(a)
@@ -880,7 +927,7 @@ unsafe fn format(fe: usize, me: O, record: O) -> Fmt {
             Owned1(std::ptr::null_mut())
         };
         // values = defaults | record.__dict__ if defaults else record.__dict__
-        let defaults = STYLES.read(se, style.0, 2);
+        let defaults = STYLES.read(se, style.0, S_DEFAULTS);
         if defaults.is_null() {
             fb!(Reason::Args);
         }
@@ -890,7 +937,6 @@ unsafe fn format(fe: usize, me: O, record: O) -> Fmt {
             Some(true) if exact_dict(defaults.0) => true,
             _ => fb!(Reason::Args),
         };
-        let Some(parsed) = parse_fmt(sfmt.0) else { fb!(Reason::Args) };
         // Observable from here on: stores into the record (the original repeats them).
         if ffi::PyObject_GenericSetAttr(record, o(n.message), message.0) < 0 {
             ffi::PyErr_Clear();
@@ -898,6 +944,16 @@ unsafe fn format(fe: usize, me: O, record: O) -> Fmt {
         }
         if uses_time && ffi::PyObject_GenericSetAttr(record, o(n.asctime), asctime.0) < 0 {
             ffi::PyErr_Clear();
+            fb!(Reason::Deopt);
+        }
+        // `record.__dict__`, as PercentStyle._format reads it.
+        let d = ffi::PyObject_GenericGetDict(record, std::ptr::null_mut());
+        if d.is_null() {
+            ffi::PyErr_Clear();
+            fb!(Reason::Deopt);
+        }
+        let d = Owned1(d);
+        if !exact_dict(d.0) {
             fb!(Reason::Deopt);
         }
         let values = if merge {
@@ -909,13 +965,13 @@ unsafe fn format(fe: usize, me: O, record: O) -> Fmt {
             }
             Owned1(v)
         } else {
-            Owned1(ffi::Py_NewRef(d.0))
+            d
         };
         if !str_keyed(values.0, 256) {
             fb!(Reason::Deopt);
         }
-        let keys = &parsed.keys;
-        match percent(sfmt.0, values.0, Some(&parsed.pieces), &mut |i, _| dget(values.0, keys[i] as O)) {
+        let keys = &plan.keys;
+        match percent(sfmt.0, values.0, Some(&plan.pieces), &mut |i, _| dget(values.0, keys[i] as O)) {
             Some(s) => Fmt::Done(s),
             None => Fmt::Fallback(Reason::Deopt),
         }
@@ -947,7 +1003,7 @@ pub unsafe extern "C" fn vc_format(func: O, args: *const O, nargsf: usize, kw: O
             if !TOOLS.quiet() || !fns_ok(&FORMAT_CODES) {
                 break 'fb Reason::Tools;
             }
-            match format(fe, me, record) {
+            match format(fe, me, re, record) {
                 Fmt::Done(s) => {
                     FORMAT_STATS.hit_streak();
                     return s;

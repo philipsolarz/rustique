@@ -144,7 +144,14 @@ pub struct TypeCache<const N: usize> {
     ix: [[AtomicI32; N]; 4],
     /// Per entry and name: `dk_nentries` of the shared keys when an index was not found.
     seen: [[AtomicI32; N]; 4],
+    /// Per entry and name: the class attribute `_PyType_LookupRef(t, name)` found (borrowed:
+    /// the class keeps it alive while the entry's version tag holds), 0 when absent,
+    /// [`UNKNOWN`] until looked up (GIL builds).
+    cls: [[AtomicUsize; N]; 4],
 }
+
+/// [`TypeCache`] class-attribute slot not looked up yet.
+const UNKNOWN: usize = 1;
 
 impl<const N: usize> TypeCache<N> {
     pub const fn new(validate: unsafe fn(Tp) -> bool) -> Self {
@@ -156,6 +163,7 @@ impl<const N: usize> TypeCache<N> {
             names: [const { AtomicUsize::new(0) }; N],
             ix: [const { [const { AtomicI32::new(-1) }; N] }; 4],
             seen: [const { [const { AtomicI32::new(-1) }; N] }; 4],
+            cls: [const { [const { AtomicUsize::new(UNKNOWN) }; N] }; 4],
         }
     }
 
@@ -210,6 +218,7 @@ impl<const N: usize> TypeCache<N> {
                 for k in 0..N {
                     self.ix[i][k].store(-1, Relaxed);
                     self.seen[i][k].store(-1, Relaxed);
+                    self.cls[i][k].store(UNKNOWN, Relaxed);
                 }
                 self.tag[i].store(tag0, Relaxed);
                 return Some(i);
@@ -278,8 +287,79 @@ impl<const N: usize> TypeCache<N> {
                     return Some(ffi::Py_NewRef(v));
                 }
             }
-            // Not an instance attribute: the class's plain value, if any.
-            Some(_PyType_LookupRef(t, name))
+            // Not an instance attribute: the class's plain value, if any (cached per entry:
+            // the entry's version tag proves the class dicts are unchanged, and the GIL
+            // that no other thread changes them during the kernel).
+            let c = self.cls[e][k].load(Relaxed);
+            if c != UNKNOWN {
+                return Some(if c == 0 { std::ptr::null_mut() } else { ffi::Py_NewRef(c as O) });
+            }
+            let v = _PyType_LookupRef(t, name);
+            if !v.is_null() {
+                // The class still holds a reference while the tag holds.
+                ffi::Py_DECREF(v);
+                self.cls[e][k].store(v as usize, Relaxed);
+                return Some(ffi::Py_NewRef(v));
+            }
+            self.cls[e][k].store(0, Relaxed);
+            Some(std::ptr::null_mut())
+        }
+    }
+
+    /// Does `obj` have an instance attribute `names[k]` that would shadow the class's?
+    /// `Some(false)`/`Some(true)` when the inline values tell (GIL builds, calibrated, the
+    /// instance's attributes all in its valid inline values), `None` when unknown.
+    ///
+    /// # Safety
+    /// Attached thread; `obj` of the entry's type; `e` from [`Self::entry`].
+    #[inline(always)]
+    pub unsafe fn shadowed(&self, e: usize, obj: O, k: usize) -> Option<bool> {
+        #[cfg(not(Py_GIL_DISABLED))]
+        // SAFETY: GIL held; layout calibrated (`INLINE_OK`).
+        unsafe {
+            if e >= 4 || !INLINE_OK.load(Relaxed) {
+                return None;
+            }
+            let t = ffi::Py_TYPE(obj);
+            let vals = inline_values(obj, t)?;
+            let mut ix = self.ix[e][k].load(Relaxed);
+            if ix < 0 {
+                let keys = cached_keys(t)?;
+                let n = keys_nentries(keys) as i32;
+                if self.seen[e][k].load(Relaxed) != n {
+                    ix = key_index(keys, self.names[k].load(Relaxed) as O);
+                    self.ix[e][k].store(ix, Relaxed);
+                    self.seen[e][k].store(n, Relaxed);
+                }
+            }
+            if ix < 0 {
+                return Some(false); // not among the shared keys: not in the inline values
+            }
+            if ix as usize >= *vals as usize {
+                return None;
+            }
+            Some(!(*vals.add(8).cast::<O>().add(ix as usize)).is_null())
+        }
+        #[cfg(Py_GIL_DISABLED)]
+        {
+            let _ = (e, obj, k);
+            None
+        }
+    }
+
+    /// `obj.names[k]` is what the class resolves it to (`func`, checked by the validator):
+    /// what `self.name(...)` calls is CPython's function.
+    ///
+    /// # Safety
+    /// As [`Self::shadowed`]; the validator checked `resolves_to(t, names[k], func)`.
+    #[inline(always)]
+    pub unsafe fn bound(&self, e: usize, obj: O, k: usize, func: O) -> bool {
+        // SAFETY: per the caller.
+        unsafe {
+            match self.shadowed(e, obj, k) {
+                Some(s) => !s,
+                None => bound_to(obj, self.names[k].load(Relaxed) as O, func),
+            }
         }
     }
 }
@@ -669,7 +749,7 @@ pub unsafe fn bound_to(obj: O, name: O, func: O) -> bool {
 }
 
 /// Values whose `str`, `repr`, `%`-conversions and `__format__` are CPython C code with no
-/// hooks: exact `str`, `int`, `bool`, `float`, `None`.
+/// hooks: exact `str`, `int`, `bool`, `float`, `None`, and the C `decimal.Decimal`.
 ///
 /// # Safety
 /// Live object.
@@ -683,6 +763,110 @@ pub unsafe fn pure_scalar(o: O) -> bool {
             || t == &raw mut ffi::PyFloat_Type
             || o == ffi::Py_None()
             || t == &raw mut ffi::PyBool_Type
+            || is_c_decimal(t)
+    }
+}
+
+/// [`pure_scalar`] without learning a new `_decimal` type (no dict lookups): for use under
+/// another container's critical section (free-threaded builds).
+///
+/// # Safety
+/// Live object.
+#[inline(always)]
+pub unsafe fn pure_scalar_cs(o: O) -> bool {
+    // SAFETY: header reads.
+    unsafe {
+        let t = ffi::Py_TYPE(o);
+        t == &raw mut ffi::PyUnicode_Type
+            || t == &raw mut ffi::PyLong_Type
+            || t == &raw mut ffi::PyFloat_Type
+            || o == ffi::Py_None()
+            || t == &raw mut ffi::PyBool_Type
+            || known_c_decimal(t)
+    }
+}
+
+/// Index of `t` among the remembered `_decimal.Decimal` types.
+pub fn decimal_index(t: Tp) -> Option<usize> {
+    DECIMAL_TYPES.iter().position(|s| s.load(Relaxed) == t as usize)
+}
+
+#[inline(always)]
+fn known_c_decimal(t: Tp) -> bool {
+    for s in &DECIMAL_TYPES {
+        let d = s.load(Relaxed);
+        if d == 0 {
+            return false;
+        }
+        if d == t as usize {
+            return true;
+        }
+    }
+    false
+}
+
+/// `_decimal.Decimal` type objects seen so far (strong references, process lifetime; one
+/// per `_decimal` module object: fresh imports make new types).
+static DECIMAL_TYPES: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
+
+/// `t` is exactly the C `decimal.Decimal` of a loaded `_decimal` module: its `str`, `repr`,
+/// `int`, `float` and `__format__` are C code with no hooks (they read the thread's decimal
+/// context, creating the default one on first use, as CPython's own `str(d)` does). A
+/// pure-Python `_pydecimal.Decimal` or any subclass is not.
+///
+/// # Safety
+/// Attached thread; live type.
+#[inline(always)]
+pub unsafe fn is_c_decimal(t: Tp) -> bool {
+    // SAFETY: per the caller.
+    known_c_decimal(t) || unsafe { learn_c_decimal(t) }
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn learn_c_decimal(t: Tp) -> bool {
+    // SAFETY: attached thread; reads of a live type and of `sys.modules` (exact dicts, str
+    // keys: no Python code runs).
+    unsafe {
+        if ffi::PyType_GetFlags(t) & ffi::Py_TPFLAGS_IMMUTABLETYPE == 0
+            || std::ffi::CStr::from_ptr((*t).tp_name).to_bytes() != b"decimal.Decimal"
+        {
+            return false;
+        }
+        let modules = ffi::PySys_GetObject(c"modules".as_ptr());
+        if modules.is_null() || !exact_dict(modules) {
+            return false;
+        }
+        let mut m: O = std::ptr::null_mut();
+        if ffi::PyDict_GetItemStringRef(modules, c"_decimal".as_ptr(), &mut m) != 1 {
+            ffi::PyErr_Clear();
+            return false;
+        }
+        let ok = ffi::PyModule_CheckExact(m) != 0 && {
+            let md = ffi::PyModule_GetDict(m);
+            let mut d: O = std::ptr::null_mut();
+            let r = ffi::PyDict_GetItemStringRef(md, c"Decimal".as_ptr(), &mut d);
+            if r < 0 {
+                ffi::PyErr_Clear();
+            }
+            let same = r == 1 && d == t.cast();
+            ffi::Py_XDECREF(d);
+            same
+        };
+        ffi::Py_DECREF(m);
+        if !ok {
+            return false;
+        }
+        for s in &DECIMAL_TYPES {
+            if s.load(Relaxed) == t as usize {
+                return true;
+            }
+            if s.compare_exchange(0, t as usize, Relaxed, Relaxed).is_ok() {
+                ffi::Py_INCREF(t.cast());
+                return true;
+            }
+        }
+        true // more than 4 `_decimal` modules: still the C type, just not remembered
     }
 }
 
