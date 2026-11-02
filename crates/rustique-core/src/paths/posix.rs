@@ -344,7 +344,7 @@ mod tests {
             assert!(!is_normal_abs(s.as_bytes()), "{s:?}");
         }
         // Exhaustive over short strings of '/', '.', 'a': the check implies normpath(s) == s.
-        let alphabet = [b'/', b'.', b'a'];
+        let alphabet = *b"/.a";
         for len in 1..=7u32 {
             for mut k in 0..3usize.pow(len) {
                 let mut v = Vec::new();
