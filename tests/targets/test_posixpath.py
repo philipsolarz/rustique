@@ -430,6 +430,9 @@ def test_threads_with_enable_disable():
 def test_shared_mechanics():
     """tests/targets/_mechanics.py: every tool kind sees the original's frames (incl.
     LINE-only/RAISE-only global tools and local events), introspection unchanged."""
+    import cProfile  # noqa: F401  (imported outside the counted windows: their import
+    import pstats  # noqa: F401   code calls os.path functions, which would count as hits)
+
     import _mechanics as M
 
     A.disable(["posixpath"])

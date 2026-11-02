@@ -287,6 +287,16 @@ pub unsafe fn new_str(len: usize, maxchar: u32) -> (O, *mut c_void, u32) {
         if o.is_null() {
             return (o, std::ptr::null_mut(), 0);
         }
+        // `PyUnicode_New` makes a compact string whose kind follows `maxchar`.
+        if let Some(Some(l)) = STR_LAYOUT.get() {
+            let (off, kind) = match maxchar {
+                0..0x80 => (l.ascii_data, 1),
+                0x80..0x100 => (l.compact_data, 1),
+                0x100..0x10000 => (l.compact_data, 2),
+                _ => (l.compact_data, 4),
+            };
+            return (o, o.cast::<u8>().add(off).cast(), kind);
+        }
         let v = str_view(o);
         let (data, kind) = match v.text {
             Text::U1(s) => (s.as_ptr() as *mut c_void, 1),
