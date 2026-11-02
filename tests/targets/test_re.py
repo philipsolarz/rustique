@@ -538,3 +538,34 @@ def test_disable_restores():
     finally:
         rt.enable(only="re")
     assert all(t["state"] == "installed" for t in rt.status()["targets"] if t["group"] == "re")
+
+
+TEMPLATE_TOKENS = ["a", "-", "\\", "\\1", "\\2", "\\9", "\\10", "\\0", "\\01", "\\012", "\\177", "\\400", "\\8",
+                   "\\g<0>", "\\g<1>", "\\g<3>", "\\g<x>", "\\g<y>", "\\g<nope>", "\\g<1", "\\g", "\\g<>", "\\g< x>",
+                   "\\g<\u00e9>", "\\n", "\\t", "\\b", "\\q", "\\Q", "\\-", "\\\\", "\\\u00e9", "<", ">", "\u00e9"]
+TEMPLATE_PATTERNS = [re.compile(r"(?P<x>a)(b)"), re.compile("plain"), re.compile(r"(a)(b)(c)(?P<y>d)"),
+                     re.compile(rb"(?P<x>a)(b)")]
+
+
+def _template_reference(p, repl):
+    try:
+        _parser.parse_template(repl, p)
+    except Exception:  # noqa: BLE001 - any error: the port must say no
+        return False
+    return True
+
+
+@settings(max_examples=4000, deadline=None)
+@given(st.sampled_from(TEMPLATE_PATTERNS), st.lists(st.sampled_from(TEMPLATE_TOKENS), max_size=6).map("".join))
+def test_template_check_against_parse_template(p, repl):
+    if isinstance(p.pattern, bytes):
+        try:
+            repl = repl.encode("latin-1")
+        except UnicodeEncodeError:
+            return
+    ours = A._re_template_ok(p, repl)
+    if ours:
+        assert _template_reference(p, repl), (p, repl)
+    elif "\u00e9" not in (repl if isinstance(repl, str) else repl.decode("latin-1")):
+        # declines only where CPython raises (or for non-ASCII group names)
+        assert not _template_reference(p, repl) or "\\g<\u00e9" in str(repl), (p, repl)
