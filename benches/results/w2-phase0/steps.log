@@ -1,0 +1,187 @@
+[2026-11-02T18:30:05Z] START setup
+[2026-11-02T18:30:07Z] END   setup rc=0 2s
+[2026-11-02T18:30:07Z] START facts
+[2026-11-02T18:30:12Z] END   facts rc=0 5s
+[2026-11-02T18:30:12Z] START quiet
+[2026-11-02T18:30:12Z] END   quiet rc=0 0s
+[2026-11-02T18:30:12Z] START build-3.15.1
+[2026-11-02T18:30:12Z] START build-3.15.1t
+[2026-11-02T18:30:12Z] START build-3.14.9
+[2026-11-02T18:30:12Z] START build-3.14.9t
+[2026-11-02T18:31:26Z] END   build-3.15.1t rc=0 74s
+[2026-11-02T18:31:26Z] START wheel-3.15.1t
+[2026-11-02T18:31:26Z] END   build-3.14.9t rc=0 74s
+[2026-11-02T18:31:26Z] START wheel-3.14.9t
+[2026-11-02T18:31:26Z] END   wheel-3.15.1t rc=0 0s
+[2026-11-02T18:31:26Z] START status-3.15.1t
+[2026-11-02T18:31:26Z] END   wheel-3.14.9t rc=0 0s
+[2026-11-02T18:31:26Z] START status-3.14.9t
+[2026-11-02T18:31:26Z] END   status-3.15.1t rc=0 0s
+[2026-11-02T18:31:26Z] START wlvenv-3.15.1t
+[2026-11-02T18:31:27Z] END   status-3.14.9t rc=0 1s
+[2026-11-02T18:31:27Z] START pytest-3.14.9t
+[2026-11-02T18:31:27Z] END   build-3.14.9 rc=0 75s
+[2026-11-02T18:31:27Z] START wheel-3.14.9
+[2026-11-02T18:31:27Z] END   build-3.15.1 rc=0 75s
+[2026-11-02T18:31:27Z] START wheel-3.15.1
+[2026-11-02T18:31:28Z] END   wheel-3.14.9 rc=0 1s
+[2026-11-02T18:31:28Z] START status-3.14.9
+[2026-11-02T18:31:28Z] END   wheel-3.15.1 rc=0 1s
+[2026-11-02T18:31:28Z] START status-3.15.1
+[2026-11-02T18:31:28Z] END   status-3.14.9 rc=0 0s
+[2026-11-02T18:31:28Z] START pytest-3.14.9
+[2026-11-02T18:31:28Z] END   status-3.15.1 rc=0 0s
+[2026-11-02T18:31:28Z] START wlvenv-3.15.1
+[2026-11-02T18:31:30Z] END   wlvenv-3.15.1t rc=0 4s
+[2026-11-02T18:31:30Z] START pytest-3.15.1t
+[2026-11-02T18:31:31Z] END   wlvenv-3.15.1 rc=0 3s
+[2026-11-02T18:31:31Z] START pytest-3.15.1
+[2026-11-02T18:35:21Z] END   pytest-3.15.1 rc=0 230s
+[2026-11-02T18:35:21Z] START build-3.16.0a1
+[2026-11-02T18:35:29Z] END   pytest-3.14.9 rc=0 241s
+[2026-11-02T18:35:29Z] START build-3.15.2
+[2026-11-02T18:36:09Z] END   pytest-3.14.9t rc=0 282s
+[2026-11-02T18:36:09Z] START build-3.15.2t
+[2026-11-02T18:36:41Z] END   pytest-3.15.1t rc=0 311s
+[2026-11-02T18:36:41Z] START build-3.16.0a1t
+[2026-11-02T18:36:42Z] END   build-3.15.2 rc=0 73s
+[2026-11-02T18:36:42Z] START wheel-3.15.2
+[2026-11-02T18:36:42Z] END   wheel-3.15.2 rc=0 0s
+[2026-11-02T18:36:42Z] START status-3.15.2
+[2026-11-02T18:36:43Z] END   status-3.15.2 rc=0 1s
+[2026-11-02T18:36:43Z] START pytest-3.15.2
+[2026-11-02T18:37:21Z] END   build-3.15.2t rc=0 72s
+[2026-11-02T18:37:21Z] START wheel-3.15.2t
+[2026-11-02T18:37:21Z] END   wheel-3.15.2t rc=0 0s
+[2026-11-02T18:37:21Z] START status-3.15.2t
+[2026-11-02T18:37:22Z] END   status-3.15.2t rc=0 1s
+[2026-11-02T18:37:22Z] START pytest-3.15.2t
+[2026-11-02T18:37:48Z] END   build-3.16.0a1 rc=0 147s
+[2026-11-02T18:37:48Z] START wheel-3.16.0a1
+[2026-11-02T18:37:48Z] END   wheel-3.16.0a1 rc=0 0s
+[2026-11-02T18:37:48Z] START status-3.16.0a1
+[2026-11-02T18:37:48Z] END   status-3.16.0a1 rc=0 0s
+[2026-11-02T18:37:48Z] START pytest-3.16.0a1
+[2026-11-02T18:39:07Z] END   build-3.16.0a1t rc=0 146s
+[2026-11-02T18:39:07Z] START wheel-3.16.0a1t
+[2026-11-02T18:39:08Z] END   wheel-3.16.0a1t rc=0 1s
+[2026-11-02T18:39:08Z] START status-3.16.0a1t
+[2026-11-02T18:39:08Z] END   status-3.16.0a1t rc=0 0s
+[2026-11-02T18:39:08Z] START pytest-3.16.0a1t
+[2026-11-02T18:40:29Z] END   pytest-3.15.2 rc=0 226s
+[2026-11-02T18:40:29Z] START pyperf-venv-3.15.1
+[2026-11-02T18:40:51Z] END   pytest-3.16.0a1 rc=1 183s
+[2026-11-02T18:40:51Z] START build-3.14.10
+[2026-11-02T18:41:12Z] END   pyperf-venv-3.15.1 rc=0 43s
+[2026-11-02T18:42:04Z] END   build-3.14.10 rc=0 73s
+[2026-11-02T18:42:04Z] START wheel-3.14.10
+[2026-11-02T18:42:04Z] END   wheel-3.14.10 rc=0 0s
+[2026-11-02T18:42:04Z] START status-3.14.10
+[2026-11-02T18:42:05Z] END   status-3.14.10 rc=0 1s
+[2026-11-02T18:42:05Z] START pytest-3.14.10
+[2026-11-02T18:42:32Z] END   pytest-3.15.2t rc=0 310s
+[2026-11-02T18:42:32Z] START pyperf-venv-3.15.1t
+[2026-11-02T18:42:52Z] END   pytest-3.16.0a1t rc=1 224s
+[2026-11-02T18:42:52Z] START build-3.14.10t
+[2026-11-02T18:43:16Z] END   pyperf-venv-3.15.1t rc=0 44s
+[2026-11-02T18:44:04Z] END   build-3.14.10t rc=0 72s
+[2026-11-02T18:44:04Z] START wheel-3.14.10t
+[2026-11-02T18:44:04Z] END   wheel-3.14.10t rc=0 0s
+[2026-11-02T18:44:04Z] START status-3.14.10t
+[2026-11-02T18:44:04Z] END   status-3.14.10t rc=0 0s
+[2026-11-02T18:44:04Z] START pytest-3.14.10t
+[2026-11-02T18:46:05Z] END   pytest-3.14.10 rc=0 240s
+[2026-11-02T18:48:55Z] END   pytest-3.14.10t rc=0 291s
+[2026-11-02T18:48:55Z] START rust-fmt
+[2026-11-02T18:48:56Z] END   rust-fmt rc=0 1s
+[2026-11-02T18:48:56Z] START rust-clippy
+[2026-11-02T18:49:09Z] END   rust-clippy rc=0 13s
+[2026-11-02T18:49:09Z] START rust-test
+[2026-11-02T18:49:33Z] END   rust-test rc=0 24s
+[2026-11-02T18:49:33Z] START conformance-3.15.1
+[2026-11-02T18:49:33Z] START conformance-3.15.1t
+[2026-11-02T18:49:33Z] START conformance-3.14.9
+[2026-11-02T18:49:33Z] START conformance-3.15.2
+[2026-11-02T18:52:29Z] END   conformance-3.15.2 rc=0 176s
+[2026-11-02T18:52:29Z] START conformance-3.14.10
+[2026-11-02T18:52:29Z] END   conformance-3.15.1 rc=0 176s
+[2026-11-02T18:52:34Z] END   conformance-3.14.9 rc=1 181s
+[2026-11-02T18:52:37Z] END   conformance-3.15.1t rc=0 184s
+[2026-11-02T18:55:29Z] END   conformance-3.14.10 rc=1 180s
+[2026-11-02T18:55:29Z] WAVE-A done in 1524s
+[2026-11-02T18:55:29Z] START workloads-3.15.1
+[2026-11-02T18:55:29Z] START whole-3.15.1
+[2026-11-02T18:55:29Z] START workloads-3.15.1t
+[2026-11-02T18:55:29Z] START wlstats-run-3.15.1
+[2026-11-02T18:56:23Z] END   wlstats-run-3.15.1 rc=0 54s
+[2026-11-02T18:56:24Z] START wlstats-run-3.15.1t
+[2026-11-02T18:57:22Z] END   wlstats-run-3.15.1t rc=0 58s
+[2026-11-02T18:57:22Z] START gcstats-3.15.1
+[2026-11-02T18:57:22Z] START gcstats-3.15.1t
+[2026-11-02T18:57:22Z] START instr-3.15.1
+[2026-11-02T19:04:54Z] END   whole-3.15.1 rc=0 565s
+[2026-11-02T19:04:54Z] START whole-3.15.1t
+[2026-11-02T19:07:41Z] END   instr-3.15.1 rc=0 619s
+[2026-11-02T19:07:41Z] START instr-3.15.1t
+[2026-11-02T19:15:58Z] END   whole-3.15.1t rc=0 664s
+[2026-11-02T19:15:58Z] START startup-3.15.1
+[2026-11-02T19:17:16Z] END   workloads-3.15.1 rc=0 1307s
+[2026-11-02T19:17:16Z] START pyperformance-plain-3.15.1
+[2026-11-02T19:17:19Z] END   startup-3.15.1 rc=0 80s
+[2026-11-02T19:17:19Z] START startup-3.14.9
+[2026-11-02T19:18:41Z] END   startup-3.14.9 rc=0 82s
+[2026-11-02T19:18:41Z] START jit-3.15.1
+[2026-11-02T19:18:50Z] END   instr-3.15.1t rc=0 669s
+[2026-11-02T19:18:50Z] START isolate-instr-3.15.1
+[2026-11-02T19:19:04Z] END   isolate-instr-3.15.1 rc=0 14s
+[2026-11-02T19:19:04Z] START isolate-instr-3.15.1t
+[2026-11-02T19:19:04Z] END   workloads-3.15.1t rc=0 1415s
+[2026-11-02T19:19:04Z] START pyperformance-plain-3.15.1t
+[2026-11-02T19:19:09Z] END   isolate-instr-3.15.1t rc=0 5s
+[2026-11-02T19:19:09Z] START pyperformance-enabled-3.15.1t-B
+[2026-11-02T19:32:20Z] END   jit-3.15.1 rc=0 819s
+[2026-11-02T19:32:20Z] START pyperformance-enabled-3.15.1-B
+[2026-11-02T20:20:24Z] END   pyperformance-plain-3.15.1 rc=1 3788s
+[2026-11-02T20:20:24Z] START pyperformance-enabled-3.15.1
+[2026-11-02T20:23:40Z] END   pyperformance-enabled-3.15.1t-B rc=1 3871s
+[2026-11-02T20:23:40Z] START pyperformance-plain-3.15.1t-B
+[2026-11-02T20:25:37Z] END   pyperformance-plain-3.15.1t rc=1 3993s
+[2026-11-02T20:25:37Z] START pyperformance-enabled-3.15.1t
+[2026-11-02T20:35:25Z] END   pyperformance-enabled-3.15.1-B rc=1 3785s
+[2026-11-02T20:35:25Z] START pyperformance-plain-3.15.1-B
+[2026-11-02T21:23:42Z] END   pyperformance-enabled-3.15.1 rc=1 3798s
+[2026-11-02T21:29:24Z] END   pyperformance-plain-3.15.1t-B rc=1 3944s
+[2026-11-02T21:30:09Z] END   pyperformance-enabled-3.15.1t rc=1 3872s
+[2026-11-02T21:38:17Z] END   pyperformance-plain-3.15.1-B rc=1 3772s
+[2026-11-02T21:38:17Z] WAVE-B done in 11292s
+[2026-11-02T21:38:17Z] START pyperformance-plain-3.15.1-ports
+[2026-11-02T21:38:20Z] START gcstats-3.15.1
+[2026-11-02T21:39:11Z] END   gcstats-3.15.1 rc=0 51s
+[2026-11-02T21:39:11Z] START gcstats-3.15.1t
+[2026-11-02T21:40:07Z] END   gcstats-3.15.1t rc=0 56s
+[2026-11-02T21:40:40Z] END   pyperformance-plain-3.15.1-ports rc=0 143s
+[2026-11-02T21:40:40Z] START pyperformance-enabled-3.15.1-ports
+[2026-11-02T21:43:03Z] END   pyperformance-enabled-3.15.1-ports rc=0 143s
+[2026-11-02T21:43:03Z] START pyperformance-plain-3.15.1t-ports
+[2026-11-02T21:45:44Z] END   pyperformance-plain-3.15.1t-ports rc=0 161s
+[2026-11-02T21:45:44Z] START pyperformance-enabled-3.15.1t-ports
+[2026-11-02T21:48:25Z] END   pyperformance-enabled-3.15.1t-ports rc=0 161s
+[2026-11-02T21:48:25Z] START time-3.15.1
+[2026-11-02T22:45:20Z] END   time-3.15.1 rc=0 3415s
+[2026-11-02T22:45:20Z] START isolate-time-3.15.1
+[2026-11-02T23:00:21Z] END   isolate-time-3.15.1 rc=0 901s
+[2026-11-02T23:00:21Z] SKIP  time 3.15.1t (/work/w2p0/skip/time-3.15.1t)
+[2026-11-02T23:00:21Z] SKIP  isolate-time 3.15.1t (/work/w2p0/skip/isolate-time-3.15.1t)
+[2026-11-02T23:00:21Z] START report-3.15.1
+[2026-11-02T23:00:24Z] END   report-3.15.1 rc=0 3s
+[2026-11-02T23:00:24Z] START pyperformance-compare-3.15.1
+[2026-11-02T23:00:24Z] END   pyperformance-compare-3.15.1 rc=0 0s
+[2026-11-02T23:00:24Z] START pyperformance-compare-3.15.1-B
+[2026-11-02T23:00:25Z] END   pyperformance-compare-3.15.1-B rc=0 1s
+[2026-11-02T23:00:25Z] START report-3.15.1t
+[2026-11-02T23:00:25Z] END   report-3.15.1t rc=0 0s
+[2026-11-02T23:00:25Z] START pyperformance-compare-3.15.1t
+[2026-11-02T23:00:26Z] END   pyperformance-compare-3.15.1t rc=0 1s
+[2026-11-02T23:00:26Z] START pyperformance-compare-3.15.1t-B
+[2026-11-02T23:00:26Z] END   pyperformance-compare-3.15.1t-B rc=0 0s
+[2026-11-02T23:00:27Z] ALL done in 16222s

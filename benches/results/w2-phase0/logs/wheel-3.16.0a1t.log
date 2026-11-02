@@ -1,0 +1,13 @@
+🍹 Building a mixed python/rust project
+🐍 Found CPython 3.16t at /work/w2p0/venv/3.16.0a1t/bin/python
+🔗 Found pyo3 bindings
+    Finished `release` profile [optimized] target(s) in 0.02s
+📦 Including files matching "python/_rustique_startup.pth"
+📦 Including files matching "python/_rustique_pytest.py"
+📦 Built wheel for CPython 3.16t to /work/w2p0/dist/3.16.0a1t/rustique-0.2.0-cp316-cp316t-manylinux_2_34_x86_64.whl
+total 2312
+drwxrwxr-x  2 ubuntu ubuntu    4096 Nov  2 18:39 .
+drwxrwxr-x 10 ubuntu ubuntu    4096 Nov  2 18:39 ..
+-rw-rw-r--  1 ubuntu ubuntu 2359003 Nov  2 18:39 rustique-0.2.0-cp316-cp316t-manylinux_2_34_x86_64.whl
+461 _rustique_startup.pth
+6756920 rustique/_rustique.cpython-316t-x86_64-linux-gnu.so

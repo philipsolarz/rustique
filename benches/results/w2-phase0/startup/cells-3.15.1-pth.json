@@ -1,0 +1,88 @@
+{
+ "cells": [
+  {
+   "variant": "plain: pass",
+   "python": "/work/w2p0/su/3.15.1/plain-pth/bin/python",
+   "code": "pass",
+   "ir": 39438206,
+   "ir_runs": [
+    39438206,
+    39438206,
+    39438206
+   ],
+   "ms_median": 9.6800455,
+   "ms_p10": 9.62869,
+   "ms_p90": 9.733291,
+   "ir_ratio": 1.0,
+   "ms_ratio": 1.0
+  },
+  {
+   "variant": "installed, unset: pass",
+   "python": "/work/w2p0/su/3.15.1/rq-pth/bin/python",
+   "code": "pass",
+   "ir": 39760066,
+   "ir_runs": [
+    39760066,
+    39760066,
+    39760066
+   ],
+   "ms_median": 9.771260999999999,
+   "ms_p10": 9.721511,
+   "ms_p90": 9.828451,
+   "ir_ratio": 1.008161121730537,
+   "ms_ratio": 1.009423044550772
+  },
+  {
+   "variant": "RUSTIQUE=1: pass",
+   "python": "/work/w2p0/su/3.15.1/rq-pth/bin/python",
+   "code": "pass",
+   "ir": 41559852,
+   "ir_runs": [
+    41559852,
+    41559852,
+    41559852
+   ],
+   "ms_median": 10.5157365,
+   "ms_p10": 10.463086,
+   "ms_p90": 10.586557,
+   "ir_ratio": 1.053796716818204,
+   "ms_ratio": 1.086331309083206
+  },
+  {
+   "variant": "import rustique",
+   "python": "/work/w2p0/su/3.15.1/rq-pth/bin/python",
+   "code": "import rustique",
+   "ir": 41319292,
+   "ir_runs": [
+    41319292,
+    41319292,
+    41319292
+   ],
+   "ms_median": 10.3974855,
+   "ms_p10": 10.341115,
+   "ms_p90": 10.466736,
+   "ir_ratio": 1.047697047882959,
+   "ms_ratio": 1.0741153541065482
+  },
+  {
+   "variant": "import + enable()",
+   "python": "/work/w2p0/su/3.15.1/rq-pth/bin/python",
+   "code": "import rustique; rustique.enable()",
+   "ir": 42735783,
+   "ir_runs": [
+    42735783,
+    42735783,
+    42735783
+   ],
+   "ms_median": 10.733718,
+   "ms_p10": 10.683257,
+   "ms_p90": 10.796059,
+   "ir_ratio": 1.0836137678270659,
+   "ms_ratio": 1.1088499532362734
+  }
+ ],
+ "marginal": {
+  "ir": 1.0452661723448848,
+  "ms": 1.0761903197550449
+ }
+}

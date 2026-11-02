@@ -1,0 +1,223 @@
+# time: 73 cells > 1.05 in time-enabled-3.15.1.json.shard0.json, time-enabled-3.15.1.json.shard1.json, time-enabled-3.15.1.json.shard2.json, time-enabled-3.15.1.json.shard3.json; 2 runs each, cpus 2,10,20,30
+3.15.1 dict/hit in x/mixed/10000: builtin 0.0 us (rsd 0.111) enabled 0.0 us (rsd 0.111) ratio 0.911 (as run 1.495; isolated, run 1, 11 runs, cpu 10)
+3.15.1 dict/miss in x/mixed/10000: builtin 0.0 us (rsd 0.082) enabled 0.0 us (rsd 0.273) ratio 1.157 (as run 1.544; isolated, run 1, 11 runs, cpu 2)
+3.15.1 dict/x[k] = v/object/10000: builtin 0.0 us (rsd 0.036) enabled 0.0 us (rsd 0.039) ratio 0.979 (as run 1.430; isolated, run 1, 11 runs, cpu 30)
+3.15.1 list/x[i] = v/str/1000000: builtin 0.0 us (rsd 0.073) enabled 0.0 us (rsd 0.051) ratio 0.970 (as run 1.485; isolated, run 1, 11 runs, cpu 20)
+3.15.1 dict/tuple(x)/float/10000: builtin 72.3 us (rsd 0.260) enabled 69.3 us (rsd 0.198) ratio 0.960 (as run 1.317; isolated, run 1, 11 runs, cpu 30)
+3.15.1 dict/miss in x/object/10000: builtin 0.0 us (rsd 0.207) enabled 0.0 us (rsd 0.107) ratio 0.820 (as run 1.365; isolated, run 1, 11 runs, cpu 2)
+3.15.1 frozenset/x <= t/object/10000: builtin 0.0 us (rsd 0.219) enabled 0.0 us (rsd 0.154) ratio 1.024 (as run 1.425; isolated, run 1, 11 runs, cpu 10)
+3.15.1 tuple/copy C(x)/float/10000: builtin 0.0 us (rsd 0.008) enabled 0.0 us (rsd 0.007) ratio 0.998 (as run 1.294; isolated, run 1, 11 runs, cpu 20)
+3.15.1 frozenset/list(x)/object/10000: builtin 69.2 us (rsd 0.017) enabled 69.1 us (rsd 0.026) ratio 0.998 (as run 1.230; isolated, run 1, 11 runs, cpu 20)
+3.15.1 tuple/for v in x/int/10000: builtin 40.4 us (rsd 0.010) enabled 46.2 us (rsd 0.110) ratio 1.144 (as run 1.194; isolated, run 1, 11 runs, cpu 20)
+3.15.1 dict/tuple(x)/mixed/1000000: builtin 8704.4 us (rsd 0.065) enabled 8915.5 us (rsd 0.062) ratio 1.024 (as run 1.270; isolated, run 1, 11 runs, cpu 30)
+3.15.1 frozenset/x == t/object/1000000: builtin 0.0 us (rsd 0.116) enabled 0.0 us (rsd 0.082) ratio 0.906 (as run 1.247; isolated, run 1, 11 runs, cpu 2)
+3.15.1 dict/tuple(x)/mixed/10000: builtin 72.4 us (rsd 0.212) enabled 73.0 us (rsd 0.247) ratio 1.008 (as run 1.181; isolated, run 1, 11 runs, cpu 30)
+3.15.1 set/x.isdisjoint(t)/mixed/1000000: builtin 0.0 us (rsd 0.121) enabled 0.0 us (rsd 0.108) ratio 0.994 (as run 1.244; isolated, run 1, 11 runs, cpu 10)
+3.15.1 tuple/for v in x/str/10000: builtin 42.3 us (rsd 0.054) enabled 46.5 us (rsd 0.118) ratio 1.100 (as run 1.180; isolated, run 1, 11 runs, cpu 2)
+3.15.1 frozenset/x <= t/mixed/10000: builtin 0.0 us (rsd 0.233) enabled 0.0 us (rsd 0.204) ratio 0.946 (as run 1.173; isolated, run 1, 11 runs, cpu 10)
+3.15.1 dict/tuple(x)/str/1000000: builtin 9824.4 us (rsd 0.137) enabled 8821.7 us (rsd 0.121) ratio 0.898 (as run 1.187; isolated, run 1, 11 runs, cpu 20)
+3.15.1 set/miss in x/int/10000: builtin 0.0 us (rsd 0.072) enabled 0.0 us (rsd 0.056) ratio 0.983 (as run 1.172; isolated, run 1, 11 runs, cpu 2)
+3.15.1 tuple/len(x)/float/10000: builtin 0.0 us (rsd 0.010) enabled 0.0 us (rsd 0.332) ratio 1.116 (as run 1.164; isolated, run 1, 11 runs, cpu 20)
+3.15.1 dict/tuple(x)/int/1000000: builtin 8327.8 us (rsd 0.167) enabled 8288.1 us (rsd 0.167) ratio 0.995 (as run 1.177; isolated, run 1, 11 runs, cpu 30)
+3.15.1 set/x == y/int/10000: builtin 62.6 us (rsd 0.071) enabled 60.5 us (rsd 0.038) ratio 0.966 (as run 1.146; isolated, run 1, 11 runs, cpu 30)
+3.15.1 dict/x.get(k)/mixed/10000: builtin 0.0 us (rsd 0.033) enabled 0.0 us (rsd 0.086) ratio 1.018 (as run 1.150; isolated, run 1, 11 runs, cpu 20)
+3.15.1 dict/x[k] = v/str/1000000: builtin 0.0 us (rsd 0.051) enabled 0.0 us (rsd 0.119) ratio 1.055 (as run 1.156; isolated, run 1, 11 runs, cpu 2)
+3.15.1 frozenset/x <= t/object/1000000: builtin 0.0 us (rsd 0.364) enabled 0.0 us (rsd 0.224) ratio 1.006 (as run 1.170; isolated, run 1, 11 runs, cpu 10)
+3.15.1 tuple/for v in x/str/1000000: builtin 4806.3 us (rsd 0.076) enabled 4954.3 us (rsd 0.079) ratio 1.031 (as run 1.140; isolated, run 1, 11 runs, cpu 30)
+3.15.1 frozenset/tuple(x)/str/10000: builtin 73.8 us (rsd 0.048) enabled 75.7 us (rsd 0.062) ratio 1.026 (as run 1.134; isolated, run 1, 11 runs, cpu 2)
+3.15.1 dict/x == t/object/10000: builtin 0.0 us (rsd 0.089) enabled 0.0 us (rsd 0.719) ratio 1.304 (as run 1.130; isolated, run 1, 11 runs, cpu 10)
+3.15.1 dict/for v in x.values()/float/10000: builtin 86.6 us (rsd 0.219) enabled 82.8 us (rsd 0.039) ratio 0.956 (as run 1.130; isolated, run 1, 11 runs, cpu 30)
+3.15.1 set/copy C(x)/mixed/10000: builtin 53.6 us (rsd 0.059) enabled 53.2 us (rsd 0.073) ratio 0.992 (as run 1.126; isolated, run 1, 11 runs, cpu 10)
+3.15.1 dict/x.get(miss)/mixed/10000: builtin 0.0 us (rsd 0.070) enabled 0.0 us (rsd 0.101) ratio 1.055 (as run 1.126; isolated, run 1, 11 runs, cpu 2)
+3.15.1 dict/x[k]/mixed/10000: builtin 0.0 us (rsd 0.072) enabled 0.0 us (rsd 0.143) ratio 1.020 (as run 1.139; isolated, run 1, 11 runs, cpu 20)  [filter --op 'x[k]' selects 3 cells]
+3.15.1 list/x[i] = v/str/10000: builtin 0.0 us (rsd 0.079) enabled 0.0 us (rsd 0.047) ratio 0.969 (as run 1.118; isolated, run 1, 11 runs, cpu 10)
+3.15.1 frozenset/hash(x)/int/10000: builtin 0.0 us (rsd 0.094) enabled 0.0 us (rsd 0.010) ratio 0.959 (as run 1.102; isolated, run 1, 11 runs, cpu 10)
+3.15.1 dict/x[k]/int/10000: builtin 0.0 us (rsd 0.039) enabled 0.0 us (rsd 0.064) ratio 1.026 (as run 1.119; isolated, run 1, 11 runs, cpu 30)  [filter --op 'x[k]' selects 3 cells]
+3.15.1 set/x == t/object/10000: builtin 0.0 us (rsd 0.121) enabled 0.0 us (rsd 0.425) ratio 1.160 (as run 1.097; isolated, run 1, 11 runs, cpu 10)
+3.15.1 dict/enumerate/float/1000000: builtin 19978.2 us (rsd 0.049) enabled 19956.8 us (rsd 0.017) ratio 0.999 (as run 1.114; isolated, run 1, 11 runs, cpu 20)
+3.15.1 set/x <= t/mixed/1000000: builtin 0.0 us (rsd 0.035) enabled 0.0 us (rsd 0.031) ratio 0.996 (as run 1.118; isolated, run 1, 11 runs, cpu 2)
+3.15.1 set/miss in x/mixed/10000: builtin 0.0 us (rsd 0.046) enabled 0.0 us (rsd 0.023) ratio 0.963 (as run 1.096; isolated, run 1, 11 runs, cpu 30)
+3.15.1 dict/reversed/float/10000: builtin 111.5 us (rsd 0.060) enabled 110.0 us (rsd 0.105) ratio 0.986 (as run 1.089; isolated, run 1, 11 runs, cpu 20)
+3.15.1 list/x[i] = v/mixed/10000: builtin 0.0 us (rsd 0.036) enabled 0.0 us (rsd 0.021) ratio 0.994 (as run 1.087; isolated, run 1, 11 runs, cpu 2)
+3.15.1 frozenset/x.isdisjoint(t)/object/10000: builtin 0.0 us (rsd 0.122) enabled 0.0 us (rsd 0.340) ratio 1.027 (as run 1.084; isolated, run 1, 11 runs, cpu 30)
+3.15.1 dict/enumerate/int/1000000: builtin 19668.8 us (rsd 0.030) enabled 20449.6 us (rsd 0.072) ratio 1.040 (as run 1.096; isolated, run 1, 11 runs, cpu 10)
+3.15.1 tuple/copy C(x)/mixed/1000000: builtin 0.0 us (rsd 0.010) enabled 0.0 us (rsd 0.005) ratio 0.999 (as run 1.079; isolated, run 1, 11 runs, cpu 30)
+3.15.1 set/tuple(x)/mixed/10000: builtin 73.8 us (rsd 0.055) enabled 72.8 us (rsd 0.048) ratio 0.986 (as run 1.077; isolated, run 1, 11 runs, cpu 10)
+3.15.1 frozenset/x == t/str/1000000: builtin 0.0 us (rsd 0.140) enabled 0.0 us (rsd 0.254) ratio 1.134 (as run 1.079; isolated, run 1, 11 runs, cpu 2)
+3.15.1 tuple/for v in x/float/1000000: builtin 4598.6 us (rsd 0.080) enabled 4469.4 us (rsd 0.106) ratio 0.972 (as run 1.077; isolated, run 1, 11 runs, cpu 30)
+3.15.1 set/x <= t/str/1000000: builtin 0.0 us (rsd 0.300) enabled 0.0 us (rsd 0.191) ratio 0.775 (as run 1.081; isolated, run 1, 11 runs, cpu 20)
+3.15.1 frozenset/tuple(x)/object/10000: builtin 79.3 us (rsd 0.076) enabled 76.8 us (rsd 0.047) ratio 0.968 (as run 1.075; isolated, run 1, 11 runs, cpu 30)
+3.15.1 list/pickle.dumps/str/1000000: builtin 125659.6 us (rsd 0.036) enabled 152121.4 us (rsd 0.017) ratio 1.211 (as run 1.076; isolated, run 1, 11 runs, cpu 10)
+3.15.1 dict/x[k] = v/str/10000: builtin 0.0 us (rsd 0.034) enabled 0.0 us (rsd 0.039) ratio 0.996 (as run 1.074; isolated, run 1, 11 runs, cpu 20)
+3.15.1 dict/x[k] = v/int/1000000: builtin 0.0 us (rsd 0.030) enabled 0.0 us (rsd 0.032) ratio 1.001 (as run 1.071; isolated, run 1, 11 runs, cpu 10)
+3.15.1 list/pickle round trip/str/1000000: builtin 188877.1 us (rsd 0.013) enabled 211515.5 us (rsd 0.017) ratio 1.120 (as run 1.073; isolated, run 1, 11 runs, cpu 30)
+3.15.1 dict/x == t/object/1000000: builtin 0.0 us (rsd 0.049) enabled 0.0 us (rsd 0.070) ratio 1.054 (as run 1.076; isolated, run 1, 11 runs, cpu 2)
+3.15.1 tuple/from list/mixed/10000: builtin 13.9 us (rsd 0.004) enabled 14.0 us (rsd 0.010) ratio 1.007 (as run 1.067; isolated, run 1, 11 runs, cpu 10)
+3.15.1 dict/x.setdefault(k)/mixed/1000000: builtin 0.0 us (rsd 0.049) enabled 0.0 us (rsd 0.036) ratio 0.978 (as run 1.067; isolated, run 1, 11 runs, cpu 20)
+3.15.1 list/x[i] = v/float/10000: builtin 0.0 us (rsd 0.036) enabled 0.0 us (rsd 0.046) ratio 1.006 (as run 1.066; isolated, run 1, 11 runs, cpu 2)
+3.15.1 set/x.isdisjoint(t)/str/10000: builtin 0.0 us (rsd 0.247) enabled 0.0 us (rsd 0.186) ratio 1.014 (as run 1.064; isolated, run 1, 11 runs, cpu 10)
+3.15.1 dict/for v in x.values()/mixed/10000: builtin 81.5 us (rsd 0.032) enabled 84.7 us (rsd 0.059) ratio 1.039 (as run 1.063; isolated, run 1, 11 runs, cpu 20)
+3.15.1 dict/repr(x)/str/10000: builtin 659.1 us (rsd 0.009) enabled 664.2 us (rsd 0.033) ratio 1.008 (as run 1.061; isolated, run 1, 11 runs, cpu 10)
+3.15.1 set/all(x)/str/10000: builtin 119.7 us (rsd 0.041) enabled 121.8 us (rsd 0.044) ratio 1.018 (as run 1.061; isolated, run 1, 11 runs, cpu 20)
+3.15.1 list/len(x)/mixed/10000: builtin 0.0 us (rsd 0.014) enabled 0.0 us (rsd 0.006) ratio 1.001 (as run 1.061; isolated, run 1, 11 runs, cpu 10)
+3.15.1 list/repr(x)/object/1000000: builtin 166250.7 us (rsd 0.030) enabled 176749.4 us (rsd 0.020) ratio 1.063 (as run 1.067; isolated, run 1, 11 runs, cpu 30)
+3.15.1 dict/miss in x/mixed/1000000: builtin 0.0 us (rsd 0.089) enabled 0.0 us (rsd 0.075) ratio 0.980 (as run 1.063; isolated, run 1, 11 runs, cpu 2)
+3.15.1 list/x.clear()/mixed/1000000: builtin 2095.4 us (rsd 0.025) enabled 2092.8 us (rsd 0.026) ratio 0.999 (as run 1.057; isolated, run 1, 11 runs, cpu 30)
+3.15.1 set/miss in x/int/1000000: builtin 0.0 us (rsd 0.092) enabled 0.0 us (rsd 0.093) ratio 1.026 (as run 1.059; isolated, run 1, 11 runs, cpu 20)
+3.15.1 dict/reversed/float/1000000: builtin 10908.4 us (rsd 0.029) enabled 10819.1 us (rsd 0.036) ratio 0.992 (as run 1.056; isolated, run 1, 11 runs, cpu 2)
+3.15.1 set/list(x)/mixed/10000: builtin 55.5 us (rsd 0.072) enabled 55.2 us (rsd 0.049) ratio 0.993 (as run 1.055; isolated, run 1, 11 runs, cpu 30)
+3.15.1 frozenset/min(x)/str/10000: builtin 215.7 us (rsd 0.033) enabled 217.9 us (rsd 0.022) ratio 1.010 (as run 1.052; isolated, run 1, 11 runs, cpu 30)
+3.15.1 frozenset/x == y/int/10000: builtin 70.5 us (rsd 0.080) enabled 70.7 us (rsd 0.064) ratio 1.003 (as run 1.051; isolated, run 1, 11 runs, cpu 30)
+3.15.1 dict/x.get(k)/int/1000000: builtin 0.0 us (rsd 0.016) enabled 0.0 us (rsd 0.012) ratio 0.997 (as run 1.053; isolated, run 1, 11 runs, cpu 20)
+3.15.1 tuple/reversed/int/1000000: builtin 7287.6 us (rsd 0.035) enabled 7269.3 us (rsd 0.028) ratio 0.997 (as run 1.051; isolated, run 1, 11 runs, cpu 30)
+3.15.1 dict/pickle.dumps/object/1000000: builtin 343292.0 us (rsd 0.009) enabled 352845.2 us (rsd 0.012) ratio 1.028 (as run 1.057; isolated, run 1, 11 runs, cpu 10)
+3.15.1 dict/hit in x/mixed/10000: builtin 0.0 us (rsd 0.184) enabled 0.0 us (rsd 0.121) ratio 0.853 (as run 1.495; isolated, run 2, 11 runs, cpu 30)
+3.15.1 dict/miss in x/mixed/10000: builtin 0.0 us (rsd 0.276) enabled 0.0 us (rsd 0.139) ratio 0.885 (as run 1.544; isolated, run 2, 11 runs, cpu 20)
+3.15.1 dict/hit in x/object/1000000: builtin 0.0 us (rsd 0.020) enabled 0.0 us (rsd 0.084) ratio 1.051 (as run 1.052; isolated, run 1, 11 runs, cpu 2)
+3.15.1 frozenset/x <= t/object/10000: builtin 0.0 us (rsd 0.194) enabled 0.0 us (rsd 0.188) ratio 1.072 (as run 1.425; isolated, run 2, 11 runs, cpu 20)
+3.15.1 dict/x[k] = v/object/10000: builtin 0.0 us (rsd 0.112) enabled 0.0 us (rsd 0.075) ratio 1.015 (as run 1.430; isolated, run 2, 11 runs, cpu 30)
+3.15.1 dict/miss in x/object/10000: builtin 0.0 us (rsd 0.185) enabled 0.0 us (rsd 0.131) ratio 0.911 (as run 1.365; isolated, run 2, 11 runs, cpu 2)
+3.15.1 list/x[i] = v/str/1000000: builtin 0.0 us (rsd 0.042) enabled 0.0 us (rsd 0.003) ratio 0.961 (as run 1.485; isolated, run 2, 11 runs, cpu 10)
+3.15.1 dict/tuple(x)/float/10000: builtin 68.1 us (rsd 0.215) enabled 69.9 us (rsd 0.246) ratio 1.026 (as run 1.317; isolated, run 2, 11 runs, cpu 20)
+3.15.1 tuple/copy C(x)/float/10000: builtin 0.0 us (rsd 0.019) enabled 0.0 us (rsd 0.010) ratio 0.996 (as run 1.294; isolated, run 2, 11 runs, cpu 30)
+3.15.1 frozenset/list(x)/object/10000: builtin 67.7 us (rsd 0.037) enabled 68.7 us (rsd 0.034) ratio 1.016 (as run 1.230; isolated, run 2, 11 runs, cpu 30)
+3.15.1 tuple/for v in x/int/10000: builtin 41.1 us (rsd 0.052) enabled 47.6 us (rsd 0.130) ratio 1.158 (as run 1.194; isolated, run 2, 11 runs, cpu 30)
+3.15.1 dict/tuple(x)/mixed/1000000: builtin 8879.7 us (rsd 0.075) enabled 9039.1 us (rsd 0.070) ratio 1.018 (as run 1.270; isolated, run 2, 11 runs, cpu 2)
+3.15.1 frozenset/x == t/object/1000000: builtin 0.0 us (rsd 0.204) enabled 0.0 us (rsd 0.192) ratio 0.981 (as run 1.247; isolated, run 2, 11 runs, cpu 10)
+3.15.1 dict/tuple(x)/mixed/10000: builtin 69.9 us (rsd 0.145) enabled 84.6 us (rsd 0.124) ratio 1.210 (as run 1.181; isolated, run 2, 11 runs, cpu 2)
+3.15.1 set/x.isdisjoint(t)/mixed/1000000: builtin 0.0 us (rsd 0.129) enabled 0.0 us (rsd 0.090) ratio 0.914 (as run 1.244; isolated, run 2, 11 runs, cpu 20)
+3.15.1 tuple/for v in x/str/10000: builtin 42.7 us (rsd 0.091) enabled 50.0 us (rsd 0.127) ratio 1.169 (as run 1.180; isolated, run 2, 11 runs, cpu 10)
+3.15.1 dict/tuple(x)/str/1000000: builtin 9604.6 us (rsd 0.133) enabled 8527.6 us (rsd 0.091) ratio 0.888 (as run 1.187; isolated, run 2, 11 runs, cpu 30)
+3.15.1 frozenset/x <= t/mixed/10000: builtin 0.0 us (rsd 0.179) enabled 0.0 us (rsd 0.154) ratio 1.014 (as run 1.173; isolated, run 2, 11 runs, cpu 20)
+3.15.1 set/miss in x/int/10000: builtin 0.0 us (rsd 0.082) enabled 0.0 us (rsd 0.074) ratio 0.954 (as run 1.172; isolated, run 2, 11 runs, cpu 10)
+3.15.1 tuple/len(x)/float/10000: builtin 0.0 us (rsd 0.156) enabled 0.0 us (rsd 0.016) ratio 0.969 (as run 1.164; isolated, run 2, 11 runs, cpu 20)
+3.15.1 dict/tuple(x)/int/1000000: builtin 8024.0 us (rsd 0.176) enabled 7771.3 us (rsd 0.178) ratio 0.968 (as run 1.177; isolated, run 2, 11 runs, cpu 2)
+3.15.1 set/x == y/int/10000: builtin 63.3 us (rsd 0.072) enabled 63.5 us (rsd 0.081) ratio 1.002 (as run 1.146; isolated, run 2, 11 runs, cpu 2)
+3.15.1 dict/x.get(k)/mixed/10000: builtin 0.0 us (rsd 0.053) enabled 0.0 us (rsd 0.052) ratio 0.989 (as run 1.150; isolated, run 2, 11 runs, cpu 20)
+3.15.1 dict/x[k] = v/str/1000000: builtin 0.0 us (rsd 0.124) enabled 0.0 us (rsd 0.056) ratio 0.985 (as run 1.156; isolated, run 2, 11 runs, cpu 10)
+3.15.1 tuple/for v in x/str/1000000: builtin 5197.8 us (rsd 0.090) enabled 4895.7 us (rsd 0.072) ratio 0.942 (as run 1.140; isolated, run 2, 11 runs, cpu 2)
+3.15.1 frozenset/x <= t/object/1000000: builtin 0.0 us (rsd 0.188) enabled 0.0 us (rsd 0.098) ratio 0.947 (as run 1.170; isolated, run 2, 11 runs, cpu 30)
+3.15.1 frozenset/tuple(x)/str/10000: builtin 73.8 us (rsd 0.022) enabled 75.2 us (rsd 0.052) ratio 1.018 (as run 1.134; isolated, run 2, 11 runs, cpu 10)
+3.15.1 dict/x == t/object/10000: builtin 0.0 us (rsd 0.037) enabled 0.0 us (rsd 0.041) ratio 1.011 (as run 1.130; isolated, run 2, 11 runs, cpu 2)
+3.15.1 dict/for v in x.values()/float/10000: builtin 80.9 us (rsd 0.027) enabled 82.2 us (rsd 0.045) ratio 1.016 (as run 1.130; isolated, run 2, 11 runs, cpu 30)
+3.15.1 set/copy C(x)/mixed/10000: builtin 54.3 us (rsd 0.068) enabled 53.6 us (rsd 0.076) ratio 0.987 (as run 1.126; isolated, run 2, 11 runs, cpu 2)
+3.15.1 dict/x.get(miss)/mixed/10000: builtin 0.0 us (rsd 0.389) enabled 0.0 us (rsd 0.128) ratio 0.813 (as run 1.126; isolated, run 2, 11 runs, cpu 10)
+3.15.1 dict/x[k]/mixed/10000: builtin 0.0 us (rsd 0.250) enabled 0.0 us (rsd 0.075) ratio 0.861 (as run 1.139; isolated, run 2, 11 runs, cpu 20)  [filter --op 'x[k]' selects 3 cells]
+3.15.1 list/x[i] = v/str/10000: builtin 0.0 us (rsd 0.045) enabled 0.0 us (rsd 0.035) ratio 0.995 (as run 1.118; isolated, run 2, 11 runs, cpu 2)
+3.15.1 frozenset/hash(x)/int/10000: builtin 0.0 us (rsd 0.008) enabled 0.0 us (rsd 0.164) ratio 1.036 (as run 1.102; isolated, run 2, 11 runs, cpu 2)
+3.15.1 dict/x[k]/int/10000: builtin 0.0 us (rsd 0.066) enabled 0.0 us (rsd 0.075) ratio 1.015 (as run 1.119; isolated, run 2, 11 runs, cpu 30)  [filter --op 'x[k]' selects 3 cells]
+3.15.1 set/x == t/object/10000: builtin 0.0 us (rsd 0.088) enabled 0.0 us (rsd 0.137) ratio 1.094 (as run 1.097; isolated, run 2, 11 runs, cpu 2)
+3.15.1 dict/enumerate/float/1000000: builtin 19690.3 us (rsd 0.014) enabled 20116.0 us (rsd 0.055) ratio 1.022 (as run 1.114; isolated, run 2, 11 runs, cpu 20)
+3.15.1 set/miss in x/mixed/10000: builtin 0.0 us (rsd 0.042) enabled 0.0 us (rsd 0.032) ratio 0.998 (as run 1.096; isolated, run 2, 11 runs, cpu 30)
+3.15.1 set/x <= t/mixed/1000000: builtin 0.0 us (rsd 0.025) enabled 0.0 us (rsd 0.063) ratio 1.013 (as run 1.118; isolated, run 2, 11 runs, cpu 10)
+3.15.1 dict/reversed/float/10000: builtin 110.4 us (rsd 0.053) enabled 112.2 us (rsd 0.062) ratio 1.016 (as run 1.089; isolated, run 2, 11 runs, cpu 20)
+3.15.1 list/x[i] = v/mixed/10000: builtin 0.0 us (rsd 0.128) enabled 0.0 us (rsd 0.052) ratio 0.964 (as run 1.087; isolated, run 2, 11 runs, cpu 30)
+3.15.1 frozenset/x.isdisjoint(t)/object/10000: builtin 0.0 us (rsd 0.138) enabled 0.0 us (rsd 0.279) ratio 1.041 (as run 1.084; isolated, run 2, 11 runs, cpu 10)
+3.15.1 dict/enumerate/int/1000000: builtin 19656.7 us (rsd 0.016) enabled 19996.7 us (rsd 0.027) ratio 1.017 (as run 1.096; isolated, run 2, 11 runs, cpu 2)
+3.15.1 tuple/copy C(x)/mixed/1000000: builtin 0.0 us (rsd 0.006) enabled 0.0 us (rsd 0.011) ratio 1.001 (as run 1.079; isolated, run 2, 11 runs, cpu 10)
+3.15.1 set/tuple(x)/mixed/10000: builtin 73.0 us (rsd 0.034) enabled 72.4 us (rsd 0.037) ratio 0.992 (as run 1.077; isolated, run 2, 11 runs, cpu 2)
+3.15.1 frozenset/x == t/str/1000000: builtin 0.0 us (rsd 0.096) enabled 0.0 us (rsd 0.138) ratio 1.140 (as run 1.079; isolated, run 2, 11 runs, cpu 30)
+3.15.1 tuple/for v in x/float/1000000: builtin 5205.3 us (rsd 0.156) enabled 4308.1 us (rsd 0.051) ratio 0.828 (as run 1.077; isolated, run 2, 11 runs, cpu 10)
+3.15.1 set/x <= t/str/1000000: builtin 0.0 us (rsd 0.134) enabled 0.0 us (rsd 0.180) ratio 0.981 (as run 1.081; isolated, run 2, 11 runs, cpu 20)
+3.15.1 frozenset/tuple(x)/object/10000: builtin 78.1 us (rsd 0.059) enabled 75.5 us (rsd 0.036) ratio 0.967 (as run 1.075; isolated, run 2, 11 runs, cpu 10)
+3.15.1 list/pickle.dumps/str/1000000: builtin 123999.0 us (rsd 0.034) enabled 151943.4 us (rsd 0.015) ratio 1.225 (as run 1.076; isolated, run 2, 11 runs, cpu 2)
+3.15.1 dict/x[k] = v/str/10000: builtin 0.0 us (rsd 0.070) enabled 0.0 us (rsd 0.047) ratio 0.975 (as run 1.074; isolated, run 2, 11 runs, cpu 20)
+3.15.1 dict/x[k] = v/int/1000000: builtin 0.0 us (rsd 0.032) enabled 0.0 us (rsd 0.031) ratio 1.001 (as run 1.071; isolated, run 2, 11 runs, cpu 2)
+3.15.1 list/pickle round trip/str/1000000: builtin 188629.3 us (rsd 0.012) enabled 209090.9 us (rsd 0.030) ratio 1.108 (as run 1.073; isolated, run 2, 11 runs, cpu 10)
+3.15.1 dict/x == t/object/1000000: builtin 0.0 us (rsd 0.092) enabled 0.0 us (rsd 0.046) ratio 0.955 (as run 1.076; isolated, run 2, 11 runs, cpu 30)
+3.15.1 tuple/from list/mixed/10000: builtin 14.0 us (rsd 0.015) enabled 14.1 us (rsd 0.013) ratio 1.004 (as run 1.067; isolated, run 2, 11 runs, cpu 2)
+3.15.1 dict/x.setdefault(k)/mixed/1000000: builtin 0.0 us (rsd 0.037) enabled 0.0 us (rsd 0.053) ratio 0.999 (as run 1.067; isolated, run 2, 11 runs, cpu 20)
+3.15.1 list/x[i] = v/float/10000: builtin 0.0 us (rsd 0.070) enabled 0.0 us (rsd 0.027) ratio 0.978 (as run 1.066; isolated, run 2, 11 runs, cpu 30)
+3.15.1 set/x.isdisjoint(t)/str/10000: builtin 0.0 us (rsd 0.153) enabled 0.0 us (rsd 0.135) ratio 0.991 (as run 1.064; isolated, run 2, 11 runs, cpu 2)
+3.15.1 dict/for v in x.values()/mixed/10000: builtin 83.7 us (rsd 0.066) enabled 83.7 us (rsd 0.108) ratio 1.000 (as run 1.063; isolated, run 2, 11 runs, cpu 20)
+3.15.1 dict/repr(x)/str/10000: builtin 670.2 us (rsd 0.027) enabled 656.4 us (rsd 0.010) ratio 0.979 (as run 1.061; isolated, run 2, 11 runs, cpu 2)
+3.15.1 set/all(x)/str/10000: builtin 117.5 us (rsd 0.046) enabled 119.5 us (rsd 0.049) ratio 1.016 (as run 1.061; isolated, run 2, 11 runs, cpu 20)
+3.15.1 list/repr(x)/object/1000000: builtin 165447.0 us (rsd 0.024) enabled 174889.9 us (rsd 0.010) ratio 1.057 (as run 1.067; isolated, run 2, 11 runs, cpu 10)
+3.15.1 list/len(x)/mixed/10000: builtin 0.0 us (rsd 0.013) enabled 0.0 us (rsd 0.034) ratio 1.013 (as run 1.061; isolated, run 2, 11 runs, cpu 2)
+3.15.1 dict/miss in x/mixed/1000000: builtin 0.0 us (rsd 0.048) enabled 0.0 us (rsd 0.106) ratio 1.088 (as run 1.063; isolated, run 2, 11 runs, cpu 30)
+3.15.1 list/x.clear()/mixed/1000000: builtin 2053.3 us (rsd 0.031) enabled 2092.4 us (rsd 0.028) ratio 1.019 (as run 1.057; isolated, run 2, 11 runs, cpu 2)
+3.15.1 set/miss in x/int/1000000: builtin 0.0 us (rsd 0.083) enabled 0.0 us (rsd 0.094) ratio 0.968 (as run 1.059; isolated, run 2, 11 runs, cpu 20)
+3.15.1 dict/reversed/float/1000000: builtin 10881.1 us (rsd 0.032) enabled 10973.6 us (rsd 0.024) ratio 1.009 (as run 1.056; isolated, run 2, 11 runs, cpu 30)
+3.15.1 set/list(x)/mixed/10000: builtin 55.6 us (rsd 0.033) enabled 57.1 us (rsd 0.053) ratio 1.026 (as run 1.055; isolated, run 2, 11 runs, cpu 2)
+3.15.1 frozenset/min(x)/str/10000: builtin 216.5 us (rsd 0.033) enabled 216.8 us (rsd 0.030) ratio 1.001 (as run 1.052; isolated, run 2, 11 runs, cpu 2)
+3.15.1 frozenset/x == y/int/10000: builtin 69.9 us (rsd 0.071) enabled 68.8 us (rsd 0.070) ratio 0.984 (as run 1.051; isolated, run 2, 11 runs, cpu 2)
+3.15.1 dict/x.get(k)/int/1000000: builtin 0.0 us (rsd 0.010) enabled 0.0 us (rsd 0.009) ratio 1.003 (as run 1.053; isolated, run 2, 11 runs, cpu 20)
+3.15.1 tuple/reversed/int/1000000: builtin 7357.6 us (rsd 0.044) enabled 7262.0 us (rsd 0.031) ratio 0.987 (as run 1.051; isolated, run 2, 11 runs, cpu 2)
+3.15.1 dict/pickle.dumps/object/1000000: builtin 344637.7 us (rsd 0.007) enabled 353895.3 us (rsd 0.009) ratio 1.027 (as run 1.057; isolated, run 2, 11 runs, cpu 10)
+3.15.1 dict/hit in x/object/1000000: builtin 0.0 us (rsd 0.055) enabled 0.0 us (rsd 0.314) ratio 1.166 (as run 1.052; isolated, run 2, 11 runs, cpu 30)
+# summary (time): cell, as run, isolated runs, mean
+#   3.15.1 dict/miss in x/mixed/10000: 1.544 -> 1.157 0.885  mean 1.021
+#   3.15.1 dict/hit in x/mixed/10000: 1.495 -> 0.911 0.853  mean 0.882
+#   3.15.1 list/x[i] = v/str/1000000: 1.485 -> 0.970 0.961  mean 0.965
+#   3.15.1 dict/x[k] = v/object/10000: 1.430 -> 0.979 1.015  mean 0.997
+#   3.15.1 frozenset/x <= t/object/10000: 1.425 -> 1.024 1.072  mean 1.048
+#   3.15.1 dict/miss in x/object/10000: 1.365 -> 0.820 0.911  mean 0.865
+#   3.15.1 dict/tuple(x)/float/10000: 1.317 -> 0.960 1.026  mean 0.993
+#   3.15.1 tuple/copy C(x)/float/10000: 1.294 -> 0.998 0.996  mean 0.997
+#   3.15.1 dict/tuple(x)/mixed/1000000: 1.270 -> 1.024 1.018  mean 1.021
+#   3.15.1 frozenset/x == t/object/1000000: 1.247 -> 0.906 0.981  mean 0.944
+#   3.15.1 set/x.isdisjoint(t)/mixed/1000000: 1.244 -> 0.994 0.914  mean 0.954
+#   3.15.1 frozenset/list(x)/object/10000: 1.230 -> 0.998 1.016  mean 1.007
+#   3.15.1 tuple/for v in x/int/10000: 1.194 -> 1.144 1.158  mean 1.151  STILL > 1.05
+#   3.15.1 dict/tuple(x)/str/1000000: 1.187 -> 0.898 0.888  mean 0.893
+#   3.15.1 dict/tuple(x)/mixed/10000: 1.181 -> 1.008 1.210  mean 1.109  STILL > 1.05
+#   3.15.1 tuple/for v in x/str/10000: 1.180 -> 1.100 1.169  mean 1.134  STILL > 1.05
+#   3.15.1 dict/tuple(x)/int/1000000: 1.177 -> 0.995 0.968  mean 0.982
+#   3.15.1 frozenset/x <= t/mixed/10000: 1.173 -> 0.946 1.014  mean 0.980
+#   3.15.1 set/miss in x/int/10000: 1.172 -> 0.983 0.954  mean 0.968
+#   3.15.1 frozenset/x <= t/object/1000000: 1.170 -> 1.006 0.947  mean 0.976
+#   3.15.1 tuple/len(x)/float/10000: 1.164 -> 1.116 0.969  mean 1.043
+#   3.15.1 dict/x[k] = v/str/1000000: 1.156 -> 1.055 0.985  mean 1.020
+#   3.15.1 dict/x.get(k)/mixed/10000: 1.150 -> 1.018 0.989  mean 1.004
+#   3.15.1 set/x == y/int/10000: 1.146 -> 0.966 1.002  mean 0.984
+#   3.15.1 tuple/for v in x/str/1000000: 1.140 -> 1.031 0.942  mean 0.986
+#   3.15.1 dict/x[k]/mixed/10000: 1.139 -> 1.020 0.861  mean 0.941
+#   3.15.1 frozenset/tuple(x)/str/10000: 1.134 -> 1.026 1.018  mean 1.022
+#   3.15.1 dict/x == t/object/10000: 1.130 -> 1.304 1.011  mean 1.158  STILL > 1.05
+#   3.15.1 dict/for v in x.values()/float/10000: 1.130 -> 0.956 1.016  mean 0.986
+#   3.15.1 dict/x.get(miss)/mixed/10000: 1.126 -> 1.055 0.813  mean 0.934
+#   3.15.1 set/copy C(x)/mixed/10000: 1.126 -> 0.992 0.987  mean 0.989
+#   3.15.1 dict/x[k]/int/10000: 1.119 -> 1.026 1.015  mean 1.021
+#   3.15.1 list/x[i] = v/str/10000: 1.118 -> 0.969 0.995  mean 0.982
+#   3.15.1 set/x <= t/mixed/1000000: 1.118 -> 0.996 1.013  mean 1.005
+#   3.15.1 dict/enumerate/float/1000000: 1.114 -> 0.999 1.022  mean 1.010
+#   3.15.1 frozenset/hash(x)/int/10000: 1.102 -> 0.959 1.036  mean 0.998
+#   3.15.1 set/x == t/object/10000: 1.097 -> 1.160 1.094  mean 1.127  STILL > 1.05
+#   3.15.1 set/miss in x/mixed/10000: 1.096 -> 0.963 0.998  mean 0.980
+#   3.15.1 dict/enumerate/int/1000000: 1.096 -> 1.040 1.017  mean 1.028
+#   3.15.1 dict/reversed/float/10000: 1.089 -> 0.986 1.016  mean 1.001
+#   3.15.1 list/x[i] = v/mixed/10000: 1.087 -> 0.994 0.964  mean 0.979
+#   3.15.1 frozenset/x.isdisjoint(t)/object/10000: 1.084 -> 1.027 1.041  mean 1.034
+#   3.15.1 set/x <= t/str/1000000: 1.081 -> 0.775 0.981  mean 0.878
+#   3.15.1 frozenset/x == t/str/1000000: 1.079 -> 1.134 1.140  mean 1.137  STILL > 1.05
+#   3.15.1 tuple/copy C(x)/mixed/1000000: 1.079 -> 0.999 1.001  mean 1.000
+#   3.15.1 set/tuple(x)/mixed/10000: 1.077 -> 0.986 0.992  mean 0.989
+#   3.15.1 tuple/for v in x/float/1000000: 1.077 -> 0.972 0.828  mean 0.900
+#   3.15.1 list/pickle.dumps/str/1000000: 1.076 -> 1.211 1.225  mean 1.218  STILL > 1.05
+#   3.15.1 dict/x == t/object/1000000: 1.076 -> 1.054 0.955  mean 1.004
+#   3.15.1 frozenset/tuple(x)/object/10000: 1.075 -> 0.968 0.967  mean 0.967
+#   3.15.1 dict/x[k] = v/str/10000: 1.074 -> 0.996 0.975  mean 0.986
+#   3.15.1 list/pickle round trip/str/1000000: 1.073 -> 1.120 1.108  mean 1.114  STILL > 1.05
+#   3.15.1 dict/x[k] = v/int/1000000: 1.071 -> 1.001 1.001  mean 1.001
+#   3.15.1 dict/x.setdefault(k)/mixed/1000000: 1.067 -> 0.978 0.999  mean 0.989
+#   3.15.1 tuple/from list/mixed/10000: 1.067 -> 1.007 1.004  mean 1.005
+#   3.15.1 list/repr(x)/object/1000000: 1.067 -> 1.063 1.057  mean 1.060  STILL > 1.05
+#   3.15.1 list/x[i] = v/float/10000: 1.066 -> 1.006 0.978  mean 0.992
+#   3.15.1 set/x.isdisjoint(t)/str/10000: 1.064 -> 1.014 0.991  mean 1.003
+#   3.15.1 dict/for v in x.values()/mixed/10000: 1.063 -> 1.039 1.000  mean 1.019
+#   3.15.1 dict/miss in x/mixed/1000000: 1.063 -> 0.980 1.088  mean 1.034
+#   3.15.1 dict/repr(x)/str/10000: 1.061 -> 1.008 0.979  mean 0.994
+#   3.15.1 set/all(x)/str/10000: 1.061 -> 1.018 1.016  mean 1.017
+#   3.15.1 list/len(x)/mixed/10000: 1.061 -> 1.001 1.013  mean 1.007
+#   3.15.1 set/miss in x/int/1000000: 1.059 -> 1.026 0.968  mean 0.997
+#   3.15.1 dict/pickle.dumps/object/1000000: 1.057 -> 1.028 1.027  mean 1.027
+#   3.15.1 list/x.clear()/mixed/1000000: 1.057 -> 0.999 1.019  mean 1.009
+#   3.15.1 dict/reversed/float/1000000: 1.056 -> 0.992 1.009  mean 1.000
+#   3.15.1 set/list(x)/mixed/10000: 1.055 -> 0.993 1.026  mean 1.009
+#   3.15.1 dict/x.get(k)/int/1000000: 1.053 -> 0.997 1.003  mean 1.000
+#   3.15.1 dict/hit in x/object/1000000: 1.052 -> 1.051 1.166  mean 1.109  STILL > 1.05
+#   3.15.1 frozenset/min(x)/str/10000: 1.052 -> 1.010 1.001  mean 1.006
+#   3.15.1 frozenset/x == y/int/10000: 1.051 -> 1.003 0.984  mean 0.993
+#   3.15.1 tuple/reversed/int/1000000: 1.051 -> 0.997 0.987  mean 0.992
+# 73 cells re-measured; 10 still > 1.05 (mean of the isolated runs)
+ISO-DONE

@@ -1,0 +1,71 @@
+old builds ['3.15.1t'] (5660 cells), new builds ['3.15.1t'] (3814 cells)
+common cells 3814, only old 1846, only new 0
+   only old: ('dict', 'all(x)', 'float', 10000) 0.55
+   only old: ('dict', 'all(x)', 'float', 1000000) 0.51
+   only old: ('dict', 'all(x)', 'int', 10000) 0.52
+   only old: ('dict', 'all(x)', 'int', 1000000) 0.53
+   only old: ('dict', 'all(x)', 'mixed', 10000) 0.55
+   only old: ('dict', 'all(x)', 'mixed', 1000000) 0.60
+   only old: ('dict', 'all(x)', 'object', 10000) 0.62
+   only old: ('dict', 'all(x)', 'object', 1000000) 0.74
+   only old: ('dict', 'all(x)', 'str', 10000) 0.61
+   only old: ('dict', 'all(x)', 'str', 1000000) 0.69
+   only old: ('dict', 'any(x)', 'float', 10000) 1.02
+   only old: ('dict', 'any(x)', 'float', 1000000) 1.01
+   only old: ('dict', 'any(x)', 'int', 10000) 1.04
+   only old: ('dict', 'any(x)', 'int', 1000000) 1.02
+   only old: ('dict', 'any(x)', 'mixed', 10000) 1.06
+   only old: ('dict', 'any(x)', 'mixed', 1000000) 1.02
+   only old: ('dict', 'any(x)', 'object', 10000) 1.03
+   only old: ('dict', 'any(x)', 'object', 1000000) 1.01
+   only old: ('dict', 'any(x)', 'str', 10000) 1.02
+   only old: ('dict', 'any(x)', 'str', 1000000) 1.02
+status changes: 0
+-- 0-100 elements (instruction-count ratios): 3814 cells
+   new-old: identical (2 dp) 3733, |d|<=0.01 3788, |d|<=0.02 3804, |d|>0.05 2
+   new/old: geomean 1.0000, median 1.0000, p05 1.000, p95 1.000
+   crossed the 1.05 bar: up 0, down 2
+     K 1.07 -> 1.03  tuple/x.count(hit)/object/1
+     K 1.06 -> 1.03  list/x.count(hit)/object/1
+   kernel-path cells: 586, geomean old 0.6488, new 0.6488
+   largest relative changes (top 40):
+       0.96 -> 1.02 (1.062x)  tuple/pickle.dumps/str/8
+       1.05 -> 0.99 (0.943x)  frozenset/hash(x)/float/8
+     K 0.18 -> 0.19 (1.056x)  list/x.count(hit)/mixed/100
+       1.04 -> 0.99 (0.952x)  list/repr(x)/int/0
+     K 0.21 -> 0.20 (0.952x)  tuple/x.index(hit)/mixed/100
+     K 1.07 -> 1.03 (0.963x)  tuple/x.count(hit)/object/1
+     K 0.30 -> 0.31 (1.033x)  list/miss in x/mixed/8
+       0.96 -> 0.99 (1.031x)  tuple/hash(x)/str/1
+       0.97 -> 1.00 (1.031x)  frozenset/hash(x)/str/1
+       0.97 -> 1.00 (1.031x)  frozenset/hash(x)/str/8
+       1.02 -> 0.99 (0.971x)  frozenset/hash(x)/mixed/8
+       1.02 -> 0.99 (0.971x)  tuple/pickle round trip/object/8
+     K 1.06 -> 1.03 (0.972x)  list/x.count(hit)/object/1
+     K 0.35 -> 0.36 (1.029x)  tuple/miss in x/int/8
+     K 0.43 -> 0.44 (1.023x)  list/hit in x/mixed/8
+       0.97 -> 0.99 (1.021x)  frozenset/hash(x)/float/1
+       0.97 -> 0.99 (1.021x)  frozenset/hash(x)/float/100
+       0.98 -> 1.00 (1.020x)  list/repr(x)/float/0
+       0.98 -> 1.00 (1.020x)  list/repr(x)/str/0
+       0.98 -> 1.00 (1.020x)  tuple/hash(x)/str/8
+       0.98 -> 1.00 (1.020x)  tuple/pickle.dumps/mixed/100
+       0.98 -> 1.00 (1.020x)  tuple/repr(x)/float/0
+       0.98 -> 1.00 (1.020x)  tuple/repr(x)/str/0
+       1.00 -> 0.98 (0.980x)  set/pickle.dumps/object/8
+       1.00 -> 0.98 (0.980x)  set/repr(x)/object/100
+       1.01 -> 0.99 (0.980x)  list/pickle.dumps/mixed/100
+       1.01 -> 0.99 (0.980x)  list/pickle.dumps/object/8
+       0.99 -> 1.01 (1.020x)  list/pickle round trip/object/8
+       0.99 -> 1.01 (1.020x)  set/pickle.dumps/mixed/100
+       0.99 -> 1.01 (1.020x)  tuple/repr(x)/int/8
+       1.00 -> 1.02 (1.020x)  list/pickle.dumps/str/8
+     K 0.51 -> 0.52 (1.020x)  set/min(x)/str/100
+       0.53 -> 0.52 (0.981x)  frozenset/repr(x)/mixed/8
+     K 0.53 -> 0.54 (1.019x)  list/hit in x/int/8
+       0.54 -> 0.53 (0.981x)  dict/repr(x)/mixed/100
+     K 0.61 -> 0.60 (0.984x)  dict/min(x)/str/8
+     K 0.74 -> 0.75 (1.014x)  tuple/miss in x/mixed/1
+     K 0.77 -> 0.78 (1.013x)  tuple/miss in x/float/1
+     K 0.87 -> 0.88 (1.011x)  list/miss in x/mixed/1
+     K 0.89 -> 0.90 (1.011x)  tuple/sorted(x)/str/8

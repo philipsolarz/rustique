@@ -1,0 +1,37 @@
+data/backup_archive                      plain     598.5 ms  enabled     596.8 ms  ratio  0.997  same
+data/billing_engine                      plain     932.3 ms  enabled     900.3 ms  ratio  0.966  same
+data/config_merge                        plain     540.6 ms  enabled     541.3 ms  ratio  1.001  same
+data/csv_etl                             plain     393.0 ms  enabled     242.9 ms  ratio  0.618  same
+data/fs_inventory                        plain     316.0 ms  enabled     233.4 ms  ratio  0.739  same
+data/log_analytics                       plain     772.2 ms  enabled     456.1 ms  ratio  0.591  same
+data/pandas_etl                          plain     528.2 ms  enabled     527.3 ms  ratio  0.998  same
+data/report_render                       plain     406.9 ms  enabled     178.1 ms  ratio  0.438  same
+data/state_snapshot                      plain     647.3 ms  enabled     414.7 ms  ratio  0.641  same
+data/text_corpus                         plain     604.3 ms  enabled     603.5 ms  ratio  0.999  same
+data/tz_events                           plain     530.6 ms  enabled     312.1 ms  ratio  0.588  same
+data/xml_feeds                           plain     506.0 ms  enabled     500.9 ms  ratio  0.990  same
+geometric mean                                                                    ratio  0.768
+devtools/black_format                    plain    1194.6 ms  enabled    1190.1 ms  ratio  0.996  same
+devtools/coverage_pyflakes_tests         plain     380.9 ms  enabled     378.1 ms  ratio  0.993  same
+devtools/import_startup                  plain    1888.7 ms  enabled    1889.1 ms  ratio  1.000  same
+devtools/isort_stdlib                    plain     284.9 ms  enabled     219.2 ms  ratio  0.769  same
+devtools/pip_resolve                     plain     563.0 ms  enabled     530.7 ms  ratio  0.943  same
+devtools/pycodestyle_stdlib              plain    1013.7 ms  enabled     991.0 ms  ratio  0.978  same
+devtools/pyflakes_stdlib                 plain    1210.5 ms  enabled    1203.1 ms  ratio  0.994  same
+devtools/pylint_stdlib                   plain    1184.4 ms  enabled    1183.7 ms  ratio  0.999  same
+devtools/pytest_networkx                 plain     629.5 ms  enabled     600.3 ms  ratio  0.954  same
+devtools/rich_render                     plain     284.8 ms  enabled     283.0 ms  ratio  0.994  same
+devtools/sphinx_autodoc                  plain     848.9 ms  enabled     838.5 ms  ratio  0.988  same
+devtools/sqlglot_transpile               plain     878.0 ms  enabled     844.7 ms  ratio  0.962  same
+geometric mean                                                                    ratio  0.962
+web/aiohttp_app                          plain     273.3 ms  enabled     247.5 ms  ratio  0.906  same
+web/asyncio_http                         plain     231.2 ms  enabled     182.5 ms  ratio  0.790  same
+web/django_blog                          plain     489.1 ms  enabled     487.1 ms  ratio  0.996  same
+web/email_mime                           plain     656.2 ms  enabled     645.2 ms  ratio  0.983  same
+web/fastapi_pydantic                     plain     297.0 ms  enabled     290.4 ms  ratio  0.978  same
+web/flask_jinja                          plain     417.3 ms  enabled     416.0 ms  ratio  0.997  same
+web/json_api                             plain     396.1 ms  enabled     330.6 ms  ratio  0.835  same
+web/logging_service                      plain     283.1 ms  enabled     230.1 ms  ratio  0.813  same
+web/requests_local                       plain     250.5 ms  enabled     232.9 ms  ratio  0.930  same
+web/sqlalchemy_orm                       plain     341.7 ms  enabled     341.4 ms  ratio  0.999  same
+geometric mean                                                                    ratio  0.919

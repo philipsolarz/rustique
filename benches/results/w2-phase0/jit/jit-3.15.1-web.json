@@ -1,0 +1,159 @@
+{
+ "python": "3.15.1 (main, Oct 21 2026, 17:48:50) [Clang 23.1.3 ]",
+ "jit": {
+  "available": true,
+  "enabled": false
+ },
+ "rows": [
+  {
+   "workload": "web/aiohttp_app",
+   "nojit_s": 0.2697652129991184,
+   "jit_s": 0.28363898299994617,
+   "ratio": 1.051429055090484,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "web/asyncio_http",
+   "nojit_s": 0.23233436400005303,
+   "jit_s": 0.24596873300015432,
+   "ratio": 1.058684254732538,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "web/django_blog",
+   "nojit_s": 0.4894635370001197,
+   "jit_s": 0.5178883039998254,
+   "ratio": 1.0580733085326819,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "web/email_mime",
+   "nojit_s": 0.6592445509995741,
+   "jit_s": 0.7008197799996196,
+   "ratio": 1.063064956603748,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "web/fastapi_pydantic",
+   "nojit_s": 0.29624377300024207,
+   "jit_s": 0.3283989470000961,
+   "ratio": 1.1085429532381352,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "web/flask_jinja",
+   "nojit_s": 0.4192482710004697,
+   "jit_s": 0.4362973739998779,
+   "ratio": 1.0406658874435504,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "web/json_api",
+   "nojit_s": 0.39633649200004584,
+   "jit_s": 0.43471200599924487,
+   "ratio": 1.0968255882912608,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "web/logging_service",
+   "nojit_s": 0.282173428000533,
+   "jit_s": 0.28044490499996755,
+   "ratio": 0.993874253104505,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "web/requests_local",
+   "nojit_s": 0.2501697380002952,
+   "jit_s": 0.27094114900046407,
+   "ratio": 1.0830292711108982,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "web/sqlalchemy_orm",
+   "nojit_s": 0.3415851140007362,
+   "jit_s": 0.3515742850004244,
+   "ratio": 1.0292435782188878,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  }
+ ]
+}

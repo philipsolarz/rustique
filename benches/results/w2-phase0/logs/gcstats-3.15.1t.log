@@ -1,0 +1,34 @@
+data/backup_archive                      run    608.4 ms  gc     0 coll     0.00 ms (  0.0%)  collected         0  maxrss    49.1 MiB  gens {}
+data/billing_engine                      run    735.0 ms  gc     4 coll   104.58 ms ( 14.2%)  collected         0  maxrss   147.0 MiB  gens {"0": 4}
+data/config_merge                        run    600.5 ms  gc     5 coll    17.26 ms (  2.9%)  collected     18488  maxrss    47.2 MiB  gens {"0": 5}
+data/csv_etl                             run    433.5 ms  gc     0 coll     0.00 ms (  0.0%)  collected         0  maxrss    55.6 MiB  gens {}
+data/fs_inventory                        run    319.7 ms  gc     1 coll     2.82 ms (  0.9%)  collected        10  maxrss    30.6 MiB  gens {"0": 1}
+data/log_analytics                       run    809.1 ms  gc     0 coll     0.00 ms (  0.0%)  collected         0  maxrss    66.4 MiB  gens {}
+data/pandas_etl                          run    605.0 ms  gc     0 coll     0.00 ms (  0.0%)  collected         0  maxrss   299.5 MiB  gens {}
+data/report_render                       run    452.6 ms  gc     3 coll     7.50 ms (  1.7%)  collected        22  maxrss    56.3 MiB  gens {"0": 3}
+data/state_snapshot                      run   1209.4 ms  gc     3 coll   112.20 ms (  9.3%)  collected         0  maxrss   164.4 MiB  gens {"0": 3}
+data/text_corpus                         run    628.0 ms  gc     1 coll     2.36 ms (  0.4%)  collected        22  maxrss    42.5 MiB  gens {"0": 1}
+data/tz_events                           run    590.9 ms  gc     3 coll    20.60 ms (  3.5%)  collected         0  maxrss    63.4 MiB  gens {"0": 3}
+data/xml_feeds                           run    548.1 ms  gc     3 coll    52.37 ms (  9.6%)  collected       887  maxrss   108.7 MiB  gens {"0": 3}
+devtools/black_format                    run   1291.1 ms  gc    14 coll   114.11 ms (  8.8%)  collected    256697  maxrss    60.8 MiB  gens {"0": 14}
+devtools/coverage_pyflakes_tests         run    470.4 ms  gc    17 coll   115.55 ms ( 24.6%)  collected    289330  maxrss    72.4 MiB  gens {"0": 17}
+devtools/import_startup                  run   2220.0 ms  gc     0 coll     0.00 ms (  0.0%)  collected         0  maxrss    27.0 MiB  gens {}
+devtools/isort_stdlib                    run   1137.7 ms  gc     0 coll     0.00 ms (  0.0%)  collected         0  maxrss    54.2 MiB  gens {}
+devtools/pip_resolve                     run    612.6 ms  gc     1 coll    17.88 ms (  2.9%)  collected     14569  maxrss    84.3 MiB  gens {"0": 1}
+devtools/pycodestyle_stdlib              run   1047.4 ms  gc     0 coll     0.00 ms (  0.0%)  collected         0  maxrss    35.5 MiB  gens {}
+devtools/pyflakes_stdlib                 run   1199.3 ms  gc    52 coll   199.62 ms ( 16.6%)  collected    792692  maxrss    61.2 MiB  gens {"0": 52}
+devtools/pylint_stdlib                   run    888.9 ms  gc     3 coll   109.91 ms ( 12.4%)  collected    103603  maxrss   138.8 MiB  gens {"0": 3}
+devtools/pytest_networkx                 run    587.6 ms  gc     6 coll   129.21 ms ( 22.0%)  collected     14700  maxrss   152.0 MiB  gens {"2": 6}
+devtools/rich_render                     run    305.7 ms  gc     1 coll     4.86 ms (  1.6%)  collected        26  maxrss    52.8 MiB  gens {"0": 1}
+devtools/sphinx_autodoc                  run    869.8 ms  gc     2 coll    49.24 ms (  5.7%)  collected     82308  maxrss   125.0 MiB  gens {"0": 2}
+devtools/sqlglot_transpile               run   1007.6 ms  gc    15 coll   137.36 ms ( 13.6%)  collected    324168  maxrss    57.2 MiB  gens {"0": 15}
+web/aiohttp_app                          run    300.4 ms  gc     0 coll     0.00 ms (  0.0%)  collected         0  maxrss    56.9 MiB  gens {}
+web/asyncio_http                         run    241.2 ms  gc     0 coll     0.00 ms (  0.0%)  collected         0  maxrss    36.2 MiB  gens {}
+web/django_blog                          run    541.0 ms  gc     1 coll    17.73 ms (  3.3%)  collected     30745  maxrss    80.5 MiB  gens {"0": 1}
+web/email_mime                           run    700.7 ms  gc    15 coll    35.86 ms (  5.1%)  collected     74584  maxrss    40.0 MiB  gens {"0": 15}
+web/fastapi_pydantic                     run    322.4 ms  gc     0 coll     0.00 ms (  0.0%)  collected         0  maxrss    78.2 MiB  gens {}
+web/flask_jinja                          run    459.2 ms  gc     1 coll     9.34 ms (  2.0%)  collected     21917  maxrss    62.4 MiB  gens {"0": 1}
+web/json_api                             run    431.4 ms  gc     2 coll     6.06 ms (  1.4%)  collected       156  maxrss    53.1 MiB  gens {"0": 2}
+web/logging_service                      run    304.0 ms  gc     0 coll     0.00 ms (  0.0%)  collected         0  maxrss    37.9 MiB  gens {}
+web/requests_local                       run    249.3 ms  gc     0 coll     0.00 ms (  0.0%)  collected         0  maxrss    47.1 MiB  gens {}
+web/sqlalchemy_orm                       run    355.8 ms  gc     0 coll     0.00 ms (  0.0%)  collected         0  maxrss   136.8 MiB  gens {}
