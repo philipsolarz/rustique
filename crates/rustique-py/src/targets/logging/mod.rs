@@ -193,15 +193,32 @@ fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         record::MP_PROCS.set_names([n.t_name]);
         level::LOGGERS.set_names([n.disabled, n.cache]);
         format::TIME_FORMATTERS.set_names([n.converter, n.default_time_format, n.default_msec_format]);
-        format::FORMATTERS.set_names([n.converter, n.default_time_format, n.default_msec_format, n.style, n.datefmt]);
-        format::STYLES.set_names([n.fmt, n.asctime_search, n.defaults]);
-        format::FMT_RECORDS.set_names([n.msg, n.args]);
+        format::FORMATTERS.set_names([
+            n.converter,
+            n.default_time_format,
+            n.default_msec_format,
+            n.style,
+            n.datefmt,
+            n.uses_time,
+            n.format_time,
+            n.format_message,
+        ]);
+        format::STYLES.set_names([n.fmt, n.asctime_search, n.defaults, n.uses_time, n.format, n.format_]);
+        format::FMT_RECORDS.set_names([
+            n.msg,
+            n.args,
+            n.get_message,
+            n.exc_info,
+            n.exc_text,
+            n.stack_info,
+            n.created,
+            n.msecs,
+        ]);
     }
     let lr = ty(cx.module_attr("LogRecord")?)?;
     format::R_GET_MESSAGE.set_obj(&cx.type_attr(&lr, "getMessage")?);
     format::R_DICT.set_obj(&cx.type_attr(&lr, "__dict__")?);
     format::clear_type_caches();
-    format::clear_fmt_cache();
     Ok(())
 }
 
@@ -487,6 +504,10 @@ fn prepare_format(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     format::S_USES_TIME.set_obj(&sut);
     format::S_FORMAT.set_obj(&sf);
     format::S_FORMAT_.set_obj(&sf_);
+    let search = cx.type_attr(&style, "asctime_search")?;
+    if search.is_exact_instance_of::<PyString>() {
+        format::ASCTIME_SEARCH.set_obj(&search);
+    }
     cx.vectorcall(&f, format::vc_format, &accel::FUNCTION_VECTORCALL)
 }
 
@@ -514,7 +535,24 @@ macro_rules! target {
 // Checkable: the kernel's exact subset has no side effects (a disabled level call, the
 // frame walk, formatTime). `format` and `__init__` store
 // into the record.
-target!(LEVEL, "logging.Logger.level", &level::STATS, prepare_level, true);
+/// Net benefit (ACCELERATION §5.6, measured on `L.info("x %s", 5)` / `L.debug(...)`,
+/// 3.15.1): a disabled call saves ~500 Ir, an enabled one costs ~+800 Ir (kernel checks +
+/// vectorcall fallback): credit 5 / debit 7 keeps the target while ≥ ~58% of the calls
+/// are disabled ones.
+pub static LEVEL: TargetSpec = TargetSpec {
+    name: "logging.Logger.level",
+    group: "logging",
+    module: Some("logging"),
+    versions: VERSIONS,
+    free_threaded: true,
+    counters: &level::STATS,
+    prepare: prepare_level,
+    checkable: true,
+    shared: Some(&SHARED),
+    hit_credit: 5,
+    fallback_debit: 7,
+    ..TargetSpec::DEFAULT
+};
 target!(FIND_CALLER, "logging.Logger.findCaller", &caller::STATS, prepare_caller, true);
 target!(RECORD_INIT, "logging.LogRecord.__init__", &record::STATS, prepare_record, false);
 target!(FORMAT_TIME, "logging.Formatter.formatTime", &format::TIME_STATS, prepare_format_time, true);

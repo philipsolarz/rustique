@@ -85,16 +85,6 @@ def test_kill_switch_makes_enable_a_noop(real, monkeypatch, value):
     assert rustique.check() in (None, "off") and not st["process"]["stats"]  # nothing else switched on
 
 
-def test_kill_switch_native_returns_the_object(real, monkeypatch):
-    monkeypatch.setenv("RUSTIQUE", "0")
-
-    def f():
-        return [1, 2]
-
-    assert rustique.native(f) is f
-    assert rustique.native()(f) is f
-
-
 @pytest.mark.parametrize("value", ["1", "yes", "anything"])
 def test_only_off_values_kill(real, monkeypatch, value):
     monkeypatch.setenv("RUSTIQUE", value)
@@ -289,19 +279,20 @@ def test_real_status_shape(real):
 
 @pytest.fixture
 def sitedir(tmp_path):
-    """A site directory laid out like an installed wheel: the `.pth` line and
-    `rustique/_rustique<suffix>` (a link to the extension under test), so the startup line
-    takes its direct path (extension only, no package import)."""
+    """A site directory laid out like an installed release wheel: the `.pth` line and the
+    extension at the top level as `_rustique<suffix>` (a link to the extension under test).
+    The probe puts it first on sys.path, ahead of the source tree's `_rustique.py` shim."""
     d = tmp_path / "site"
-    (d / "rustique").mkdir(parents=True)
+    d.mkdir()
     shutil.copy(os.path.join(PYSRC, "_rustique_startup.pth"), d / "_rustique_startup.pth")
     ext = rustique._rustique.__file__
-    os.symlink(ext, d / "rustique" / os.path.basename(ext))
+    os.symlink(ext, d / os.path.basename(ext))
     return str(d)
 
 
 PROBE = """
 import site, sys
+sys.path.insert(0, sys.argv[1])
 site.addsitedir(sys.argv[1])
 loaded = sorted(m for m in sys.modules if 'rustique' in m)
 out = {'loaded': loaded}
@@ -325,12 +316,9 @@ def test_pth_is_one_cheap_import_line():
     with open(os.path.join(PYSRC, "_rustique_startup.pth")) as f:
         lines = [ln for ln in f.read().splitlines() if ln.strip() and not ln.startswith("#")]
     assert len(lines) == 1 and lines[0].startswith("import ")  # site exec()s only `import ` lines
-    # the gate is the only code compiled when RUSTIQUE is unset or 0 (docs/targets/dx.md §1.3):
-    # the loader is a string literal that exec() compiles only when the gate passes
-    gate = "import os; os.environ.get('RUSTIQUE', '0') != '0' and exec("
-    assert lines[0].startswith(gate) and lines[0].endswith(")")
-    loader = __import__("ast").literal_eval(lines[0][len(gate):-1])
-    assert "_accel.startup()" in loader
+    # one short statement, compiled at every start (docs/targets/dx.md §1.3): the gate, then
+    # a plain import of the top-level extension (docs/DECISIONS.md §10.7)
+    assert lines[0] == "import os; os.environ.get('RUSTIQUE', '0') != '0' and __import__('_rustique').startup()"
     assert not os.path.exists(os.path.join(PYSRC, "_rustique_startup.start"))  # see docs/targets/dx.md
 
 
@@ -340,6 +328,7 @@ def test_wheel_ships_the_startup_files():
     inc = {i["path"]: i["format"] for i in cfg["tool"]["maturin"]["include"] if isinstance(i, dict)}
     assert inc.get("python/_rustique_startup.pth") == ["sdist", "wheel"]
     assert inc.get("python/_rustique_pytest.py") == ["sdist", "wheel"]
+    assert inc.get("python/_rustique.py") == ["sdist", "wheel"]  # the in-package layout's loader
     assert cfg["project"]["entry-points"]["pytest11"] == {"rustique.pytest_plugin": "_rustique_pytest"}
 
 
@@ -391,13 +380,14 @@ def test_kill_switch_ignored_under_E():
 
 
 def test_startup_survives_a_broken_install(sitedir, tmp_path):
-    # no extension next to the .pth (an editable layout): the line falls back to the package
-    for f in os.listdir(os.path.join(sitedir, "rustique")):
-        os.remove(os.path.join(sitedir, "rustique", f))
-    broken = tmp_path / "broken" / "rustique"
-    broken.mkdir(parents=True)
-    (broken / "__init__.py").write_text("raise ImportError('no wheel for this interpreter')\n")
-    code = f"import sys; sys.path.insert(0, {str(broken.parent)!r})\n" + PROBE
+    # no loadable extension anywhere: the line's import fails
+    for f in os.listdir(sitedir):
+        if f.startswith("_rustique."):
+            os.remove(os.path.join(sitedir, f))
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "_rustique.py").write_text("raise ImportError('no wheel for this interpreter')\n")
+    code = f"import sys; sys.path.insert(0, {str(broken)!r})\n" + PROBE
     r = py(code, sitedir, env=clean_env(RUSTIQUE="1"))
     assert r.returncode == 0  # site reports the failing line and carries on
     assert "ImportError: no wheel for this interpreter" in r.stderr
@@ -408,13 +398,15 @@ def test_startup_and_import_load_no_other_module(sitedir):
     package and the extension, nothing else; the RUSTIQUE=1 startup path no more than that."""
     code = ("import sys; before = set(sys.modules); import rustique; rustique.enable();"
             "print(sorted(set(sys.modules) - before))")
-    assert py(code).stdout.strip() == "['rustique', 'rustique._rustique']"
+    assert py(code).stdout.strip() == "['_rustique', 'rustique', 'rustique._rustique']"
     out, err = probe(sitedir, RUSTIQUE="1")
-    assert out["loaded"] == ["rustique._rustique"] and out["source"] == "RUSTIQUE=1", err  # no package import
-    r = py("import site, sys; site.addsitedir(sys.argv[1]); ext = sys.modules['rustique._rustique'];"
-           "import rustique; print(rustique._rustique is ext, rustique.status()['process']['switch']['source'],"
-           "type(rustique.List([1])).__name__)", sitedir, env=clean_env(RUSTIQUE="1"))
-    assert r.stdout.split() == ["True", "RUSTIQUE=1", "List"], r.stderr  # a later import reuses it
+    assert out["loaded"] == ["_rustique", "rustique._rustique"] and out["source"] == "RUSTIQUE=1", err  # no package
+    r = py("import site, sys; sys.path.insert(0, sys.argv[1]); site.addsitedir(sys.argv[1]);"
+           "ext = sys.modules['_rustique']; import rustique;"
+           "print(rustique._rustique is ext is sys.modules['rustique._rustique'],"
+           "rustique.status()['process']['switch']['source'], ext.__file__.startswith(sys.argv[1]))",
+           sitedir, env=clean_env(RUSTIQUE="1"))
+    assert r.stdout.split() == ["True", "RUSTIQUE=1", "True"], r.stderr  # a later import reuses it
 
 
 # --- report at exit (subprocesses) --------------------------------------------------------

@@ -25,7 +25,7 @@ use crate::accel::{GroupSpec, Prepare, Refusal, TargetSpec};
 
 pub mod env;
 mod fingerprints;
-mod fmtcache;
+pub(crate) mod fmtcache;
 pub mod format;
 pub mod iso;
 pub mod parse;
