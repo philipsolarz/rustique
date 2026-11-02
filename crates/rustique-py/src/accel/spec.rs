@@ -46,6 +46,10 @@ pub struct TargetSpec {
     pub versions: &'static [(u8, u8)],
     /// Validated on free-threaded builds too.
     pub free_threaded: bool,
+    /// Validate at install, never arm (first-call validation, docs/ACCELERATION.md §3.2):
+    /// for targets that must act from install on although their sites fire rarely (a
+    /// policy such as `gc.adaptive`). Default `false`.
+    pub eager: bool,
     /// Opt-in tier (`Some("interp")`, `Some("gc")`): not in the default set; installed only
     /// when the tier is requested (`RUSTIQUE_TIERS=interp,gc`, `rustique.enable(tiers=[...])`),
     /// and then like any target (`only`/`exclude` still apply; a tier name works in both).
@@ -136,6 +140,7 @@ impl TargetSpec {
         module: None,
         versions: &[],
         free_threaded: false,
+        eager: false,
         opt_in: None,
         counters: &NO_COUNTERS,
         prepare: no_prepare,
@@ -189,6 +194,10 @@ pub enum Category {
     /// Rustique (`RUSTIQUE_UNVALIDATED_PATCH=1` installs the targets whose fingerprints
     /// match a recorded release, reported "unvalidated").
     UnvalidatedPatch,
+    /// The target is not needed here (what it fixes or speeds up does not exist on this
+    /// build, e.g. a free-threaded-only contention fix on a GIL build): not a failure;
+    /// reported apart from refusals.
+    NotNeeded,
     /// Anything else (including errors raised while preparing).
     Other,
 }
@@ -207,6 +216,7 @@ impl Category {
             Category::Symbol => "symbol",
             Category::Deps => "deps",
             Category::UnvalidatedPatch => "unvalidated-patch",
+            Category::NotNeeded => "not-needed",
             Category::Other => "other",
         }
     }
@@ -224,6 +234,10 @@ pub struct Refusal {
 impl Refusal {
     pub fn new(reason: impl Into<Cow<'static, str>>) -> Self {
         Refusal { reason: reason.into(), category: Category::Other }
+    }
+    /// Not needed on this build (category `not-needed`, reported apart from refusals).
+    pub fn not_needed(reason: impl Into<Cow<'static, str>>) -> Self {
+        Refusal { reason: reason.into(), category: Category::NotNeeded }
     }
     pub fn with(category: Category, reason: impl Into<Cow<'static, str>>) -> Self {
         Refusal { reason: reason.into(), category }

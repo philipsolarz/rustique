@@ -145,7 +145,8 @@ discovered becomes a guard (the input falls back) or a bug.
      would stop the world in steady state), and so do targets with opcode-handler sites or
      of an arity the stubs do not cover. `RUSTIQUE_VALIDATE=eager` (CI, the test-suite) and
      `_accel._set_validation("eager")` validate at install; `_accel.validate()` validates
-     armed targets now. State `armed` in `status()` (§6).
+     armed targets now. State `armed` in `status()` (§6). A target that must act from
+     install on although its sites fire rarely (a policy) sets `TargetSpec::eager`.
 3. **Never import a module to patch it.** Targets whose module is already imported are
    patched at `enable()`; the others when the module finishes executing (one dict watcher
    on `sys.modules` sees importlib's post-exec re-insert, M§7). Static builtin types and
@@ -435,7 +436,9 @@ Decide the exact subset **before anything observable happens**, cheaply:
    "sites": [str], "versions": [str], "checkable", "module"?}`, with `state` one of
    `installed`, `armed` (first-call stubs in place, §3.2), `pending-import`, `refused`,
    `disabled`; `refusal` one of `version`, `build`, `platform`, `unvalidated-patch`, `jit`,
-   `fingerprint`, `layout`, `conflict`, `selftest`, `symbol`, `deps`, `other`; plus, when
+   `fingerprint`, `layout`, `conflict`, `selftest`, `symbol`, `deps`, `other`, or
+   `not-needed` (not a failure: what the target fixes does not exist on this build, e.g. a
+   free-threaded-only fix on a GIL build; reported apart from refusals); plus, when
    they apply, `"validation": "recorded"|"unvalidated"` (installed or armed targets),
    `"suspended": "deps"|"fallback"|"conflict"`, `"degraded"`, `"deps_intact"`, `"shared"`,
    `"dynamic_sites"`. Process facts: CPython version, patch release, build, platform, JIT,

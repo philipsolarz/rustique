@@ -1170,7 +1170,7 @@ fn install(
     module: Option<Bound<'_, PyModule>>,
     definitive: bool,
 ) -> bool {
-    if eager() {
+    if eager() || all_specs()[i].eager {
         return activate(py, reg, i, module, definitive);
     }
     let outcome =
