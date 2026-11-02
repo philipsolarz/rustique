@@ -160,7 +160,9 @@ family 5, `object.__setattr__` 64, keyword instantiation 64; `isinstance` never 
 at most the core's cost). One decision per install, on a horizon long enough to average out
 start-up phases. `_accel._t_interp.info()["groups"]` shows executions, hits, fills and
 `suspended`; the registry records the suspension in `status()` once accel's merge B handles
-every site kind.
+every site kind. `rustique.stats()` shows no per-call counts for these targets (the handlers
+count in C, always on, for the suspension rule): reporting tools read
+`_accel._t_interp.info()`.
 
 ## 3. Free-threading, subinterpreters, tools, the JIT
 
