@@ -1,7 +1,7 @@
 STATUS: wave 2, opt-in tier `interp` (DECISIONS §10.2). Contract: `docs/ACCELERATION.md` with
 the opcode-handler site kind (§A below, proposed text). Code: `crates/rustique-interp/` (generated
 handler sets, verification, C overrides), `crates/rustique-py/src/targets/interp/` (targets).
-Tests: `tests/interp/`. Benchmarks: `benches/interp/` (`cells_cg.py`, `wl_instr.py`,
+Tests: `tests/interp/`. Benchmarks: `benches/interp/` (`cells_cg.py`, `wl_cg.py`,
 `regrtest/`). Research: `docs/atlas/w2-interp.md` (prototype `w2/p1-interp`). Every number
 is **M** (measured; tool named) or **I** (inferred; source named).
 
