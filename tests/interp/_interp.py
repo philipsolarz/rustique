@@ -40,11 +40,8 @@ def swapped() -> dict[str, list[str]]:
 
 
 def enable(only: list[str] | None = None) -> None:
-    names = only or [GROUP]
-    try:
-        rustique.enable(only=names, tiers=["interp"])
-    except TypeError:
-        rustique.enable(only=names)
+    """The opt-in tier (its own targets only, or `only`)."""
+    acc.enable(only=only or [GROUP], tiers=["interp"])
 
 
 @contextlib.contextmanager

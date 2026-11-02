@@ -1,6 +1,5 @@
-"""Turn the interp tier on for benches and tests, whatever the switch API of the build is:
-`rustique.enable(tiers=["interp"])` (accel's opt-in tiers) or, until they land, the hidden
-group `_interp` named in `only=`. With default=True the default groups are enabled too."""
+"""Turn the opt-in interp tier on for benches (accel's tiers: `_accel.enable(tiers=["interp"])`,
+the same as `RUSTIQUE_TIERS=interp`). With default=True the default groups are enabled too."""
 import rustique
 
 acc = rustique._accel
@@ -17,14 +16,9 @@ def default_groups():
 
 
 def enable_tier(default=False):
-    g = interp_group()
-    try:
-        if default:
-            return rustique.enable(tiers=["interp"])
-        return rustique.enable(only=[g], tiers=["interp"])
-    except TypeError:
-        pass
-    return rustique.enable(only=(default_groups() if default else []) + [g])
+    if default:
+        return acc.enable(tiers=["interp"])
+    return acc.enable(only=[interp_group()], tiers=["interp"])
 
 
 def info():

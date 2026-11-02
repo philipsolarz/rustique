@@ -223,3 +223,17 @@ def test_attr_group_suspends_when_it_does_not_pay() -> None:
     r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=300)
     assert r.returncode == 0, r.stderr[-3000:]
     assert r.stdout.split()[0] == "True" and "[]" in r.stdout and r.stdout.split()[-1] == "1600000", r.stdout
+
+
+@requires_tier
+def test_startup_switch_requests_the_tier() -> None:
+    """`RUSTIQUE=1 RUSTIQUE_TIERS=interp` installs the tier at startup; `RUSTIQUE=1` alone
+    does not."""
+    script = "import rustique; s = rustique._accel._t_interp.info(); print(sorted(s['groups']['interp.attr']['swapped'])[:1])"
+    env = {**__import__("os").environ, "RUSTIQUE": "1"}
+    on = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                        env={**env, "RUSTIQUE_TIERS": "interp"}, timeout=120)
+    off = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env, timeout=120)
+    assert on.returncode == 0 and off.returncode == 0, (on.stderr[-2000:], off.stderr[-2000:])
+    assert on.stdout.strip() == "['LOAD_ATTR']", on.stdout
+    assert off.stdout.strip() == "[]", off.stdout

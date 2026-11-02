@@ -117,6 +117,7 @@ fn prepare_hasattr(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal>
 pub static GETATTR: TargetSpec = TargetSpec {
     name: "interp.getattr",
     group: super::GROUP,
+    opt_in: super::TIER,
     module: None,
     versions: super::VERSIONS,
     free_threaded: true,
@@ -128,6 +129,7 @@ pub static GETATTR: TargetSpec = TargetSpec {
 pub static HASATTR: TargetSpec = TargetSpec {
     name: "interp.hasattr",
     group: super::GROUP,
+    opt_in: super::TIER,
     module: None,
     versions: super::VERSIONS,
     free_threaded: true,

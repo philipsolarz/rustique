@@ -25,14 +25,12 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustique_interp::{Group, Refuse};
 
-use crate::accel::prepare::SiteDecl;
-use crate::accel::site::{Kind, Site};
 use crate::accel::{Category, Counters, Prepare, Refusal, TargetSpec};
 
-/// The tier's group. ADAPTER until accel's opt-in tiers land (`TargetSpec.opt_in`): a hidden
-/// group (`_`), selected only by name (`enable(only=["_interp"])`). Then: group `"interp"`,
-/// `opt_in: Some("interp")`, enabled by `RUSTIQUE_TIERS=interp` / `enable(tiers=["interp"])`.
-pub const GROUP: &str = "_interp";
+/// The tier's group: an opt-in tier (`RUSTIQUE_TIERS=interp`, `rustique.enable(tiers=["interp"])`),
+/// never part of the default set.
+pub const GROUP: &str = "interp";
+pub(crate) const TIER: Option<&str> = Some("interp");
 
 pub(crate) const VERSIONS: &[(u8, u8)] = &[(3, 15)];
 
@@ -74,13 +72,11 @@ pub(crate) fn refusal(r: &Refuse) -> Refusal {
     Refusal::with(cat, r.reason().to_owned())
 }
 
-/// A group suspended itself (its fast path did not pay for its handler copies): count it and
-/// ask the registry to record the suspension (honoured once `resync` handles every site kind).
+/// A group decided that its fast path does not pay for its handler copies: the registry
+/// restores the core's handlers and reports the target suspended (ACCELERATION §5.6). Called
+/// from inside a swapped handler (attached, between nothing observable): only swaps happen.
 fn on_suspend(g: Group) {
-    let c = counters(g);
-    c.suspensions.fetch_add(1, Ordering::Relaxed);
-    c.suspend_requested.store(true, Ordering::Release);
-    crate::accel::registry::schedule_resync();
+    counters(g).request_suspend();
 }
 
 /// Declare the dispatch-table entries of one override group as sites.
@@ -91,34 +87,17 @@ fn declare(cx: &mut Prepare<'_>, group: Group) -> Result<(), Refusal> {
     if ops.is_empty() {
         return Err(Refusal::with(Category::Other, format!("no handlers for {}", group_name(group))));
     }
-    let mut sites = Vec::with_capacity(ops.len());
+    if !loc.arm(group, &ops) {
+        return Err(Refusal::with(Category::Other, "cannot arm the override group"));
+    }
     for &op in &ops {
         let (Some(core), Some(ours)) = (loc.core_handler(op), loc.handler(op)) else {
             return Err(Refusal::with(Category::Build, format!("{}: handler not recorded", loc.opname(op))));
         };
-        // Every entry is compared with the expected core handler before the swap (the
-        // registry's CAS compares again).
-        if loc.current(op) != core {
-            return Err(Refusal::with(
-                Category::Conflict,
-                format!("dispatch-table entry {} is not CPython's handler", loc.opname(op)),
-            ));
-        }
-        sites.push(Site {
-            name: format!("opcode {}", loc.opname(op)),
-            // ADAPTER until accel's opcode-handler site kind lands: an entry of the dispatch
-            // table is an aligned pointer cell swapped and restored by CAS, as a slot is.
-            kind: Kind::Slot,
-            addr: loc.cell(op),
-            original: core,
-            kernel: ours,
-            installed: false,
-        });
+        // Every entry is compared with the expected core handler before the swap (here and
+        // by the registry's CAS).
+        cx.opcode_handler(&format!("opcode {}", loc.opname(op)), loc.cell(op), core, ours)?;
     }
-    if !loc.arm(group, &ops) {
-        return Err(Refusal::with(Category::Other, "cannot arm the override group"));
-    }
-    cx.sites.extend(sites.into_iter().map(|site| SiteDecl { site }));
     Ok(())
 }
 
@@ -141,6 +120,7 @@ fn prepare_kwinit(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> 
 pub static ISINSTANCE: TargetSpec = TargetSpec {
     name: "interp.isinstance",
     group: GROUP,
+    opt_in: TIER,
     module: None,
     versions: VERSIONS,
     free_threaded: true,
@@ -152,6 +132,7 @@ pub static ISINSTANCE: TargetSpec = TargetSpec {
 pub static ATTR: TargetSpec = TargetSpec {
     name: "interp.attr",
     group: GROUP,
+    opt_in: TIER,
     module: None,
     versions: VERSIONS,
     free_threaded: true,
@@ -163,6 +144,7 @@ pub static ATTR: TargetSpec = TargetSpec {
 pub static SETATTR: TargetSpec = TargetSpec {
     name: "interp.setattr",
     group: GROUP,
+    opt_in: TIER,
     module: None,
     versions: VERSIONS,
     free_threaded: true,
@@ -177,6 +159,7 @@ pub static SETATTR: TargetSpec = TargetSpec {
 pub static KWINIT: TargetSpec = TargetSpec {
     name: "interp.kwinit",
     group: GROUP,
+    opt_in: TIER,
     module: None,
     versions: VERSIONS,
     free_threaded: false,

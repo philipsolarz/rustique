@@ -63,20 +63,26 @@ rq_lookup_ref(PyTypeObject *tp, PyObject *name, PyObject **descr, unsigned int *
 
 /* ---- Override groups and net-benefit suspension (ACCELERATION 5.6 for handlers) ------------
  *
- * Each group counts executions of its overridden path and fast-path hits. After RQ_DECIDE
- * windows of RQ_WINDOW executions (about 1M), a group whose cumulative hits are below
- * 1/ratio of its steady executions (attribute-cache fills excluded: they are the warm-up)
- * restores the core's handlers for the rest of the process (one decision per install: the
- * horizon averages out start-up phases). Only which, equivalent, handler runs changes.
+ * Each group counts executions of its overridden path and fast-path hits; attribute-cache
+ * fills are excluded from the steady executions (they are the warm-up). Two decisions:
+ *  - early, after the first window of RQ_WINDOW executions: a group whose hits are below
+ *    1/(RQ_EARLY_FACTOR x ratio) of its steady executions -- far below break-even, its cost is
+ *    already visible -- gives the core's handlers back;
+ *  - final, after RQ_DECIDE windows (about 1M executions), the same test at 1/ratio: a horizon
+ *    long enough to average out start-up phases for borderline groups.
+ * Suspending asks the registry (Counters::request_suspend through rq_on_suspend), which
+ * restores the core's handlers and reports the target `suspended`; only which, equivalent,
+ * handler runs changes. A window that ends while the group is suspended means the registry
+ * reinstalled it (enable() after a suspension): the group starts counting afresh.
  *   attr      ratio 5   our copies of the LOAD_ATTR family cost ~0.8% when nothing hits
  *   setattr   ratio 64  a hit saves ~570 Ir, a non-hit costs ~10
  *   kwinit    ratio 64  a hit saves ~1,100 Ir
- *   isinstance          never suspended: every path is at most the core's cost
- *   getattr             builtins.getattr/hasattr (ml_meth kernels): counted, never suspended */
+ *   isinstance          never suspended: every path is at most the core's cost */
 enum { RQ_G_ATTR = 0, RQ_G_SETATTR = 1, RQ_G_KWINIT = 2, RQ_G_ISINSTANCE = 3, RQ_G_GETATTR = 4,
        RQ_NGROUPS = 5 };
 #define RQ_WINDOW 65536u
 #define RQ_DECIDE 16
+#define RQ_EARLY_FACTOR 4
 #define RQ_MAXOPS 64
 
 typedef struct {
@@ -102,34 +108,52 @@ static rq_group_t rq_groups[RQ_NGROUPS] = {
 /* Called (any thread, attached) after a group restored the core's handlers. */
 static void (*rq_on_suspend)(int group);
 
+static void
+rq_group_reset(rq_group_t *g)
+{
+    RQ_ST(g->total, 0ull);
+    RQ_ST(g->hits, 0ull);
+    RQ_ST(g->fills, 0ull);
+    RQ_ST(g->window, 0u);
+    RQ_ST(g->windows, 0);
+}
+
 static Py_NO_INLINE void
 rq_window_end(rq_group_t *g)
 {
     RQ_ST(g->total, RQ_LD(g->total) + RQ_LD(g->window));
     RQ_ST(g->window, 0u);
-    if (RQ_LD(g->suspended) || !RQ_LD(g->armed) || g->ratio == 0) {
+    if (!RQ_LD(g->armed) || g->ratio == 0) {
+        return;
+    }
+    if (RQ_LD(g->suspended)) {
+        /* A full window after the suspension: the registry reinstalled the handlers. */
+        rq_group_reset(g);
+        RQ_ST(g->suspended, 0);
         return;
     }
     int w = RQ_LD(g->windows) + 1;
     RQ_ST(g->windows, w);
-    if (w != RQ_DECIDE) {
+    if (w != 1 && w != RQ_DECIDE) {
         return;
     }
     unsigned long long total = RQ_LD(g->total), fills = RQ_LD(g->fills);
     unsigned long long steady = total > fills ? total - fills : 0;
-    if (RQ_LD(g->hits) * g->ratio >= steady) {
+    unsigned long long need = (unsigned long long)g->ratio * (w == 1 ? RQ_EARLY_FACTOR : 1);
+    if (RQ_LD(g->hits) * need >= steady) {
         return;
     }
-    /* Restore the core's handlers. A thread still running our handler finishes it and
-     * dispatches onward through the table: the code stays mapped. */
+    RQ_ST(g->suspended, 1);
+    if (rq_on_suspend != NULL) {
+        rq_on_suspend((int)(g - rq_groups));   /* the registry restores the core's handlers */
+        return;
+    }
+    /* No registry hook: restore the core's handlers here. A thread still running our handler
+     * finishes it and dispatches onward through the table: the code stays mapped. */
     for (int i = 0; i < g->n; i++) {
         void *expect = g->mine[i];
         __atomic_compare_exchange_n(g->cell[i], &expect, g->orig[i], 0, __ATOMIC_ACQ_REL,
                                     __ATOMIC_RELAXED);
-    }
-    RQ_ST(g->suspended, 1);
-    if (rq_on_suspend != NULL) {
-        rq_on_suspend((int)(g - rq_groups));
     }
 }
 

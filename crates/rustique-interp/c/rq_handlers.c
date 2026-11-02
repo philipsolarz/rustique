@@ -226,11 +226,7 @@ rq_group_arm(int group, void **cells, void *const *orig, void *const *mine, int 
         g->mine[i] = mine[i];
     }
     g->n = n;
-    RQ_ST(g->total, 0ull);
-    RQ_ST(g->hits, 0ull);
-    RQ_ST(g->fills, 0ull);
-    RQ_ST(g->window, 0u);
-    RQ_ST(g->windows, 0);
+    rq_group_reset(g);
     RQ_ST(g->suspended, 0);
     RQ_ST(g->armed, 1);
     return 0;

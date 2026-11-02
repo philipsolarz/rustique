@@ -26,10 +26,7 @@ if _v and _is_main_interpreter():
         _info = _acc._t_interp.info()
         if _v == "tier" and _info["verified"]:
             _g = next(grp for name, grp, _ in _acc.targets() if name.startswith("interp."))
-            try:
-                _r.enable(only=[_g], tiers=["interp"])
-            except TypeError:
-                _r.enable(only=[_g])
+            _acc.enable(only=[_g], tiers=["interp"])
             _ok = any(t["state"] == "installed" for t in _acc.status()["targets"]
                       if t["name"].startswith("interp."))
         elif _v == "noop":
