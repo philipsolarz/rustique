@@ -453,7 +453,7 @@ Ranked by how many developers a break stops × how early in the journey × effor
 | 2 | **`process_gate` platform allowlist** + Rustique's own tests skip on `version`/`platform` refusals + an sdist-build notice + `--only-binary` docs | install, safety | high (silent unvalidated targets) | S | §6.3 | accel/dx |
 | 3 | **Report counters survive processes**: mmap'd per-process counters, zeroed after fork | visibility | high for servers and workers | M | §3.1 (0 of 8, 1 of 50, 110 vs 10) | accel |
 | 4 | **`python -m rustique estimate`**: productise the prototype (pick the time source per target by the profiler's event density and detect I/O-bound runs, a sampler that is safe on free-threaded builds, cold replay of the longest call, `estimate --json` for CI) | "will it help me?" | high (the first question) | M | §5 (3.15.1: median error 0.007, 27/34 within ±0.05) | dx |
-| 5 | **Platform steps 1–3 and 5** (patches A and B, allowlist, posixpath/fnmatchcase on Windows) + the per-platform CI job | every platform | high on Windows (30 → 55) | S each | §6 | platform |
+| 5 | **Platform steps 1–3 and 5** (patches A and B, allowlist, posixpath/fnmatchcase on Windows) + the per-platform CI job. Patch A's `strstate` accessor is also the **must-fix-or-refuse** for the MSVC free-threaded fixed-mask reads (§6.3) | every platform | high on Windows (30 → 55); safety | S each | §6 | platform |
 | 6 | **The runner fixes on this branch** (absolute `__file__`, traceback, SIGINT, `RUSTIQUE=1` exported) | turn it on | medium | done (2 tests) | §2 | dx |
 | 7 | **Report readability**: only targets that ran, a `saved ≈` column, suspensions rendered, pending as a count, status wording | visibility | medium | S | §3.1 | dx |
 | 8 | **Per-site fallback attribution** (`RUSTIQUE_STATS=sites`) | "why did it fall back, and what can I do?" | medium | M | §3.1 | accel (shared with floors) |
@@ -483,7 +483,11 @@ Ranked by how many developers a break stops × how early in the journey × effor
 - Branch `w2/p1-dx`:
   - `python/rustique/_diff.py` (diff fixes), `python/rustique/_cli.py` (runner fixes),
     `python/rustique/_estimate.py` (estimator), `tests/test_dx_cli.py` (+6 tests).
-  - `benches/dx/real_projects.py`, `benches/dx/estimate_workloads.py`, `benches/dx/c_ratios.py`.
+  - `benches/dx/real_projects.py` (`setup` / `run [--tag T --diff-from F]` / `table`),
+    `benches/dx/estimate_workloads.py` (validation), `benches/dx/estimate_repredict.py`
+    (the three time-source modes and the §5.2 tables from saved runs),
+    `benches/dx/c_ratios.py`.
+  - `docs/USAGE.md`: diff's masks and volatile rule, `estimate`.
 - `~/rustique-research/w2/dx/`:
   - `ci/` (CI logs, artifacts, `parse_smoke.py`), `install_matrix.{sh,out}`, `onoff/`,
     `rp/` (real-project results), `est/` (validation JSON).
