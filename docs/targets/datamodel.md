@@ -167,9 +167,69 @@ on the stack (wave 1 treats instance dicts the same way); a kernel elides the Py
 frame(s) it replaces, so the exact recursion depth at which `RecursionError` is raised
 differs by those frames (as for every wave-1 vectorcall target).
 
-## 3. Measured results (callgrind, Ir per call, 3.15.1, region-instrumented, fresh process)
+## 3. Measured results
 
-See `benches/targets/datamodel_cells.py` (full table in §3.1 of the final report below).
+### 3.1 Cells (callgrind, Ir per call, 3.15.1, region-instrumented, fresh process; `benches/targets/datamodel_cells.py`)
+
+| cell | plain | on | ratio |
+|---|---:|---:|---:|
+| `m.value` / `m.name` | 1,097 | 544 / 550 | 0.496 / 0.501 |
+| `Color(2)` / `Color(m)` / `Num(2)` (IntEnum) | 2,348 / 2,193 / 2,348 | 623 / 487 / 623 | 0.265 / 0.222 / 0.265 |
+| `Perm.R \| Perm.W` / `rw & r` / `rw ^ r` | 5,449 / 5,364 / 5,369 | 1,123 / 1,049 / 1,051 | 0.206 / 0.196 / 0.196 |
+| `~r` / `r in rw` / `Bits.A \| Bits.B` (IntFlag) | 1,143 / 1,048 / 6,636 | 524 / 781 / 1,195 | 0.459 / 0.745 / 0.180 |
+| `hash(m)` / `d[m]` | 1,213 / 985 | 945 / 731 | 0.779 / 0.742 |
+| `M(1)` (metaclass subclass of EnumType) | 2,348 | 752 | 0.320 |
+| fallback: `Color(99)` miss → ValueError | 12,937 | 13,266 | 1.025 |
+| fallback: `Bits.A \| 2` (IntFlag \| int) | 8,795 | 7,169 | 0.815 |
+| fallback: user `enum.property` | 1,097 | 1,129 | 1.029 |
+| fallback: value map with a user-typed key (`Bad(1)`) | 2,348 | 2,511 | 1.069 (see below) |
+| `NT(1, 2, 3)` / keywords / `typing.NamedTuple` | 2,209 / 3,514 / 2,065 | 1,604 / 2,750 / 1,500 | 0.726 / 0.783 / 0.726 |
+| `NT._make(tuple)` / `(list)` / subclass | 1,988 / 2,160 / 2,013 | 1,395 / 1,588 / 1,420 | 0.702 / 0.735 / 0.706 |
+| `nt._replace(b=5)` | 5,355 | 1,420 | 0.265 |
+| fallbacks: `_make(iter(t))`, `_replace` on a subclass with `__dict__` | 2,665 / 5,294 | 2,665 / 5,289 | 1.000 / 0.999 |
+| `F(x=1, y=2)` frozen keywords / `E(a=1, b='t')` slots kw_only | 4,335 / 4,254 | 2,775 / 2,722 | 0.640 / 0.640 |
+| `F(1, 2)` / `S(1, 2)` slots / `L(1)` factory, positional (routing, `generated.md`) | 2,832 / 2,774 / 3,449 | 1,849 / 1,789 / 2,255 | 0.653 / 0.645 / 0.654 |
+| untouched: user factory, non-frozen, `__post_init__` | 3,379 / 2,572 / 3,312 | 3,374 / 2,567 / 3,326 | 0.999 / 0.998 / 1.004 |
+| `cm()` / `with cm(): pass` / `cm2(1, k=2)` | 4,181 / 8,085 / 5,525 | 2,695 / 6,591 / 3,391 | 0.644 / 0.815 / 0.614 |
+| fallback: `@contextmanager` on a non-generator | 4,342 | 4,342 | 1.000 |
+| `fmt(1)` / `fmt.dispatch(int)` (singledispatch) | 3,130 / 1,947 | 2,485 / 1,303 | 0.794 / 0.669 |
+| `h.handle(1)` / `h.handle` (singledispatchmethod) | 9,672 / 3,417 | 8,405 / 2,796 | 0.869 / 0.818 |
+| fallbacks: metaclass with `__eq__`, classmethod implementation | 4,454 / 10,501 | 4,436 / 10,293 | 0.996 / 0.980 |
+| decorate: `contextmanager(f)` / `singledispatch(f)` | 12,904 / 34,743 | 13,200 / 35,138 | 1.023 / 1.011 |
+| create `namedtuple` + 1 call / frozen dataclass + 1 call / enum (5 members) | 312,831 / 2,816,580 / 420,352 | 316,566 / 2,882,253 / 434,327 | 1.012 / 1.023 / 1.033 |
+
+`Bad(1)` (1.069) is an enum whose `_value2member_map_` holds a key of a user class (only
+possible by writing to the private map): every lookup falls back after the class facts
+said "unsafe keys"; the +163 Ir are `tp_call` kernel + `slot_tp_call` + the vectorcall
+kernel's early exit. Not a realistic program state; listed as the one cell above 1.05.
+Creation cells include ~930 Ir per new code object of the monitoring-version tax accel's
+probe caused (fixed on `ws2/accel` @ e0b0996, not yet merged); enum creation (1.033) has no
+hook: it is that tax plus per-class fact computations during `EnumType.__new__`.
+
+### 3.2 Workloads (instructions per `run()`, `perf stat`, dev box, 3.15.1, digests identical; `benches/datamodel/wl_instr.py`)
+
+"all" = every group enabled; "base" = every group except this workstream's; all/base is
+this workstream's effect. Custom family (k=3, r=2, spread ≤ ±0.0034):
+
+| workload | all/plain | all/base |
+|---|---:|---:|
+| rules_engine | 0.8005 | 0.8009 |
+| report_engine | 0.8410 | 0.9158 |
+| event_ledger | 0.8553 | 0.8658 |
+| orm_mapper | 0.9462 | 0.9714 |
+| ecs_arena | 0.9582 | 0.9659 |
+| order_domain | 0.9604 | 0.9604 |
+| di_plugins | 0.9609 | 0.9577 |
+| task_planner | 0.9969 | 0.9963 |
+| fulfilment_sim | 0.9959 | 0.9979 |
+| mini_interp | 0.9994 | 1.0019 |
+| **geometric mean** | **0.929** | **0.944** |
+
+Others (all/base): json_api 0.963 (±0.003), strawberry_graphql 0.966, rich_render 0.966,
+pylint_stdlib 0.997, django_admin 0.996, drf_api 0.999, falcon_api 1.000,
+fastapi_sqlalchemy 0.991, flask_marshmallow 1.014 — the framework and devtools runs were
+noisy at k=3 (spread ±3–90% from full GC collections in the few measured runs); re-measured
+with more runs in the final report.
 
 ## 4. Conformance
 
