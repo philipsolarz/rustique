@@ -36,6 +36,13 @@ enabled ÷ CPython): `Formatter.format` 0.45 local / 0.32 shared (wave 1: 1.010)
 `LogRecord` 0.29 / 0.37, `findCaller` 0.21 / 0.15, a record to StringIO 0.39 / 0.47, a
 disabled `debug` 1.003 / 0.47, a Decimal argument 0.39 / 0.20: every logging kernel ≤ 1.05.
 
+**Install** (`benches/targets/logging_install_cost.py`, 3.15.1): `import logging` with the
+group pending 27.65M vs 27.92M plain (accel's deferred activation; within the 5% budget);
+`_accel.enable(['logging'])` with `logging` imported 0.64M cold / 0.22M warm (wave 1:
+0.51M / 0.14M): the sixth target adds five fingerprinted functions and eight captured
+objects. The warm per-group cost stays the documented wave-1 overage (framework-side
+lever: validate on first call).
+
 ### 0.1 `logging.Handler.handle`
 
 Exact subset (anything else runs CPython's `Handler.handle`, before anything observable):
