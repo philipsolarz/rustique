@@ -9,11 +9,11 @@ One target, `gc.adaptive`, in the opt-in tier `gc` (DECISIONS §10.3): **full co
 keep finding nothing are deferred**, never past a pause cap; as soon as they find garbage
 again CPython's own rule is back. Young and middle collections and explicit `gc.collect()`
 are untouched, and the program's own GC tuning hands control back for the rest of the
-process. Turn it on with `RUSTIQUE_TIERS=gc` (with `RUSTIQUE=1`, or before
-`rustique.enable()`); `rustique.enable(tiers=["gc"])` once the registry's tiers land (until
-then the target refuses itself with category `build`, "opt-in tier: RUSTIQUE_TIERS=gc", unless
-the tier was requested — `crates/rustique-py/src/targets/gc/mod.rs`, a one-line switch to
-`opt_in: Some("gc")`).
+process. Turn it on with `RUSTIQUE_TIERS=gc` (with `RUSTIQUE=1` at startup, or before
+`rustique.enable()`), or `rustique._accel.enable([...], tiers=["gc"])`
+(`rustique.enable(tiers=["gc"])` once the public switch has it): `TargetSpec.opt_in =
+Some("gc")`; without the tier the target shows state `disabled`, reason "opt-in tier:
+RUSTIQUE_TIERS=gc".
 
 **Criterion (a): no documented-API deviation.** The prototype (`benches/runtime/gcadapt.py`,
 w2-runtime §5.1) had two declared deviations: `gc.get_threshold()` reported the configured

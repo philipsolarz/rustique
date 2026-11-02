@@ -2,8 +2,8 @@
 //! (`RUSTIQUE_TIERS=gc`; DECISIONS §10.3).
 //!
 //! Full collections that keep finding nothing are deferred (the old generation may grow by
-//! up to 2× instead of 25% before the next one), never past 1.1× the largest legitimate full
-//! collection; as soon as full collections find garbage again CPython's rule is back. Young
+//! up to 2× instead of 25% before the next one), never past 1.1× (free-threaded: 1.05×) the
+//! largest legitimate full collection; as soon as full collections find garbage again CPython's rule is back. Young
 //! collections and explicit `gc.collect()` are untouched. The program's own GC tuning
 //! (`gc.set_threshold/enable/disable/freeze/unfreeze/set_debug`) hands control back for the
 //! rest of the process.
@@ -17,8 +17,6 @@
 //!
 //! Main interpreter only: the hooks sit in the `gc` module's static method table, shared by
 //! every interpreter, and do nothing but call the original elsewhere.
-
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::ffi;
 use pyo3::prelude::*;
@@ -35,37 +33,6 @@ mod policy;
 pub(crate) static COUNTERS: Counters = Counters::new();
 
 const VERSIONS: &[(u8, u8)] = &[(3, 14), (3, 15)];
-
-// ---------------------------------------------------------------------------------------
-// Opt-in adapter. Until the registry's opt-in tiers land (`TargetSpec.opt_in:
-// Some("gc")`, `RUSTIQUE_TIERS`, `enable(tiers=...)`), the target refuses itself (category
-// `build`: "not this configuration", expected by the test plugins) unless the tier was
-// requested through `RUSTIQUE_TIERS` or `_accel._t_gc.request(True)`.
-// ---------------------------------------------------------------------------------------
-
-static REQUESTED: AtomicBool = AtomicBool::new(false);
-
-fn ignore_environment(py: Python<'_>) -> bool {
-    // SAFETY: borrowed lookup in the sys module dict.
-    let flags = unsafe { ffi::PySys_GetObject(c"flags".as_ptr()) };
-    if flags.is_null() {
-        return false;
-    }
-    // SAFETY: a live borrowed object.
-    let flags = unsafe { Bound::from_borrowed_ptr(py, flags) };
-    flags.getattr("ignore_environment").and_then(|v| v.is_truthy()).unwrap_or(false)
-}
-
-fn tier_requested(py: Python<'_>) -> bool {
-    if REQUESTED.load(Ordering::Relaxed) {
-        return true;
-    }
-    if ignore_environment(py) {
-        return false;
-    }
-    std::env::var_os("RUSTIQUE_TIERS")
-        .is_some_and(|v| v.to_string_lossy().split([',', ';']).any(|t| t.trim().eq_ignore_ascii_case("gc")))
-}
 
 // ---------------------------------------------------------------------------------------
 // Hooks: the program tuning the GC.
@@ -233,9 +200,6 @@ fn tuned_at_install(l: &layout::Layout) -> Option<u8> {
 }
 
 fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    if !tier_requested(py) {
-        return Err(Refusal::with(Category::Build, "opt-in tier: RUSTIQUE_TIERS=gc"));
-    }
     let l = layout::calibrate(py).map_err(layout_refusal)?;
     let table = gc_method_table(py, cx)?;
     validate(py, l, table)?;
@@ -283,6 +247,7 @@ pub static ADAPTIVE: TargetSpec = TargetSpec {
     module: None,
     versions: VERSIONS,
     free_threaded: true,
+    opt_in: Some("gc"),
     counters: &COUNTERS,
     prepare,
     on_disable: Some(restore),
@@ -300,12 +265,6 @@ pub static TARGETS: &[&TargetSpec] = &[&ADAPTIVE];
 #[pyfunction]
 fn report(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     policy::report(py)
-}
-
-/// Request the tier in this process (the adapter's stand-in for `enable(tiers=["gc"])`).
-#[pyfunction]
-fn request(on: bool) {
-    REQUESTED.store(on, Ordering::Relaxed);
 }
 
 /// Research only: the rule's parameters (applied at the next install, and to the running
@@ -339,7 +298,6 @@ fn layout_info(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let sub = PyModule::new(m.py(), "_t_gc")?;
     sub.add_function(wrap_pyfunction!(report, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(request, &sub)?)?;
     sub.add_function(wrap_pyfunction!(set_params, &sub)?)?;
     sub.add_function(wrap_pyfunction!(layout_info, &sub)?)?;
     m.add("_t_gc", sub)

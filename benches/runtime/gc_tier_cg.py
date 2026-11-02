@@ -6,7 +6,8 @@ collection and an automatic young collection cost with the tier, against plain C
 
 Each cell runs in fresh processes (benches/targets/_callgrind.py: region-instrumented,
 per-execution instructions from the difference of n and 2n iterations). The tier is
-requested with RUSTIQUE_TIERS=gc and enabled alone at the end of the setup. Hooked calls
+requested in code (`_accel.enable(["gc"], tiers=["gc"])`) and enabled alone at the end of the
+setup. Hooked calls
 are measured in steady state: the first tuning call makes the policy step aside (one-time),
 so the cells show what every later call costs; `steps aside` measures that first call.
 """
@@ -23,7 +24,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "targets"))
 
 from _callgrind import per_call, region, table  # noqa: E402
 
-TIER = {"RUSTIQUE_TIERS": "gc"}
+# The tier is requested in code (benches/targets/_callgrind.py's `enable=` reads no environment).
+TIER_ON = "\nimport rustique\nrustique._accel.enable(['gc'], tiers=['gc'])\n"
 HEAP = "import gc\nheap = [(i, [i]) for i in range(50_000)]\n"
 
 CELLS = [
@@ -60,21 +62,23 @@ def main() -> None:
         n = 20 if "2001" in stmt or stmt == "gc.collect()" else a.n
         rows[label] = {
             "plain": per_call(stmt, setup, n=n),
-            "tier": per_call(stmt, setup, enable=["gc"], env=TIER, n=n),
+            "tier": per_call(stmt, setup + TIER_ON, n=n),
         }
         print(table({label: rows[label]}), flush=True)
     # one-time costs
     first = "gc.set_threshold(2000, 10, 10)"
     rows["steps aside (first tuning call)"] = {
         "plain": region(first, "import gc"),
-        "tier": region(first, "import gc", enable=["gc"], env=TIER),
+        "tier": region(first, "import gc" + TIER_ON),
     }
     print(table({"steps aside (first tuning call)": rows["steps aside (first tuning call)"]}), flush=True)
-    rows["install: enable(only=['gc'])"] = {
-        "plain": region("import rustique; rustique.enable(only=['gc'])", "import rustique"),
-        "tier": region("import rustique; rustique.enable(only=['gc'])", "import rustique", env=TIER),
+    # install: the gc tier enabled alone (gc already imported, the common case) vs the same
+    # call that installs nothing (tier not requested)
+    rows["install: enable(['gc'], tiers=['gc'])"] = {
+        "plain": region("A.enable(['gc'])", "import gc, rustique\nA = rustique._accel"),
+        "tier": region("A.enable(['gc'], tiers=['gc'])", "import gc, rustique\nA = rustique._accel"),
     }
-    print(table({"install": rows["install: enable(only=['gc'])"]}), flush=True)
+    print(table({"install": rows["install: enable(['gc'], tiers=['gc'])"]}), flush=True)
     if a.json:
         with open(a.json, "w") as f:
             json.dump({"python": sys.version, "rows": rows}, f, indent=1)

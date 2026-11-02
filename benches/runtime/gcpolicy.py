@@ -131,6 +131,10 @@ class Tier(Policy):
                 rustique._accel._t_gc.set_params(**self.kw)
         if self.all:
             rustique.enable()
+        if not self.tier and not self.all:
+            # `loaded`: the same allocations as the tier's install below (status() builds the
+            # registry's status tables), so peak-RSS ratios isolate the policy
+            rustique.status()
         if self.tier:
             rustique.enable(only=["gc"])
             st = {t["name"]: t for t in rustique.status()["targets"]}["gc.adaptive"]

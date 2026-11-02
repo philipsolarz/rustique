@@ -2,9 +2,11 @@
 # CPython's own test modules with the gc tier (docs/targets/gc.md §6), in the rbox venv of a
 # build (run from the source root on the dev box: `rbox <ws> run --py B -- bash benches/runtime/conformance.sh OUT`).
 #
-#   1. tests/conformance/run_target_suites.py --targets gc: plain vs RUSTIQUE_TIERS=gc +
-#      enable(only=["gc"]) before the test module is imported (the standard gate); the
-#      modules that tune the GC make the policy step aside, the forwarder stays.
+#   1. benches/runtime/policy_suites.py --policy tier: plain vs RUSTIQUE_TIERS=gc +
+#      rustique.enable(only=["gc"]) before the test module is imported (the gate of
+#      tests/conformance/run_target_suites.py, whose `_takeover.enable` reads no environment
+#      and so cannot request a tier); the policy steps aside where the modules tune the GC,
+#      the forwarder stays.
 #   2. benches/runtime/policy_suites.py --policy tier:step_aside=0: the same modules with the
 #      policy kept armed through their own GC tuning (research: exercises deferral + forwarder
 #      under test_gc, test_weakref, test_finalization, ...).
@@ -19,8 +21,8 @@ G3=test.test_functools,test.test_exceptions,test.test_contextlib,test.test_scope
 case $b in *t) G3=$G3,test.test_free_threading.test_gc;; esac
 i=0
 for G in $G1 $G2 $G3; do
-    RUSTIQUE_TIERS=gc python tests/conformance/run_target_suites.py --targets gc --expect-installed gc.adaptive \
-        --modules "$G" --json "$out/conf-$b-g$i.json" --timeout 2400 > "$out/conf-$b-g$i.log" 2>&1 &
+    python benches/runtime/policy_suites.py --policy tier --modules "$G" \
+        --json "$out/conf-$b-g$i.json" --timeout 2400 > "$out/conf-$b-g$i.log" 2>&1 &
     python benches/runtime/policy_suites.py --policy tier:step_aside=0 --modules "$G" \
         --json "$out/armed-$b-g$i.json" --timeout 2400 > "$out/armed-$b-g$i.log" 2>&1 &
     i=$((i + 1))
