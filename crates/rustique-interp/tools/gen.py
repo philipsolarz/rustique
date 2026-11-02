@@ -73,13 +73,38 @@ def op_body(src, name):
     raise SystemExit(f"{name}: unbalanced")
 
 
+# Core helpers copied into c/rq_inline.h (the core inlines them into its own handlers): their
+# originals must be unchanged for a release to be generated.
+COPIED = [("Python/ceval.c", "_PyObjectArray_FromStackRefArray"),
+          ("Python/ceval.c", "_PyObjectArray_Free"),
+          ("Python/ceval.c", "_Py_VectorCall_StackRefSteal"),
+          ("Objects/object.c", "_PyObject_GetAttrStackRef"),
+          ("Objects/call.c", "PyObject_Vectorcall")]
+
+
+def c_function(text, name):
+    m = re.search(r"^" + re.escape(name) + r"\(", text, re.M)
+    if not m:
+        raise SystemExit(f"{name}: definition not found")
+    i = text.index("{", m.end())
+    depth = 0
+    for j in range(i, len(text)):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[m.start():j + 1]
+    raise SystemExit(f"{name}: unbalanced")
+
+
 def norm_hash(text):
     text = re.sub(r"//[^\n]*", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
-def check_lock(bytecodes, update):
+def check_lock(src, bytecodes, update):
     ovr = open(os.path.join(CDIR, "overrides.c")).read()
     names = re.findall(r"override\s+(?:op|inst)\((\w+)", ovr)
     lock_path = os.path.join(CDIR, "overrides.lock")
@@ -90,15 +115,18 @@ def check_lock(bytecodes, update):
                 k, v = line.split()
                 lock[k] = v
     bad = []
-    for n in names:
-        h = norm_hash(op_body(bytecodes, n))
+    entries = [(n, op_body(bytecodes, n)) for n in names]
+    entries += [(f"copy:{f}:{fn}", c_function(open(os.path.join(src, f)).read(), fn)) for f, fn in COPIED]
+    for n, body in entries:
+        h = norm_hash(body)
         if lock.get(n) not in (None, h) and not update:
             bad.append(f"{n}: CPython's original changed ({lock[n]} -> {h})")
         lock[n] = h
     if bad:
         raise SystemExit("override(s) must be re-proven:\n  " + "\n  ".join(bad))
     with open(lock_path, "w") as f:
-        f.write("# CPython's original body of each overridden op (normalized sha256 prefix).\n"
+        f.write("# CPython's original body of each overridden op, and of each core helper copied\n"
+                "# into c/rq_inline.h (copy:<file>:<function>) (normalized sha256 prefix).\n"
                 "# tools/gen.py refuses a release whose original differs; review, re-prove the\n"
                 "# override, then regenerate with --update-lock.\n")
         for n in sorted(lock):
@@ -151,7 +179,7 @@ def main():
         shutil.rmtree(out)
     os.makedirs(out)
     bytecodes = open(os.path.join(src, "Python", "bytecodes.c")).read()
-    overridden = check_lock(bytecodes, a.update_lock)
+    overridden = check_lock(src, bytecodes, a.update_lock)
 
     # 1. the cases generator of this release, on its bytecodes.c + our overrides
     gens = os.path.join(src, "Tools", "cases_generator")

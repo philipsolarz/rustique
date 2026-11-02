@@ -68,6 +68,7 @@ static _Py_CODEUNIT *rq_unreachable_jit_entry(struct _PyExecutorObject *exec,
 #endif
 #define _Py_jit_entry rq_unreachable_jit_entry
 
+#include "rq_inline.h"
 #include "rq_isinstance.h"
 #include "rq_attrcache.h"
 #include "rq_calls.h"

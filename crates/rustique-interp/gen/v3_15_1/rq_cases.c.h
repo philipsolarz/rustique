@@ -3547,7 +3547,8 @@
                     total_args++;
                 }
                 _PyFrame_SetStackPointer(frame, stack_pointer);
-                PyObject *res_o = _Py_VectorCall_StackRefSteal(
+                PyObject *res_o = rq_VectorCall_StackRefSteal(
+                    tstate,
                     callable,
                     arguments,
                     total_args,

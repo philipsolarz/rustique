@@ -37,7 +37,7 @@ rq_call_non_py(PyThreadState *tstate, _PyStackRef callable, _PyStackRef *argumen
             }
         }
     }
-    return _Py_VectorCall_StackRefSteal(callable, arguments, total_args, PyStackRef_NULL);
+    return rq_VectorCall_StackRefSteal(tstate, callable, arguments, total_args, PyStackRef_NULL);
 }
 
 /* Keyword instantiation of a plain Python class: CALL_KW -> type_call -> object_new ->

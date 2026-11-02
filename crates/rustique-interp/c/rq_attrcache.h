@@ -528,7 +528,7 @@ rq_GetAttrStackRef(PyThreadState *tstate, PyObject *v, PyObject *name, _Py_CODEU
     int is_meth = 0;
     int r = rq_attr_fast(tstate, v, name, 0, &res, &is_meth, instr);
     if (r == 0) {
-        return _PyObject_GetAttrStackRef(v, name);
+        return rq_GetAttrStackRef_core(v, name);
     }
     if (r < 0) {
         return PyStackRef_NULL;

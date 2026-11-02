@@ -17,6 +17,7 @@
 #pragma weak PyErr_Format
 #pragma weak PyErr_GetRaisedException
 #pragma weak PyErr_GivenExceptionMatches
+#pragma weak PyErr_NoMemory
 #pragma weak PyErr_SetHandledException
 #pragma weak PyErr_SetObject
 #pragma weak PyErr_SetRaisedException
@@ -43,6 +44,8 @@
 #pragma weak PyLong_FromLong
 #pragma weak PyLong_FromSsize_t
 #pragma weak PyLong_Type
+#pragma weak PyMem_Free
+#pragma weak PyMem_Malloc
 #pragma weak PyMemberDescr_Type
 #pragma weak PyMethodDescr_Type
 #pragma weak PyMethod_Type
@@ -168,6 +171,7 @@
 #pragma weak _PyObject_GetAttrStackRef
 #pragma weak _PyObject_LookupSpecialMethod
 #pragma weak _PyObject_MakeTpCall
+#pragma weak _PyObject_SetAttributeErrorContext
 #pragma weak _PyOpcode_Caches
 #pragma weak _PyOpcode_Deopt
 #pragma weak _PyOpcode_RecordEntries
@@ -184,6 +188,7 @@
 #pragma weak _PyTuple_FromStackRefStealOnSuccess
 #pragma weak _PyType_GetDict
 #pragma weak _PyType_Lookup
+#pragma weak _PyType_LookupRef
 #pragma weak _PyUnicode_BinarySlice
 #pragma weak _PyUnicode_Equal
 #pragma weak _PyUnicode_ExactDealloc
@@ -228,7 +233,6 @@
 #pragma weak _Py_Specialize_UnpackSequence
 #pragma weak _Py_TrueStruct
 #pragma weak _Py_VectorCallInstrumentation_StackRefSteal
-#pragma weak _Py_VectorCall_StackRefSteal
 #pragma weak _Py_call_instrumentation
 #pragma weak _Py_call_instrumentation_2args
 #pragma weak _Py_call_instrumentation_arg
