@@ -45,6 +45,16 @@ CPython's).
   CPython returns `None`. Netlocs with brackets (`ValueError` or `_check_bracketed_netloc`
   via `ipaddress`) and non-ASCII netlocs (`_checknetloc`'s NFKC check) fall back.
 
+- **Result identity** (wave 2: the kernels build every result object themselves, so they
+  follow CPython's builders exactly, `test_urllib_identity.py`): slices and `bytes.decode()`
+  give the Latin-1 singleton for one character (`quote('a')`, `parse_qsl('a=b')` names and
+  values, `_urlsplit` components); `''.join` of several parts and `str.replace` give a new
+  object even for one character (`unquote('%41')`, `unquote_plus('+')`, `quote_plus(' ')`,
+  a url whose tab/CR/LF were removed); a one-byte input that needs quoting returns the
+  `_Quoter` cache's shared `'%XX'` object in CPython (`quote(' ') is quote(' ')`), so that
+  call falls back. The wave-1 kernels returned singletons in the first two cases and fresh
+  objects in the third (5 identity differences, found by the new tests, now fixed).
+
 ## 2. Exact subset and fallbacks
 
 Accelerated: exact `str` arguments (and `bytes` for `quote`/`quote_plus`); default codecs
@@ -71,7 +81,8 @@ Constants' contents are checked at install.
 
 **Private state skipped:** `_byte_quoter_factory`'s `lru_cache` entries and the `_Quoter`
 dicts `quote` would create; the lazily built `_hextobyte` table (`unquote` would build it on
-its first call with a `%`).
+its first call with a `%`). The kernels keep per-thread scratch buffers (Rust memory, not
+Python objects; reused between calls, released above 64 Ki elements), invisible to any API.
 
 ## 4. Version coverage
 

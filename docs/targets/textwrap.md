@@ -47,6 +47,16 @@ The kernels run CPython's algorithm on the text's code points (`rustique_core::t
   `replace_whitespace=False` when the text is one chunk: `PyUnicode_Substring` of the whole
   string, `''.join([x])` and `'' + x` return `x`). The kernels return the argument in
   exactly these cases (tested: `result is text` compared with CPython).
+  Since wave 2 the kernels also build every other result object themselves, so the rule
+  for one-character results is CPython's builder's: a line that is one chunk is a slice
+  (`PyUnicode_Substring`: the Latin-1 singleton for one character), `dedent` of one line is
+  `l[margin:]` (a slice), while `'\n'.join` of several lines and `indent`'s `''.join` of
+  several parts are new objects even for one character (`_PyUnicode_JoinArray` does not
+  return the singleton). Lines CPython builds as the placeholder object itself
+  (`'' + placeholder`, `'' + placeholder.lstrip()` with nothing to strip) or as a fresh
+  one-character join (a `max_lines` cut with an empty placeholder) are not expressible as a
+  piece list: those calls fall back (`args`). Tested by `test_textwrap_identity.py`
+  (identity with every argument and with the 256 singletons, every PEP 393 kind).
 - **Endless loops**: CPython's `_wrap_chunks` never terminates when an indent is at least
   as wide as `width` and the first line can take nothing (e.g. text starting with a space).
   The kernel detects an iteration that consumes nothing and lets CPython's original run (and
@@ -83,7 +93,9 @@ original. Checked per call:
 its defaults) and the contents of `unicode_whitespace_trans` (a mutable dict: six lookups).
 
 **Private state skipped:** none (no caches involved; the `TextWrapper` instance the module
-functions would create is not created).
+functions would create is not created). The kernels keep per-thread scratch buffers (Rust
+memory, not Python objects; reused between calls, released above 64 Ki elements), invisible
+to any API.
 
 ## 4. Version coverage
 

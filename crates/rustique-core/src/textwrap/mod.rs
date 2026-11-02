@@ -514,12 +514,8 @@ pub fn wrap_chunks_into(
                             }
                             keep -= 1;
                         }
-                        let prev_len: usize =
-                            w.segs[start..keep].iter().map(|s| s.len()).sum::<usize>() - (if keep > start {
-                                w.segs[keep - 1].b - cut
-                            } else {
-                                0
-                            });
+                        let prev_len: usize = w.segs[start..keep].iter().map(|s| s.len()).sum::<usize>()
+                            - (if keep > start { w.segs[keep - 1].b - cut } else { 0 });
                         if (prev_len + ph_len) as i64 <= o.width {
                             // `'' + placeholder` is the placeholder object
                             w.placeholder_identity |= prev_len == 0;
