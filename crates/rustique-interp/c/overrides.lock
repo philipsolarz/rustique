@@ -1,0 +1,7 @@
+# CPython's original body of each overridden op (normalized sha256 prefix).
+# tools/gen.py refuses a release whose original differs; review, re-prove the
+# override, then regenerate with --update-lock.
+_CALL_ISINSTANCE e2ba8c4d39d440d4
+_CALL_KW_NON_PY 2dcb244ce106ad72
+_CALL_NON_PY_GENERAL 781d67eb211ac87e
+_LOAD_ATTR 790c9070ca23db10
