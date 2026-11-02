@@ -58,6 +58,17 @@ cells; workloads: `benches/targets/text_wl.py`, user-space instructions per stea
 | `datetime.strptime(ISO, '%Y-%m-%d %H:%M:%S')` | 42,774 | 3,095 | 2,805 | 0.066 |
 | `datetime.strptime(AMPM, '%m/%d/%Y %I:%M %p')` | 45,728 | 3,344 | 2,880 | 0.063 |
 
+**8 threads** (3.15.1t, `benches/targets/text_scaling.py -t 1,8`, CPU per call at 8 threads,
+enabled ÷ CPython, local / shared): `strptime` 0.07 / 0.05, access-log `strptime` 0.06 /
+0.05, `date.strftime` 0.07 / 0.15, numeric `strftime` 0.10 / 0.10, ZoneInfo `strftime`
+0.07 / 0.09, `isoformat` 0.16 / 0.54, ZoneInfo `isoformat` 0.20 / 0.17: every kernel well
+under 1.05 (CPython serializes on `_strptime._cache_lock` and imports `time.strftime` per
+call; the kernels take neither, and the format plans are read-only after insertion).
+
+**Workloads** (`benches/targets/text_wl.py`, all groups, instruction ratios, identical
+digests, wave 1 → wave 2): `data/tz_events` 0.584 → 0.570, `data/log_analytics` 0.614 →
+0.608.
+
 **Settled, with the reason.** strptime: the matcher is ~650 Ir of the 2.8k; the rest is the
 call site (a bound classmethod per call), the steady-state guards of `_strptime` (frame
 builtins, `_regex_cache` hit) and building the datetime. strftime: ~1.1–1.5k is CPython's
