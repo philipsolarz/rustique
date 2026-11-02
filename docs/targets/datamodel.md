@@ -258,7 +258,15 @@ Kernels compare cached objects by pointer without taking references (`cell_is`,
 `dict_item_is`) so they add no reference-count traffic on shared objects; dict scans run
 under the dict's critical section; verdict caches are atomics (a class modified while a
 verdict is computed is never cached under the old tag); arguments get new references
-before anything can run. The 8-thread rule results are in the final report.
+before anything can run.
+
+8-thread rule (`benches/datamodel/ft_scaling.py`, 3.15.1t, CPU time per call over 8
+threads, minimum of 5 interleaved repeats; the shared dev box ran at load ~50 on 32 cores,
+so ops whose targets are refused there — and therefore run CPython's code on both sides —
+read 0.97–1.19: that is the noise band): `Color(2)` 0.844, `Perm.R | Perm.W` 0.304,
+`hash(m)` 0.789, `h.handle(1)` 0.978. A clean stop-the-world cost could not be measured on
+the loaded box (`ft_stw.py`: the main thread itself is descheduled for milliseconds); it is
+the quiet-box item for Phase 3 if dynamic sites are to be enabled on free-threaded builds.
 
 ## 6. Not in this wave: `inspect.signature` / `getfullargspec`
 
