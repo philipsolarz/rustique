@@ -266,8 +266,10 @@ unsafe fn check(ours: O, f: O, args: *const O, nargsf: usize, kw: O) -> O {
         ffi::Py_DECREF(ours);
         if crate::accel::stats::check_mode() == Some(true) {
             ffi::Py_DECREF(theirs);
-            crate::accel::check::RustiqueCheckError::new_err("rustique check: re._compiler.compile: kernel != original")
-                .restore(py);
+            crate::accel::check::RustiqueCheckError::new_err(
+                "rustique check: re._compiler.compile: kernel != original",
+            )
+            .restore(py);
             return std::ptr::null_mut();
         }
         theirs

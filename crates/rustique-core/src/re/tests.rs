@@ -71,14 +71,19 @@ fn recorded_cases_match_cpython() {
         assert_eq!(f.len(), 4, "line {n}");
         let istext = f[0] == "s";
         let flags: u32 = f[1].parse().unwrap();
-        let pattern: Vec<u32> =
-            if f[2].is_empty() { vec![] } else { f[2].split(',').map(|x| u32::from_str_radix(x, 16).unwrap()).collect() };
+        let pattern: Vec<u32> = if f[2].is_empty() {
+            vec![]
+        } else {
+            f[2].split(',').map(|x| u32::from_str_radix(x, 16).unwrap()).collect()
+        };
         let got = compile(&pattern, istext, flags, &env);
         let shown = || pattern.iter().map(|&c| char::from_u32(c).unwrap_or('?')).collect::<String>();
         if f[3] == "ERR" {
             match got {
                 Err(Decline::Error | Decline::Warning | Decline::Unsupported) => errors += 1,
-                Ok(c) => failures.push(format!("line {n}: {:?} flags {flags}: CPython raises, port gave {c:?}", shown())),
+                Ok(c) => {
+                    failures.push(format!("line {n}: {:?} flags {flags}: CPython raises, port gave {c:?}", shown()))
+                }
             }
             continue;
         }
@@ -99,9 +104,13 @@ fn recorded_cases_match_cpython() {
         let want = Compiled { flags: want_flags, code, groups, groupindex: gi };
         match got {
             Ok(c) if c == want => same += 1,
-            Ok(c) => failures.push(format!("line {n}: {:?} flags {flags}:\n  port    {c:?}\n  cpython {want:?}", shown())),
+            Ok(c) => {
+                failures.push(format!("line {n}: {:?} flags {flags}:\n  port    {c:?}\n  cpython {want:?}", shown()))
+            }
             Err(Decline::Unsupported) => declined += 1,
-            Err(e) => failures.push(format!("line {n}: {:?} flags {flags}: CPython compiles, port says {e:?}", shown())),
+            Err(e) => {
+                failures.push(format!("line {n}: {:?} flags {flags}: CPython compiles, port says {e:?}", shown()))
+            }
         }
     }
     eprintln!("same {same}, declined {declined}, errors {errors}");
@@ -116,7 +125,28 @@ fn simple_literal() {
     assert_eq!(c.flags, SRE_FLAG_UNICODE);
     assert_eq!(
         c.code,
-        vec![INFO, 12, SRE_INFO_PREFIX | SRE_INFO_LITERAL, 3, 3, 3, 3, 97, 98, 99, 0, 0, 0, LITERAL, 97, LITERAL, 98, LITERAL, 99, SUCCESS]
+        vec![
+            INFO,
+            12,
+            SRE_INFO_PREFIX | SRE_INFO_LITERAL,
+            3,
+            3,
+            3,
+            3,
+            97,
+            98,
+            99,
+            0,
+            0,
+            0,
+            LITERAL,
+            97,
+            LITERAL,
+            98,
+            LITERAL,
+            99,
+            SUCCESS
+        ]
     );
     assert_eq!(c.groups, 0);
 }

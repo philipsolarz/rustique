@@ -109,7 +109,16 @@ macro_rules! func_target {
 }
 
 func_target!(MATCH, RT_MATCH, k_match, prep_match, "re.match", "match", Method::Match, false);
-func_target!(FULLMATCH, RT_FULLMATCH, k_fullmatch, prep_fullmatch, "re.fullmatch", "fullmatch", Method::Fullmatch, false);
+func_target!(
+    FULLMATCH,
+    RT_FULLMATCH,
+    k_fullmatch,
+    prep_fullmatch,
+    "re.fullmatch",
+    "fullmatch",
+    Method::Fullmatch,
+    false
+);
 func_target!(SEARCH, RT_SEARCH, k_search, prep_search, "re.search", "search", Method::Search, false);
 func_target!(SUB, RT_SUB, k_sub, prep_sub, "re.sub", "sub", Method::Sub, true);
 func_target!(SUBN, RT_SUBN, k_subn, prep_subn, "re.subn", "subn", Method::Subn, true);
@@ -138,7 +147,8 @@ fn release(_py: Python<'_>) {
 
 /// Require the recorded fingerprint of `obj` (named `name` in [`fps::FPS`]).
 fn check_fp(cx: &mut Prepare<'_>, name: &str, obj: &Bound<'_, PyAny>) -> Result<(), Refusal> {
-    let fps = fps::FPS.iter().find(|(n, _)| *n == name).map(|(_, f)| *f).ok_or_else(|| refuse!("{name}: no fingerprint"))?;
+    let fps =
+        fps::FPS.iter().find(|(n, _)| *n == name).map(|(_, f)| *f).ok_or_else(|| refuse!("{name}: no fingerprint"))?;
     cx.fingerprint_code(obj, fps)
 }
 
@@ -182,7 +192,12 @@ fn keep(o: &Bound<'_, PyAny>) -> O {
 
 /// The builtins the originals look up on their success path, pinned with `flag` through
 /// `globals` (absent from the module, present in builtins).
-fn pin_builtins(cx: &mut Prepare<'_>, globals: &Bound<'_, PyDict>, names: &[&str], flag: &'static DepFlag) -> Result<(), Refusal> {
+fn pin_builtins(
+    cx: &mut Prepare<'_>,
+    globals: &Bound<'_, PyDict>,
+    names: &[&str],
+    flag: &'static DepFlag,
+) -> Result<(), Refusal> {
     for n in names {
         cx.pin_global(globals, n, flag)?;
     }
@@ -233,9 +248,21 @@ fn shared_compile(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> 
     }
     // fingerprints of the call graph
     for name in [
-        "compile", "isstring", "_code", "_compile_info", "_compile", "_compile_charset", "_optimize_charset",
-        "_mk_bitmap", "_bytes_to_codes", "_simple", "_generate_overlap_table", "_get_iscased",
-        "_get_literal_prefix", "_get_charset_prefix", "_combine_flags",
+        "compile",
+        "isstring",
+        "_code",
+        "_compile_info",
+        "_compile",
+        "_compile_charset",
+        "_optimize_charset",
+        "_mk_bitmap",
+        "_bytes_to_codes",
+        "_simple",
+        "_generate_overlap_table",
+        "_get_iscased",
+        "_get_literal_prefix",
+        "_get_charset_prefix",
+        "_combine_flags",
     ] {
         let f = cx.get(&co, name)?;
         check_fp(cx, &format!("re._compiler.{name}"), &f)?;
@@ -246,9 +273,26 @@ fn shared_compile(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> 
     }
     let mut tags = Vec::new();
     for (class, methods) in [
-        ("Tokenizer", &["__init__", "_Tokenizer__next", "match", "get", "getwhile", "getuntil", "tell", "seek", "checkgroupname", "pos"][..]),
+        (
+            "Tokenizer",
+            &[
+                "__init__",
+                "_Tokenizer__next",
+                "match",
+                "get",
+                "getwhile",
+                "getuntil",
+                "tell",
+                "seek",
+                "checkgroupname",
+                "pos",
+            ][..],
+        ),
         ("State", &["__init__", "opengroup", "closegroup", "checkgroup", "checklookbehindgroup", "groups"][..]),
-        ("SubPattern", &["__init__", "__len__", "__delitem__", "__getitem__", "__setitem__", "insert", "append", "getwidth"][..]),
+        (
+            "SubPattern",
+            &["__init__", "__len__", "__delitem__", "__getitem__", "__setitem__", "insert", "append", "getwidth"][..],
+        ),
     ] {
         let ty = as_type(cx.get(&pa, class)?, class)?;
         for m in methods {
@@ -285,8 +329,25 @@ fn shared_compile(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> 
     cx.pin_dict(&pa, &DEPS_COMPILE)?;
     cx.pin_dict(&sre, &DEPS_COMPILE)?;
     let builtins = [
-        "isinstance", "str", "bytes", "len", "range", "IndexError", "int", "chr", "ord", "min", "list", "dict",
-        "slice", "tuple", "any", "map", "bytearray", "memoryview", "ValueError",
+        "isinstance",
+        "str",
+        "bytes",
+        "len",
+        "range",
+        "IndexError",
+        "int",
+        "chr",
+        "ord",
+        "min",
+        "list",
+        "dict",
+        "slice",
+        "tuple",
+        "any",
+        "map",
+        "bytearray",
+        "memoryview",
+        "ValueError",
     ];
     pin_builtins(cx, &co, &builtins, &DEPS_COMPILE)?;
     pin_builtins(cx, &pa, &builtins, &DEPS_COMPILE)?;
@@ -347,7 +408,9 @@ fn shared_funcs(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let minor = cx.version().1;
     // fingerprints: every function, `_compile` (its hit path), the template path
     let match_name = if minor >= 15 { "prefixmatch" } else { "match" };
-    for name in [match_name, "fullmatch", "search", "sub", "subn", "split", "findall", "finditer", "compile", "_compile"] {
+    for name in
+        [match_name, "fullmatch", "search", "sub", "subn", "split", "findall", "finditer", "compile", "_compile"]
+    {
         let f = cx.get(&red, name)?;
         check_fp(cx, &format!("re.{}", if name == "prefixmatch" { "match" } else { name }), &f)?;
     }
@@ -407,7 +470,9 @@ fn shared_funcs(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         pattern_t.clone().into_any(),
     ];
     // pins
-    for name in ["_compile", "_cache2", "RegexFlag", "_zero_sentinel", "Pattern", "_compile_template", "_parser", "_sre"] {
+    for name in
+        ["_compile", "_cache2", "RegexFlag", "_zero_sentinel", "Pattern", "_compile_template", "_parser", "_sre"]
+    {
         cx.pin(&red, name, &DEPS_FUNCS)?;
     }
     pin_builtins(cx, &red, &["isinstance", "type"], &DEPS_FUNCS)?;

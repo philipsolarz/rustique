@@ -890,7 +890,7 @@ impl<'a, 'e> Parser<'a, 'e> {
             Some(n) => n.clone(),
         };
         let item = match last {
-            Node::At(_) => return Err(Decline::Error), // nothing to repeat
+            Node::At(_) => return Err(Decline::Error),         // nothing to repeat
             Node::Repeat { .. } => return Err(Decline::Error), // multiple repeat
             Node::Subpattern { group: None, add: 0, del: 0, p } => p,
             other => {
@@ -922,7 +922,7 @@ impl<'a, 'e> Parser<'a, 'e> {
         let mut del_flags = 0;
         if self.src.matches('?')? {
             let c = match self.src.get()? {
-                Tok::End => return Err(Decline::Error), // unexpected end of pattern
+                Tok::End => return Err(Decline::Error),    // unexpected end of pattern
                 Tok::Esc(_) => return Err(Decline::Error), // unknown extension
                 Tok::Ch(c) => c,
             };

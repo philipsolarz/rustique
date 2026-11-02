@@ -12,8 +12,8 @@
 //! [`template`] validates `re.sub` replacement templates the same way
 //! (`re._parser.parse_template`).
 
-pub mod consts;
 mod compiler;
+pub mod consts;
 mod parser;
 pub mod template;
 

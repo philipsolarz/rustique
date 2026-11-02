@@ -265,10 +265,7 @@ unsafe fn repl_ok(st: &state::Funcs, p: O, repl: O, istext: bool) -> bool {
             if t != &raw mut ffi::PyBytes_Type {
                 return false;
             }
-            let b = std::slice::from_raw_parts(
-                ffi::PyBytes_AS_STRING(repl).cast::<u8>(),
-                ffi::Py_SIZE(repl) as usize,
-            );
+            let b = std::slice::from_raw_parts(ffi::PyBytes_AS_STRING(repl).cast::<u8>(), ffi::Py_SIZE(repl) as usize);
             !b.contains(&b'\\')
         };
         literal || template_checked(st, p, repl, istext)
@@ -451,9 +448,7 @@ pub(crate) unsafe fn kernel(
         let string = *args.add(npos - 1);
         let ok = string_ok(string, istext)
             && match m.shape() {
-                Shape::Sub => {
-                    ssize_ok(st, aux.expect("bound above")) && repl_ok(st, p, *args.add(1), istext)
-                }
+                Shape::Sub => ssize_ok(st, aux.expect("bound above")) && repl_ok(st, p, *args.add(1), istext),
                 Shape::Split => ssize_ok(st, aux.expect("bound above")),
                 _ => true,
             };
