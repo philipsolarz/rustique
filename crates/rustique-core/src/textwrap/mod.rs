@@ -58,8 +58,10 @@ impl Chunk {
 pub fn munge_into<T: Copy + Into<u32>>(text: &[T], expand_tabs: bool, tabsize: i64, replace: bool, out: &mut Vec<u32>) {
     out.clear();
     out.reserve(text.len());
-    let map = |c: u32| if replace && is_ws(c) { 0x20 } else { c };
-    if expand_tabs {
+    // `_whitespace` minus the space itself (mapping ' ' to ' ' changes nothing).
+    let map = |c: u32| if replace && c.wrapping_sub(0x09) < 5 { 0x20 } else { c };
+    // Without a tab, `expandtabs` is the identity (its column counter matters for tabs only).
+    if expand_tabs && text.iter().any(|&c| c.into() == 0x09) {
         let mut col: i64 = 0;
         for &c in text {
             let c: u32 = c.into();
@@ -151,8 +153,8 @@ pub fn split_words_into(text: &[u32], cls: &impl Classes, out: &mut Vec<Chunk>) 
             p = q;
             continue;
         }
-        // Alternative 2: em-dash between words.
-        if p > 0 && wp(at(p - 1)) && dashes_word(p) {
+        // Alternative 2: em-dash between words (`-{2,}` starts here).
+        if text[p] == 0x2d && p > 0 && wp(at(p - 1)) && dashes_word(p) {
             let q = p + run(p);
             out.push(Chunk::Text(p, q));
             p = q;
@@ -301,13 +303,18 @@ impl From<Chunk> for Seg {
 pub struct Wrapped {
     pub segs: Vec<Seg>,
     pub lines: Vec<usize>,
+    /// Set when a line is CPython's placeholder object itself or a one-character `str` that
+    /// CPython builds without its Latin-1 singleton (a `max_lines` cut with an empty
+    /// placeholder, `'' + placeholder`, `'' + placeholder.lstrip()` with nothing to strip):
+    /// identity a piece list cannot express; the caller lets CPython run.
+    pub placeholder_identity: bool,
     rev: Vec<Seg>,
     cur: Vec<Seg>,
 }
 
 impl Wrapped {
     pub const fn new() -> Wrapped {
-        Wrapped { segs: Vec::new(), lines: Vec::new(), rev: Vec::new(), cur: Vec::new() }
+        Wrapped { segs: Vec::new(), lines: Vec::new(), placeholder_identity: false, rev: Vec::new(), cur: Vec::new() }
     }
     /// The pieces of line `i`.
     #[inline]
@@ -355,6 +362,24 @@ fn lstrip<'s>(s: &'s [u32], cls: &impl Classes) -> &'s [u32] {
     &s[b..]
 }
 
+/// Append `cur` to `segs`, merging pieces of the text that are contiguous (consecutive
+/// chunks are adjacent ranges of the munged text), so a line is usually two pieces.
+#[inline]
+fn push_merged(segs: &mut Vec<Seg>, cur: &[Seg]) {
+    let mut prev: Option<Seg> = None;
+    for &s in cur {
+        match prev {
+            Some(p) if p.src == Src::Text && s.src == Src::Text && p.b == s.a => prev = Some(Seg { b: s.b, ..p }),
+            Some(p) => {
+                segs.push(p);
+                prev = Some(s);
+            }
+            None => prev = Some(s),
+        }
+    }
+    segs.extend(prev);
+}
+
 /// `TextWrapper._wrap_chunks(chunks)`: the lines, as pieces, in `w` (cleared first).
 pub fn wrap_chunks_into(
     text: &[u32],
@@ -367,6 +392,7 @@ pub fn wrap_chunks_into(
     w.lines.clear();
     w.cur.clear();
     w.rev.clear();
+    w.placeholder_identity = false;
     if o.width <= 0 {
         return Err(WrapError::InvalidWidth);
     }
@@ -455,14 +481,17 @@ pub fn wrap_chunks_into(
             };
             if fits {
                 w.segs.push(indent);
-                w.segs.extend_from_slice(&w.cur);
+                push_merged(&mut w.segs, &w.cur);
                 w.lines.push(w.segs.len());
             } else {
+                // `''.join(cur_line + [placeholder])` with an empty placeholder can be one
+                // fresh character; `prev_line + ''` is `prev_line` (an object of its own).
+                w.placeholder_identity |= ph_len == 0;
                 let mut placed = false;
                 while let Some(&p) = w.cur.last() {
                     if !blank(p) && cur_len + ph_len as i64 <= width {
                         w.segs.push(indent);
-                        w.segs.extend_from_slice(&w.cur);
+                        push_merged(&mut w.segs, &w.cur);
                         w.segs.push(Seg { src: Src::Placeholder, a: 0, b: ph_len });
                         w.lines.push(w.segs.len());
                         placed = true;
@@ -497,6 +526,8 @@ pub fn wrap_chunks_into(
                                 0
                             });
                         if (prev_len + ph_len) as i64 <= o.width {
+                            // `'' + placeholder` is the placeholder object
+                            w.placeholder_identity |= prev_len == 0;
                             w.segs.truncate(keep);
                             if keep > start {
                                 w.segs[keep - 1].b = cut;
@@ -507,6 +538,8 @@ pub fn wrap_chunks_into(
                             break;
                         }
                     }
+                    // `'' + placeholder.lstrip()` with nothing stripped: the placeholder object
+                    w.placeholder_identity |= indent.is_empty() && ph_lstrip == 0;
                     w.segs.push(indent);
                     w.segs.push(Seg { src: Src::Placeholder, a: ph_lstrip, b: ph_len });
                     w.lines.push(w.segs.len());

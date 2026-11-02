@@ -114,8 +114,26 @@ impl StrWriter {
     #[inline]
     pub unsafe fn new(len: usize, maxchar: u32) -> Option<StrWriter> {
         // SAFETY: per the caller.
+        unsafe { Self::with(len, maxchar, true) }
+    }
+
+    /// As [`StrWriter::new`], but a one-character result is a new object, never the
+    /// Latin-1 singleton: what CPython's `''.join` of several parts and `str.replace`
+    /// return (`PyUnicode_New` without `unicode_result`).
+    ///
+    /// # Safety
+    /// As [`StrWriter::new`].
+    #[inline]
+    pub unsafe fn fresh(len: usize, maxchar: u32) -> Option<StrWriter> {
+        // SAFETY: per the caller.
+        unsafe { Self::with(len, maxchar, false) }
+    }
+
+    #[inline]
+    unsafe fn with(len: usize, maxchar: u32, singleton: bool) -> Option<StrWriter> {
+        // SAFETY: per the caller.
         unsafe {
-            if len == 1 && maxchar < 256 {
+            if singleton && len == 1 && maxchar < 256 {
                 return Some(StrWriter {
                     obj: std::ptr::null_mut(),
                     data: std::ptr::null_mut(),

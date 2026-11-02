@@ -358,6 +358,9 @@ fn wrap_into<T: Unit>(text: &[T], o: &Opts, sc: &mut Scratch) -> Option<bool> {
         Err(WrapError::InvalidWidth | WrapError::PlaceholderTooLarge | WrapError::NoProgress) => return None,
     }
     let w = &sc.wrapped;
+    if w.placeholder_identity {
+        return None; // a line that is the placeholder object (or a fresh 1-char str): CPython's
+    }
     let whole = munged_is_input
         && one_chunk
         && sc.initial.is_empty()
@@ -367,17 +370,26 @@ fn wrap_into<T: Unit>(text: &[T], o: &Opts, sc: &mut Scratch) -> Option<bool> {
     Some(whole)
 }
 
-/// Length and largest code point of line `i`.
+/// Largest code point any line can contain when every source is ASCII (then every line is
+/// ASCII and needs no scan), else `None`.
+fn ascii_bound(sc: &Scratch) -> Option<u32> {
+    let m = [&sc.munged, &sc.initial, &sc.subsequent, &sc.placeholder].iter().fold(0, |m, v| m.max(pep393::max_cp(v)));
+    (m < 128).then_some(127)
+}
+
+/// Length and largest code point (class-exact: `bound` when given) of line `i`.
 #[inline]
-fn line_shape(sc: &Scratch, opts: &WrapOpts<'_>, i: usize) -> (usize, u32) {
+fn line_shape(sc: &Scratch, opts: &WrapOpts<'_>, i: usize, bound: Option<u32>) -> (usize, u32) {
     let mut len = 0;
     let mut max = 0;
     for s in sc.wrapped.line(i) {
         let t = s.get(&sc.munged, opts);
         len += t.len();
-        max = max.max(pep393::max_cp(t));
+        if bound.is_none() {
+            max = max.max(pep393::max_cp(t));
+        }
     }
-    (len, max)
+    (len, bound.unwrap_or(max))
 }
 
 fn wrap_opts<'a>(sc: &'a Scratch, o: &Opts) -> WrapOpts<'a> {
@@ -403,11 +415,12 @@ unsafe fn lines_list(sc: &Scratch, o: &Opts, text: O, whole: bool) -> O {
             return out;
         }
         let opts = wrap_opts(sc, o);
+        let bound = if whole { None } else { ascii_bound(sc) };
         for i in 0..n {
             let s = if whole {
                 ffi::Py_NewRef(text)
             } else {
-                let (len, max) = line_shape(sc, &opts, i);
+                let (len, max) = line_shape(sc, &opts, i, bound);
                 match StrWriter::new(len, max) {
                     Some(mut w) => {
                         for seg in sc.wrapped.line(i) {
@@ -437,9 +450,10 @@ unsafe fn lines_joined(sc: &Scratch, o: &Opts, text: O, whole: bool) -> O {
         }
         let n = sc.wrapped.len();
         let opts = wrap_opts(sc, o);
+        let bound = ascii_bound(sc);
         let (mut len, mut max) = (n.saturating_sub(1), if n > 1 { 0x0a } else { 0 });
         for i in 0..n {
-            let (l, m) = line_shape(sc, &opts, i);
+            let (l, m) = line_shape(sc, &opts, i, bound);
             len += l;
             max = max.max(m);
         }
