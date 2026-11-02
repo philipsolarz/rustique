@@ -12,18 +12,20 @@ test's outcome), reporting any difference and the timing.
 import os
 import sys
 
-COMMANDS = ("run", "status", "report", "diff")
+COMMANDS = ("run", "status", "report", "diff", "estimate")
 USAGE = """\
 usage: python -m rustique [run] [--only G,..] [--exclude G,..] [--report] [--check|--check-raise] [--native PATTERN]...
                           [--no-builtins] (script.py | -m module | -c command) [args...]
        python -m rustique status [--json]
        python -m rustique report [--json] [-o FILE] [--limit N] [--check] -- <command...>
        python -m rustique diff [--repeat N] [--ignore REGEX]... [--no-normalize] [--keep DIR] [--check] -- <command...>
+       python -m rustique estimate [--json] -- <command...>
 
   run      run a Python program with Rustique enabled (RUSTIQUE=0 still turns it off)
   status   what Rustique accelerates on this interpreter, and why anything is refused
   report   run a command with RUSTIQUE=1 and counters on; print the per-target report
   diff     run a command plain and with RUSTIQUE=1; compare exit code, output, test outcomes
+  estimate predict what Rustique would do for a command's run time, from the command itself (prototype)
 
 Environment: RUSTIQUE=1|0, RUSTIQUE_ONLY, RUSTIQUE_EXCLUDE, RUSTIQUE_STATS, RUSTIQUE_REPORT, RUSTIQUE_CHECK
 (docs/USAGE.md).
@@ -49,6 +51,10 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(status_cmd(argv))
     elif cmd == "report":
         raise SystemExit(report_cmd(argv))
+    elif cmd == "estimate":
+        from rustique import _estimate
+
+        raise SystemExit(_estimate.main(argv))
     else:
         from rustique import _diff
 

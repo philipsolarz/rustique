@@ -141,6 +141,20 @@ def test_report_refuses_under_kill_switch():
     assert r.returncode == 2 and "kill switch" in r.stderr
 
 
+# --- estimate (prototype) --------------------------------------------------------------------
+
+
+def test_estimate_names_the_targets(tmp_path):
+    prog = tmp_path / "prog.py"
+    prog.write_text("import json\nfor i in range(30000):\n    json.dumps({'a': [i, i + 1], 'b': 'x' * 20})\n")
+    r = rq("estimate", "--json", "--", sys.executable, str(prog), cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    pred = json.loads(r.stdout)["prediction"]
+    row = next(x for x in pred["rows"] if x["target"] == "json.dumps")
+    assert row["calls"] == 30000 and row["source"].startswith("replayed")
+    assert 0 < row["ratio"] < 1 and 0 < pred["ratio"] < 1
+
+
 # --- diff ----------------------------------------------------------------------------------
 
 # Programs enable Rustique themselves here (dev installs have no startup file); the plain run
