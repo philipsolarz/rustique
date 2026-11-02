@@ -31,7 +31,7 @@ use pyo3::types::{PyDict, PyList, PyModule};
 use super::guard;
 use super::prepare::{self, FingerprintRecord, Prepare};
 use super::site::{Kind, Site};
-use super::spec::{Category, GroupSpec, Refusal, TargetSpec};
+use super::spec::{Category, GroupSpec, KNOWN_TIERS, Refusal, TargetSpec};
 use super::stats;
 use super::version;
 
@@ -201,6 +201,8 @@ struct Registry {
     rt: Vec<Rt>,
     only: Option<Vec<String>>,
     exclude: Vec<String>,
+    /// Opt-in tiers requested (union of every `enable()` since the last full `disable()`).
+    tiers: Vec<String>,
     groups: Vec<Group>,
     /// Incremented at the start of each registry pass (a group's refusal is remembered for
     /// the pass only).
@@ -264,6 +266,7 @@ fn registry<'a>(g: &'a mut Guard<'_, Option<Registry>>) -> &'a mut Registry {
         pass: 0,
         only: None,
         exclude: Vec::new(),
+        tiers: Vec::new(),
     })
 }
 
@@ -528,6 +531,7 @@ extern "C" fn resync_pending(_arg: *mut std::ffi::c_void) -> c_int {
     // The registry may be held (even by this thread, while a `prepare` runs Python code):
     // then its holder picks the request up in `after_unlock`.
     after_unlock(py);
+    run_hooks(py);
     0
 }
 
@@ -565,8 +569,10 @@ pub(crate) fn deps_fallback() {
     }
 }
 
-/// Restore a target's sites to the originals (kept installed: pins stay active).
-fn suspend(rt: &mut Rt, why: Suspended) -> bool {
+/// Restore a target's sites to the originals (kept installed: pins stay active). Its
+/// dynamic sites retire at their next call (`accel::dynamic`).
+fn suspend(spec: &TargetSpec, rt: &mut Rt, why: Suspended) -> bool {
+    spec.counters.set_live(false);
     for s in rt.sites.iter_mut().rev() {
         s.uninstall(true);
     }
@@ -588,6 +594,7 @@ fn resume(reg: &mut Registry, i: usize) -> bool {
     let mut ml = rt.sites.iter().any(|s| s.kind == Kind::MlMeth);
     rt.suspended = None;
     all_specs()[i].counters.rearm();
+    all_specs()[i].counters.set_live(failed.is_none());
     if let Some(f) = failed {
         ml |= deactivate(reg, i);
         let rt = &mut reg.rt[i];
@@ -613,7 +620,7 @@ fn resync(_py: Python<'_>, reg: &mut Registry, from_kernel: bool) -> (bool, bool
         let fallback = spec.counters.suspend_requested.swap(false, Ordering::AcqRel);
         if fallback && rt.suspended.is_none() {
             spec.counters.suspensions.fetch_add(1, Ordering::Relaxed);
-            ml |= suspend(rt, Suspended::Fallback);
+            ml |= suspend(spec, rt, Suspended::Fallback);
             continue;
         }
         if rt.tracked.is_empty() {
@@ -621,7 +628,7 @@ fn resync(_py: Python<'_>, reg: &mut Registry, from_kernel: bool) -> (bool, bool
         }
         let ok = rt.tracked.iter().all(|f| f.ok());
         if !ok && rt.suspended.is_none() {
-            ml |= suspend(rt, Suspended::Deps);
+            ml |= suspend(spec, rt, Suspended::Deps);
             rt.suspensions += 1;
         }
         if rt.suspended == Some(Suspended::Deps) && rt.suspensions > MAX_SUSPENSIONS {
@@ -879,7 +886,8 @@ fn activate_inner(
         Ok(Err(r)) => return refuse(reg, r),
         Err(p) => return refuse(reg, Refusal::new(format!("prepare panicked: {}", panic_message(&*p)))),
     }
-    if staged.declared.is_empty() {
+    if staged.declared.is_empty() && spec.on_install.is_none() {
+        // (A target with only dynamic sites installs them from its `on_install` hook.)
         return refuse(reg, Refusal::new("declared no sites"));
     }
     // All-or-nothing: CAS each site from its validated original.
@@ -927,6 +935,8 @@ fn activate_inner(
     rt.suspended = None;
     rt.suspensions = 0;
     spec.counters.arm(spec.hit_credit, spec.fallback_debit);
+    spec.counters.set_live(true);
+    queue_hook(i);
     // Deopt while unpinned: GIL builds only (see "Suspensions").
     if has_vc && !cfg!(Py_GIL_DISABLED) {
         rt.tracked = rt.flags.clone();
@@ -944,6 +954,47 @@ fn activate_inner(
     ml
 }
 
+// ---------------------------------------------------------------------------------------
+// The on_install hook
+// ---------------------------------------------------------------------------------------
+
+/// Targets installed since the hooks last ran: their `on_install` runs outside the registry
+/// lock and outside every watcher ([`run_hooks`]).
+static HOOKS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+fn queue_hook(i: usize) {
+    if all_specs()[i].on_install.is_some() {
+        HOOKS.lock().unwrap_or_else(|p| p.into_inner()).push(i);
+        // A lazy activation (possibly inside the `sys.modules` watcher): the pending call
+        // runs the hook soon after; registry operations run it too.
+        schedule_pending();
+    }
+}
+
+/// Run queued `on_install` hooks of targets still installed (attached thread, registry
+/// lock not held by this thread, not in a watcher). Left queued when this thread holds the
+/// registry (a pending call during a `prepare`).
+fn run_hooks(py: Python<'_>) {
+    if HOLDING.get() {
+        return;
+    }
+    loop {
+        let batch = std::mem::take(&mut *HOOKS.lock().unwrap_or_else(|p| p.into_inner()));
+        if batch.is_empty() {
+            return;
+        }
+        for i in batch {
+            let still = match REG.lock(py) {
+                Ok(mut g) => registry(&mut g).rt[i].state == State::Installed,
+                Err(_) => false,
+            };
+            if still && let Some(f) = all_specs()[i].on_install {
+                let _ = std::panic::catch_unwind(f_with_py(f));
+            }
+        }
+    }
+}
+
 fn release_sites(sites: impl Iterator<Item = Site>) {
     for s in sites {
         s.release();
@@ -951,12 +1002,7 @@ fn release_sites(sites: impl Iterator<Item = Site>) {
 }
 
 fn site_label(name: &str, kind: Kind) -> String {
-    let kind = match kind {
-        Kind::MlMeth => "ml_meth",
-        Kind::Slot => "slot",
-        Kind::Vectorcall => "vectorcall",
-    };
-    format!("{name} ({kind})")
+    format!("{name} ({})", kind.label())
 }
 
 /// Restore target `i`'s sites and drop its pins. Returns whether an `ml_meth` site was
@@ -964,6 +1010,7 @@ fn site_label(name: &str, kind: Kind) -> String {
 fn deactivate(reg: &mut Registry, i: usize) -> bool {
     let rt = &mut reg.rt[i];
     let was_installed = rt.state == State::Installed;
+    all_specs()[i].counters.set_live(false);
     let ml = rt.sites.iter().any(|s| s.kind == Kind::MlMeth);
     for mut s in rt.sites.drain(..).rev() {
         s.uninstall(true);
@@ -1027,11 +1074,17 @@ fn clear_internal_caches() {
 // Selection
 // ---------------------------------------------------------------------------------------
 
+/// `names` names this target, its group or its tier.
 fn matches(spec: &TargetSpec, names: &[String]) -> bool {
-    names.iter().any(|n| n == spec.name || n == spec.group)
+    names.iter().any(|n| n == spec.name || n == spec.group || spec.opt_in == Some(n.as_str()))
 }
 
-fn selected(spec: &TargetSpec, only: Option<&[String]>, exclude: &[String]) -> bool {
+fn selected(spec: &TargetSpec, only: Option<&[String]>, exclude: &[String], tiers: &[String]) -> bool {
+    if let Some(t) = spec.opt_in
+        && !tiers.iter().any(|x| x == t)
+    {
+        return false;
+    }
     let inc = match only {
         Some(o) => matches(spec, o),
         None => !spec.hidden(),
@@ -1039,9 +1092,31 @@ fn selected(spec: &TargetSpec, only: Option<&[String]>, exclude: &[String]) -> b
     inc && !matches(spec, exclude)
 }
 
+/// A known name: target, group or tier (including tiers with no target in this build).
+pub(crate) fn known_name(n: &str) -> bool {
+    all_specs().iter().any(|s| s.name == n || s.group == n || s.opt_in == Some(n)) || KNOWN_TIERS.contains(&n)
+}
+
+/// Every tier name known to this build (sorted).
+pub(crate) fn tier_names() -> Vec<&'static str> {
+    let mut t: Vec<&'static str> = KNOWN_TIERS.to_vec();
+    t.extend(all_specs().iter().filter_map(|s| s.opt_in));
+    t.sort_unstable();
+    t.dedup();
+    t
+}
+
+pub(crate) fn check_tiers(names: &[String]) -> PyResult<()> {
+    let known = tier_names();
+    let unknown: Vec<&str> = names.iter().map(String::as_str).filter(|n| !known.contains(n)).collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(PyValueError::new_err(format!("unknown rustique tier: {}; tiers: {}", unknown.join(", "), known.join(", "))))
+}
+
 pub(crate) fn check_names(names: &[String]) -> PyResult<()> {
-    let unknown: Vec<&String> =
-        names.iter().filter(|n| !all_specs().iter().any(|s| s.name == n.as_str() || s.group == n.as_str())).collect();
+    let unknown: Vec<&String> = names.iter().filter(|n| !known_name(n)).collect();
     if unknown.is_empty() {
         return Ok(());
     }
@@ -1063,12 +1138,29 @@ pub(crate) fn check_names(names: &[String]) -> PyResult<()> {
 /// stay; refused or disabled ones are retried). Module targets whose module is not
 /// imported yet become pending. Never imports anything.
 pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -> PyResult<()> {
+    enable_tiers(py, only, exclude, Vec::new())
+}
+
+/// [`enable`] with opt-in tiers requested too (added to the ones already requested).
+pub fn enable_tiers(
+    py: Python<'_>,
+    only: Option<Vec<String>>,
+    exclude: Vec<String>,
+    tiers: Vec<String>,
+) -> PyResult<()> {
     if let Some(o) = &only {
         check_names(o)?;
     }
     check_names(&exclude)?;
+    check_tiers(&tiers)?;
     let mut g = REG.lock(py)?;
     let reg = registry(&mut g);
+    for t in tiers {
+        if !reg.tiers.contains(&t) {
+            reg.tiers.push(t);
+        }
+    }
+    let tiers = reg.tiers.clone();
     prepare::clear_pass_caches();
     reg.pass += 1;
     JIT.store(jit_enabled(py), Ordering::Relaxed);
@@ -1080,12 +1172,16 @@ pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -
     // queued by the watcher (drained below).
     let mut check: Vec<usize> = Vec::new();
     for (i, spec) in all_specs().iter().enumerate() {
-        if !selected(spec, only.as_deref(), &exclude) {
+        if !selected(spec, only.as_deref(), &exclude, &tiers) {
             continue;
         }
         if reg.rt[i].suspended == Some(Suspended::Fallback) {
             ml |= resume(reg, i);
             continue;
+        }
+        if reg.rt[i].state == State::Installed && reg.rt[i].sites.iter().any(Site::displaced) {
+            // An entry point was rewritten over the kernel: validate afresh.
+            ml |= deactivate(reg, i);
         }
         if matches!(reg.rt[i].state, State::Installed | State::Pending) {
             continue;
@@ -1126,6 +1222,7 @@ pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -
         clear_internal_caches();
     }
     after_unlock(py);
+    run_hooks(py);
     // Release everything before finalization (registered once, outside the lock).
     super::exit::ensure_hook(py);
     Ok(())
@@ -1154,6 +1251,7 @@ pub fn disable(py: Python<'_>, names: Option<Vec<String>>) -> PyResult<()> {
     if names.is_none() {
         reg.only = None;
         reg.exclude = Vec::new();
+        reg.tiers.clear();
     }
     refresh_pending(reg);
     drop(g);
@@ -1183,6 +1281,7 @@ pub fn teardown(py: Python<'_>) -> PyResult<()> {
     }
     reg.only = None;
     reg.exclude = Vec::new();
+    reg.tiers.clear();
     refresh_pending(reg);
     NEED_RESYNC.store(false, Ordering::Release);
     guard::unwatch_sys_modules();
@@ -1228,6 +1327,7 @@ pub fn installed(py: Python<'_>, names: Option<&[String]>) -> PyResult<Vec<&'sta
         clear_internal_caches();
     }
     after_unlock(py);
+    run_hooks(py);
     Ok(out)
 }
 
@@ -1292,13 +1392,21 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         if spec.hidden() && rt.state == State::Disabled && rt.reason.is_none() {
             continue;
         }
+        // A target of a tier nobody requested: disabled, saying how to turn it on.
+        let tier_off = spec.opt_in.filter(|t| rt.state == State::Disabled && !reg.tiers.iter().any(|x| x == t));
         enabled |= matches!(rt.state, State::Installed | State::Pending);
         let d = PyDict::new(py);
         let fixed = &static_status(py)[i];
         d.set_item(intern!(py, "name"), fixed.name.bind(py))?;
         d.set_item(intern!(py, "group"), fixed.group.bind(py))?;
         d.set_item(intern!(py, "state"), rt.state.as_str())?;
-        d.set_item(intern!(py, "reason"), rt.reason.as_deref())?;
+        match tier_off {
+            Some(t) if rt.reason.is_none() => {
+                d.set_item(intern!(py, "reason"), format!("opt-in tier: RUSTIQUE_TIERS={t}"))?
+            }
+            _ => d.set_item(intern!(py, "reason"), rt.reason.as_deref())?,
+        }
+        d.set_item(intern!(py, "tier"), spec.opt_in)?;
         d.set_item(
             intern!(py, "refusal"),
             if rt.state == State::Refused { rt.refusal.map(Category::as_str) } else { None },
@@ -1321,6 +1429,18 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
             && let Some(why) = degraded_reason(spec)
         {
             d.set_item(intern!(py, "degraded"), why)?;
+        }
+        if rt.state == State::Installed && rt.suspended.is_none() && rt.sites.iter().any(Site::displaced) {
+            // CPython (or someone else) rewrote an entry point over the kernel.
+            d.set_item(intern!(py, "suspended"), "conflict")?;
+            d.set_item(
+                "reason",
+                "an entry point was rewritten over the kernel: the original runs until the next enable()",
+            )?;
+        }
+        let dynamic = spec.counters.dynamic.load(Ordering::Relaxed);
+        if dynamic != 0 {
+            d.set_item(intern!(py, "dynamic_sites"), dynamic)?;
         }
         if let Some(why) = rt.suspended {
             d.set_item(intern!(py, "suspended"), why.as_str())?;
@@ -1349,11 +1469,13 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     process.set_item("check", stats::check_mode().map(|r| if r { "raise" } else { "warn" }))?;
     process.set_item("only", reg.only.clone())?;
     process.set_item("exclude", reg.exclude.clone())?;
+    process.set_item("tiers", reg.tiers.clone())?;
     let out = PyDict::new(py);
     out.set_item("targets", targets)?;
     out.set_item("process", process)?;
     drop(g);
     after_unlock(py);
+    run_hooks(py);
     Ok(out)
 }
 
