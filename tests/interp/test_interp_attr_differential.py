@@ -116,7 +116,7 @@ def build(spec: dict[str, Any]) -> tuple[list[Any], list[Any], list[str], Any]:
     if spec["meta"] == "type":
         meta: type = type
     elif spec["meta"] == "abc":
-        meta = abc.ABCMeta
+        meta = type("AbcMeta", (abc.ABCMeta,), {})   # fresh: mutations must not leak
     else:
         mns: dict[str, Any] = {}
         if spec["meta"] == "attrs":
@@ -174,7 +174,7 @@ def build(spec: dict[str, Any]) -> tuple[list[Any], list[Any], list[str], Any]:
         classes.append(c)
         base = (c,)
 
-    oslots = {"__slots__": ("a", "s")} if spec["other_slots"] else {}
+    oslots = {"__slots__": ("s", "b")} if spec["other_slots"] else {}
     other = type("Other", (), {"m": lambda self: "other-m", "a": Plain("other-a"), **oslots})
     pool = classes + [other]
 
@@ -240,6 +240,8 @@ def build(spec: dict[str, Any]) -> tuple[list[Any], list[Any], list[str], Any]:
 
 
 PROGRAM = '''
+import re as _re
+
 def canon(r, o):
     if callable(r) and hasattr(r, "__func__"):
         return ("bound", r.__func__.__name__, r.__self__ is o)
@@ -247,10 +249,10 @@ def canon(r, o):
         return ("callable", type(r).__name__, getattr(r, "__name__", None))
     if isinstance(r, type):
         return ("type", r.__name__)
-    return ("v", repr(r))
+    return ("v", _re.sub(r" at 0x[0-9a-f]+", "", repr(r)))
 
 def exc(e):
-    return ("exc", type(e).__name__, str(e))
+    return ("exc", type(e).__name__, _re.sub(r" at 0x[0-9a-f]+", "", str(e)))
 
 ''' + "".join(f'''
 def load_{n}(objs):
@@ -308,7 +310,7 @@ def run(spec: dict[str, Any]) -> tuple[list[Any], list[str]]:
     return out, log
 
 
-@settings(max_examples=150)
+@settings(max_examples=300)
 @given(spec_strategy)
 def test_attribute_resolution_and_isinstance(spec: dict[str, Any]) -> None:
     plain = run(spec)
@@ -316,3 +318,22 @@ def test_attribute_resolution_and_isinstance(spec: dict[str, Any]) -> None:
         accelerated = run(spec)
     assert accelerated[0] == plain[0]
     assert accelerated[1] == plain[1]
+
+
+def test_differential_reaches_the_fast_paths() -> None:
+    """Guard against a vacuous differential: a fixed scenario hits the attribute cache."""
+    from _interp import info
+
+    spec = {"meta": "attrs", "classes": [{"attrs": {"a": "value", "m": "method", "b": "cached"}, "slots": None,
+                                          "getattr": False, "getattribute": False},
+                                         {"attrs": {"d": "nondatadesc"}, "slots": ("s",), "getattr": False,
+                                          "getattribute": False}],
+            "other_slots": True, "objs": [(0, {"a": 1}, "plain"), (1, {"b": 2}, "materialize"), (2, {"s": 3}, "plain"),
+                                          (3, {}, "plain")],
+            "class_prop": False, "mutations": [("set_class_value", 0, "a", 1)], "rounds": 2}
+    plain = run(spec)
+    with tier():
+        accelerated = run(spec)
+        g = info()["groups"]["interp.attr"]
+    assert accelerated == plain
+    assert g["hits"] > 100, g
