@@ -23,7 +23,7 @@ I record what I saw of both.
 
 | # | finding | evidence |
 |---|---|---|
-| 1 | **No behaviour difference in 14 real projects.** No exit code, output or test outcome changed: requests, flask, attrs, rich, httpx, jinja, click, marshmallow, sqlglot, black, pydantic, Django (5,164 tests), arrow and dateutil; about 30,000 test outcomes plus 22,789 subtests on 3.15.1, and 7 of the projects again on 3.15.1t | §4, M |
+| 1 | **No behaviour difference in 14 real projects.** No exit code, output or test outcome changed: requests, flask, attrs, rich, httpx, jinja, click, marshmallow, sqlglot, black, pydantic, Django (5,164 tests), arrow and dateutil; about 30,000 test outcomes plus 22,789 subtests on 3.15.1, and 6 of the projects again on 3.15.1t. The one outcome change (a Django test on 3.15.1t) is flaky there without Rustique too: 7 of 12 plain runs fail | §4, M |
 | 2 | **But the shipped `diff` said DIFFERENT on 6 of the 14 suites (across two passes), and none of the six was Rustique.** The causes were its own `--junitxml` path printed by pytest, log timestamps, ephemeral ports, a test server's thread interleaving with progress dots, and test ids built from `now()`. A CI gate that cries wolf gets switched off. The prototype on this branch fixes all six: 0 false alarms. It also calibrates noise by re-running the plain side once when only the output differs | §3.2, M |
 | 3 | **Found while measuring the estimator: the `list.sort` kernel is 1.4–3.2× slower** on presorted and string lists. `sorted()` reaches it too. Sent to the lead, then routed to w2-floors | §5.4, M |
 | 4 | **The report under-counts multi-process programs and double-counts forked ones.** Forked workers end with `os._exit` and write nothing: a fork `Pool` doing 8 accelerated calls reports 0. uvicorn's 2 workers served 50 requests and the report shows 1 hit. A forked child inherits its parent's counters: a child with 10 calls reports 110 | §3.1, M |
@@ -152,12 +152,25 @@ plain and one enabled run in sequence on the loaded box: **±5% is noise here** 
 | arrow 1.4.0 (`--cov` in addopts) | 1,863 | 3.35 | 0.995 | DIFFERENT (junit path) | identical | 1 | 482k / 66k | `tools` 5,644 (coverage listening); `builtins.min` 6% |
 | dateutil 4.0.0 | 5,343 | 15.0 | 0.989 | identical | identical | 2 | 2.76M / 709k | **`builtins.min` 49% deopt (438k)**; `list.sort` 72% args |
 
-⟨T-TABLE⟩
+**3.15.1t** (cp315t release wheel, prototype diff v2; sqlglot skipped: `duckdb` builds from
+source for cp315t; M):
+
+| project | plain s | ratio (1 pair) | diff | accelerated calls / fallbacks |
+|---|---:|---:|---|---|
+| attrs | 9.89 | 0.975 | identical (1,387) | 320k / 159k |
+| jinja | 2.70 | 1.071 | identical (909) | 427k / 31k |
+| click | 4.91 | 1.019 | identical (2,016) | 364k / 47k |
+| marshmallow | 1.54 | 1.000 | identical (1,188) | 116k / 29k |
+| rich | 5.74 | 0.984 | identical (981) | 332k / 64k |
+| Django (14 apps) | 16.6 | 1.022 | **DIFFERENT**: `view_tests…test_reporting_frames_for_cyclic_reference` failed in the enabled run only. **Flaky on 3.15.1t without Rustique**: 7 of 12 plain runs fail, 5 of 12 enabled; 0 of 2 on 3.15.1 (M). Not Rustique; exactly the case for confirming a difference by re-running the differing test (§3.2 item 2) | 585k / 158k |
+
 
 Reading:
 
 - **No behaviour difference anywhere.** Failures present in both runs are environmental (old
   tags against pytest 9 or Python 3.15, network tests) and identical between plain and enabled.
+  The one outcome change (Django on 3.15.1t) is a test that is flaky on 3.15.1t without
+  Rustique.
 - **Timing is flat (0.90–1.05)** because test suites are dominated by pytest machinery,
   fixtures and assertion rewriting, not by stdlib calls. That is consistent with the workload
   atlas: framework-heavy code is out of reach of today's 84 targets. A developer who measures
