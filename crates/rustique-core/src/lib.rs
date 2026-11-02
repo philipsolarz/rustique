@@ -20,6 +20,7 @@ pub mod paths;
 pub mod pyfmt;
 pub mod pyhash;
 pub mod random;
+pub mod re;
 pub mod slice;
 pub mod stats;
 pub mod textwrap;
