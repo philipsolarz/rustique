@@ -25,7 +25,9 @@ use super::common::*;
 // ClassCache
 // ---------------------------------------------------------------------------------------
 
-/// Per-class facts: `N` slots of `(tag << 32) | payload`, indexed by the type's address.
+/// Per-class facts: `N` slots of `(tag << 32) | payload`, two-way set-associative, the set
+/// chosen by a multiplicative hash of the type's address (`N` even). Tags identify a class
+/// (and its state) uniquely, so a slot holding the type's current tag is its verdict.
 pub struct ClassCache<const N: usize> {
     slots: [AtomicU64; N],
     epoch: AtomicU64,
@@ -37,8 +39,9 @@ impl<const N: usize> ClassCache<N> {
     }
 
     #[inline(always)]
-    fn slot(&self, tp: Tp) -> &AtomicU64 {
-        &self.slots[(tp as usize >> 4) % N]
+    fn set(&self, tp: usize) -> usize {
+        let h = ((tp as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize;
+        (h % (N / 2)) * 2
     }
 
     /// The payload cached for `tp` at its current tag.
@@ -46,8 +49,16 @@ impl<const N: usize> ClassCache<N> {
     pub unsafe fn get(&self, tp: Tp) -> Option<u32> {
         // SAFETY: live type.
         let tag = unsafe { tag_of(tp) };
-        let v = self.slot(tp).load(Relaxed);
-        (tag != 0 && (v >> 32) as u32 == tag).then_some(v as u32)
+        if tag == 0 {
+            return None;
+        }
+        let i = self.set(tp as usize);
+        let v = self.slots[i].load(Relaxed);
+        if (v >> 32) as u32 == tag {
+            return Some(v as u32);
+        }
+        let v = self.slots[i + 1].load(Relaxed);
+        ((v >> 32) as u32 == tag).then_some(v as u32)
     }
 
     /// Start computing a verdict: the type's tag (assigned if missing) and the epoch.
@@ -64,7 +75,15 @@ impl<const N: usize> ClassCache<N> {
         if tag == 0 || unsafe { tag_of(tp) } != tag {
             return;
         }
-        let s = self.slot(tp);
+        let i = self.set(tp as usize);
+        let way = if self.slots[i].load(Relaxed) == 0 {
+            i
+        } else if self.slots[i + 1].load(Relaxed) == 0 {
+            i + 1
+        } else {
+            i + (tag as usize & 1)
+        };
+        let s = &self.slots[way];
         let v = (u64::from(tag) << 32) | u64::from(payload);
         s.store(v, Release);
         if self.epoch.load(Acquire) != epoch_seen {
@@ -75,7 +94,9 @@ impl<const N: usize> ClassCache<N> {
     /// Forget `tp`'s verdict (an invalidation event).
     pub fn clear(&self, tp: usize) {
         self.epoch.fetch_add(1, AcqRel);
-        self.slots[(tp >> 4) % N].store(0, Release);
+        let i = self.set(tp);
+        self.slots[i].store(0, Release);
+        self.slots[i + 1].store(0, Release);
     }
 
     /// Forget everything (disable/exit).
@@ -179,23 +200,22 @@ pub unsafe fn watch_dict_invalidates(dict: P, cache: &'static dyn Invalidate, tp
 /// The dynamic sites of one target: functions patched after install, owned by the target's
 /// static "hook" site (the generator function whose vectorcall Rustique replaced). The
 /// target counts as installed while the hook still carries its kernel.
+///
+/// No registry of the patched functions is kept: a per-site weak reference costs ~300 Ir
+/// at class/decorator creation, enough to break never-slower on `contextmanager(f)`
+/// (measured 1.066). A kernel that finds its target not installed (disabled, suspended,
+/// exited) gives its function CPython's vectorcall back at that call ([`Self::retire`]);
+/// until then the function falls back at C-call cost.
 pub struct Dynamic {
     /// The hook function (strong reference) and its kernel.
     hook: AtomicUsize,
     hook_kernel: AtomicUsize,
-    /// Weak references to the patched functions, with the kernel each got.
-    sites: Mutex<Vec<(usize, usize)>>,
-    prune_at: AtomicUsize,
+    installed: AtomicUsize,
 }
 
 impl Dynamic {
     pub const fn new() -> Self {
-        Dynamic {
-            hook: AtomicUsize::new(0),
-            hook_kernel: AtomicUsize::new(0),
-            sites: Mutex::new(Vec::new()),
-            prune_at: AtomicUsize::new(64),
-        }
+        Dynamic { hook: AtomicUsize::new(0), hook_kernel: AtomicUsize::new(0), installed: AtomicUsize::new(0) }
     }
 
     /// Record the hook site (from `prepare`; the registry swaps it right after).
@@ -233,25 +253,10 @@ impl Dynamic {
             if !is_function(func) || vectorcall_of(func) != function_vectorcall() {
                 return false;
             }
-            let wr = ffi::PyWeakref_NewRef(func, std::ptr::null_mut());
-            if wr.is_null() {
-                ffi::PyErr_Clear();
-                return false;
-            }
-            let Ok(mut v) = self.sites.lock() else {
-                ffi::Py_DECREF(wr);
-                return false;
-            };
-            v.push((wr as usize, kernel as usize));
-            let n = v.len();
-            if n >= self.prune_at.load(Relaxed) {
-                prune(&mut v);
-                self.prune_at.store((v.len() * 2).max(64), Relaxed);
-            }
-            drop(v);
             PyFunction_SetVectorcall(func.cast(), kernel);
-            true
         }
+        self.installed.fetch_add(1, Relaxed);
+        true
     }
 
     /// A kernel found its target not installed: give `func` its CPython vectorcall (and
@@ -262,30 +267,8 @@ impl Dynamic {
         unsafe { restore_one(func, kernel as usize) }
     }
 
-    /// Restore every live patched function (exit, or an explicit reset).
-    pub fn restore_all(&self) {
-        let sites = match self.sites.lock() {
-            Ok(mut v) => std::mem::take(&mut *v),
-            Err(_) => return,
-        };
-        // SAFETY: attached thread (exit hook / Python-facing call); our weak references.
-        unsafe {
-            for (wr, k) in sites {
-                let mut f: P = std::ptr::null_mut();
-                if PyWeakref_GetRef(wr as P, &mut f) > 0 && !f.is_null() {
-                    restore_one(f, k);
-                    ffi::Py_DECREF(f);
-                } else {
-                    ffi::PyErr_Clear();
-                }
-                ffi::Py_DECREF(wr as P);
-            }
-        }
-    }
-
-    /// Exit: restore everything and drop the hook reference.
+    /// Exit: drop the hook reference (patched functions retire at their next call).
     pub fn release(&self) {
-        self.restore_all();
         let h = self.hook.swap(0, AcqRel);
         if h != 0 {
             // SAFETY: the reference we held.
@@ -293,12 +276,9 @@ impl Dynamic {
         }
     }
 
-    /// Number of patched functions still alive (status/tests).
+    /// Number of functions given a kernel since the process started (status/tests).
     pub fn live(&self) -> usize {
-        let Ok(mut v) = self.sites.lock() else { return 0 };
-        // SAFETY: attached thread (Python-facing caller).
-        unsafe { prune(&mut v) };
-        v.len()
+        self.installed.load(Relaxed)
     }
 }
 
@@ -318,21 +298,3 @@ unsafe fn restore_one(f: P, kernel: usize) {
     }
 }
 
-/// Drop the entries whose function died.
-unsafe fn prune(v: &mut Vec<(usize, usize)>) {
-    v.retain(|&(wr, _)| {
-        let mut f: P = std::ptr::null_mut();
-        // SAFETY: our weak reference.
-        let live = unsafe { PyWeakref_GetRef(wr as P, &mut f) } > 0;
-        // SAFETY: as above.
-        unsafe {
-            if live {
-                ffi::Py_DECREF(f);
-            } else {
-                ffi::PyErr_Clear();
-                ffi::Py_DECREF(wr as P);
-            }
-        }
-        live
-    });
-}

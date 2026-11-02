@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicUsize, Ordering::*};
 
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyCode, PyDict, PyTuple, PyType};
+use pyo3::types::{PyCode, PyTuple, PyType};
 
 use super::adapter::Dynamic;
 use super::common::*;
@@ -76,6 +76,7 @@ static N_NEW: Slot = Slot::new();
 static N_MAKE: Slot = Slot::new();
 static N_REPLACE: Slot = Slot::new();
 static N_FIELDS: Slot = Slot::new();
+static N_CLS: Slot = Slot::new();
 /// `slot_tp_new` (read from a namedtuple class: its `__new__` is in its dict).
 static SLOT_TP_NEW: AtomicUsize = AtomicUsize::new(0);
 /// Closure-cell indices of `_make` (`_len`, `num_fields`, `tuple_new`) and `_replace`
@@ -477,78 +478,83 @@ unsafe fn adopt(cls: P, fresh: bool, force: bool) {
 }
 
 /// Structural checks of a just-generated `__new__` and its plan (parameter names). The
-/// class's `_fields` must be what the parameters are.
+/// class's `_fields` must be what the parameters are. Raw reads of the code object
+/// (layout calibrated by the target's vectorcall site): this runs at every class creation.
 unsafe fn new_plan(cls: P, new: P) -> bool {
-    // SAFETY: attached thread; only C getters and dict reads.
+    // SAFETY: attached thread; dict reads with interned keys, field reads of live objects.
     unsafe {
-        let py = Python::assume_attached();
-        let check = || -> PyResult<Option<Sig>> {
-            let code = Bound::from_borrowed_ptr(py, func_code(new)).cast_into::<PyCode>()?;
-            let cls = Bound::from_borrowed_ptr(py, cls);
-            let td = crate::accel::prepare::type_dict(cls.cast::<PyType>()?).map_err(|r| {
-                pyo3::exceptions::PyRuntimeError::new_err(r.reason().to_owned())
-            })?;
-            let Some(fields) = td.get_item("_fields")? else { return Ok(None) };
-            let fields = fields.cast_into_exact::<PyTuple>()?;
-            let nf = fields.len();
-            if nf == 0 || nf > MAX_PARAMS {
-                return Ok(None);
-            }
-            let int = |n: &str| -> PyResult<i64> { code.getattr(n)?.extract() };
-            const CO_VARARGS: i64 = 0x04;
-            const CO_VARKEYWORDS: i64 = 0x08;
-            const CO_GEN_ANY: i64 = 0x20 | 0x80 | 0x100 | 0x200;
-            let flags = int("co_flags")?;
-            if int("co_argcount")? != nf as i64 + 1
-                || int("co_posonlyargcount")? != 0
-                || int("co_kwonlyargcount")? != 0
-                || flags & (CO_VARARGS | CO_VARKEYWORDS | CO_GEN_ANY) != 0
-            {
-                return Ok(None);
-            }
-            let names = code.getattr("co_names")?.cast_into_exact::<PyTuple>()?;
-            if names.len() != 1 || names.get_item(0)?.as_ptr() != N_TUPLE_NEW.get() && names.get_item(0)?.ne("_tuple_new")? {
-                return Ok(None);
-            }
-            for attr in ["co_freevars", "co_cellvars"] {
-                if code.getattr(attr)?.cast_into_exact::<PyTuple>()?.len() != 0 {
-                    return Ok(None);
-                }
-            }
-            let varnames = code.getattr("co_varnames")?.cast_into_exact::<PyTuple>()?;
-            if varnames.len() != nf + 1 || varnames.get_item(0)?.ne("_cls")? {
-                return Ok(None);
-            }
-            let mut sig_names = Vec::with_capacity(nf);
-            for i in 0..nf {
-                let v = varnames.get_item(i + 1)?;
-                let fname = fields.get_item(i)?;
-                if v.ne(&fname)? || !v.is_exact_instance_of::<pyo3::types::PyString>() {
-                    return Ok(None);
-                }
-                // The interned field name (namedtuple interns them; keywords from call
-                // sites are compared by identity, anything else falls back).
-                sig_names.push(intern(py, &v.extract::<String>()?));
-            }
-            // The globals the lambda reads.
-            let g = Bound::from_borrowed_ptr(py, (*new.cast::<ffi::PyFunctionObject>()).func_globals);
-            let g = g.cast_into_exact::<PyDict>()?;
-            match g.get_item("_tuple_new")? {
-                Some(t) if t.as_ptr() == TUPLE_NEW.get() => {}
-                _ => return Ok(None),
-            }
-            Ok(Some(Sig { names: sig_names, npos: nf }))
-        };
-        let sig = match check() {
-            Ok(Some(s)) => s,
-            Ok(None) => return false,
-            Err(_) => {
+        let code = func_code(new).cast::<crate::accel::version::RawCode>();
+        let d = ffi::PyType_GetDict(cls.cast());
+        if d.is_null() {
+            ffi::PyErr_Clear();
+            return false;
+        }
+        let fields = ffi::PyDict_GetItemWithError(d, N_FIELDS.get());
+        let fields = if fields.is_null() || ffi::PyTuple_CheckExact(fields) == 0 { null_mut() } else { incref(fields) };
+        ffi::Py_DECREF(d);
+        if fields.is_null() {
+            ffi::PyErr_Clear();
+            return false;
+        }
+        let nf = ffi::PyTuple_GET_SIZE(fields) as usize;
+        const CO_VARARGS: i32 = 0x04;
+        const CO_VARKEYWORDS: i32 = 0x08;
+        const CO_GEN_ANY: i32 = 0x20 | 0x80 | 0x100 | 0x200;
+        let names = (*code).co_names;
+        let lp = (*code).co_localsplusnames;
+        let ok = nf > 0
+            && nf <= MAX_PARAMS
+            && (*code).co_argcount as usize == nf + 1
+            && (*code).co_posonlyargcount == 0
+            && (*code).co_kwonlyargcount == 0
+            && (*code).co_flags & (CO_VARARGS | CO_VARKEYWORDS | CO_GEN_ANY) == 0
+            && (*code).co_ncellvars == 0
+            && (*code).co_nfreevars == 0
+            && (*code).co_nlocalsplus as usize == nf + 1
+            && ffi::PyTuple_CheckExact(names) != 0
+            && ffi::PyTuple_GET_SIZE(names) == 1
+            && same_str(ffi::PyTuple_GET_ITEM(names, 0), N_TUPLE_NEW.get())
+            && ffi::PyTuple_CheckExact(lp) != 0
+            && ffi::PyTuple_GET_SIZE(lp) as usize == nf + 1
+            && same_str(ffi::PyTuple_GET_ITEM(lp, 0), N_CLS.get())
+            && (0..nf).all(|i| {
+                same_str(ffi::PyTuple_GET_ITEM(lp, (i + 1) as ffi::Py_ssize_t), ffi::PyTuple_GET_ITEM(fields, i as ffi::Py_ssize_t))
+            });
+        // The globals the lambda reads.
+        let g = (*new.cast::<ffi::PyFunctionObject>()).func_globals;
+        let mut tn: P = null_mut();
+        let ok = ok && ffi::PyDict_CheckExact(g) != 0 && ffi::PyDict_GetItemRef(g, N_TUPLE_NEW.get(), &mut tn) > 0;
+        if !tn.is_null() {
+            ffi::Py_DECREF(tn);
+        }
+        if !ok || tn != TUPLE_NEW.get() {
+            ffi::Py_DECREF(fields);
+            if !ffi::PyErr_Occurred().is_null() {
                 ffi::PyErr_Clear();
-                return false;
             }
-        };
-        let plan = Box::into_raw(Box::new(NtPlan { h: PlanHeader { tag: NT_TAG, free: free_nt_plan }, sig }));
+            return false;
+        }
+        // Parameter names: the code's own (keywords from call sites are compared by
+        // identity; anything else falls back).
+        let sig_names = (0..nf).map(|i| incref(ffi::PyTuple_GET_ITEM(lp, (i + 1) as ffi::Py_ssize_t))).collect();
+        ffi::Py_DECREF(fields);
+        let plan = Box::into_raw(Box::new(NtPlan {
+            h: PlanHeader { tag: NT_TAG, free: free_nt_plan },
+            sig: Sig { names: sig_names, npos: nf },
+        }));
         set_plan(func_code(new), plan.cast())
+    }
+}
+
+/// Exact `str` objects with equal contents (identity first: names are interned).
+#[inline]
+unsafe fn same_str(a: P, b: P) -> bool {
+    // SAFETY: live objects; exact str comparison runs no Python code.
+    unsafe {
+        a == b
+            || (ffi::PyUnicode_CheckExact(a) != 0
+                && ffi::PyUnicode_CheckExact(b) != 0
+                && ffi::PyUnicode_Compare(a, b) == 0)
     }
 }
 
@@ -626,6 +632,7 @@ fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     N_MAKE.name(py, "_make");
     N_REPLACE.name(py, "_replace");
     N_FIELDS.name(py, "_fields");
+    N_CLS.name(py, "_cls");
     extra_index().ok_or_else(|| Refusal::new("no code-extra index available"))?;
     cx.vectorcall(&nt, k_namedtuple, &accel::FUNCTION_VECTORCALL)?;
     // SAFETY: a live function.

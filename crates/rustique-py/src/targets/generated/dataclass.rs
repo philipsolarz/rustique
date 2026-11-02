@@ -207,6 +207,13 @@ struct DcPlan {
     next: AtomicUsize,
 }
 
+impl Drop for Step {
+    fn drop(&mut self) {
+        // SAFETY: the reference `intern` returned; dropped with the plan (attached thread).
+        unsafe { ffi::Py_DECREF(self.name) };
+    }
+}
+
 unsafe fn free_dc_plan(p: *mut PlanHeader) {
     // SAFETY: created by Box::into_raw of a DcPlan.
     drop(unsafe { Box::from_raw(p.cast::<DcPlan>()) });

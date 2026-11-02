@@ -267,10 +267,23 @@ impl Default for Slot {
 // ---------------------------------------------------------------------------------------
 
 /// Parameter facts of a function with a plain signature, parameters after the first
-/// (`self` / `_cls`): interned names, how many are positional-or-keyword.
+/// (`self` / `_cls`): interned names (strong references), how many are
+/// positional-or-keyword.
 pub struct Sig {
     pub names: Vec<P>,
     pub npos: usize,
+}
+
+impl Drop for Sig {
+    fn drop(&mut self) {
+        // SAFETY: references owned by the plan; plans are freed by CPython's code-object
+        // deallocation (attached thread) or before they were published.
+        unsafe {
+            for &n in &self.names {
+                ffi::Py_DECREF(n);
+            }
+        }
+    }
 }
 
 // SAFETY: interned (immortal) strings, read-only after construction.

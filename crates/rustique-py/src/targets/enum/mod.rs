@@ -168,6 +168,10 @@ static CONTAINS_FN: Fn = Fn::new();
 /// `enum.property` and `EnumType` (types), `Enum.__new__`'s staticmethod,
 /// `object.__dict__['__class__']`.
 static PROP_TYPE: Slot = Slot::new();
+/// `Enum.__dict__['value']` and `['name']`: the two `enum.property` objects member
+/// `.value`/`.name` resolve to (any other `enum.property` falls back at once).
+static VALUE_PROP: Slot = Slot::new();
+static NAME_PROP: Slot = Slot::new();
 static ENUM_TYPE: Slot = Slot::new();
 static NEW_SM: Slot = Slot::new();
 static OBJ_CLASS: Slot = Slot::new();
@@ -194,7 +198,7 @@ fn release(_py: Python<'_>) {
     ] {
         f.release();
     }
-    for s in [&PROP_TYPE, &ENUM_TYPE, &NEW_SM, &OBJ_CLASS] {
+    for s in [&PROP_TYPE, &VALUE_PROP, &NAME_PROP, &ENUM_TYPE, &NEW_SM, &OBJ_CLASS] {
         s.release();
     }
     CLASS_FACTS.clear_all();
@@ -301,11 +305,14 @@ unsafe fn compute_class(cls: Tp) -> u32 {
         let mm = lookup(cls, N_MEMBER_MAP.get());
         let v2m = lookup(cls, N_V2M.get());
         let nw = lookup(cls, N_NEW.get());
+        // Watch the two dicts only for a verdict that relies on them (classes under
+        // construction have no members yet: no watch, no cost).
         if !mm.is_null()
             && !v2m.is_null()
             && ffi::PyDict_CheckExact(mm) != 0
             && ffi::PyDict_CheckExact(v2m) != 0
             && (nw == NEW_FN.func.get() || nw == NEW_SM.get())
+            && ffi::PyDict_Size(mm) > 0
             && watch_dict_invalidates(mm, &CLASS_FACTS, cls)
             && watch_dict_invalidates(v2m, &CLASS_FACTS, cls)
             && ffi::PyDict_Size(mm) > 0
@@ -495,7 +502,13 @@ unsafe extern "C" fn k_enum_call_vc(f: P, args: *const P, nargsf: usize, kw: P) 
             return orig(f, args, nargsf, kw);
         }
         let cls = *args;
-        if ffi::PyType_Check(cls) == 0 || !DEPS.ok() || !lookup_quiet() || !meta_ok(ffi::Py_TYPE(cls)) {
+        // Classes whose metaclass is exactly `EnumType` reach this function from the
+        // `tp_call` kernel's fallback (`slot_tp_call`), which already tried: don't twice.
+        if ffi::PyType_Check(cls) == 0 || ffi::Py_TYPE(cls).cast::<ffi::PyObject>() == ENUM_TYPE.get() {
+            C_CALL.fallback(Reason::Args);
+            return orig(f, args, nargsf, kw);
+        }
+        if !DEPS.ok() || !lookup_quiet() || !meta_ok(ffi::Py_TYPE(cls)) {
             C_CALL.fallback(Reason::Tools);
             return orig(f, args, nargsf, kw);
         }
@@ -517,12 +530,11 @@ unsafe extern "C" fn k_enum_call_vc(f: P, args: *const P, nargsf: usize, kw: P) 
 unsafe extern "C" fn k_prop_descr_get(this: P, inst: P, owner: P) -> P {
     // SAFETY: CPython's tp_descr_get protocol.
     unsafe {
-        let pt = ffi::Py_TYPE(this);
-        if pt.cast::<ffi::PyObject>() != PROP_TYPE.get() || inst.is_null() || inst == ffi::Py_None() {
+        if (this != VALUE_PROP.get() && this != NAME_PROP.get()) || inst.is_null() || inst == ffi::Py_None() {
             C_PROP.fallback(Reason::Args);
             return ORIG_DESCR_GET.get()(this, inst, owner);
         }
-        if !TOOLS.quiet() || !PROP_GET.intact() || !prop_type_ok(pt) {
+        if !TOOLS.quiet() || !PROP_GET.intact() || !prop_type_ok(ffi::Py_TYPE(this)) {
             C_PROP.fallback(Reason::Tools);
             return ORIG_DESCR_GET.get()(this, inst, owner);
         }
@@ -815,6 +827,8 @@ fn prepare_shared<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Ref
         exact_fn(&f, n)?;
         Ok(f)
     };
+    let value_prop = cx.type_attr(&enum_cls, "value")?;
+    let name_prop = cx.type_attr(&enum_cls, "name")?;
     let name_fget = fget_of(cx, &enum_cls, "name")?;
     cx.fingerprint_code(&name_fget, fp::NAME_FGET)?;
     let value_fget = fget_of(cx, &enum_cls, "value")?;
@@ -848,6 +862,8 @@ fn prepare_shared<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Ref
         st.keep(py, o);
     }
     PROP_TYPE.keep(prop_t.as_any());
+    VALUE_PROP.keep(&value_prop);
+    NAME_PROP.keep(&name_prop);
     ENUM_TYPE.keep(enum_type.as_any());
     NEW_SM.keep(&new_sm);
     OBJ_CLASS.keep(&obj_class);
