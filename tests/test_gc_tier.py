@@ -408,3 +408,29 @@ def test_disable_from_inside_a_callback():
         rep = R()
         assert not rep["forwarding"] and rep["callbacks_ptr"] == id(gc.callbacks), rep
     """)
+
+
+def test_installs_without_importing_gc():
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
+    env["RUSTIQUE_TIERS"] = "gc"
+    src = textwrap.dedent("""
+        import sys, json
+        import rustique
+        rustique.enable(only=["gc"])
+        st = {t["name"]: t for t in rustique.status()["targets"]}["gc.adaptive"]
+        if st["state"] != "installed":
+            print(json.dumps({"refused": st.get("refusal"), "reason": st["reason"]})); sys.exit(77)
+        assert "gc" not in sys.modules, "the tier imported gc"
+        T = rustique._accel._t_gc
+        assert T.report()["armed"], T.report()
+        import gc                      # the hooks are in the static table every gc module uses
+        gc.set_threshold(1000)
+        rep = T.report()
+        assert rep["stepped_aside"] == "gc.set_threshold" and gc.get_threshold() == (1000, 10, 10), rep
+    """)
+    r = subprocess.run([sys.executable, "-c", src], capture_output=True, text=True, env=env, timeout=120)
+    if r.returncode == SKIP:
+        info = json.loads(r.stdout.strip().splitlines()[-1])
+        if info["refused"] in EXPECTED:
+            pytest.skip(f"gc tier refused here: {info['reason']}")
+    assert r.returncode == 0, r.stderr[-3000:]

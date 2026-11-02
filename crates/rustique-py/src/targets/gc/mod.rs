@@ -118,62 +118,91 @@ const HOOKS: [Hook; 6] = [
 // Install.
 // ---------------------------------------------------------------------------------------
 
-/// A private instance of the builtin `gc` module (never imports: `sys.modules` is not
-/// touched). Executing it binds `garbage` and `callbacks` to the collector state's own lists,
-/// which validates the layout's pointer fields; its functions use the module's static method
-/// table, the same entries every `gc` module object uses.
-fn private_gc_module(py: Python<'_>) -> Result<Bound<'_, PyModule>, Refusal> {
+/// The `gc` module's static method table (`GcMethods`, `Modules/gcmodule.c`): from the
+/// imported module's definition, or, when `gc` is not imported, from the builtin's init
+/// function, which for a multi-phase module only returns its `PyModuleDef` (no module object,
+/// nothing in `sys.modules`: never imports). Every `gc` module object of every interpreter
+/// uses these entries.
+fn gc_method_table(py: Python<'_>, cx: &Prepare<'_>) -> Result<*mut ffi::PyMethodDef, Refusal> {
     let modules = crate::accel::prepare::sys_modules(py)?;
-    let imp = modules
-        .get_item(pyo3::intern!(py, "_imp"))?
-        .ok_or_else(|| Refusal::with(Category::Deps, "_imp is not loaded"))?;
-    // A spec needs only `name`: a namespace of `sys.implementation`'s type.
-    // SAFETY: a borrowed reference owned by the sys module, or NULL (no exception).
-    let implementation = unsafe { ffi::PySys_GetObject(c"implementation".as_ptr()) };
-    if implementation.is_null() {
-        return Err(Refusal::with(Category::Deps, "sys.implementation is missing"));
+    if let Some(m) = cx.get_opt(&modules, "gc")?
+        && let Ok(m) = m.cast::<PyModule>()
+    {
+        // SAFETY: attached thread; a module object.
+        let def = unsafe { ffi::PyModule_GetDef(m.as_ptr()) };
+        if !def.is_null() {
+            // SAFETY: the module's static definition.
+            return Ok(unsafe { (*def).m_methods });
+        }
     }
-    // SAFETY: a live object (see above).
-    let namespace = unsafe { Bound::from_borrowed_ptr(py, implementation) }.get_type();
-    let kw = PyDict::new(py);
-    kw.set_item(pyo3::intern!(py, "name"), pyo3::intern!(py, "gc"))?;
-    let spec = namespace.call((), Some(&kw))?;
-    let module = imp.call_method1(pyo3::intern!(py, "create_builtin"), (&spec,))?;
-    imp.call_method1(pyo3::intern!(py, "exec_builtin"), (&module,))?;
-    module
-        .cast_into::<PyModule>()
-        .map_err(|_| Refusal::with(Category::Other, "_imp.create_builtin('gc') is not a module"))
+    // SAFETY: the interpreter's builtin module table (NULL-name terminated); calling a
+    // multi-phase init function only readies and returns its static definition.
+    unsafe {
+        let mut e = ffi::PyImport_Inittab;
+        while !e.is_null() && !(*e).name.is_null() {
+            if std::ffi::CStr::from_ptr((*e).name) == c"gc"
+                && let Some(init) = (*e).initfunc
+            {
+                let def = init();
+                if def.is_null() {
+                    ffi::PyErr_Clear();
+                    break;
+                }
+                if ffi::Py_TYPE(def) != &raw mut ffi::PyModuleDef_Type {
+                    break;
+                }
+                let def = def.cast::<ffi::PyModuleDef>();
+                if (*def).m_name.is_null() || std::ffi::CStr::from_ptr((*def).m_name) != c"gc" {
+                    break;
+                }
+                return Ok((*def).m_methods);
+            }
+            e = e.add(1);
+        }
+    }
+    Err(Refusal::with(Category::Deps, "the builtin gc module's method table was not found"))
 }
 
-/// Drops the private module's namespace when done: its functions reference the module
-/// (`m_self`), a cycle that would otherwise keep a second reference to `gc.garbage` and
-/// `gc.callbacks` alive until the next full collection (visible to `sys.getrefcount` and
-/// `gc.get_referrers`).
-struct Private<'py>(Bound<'py, PyModule>);
-
-impl Drop for Private<'_> {
-    fn drop(&mut self) {
-        self.0.dict().clear();
+/// The entry named `name` of a method table.
+///
+/// # Safety
+/// `table` is a live, NULL-name terminated method table.
+unsafe fn method_entry(table: *mut ffi::PyMethodDef, name: &str) -> Option<*mut ffi::PyMethodDef> {
+    let mut d = table;
+    // SAFETY: per the caller.
+    unsafe {
+        while !d.is_null() && !(*d).ml_name.is_null() {
+            if std::ffi::CStr::from_ptr((*d).ml_name).to_bytes() == name.as_bytes() {
+                return Some(d);
+            }
+            d = d.add(1);
+        }
     }
+    None
 }
 
 fn layout_refusal((cat, why): (u8, String)) -> Refusal {
     Refusal::with(if cat == layout::E_SYMBOL { Category::Symbol } else { Category::Layout }, why)
 }
 
-/// Check the calibrated fields against a freshly executed `gc` module's view.
-fn validate(py: Python<'_>, l: &layout::Layout, gc: &Bound<'_, PyModule>, cx: &Prepare<'_>) -> Result<(), Refusal> {
-    let d = gc.dict();
+/// Check the calibrated fields against what CPython's own getters report (`gc.isenabled`,
+/// `gc.get_threshold`, `gc.get_debug`: they read the calling interpreter's state and ignore
+/// their module argument, 3.14 and 3.15).
+fn validate(py: Python<'_>, l: &layout::Layout, table: *mut ffi::PyMethodDef) -> Result<(), Refusal> {
     let bad =
         |what: &str| Refusal::with(Category::Layout, format!("collector state: {what} differs from the gc module's"));
-    if cx.get(&d, "garbage")?.as_ptr() != l.ptr(l.off.garbage) {
-        return Err(bad("garbage"));
-    }
-    if cx.get(&d, "callbacks")?.as_ptr() != l.ptr(l.off.callbacks) {
-        return Err(bad("callbacks"));
-    }
+    let call = |name: &str| -> Result<Bound<'_, PyAny>, Refusal> {
+        // SAFETY: a live table; METH_NOARGS getters called as CPython would with no module.
+        unsafe {
+            let d = method_entry(table, name).ok_or_else(|| bad(name))?;
+            if (*d).ml_flags != ffi::METH_NOARGS {
+                return Err(bad(name));
+            }
+            let r = ((*d).ml_meth.PyCFunction)(std::ptr::null_mut(), std::ptr::null_mut());
+            Ok(Bound::from_owned_ptr_or_err(py, r)?)
+        }
+    };
     let (enabled, thr, debug) = l.config();
-    let call = |name: &str| -> Result<Bound<'_, PyAny>, Refusal> { Ok(cx.get(&d, name)?.call0()?) };
     if call("isenabled")?.extract::<bool>()? != (enabled != 0) {
         return Err(bad("enabled"));
     }
@@ -183,7 +212,6 @@ fn validate(py: Python<'_>, l: &layout::Layout, gc: &Bound<'_, PyModule>, cx: &P
     if call("get_debug")?.extract::<i32>()? != debug {
         return Err(bad("debug"));
     }
-    let _ = py;
     Ok(())
 }
 
@@ -209,21 +237,21 @@ fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         return Err(Refusal::with(Category::Build, "opt-in tier: RUSTIQUE_TIERS=gc"));
     }
     let l = layout::calibrate(py).map_err(layout_refusal)?;
-    let gc = Private(private_gc_module(py)?);
-    validate(py, l, &gc.0, cx)?;
-    let d = gc.0.dict();
+    let table = gc_method_table(py, cx)?;
+    validate(py, l, table)?;
     let mut set_threshold_def: *mut ffi::PyMethodDef = std::ptr::null_mut();
     for (name, kernel, orig, fp) in HOOKS {
-        let f = cx.get(&d, name)?;
-        cx.fingerprint_c(&f, fp)?;
-        cx.ml_meth(&f, kernel, orig)?;
-        if name == "set_threshold" {
-            // SAFETY: attached thread; a builtin function of the gc module.
-            set_threshold_def = unsafe { crate::accel::site::method_def(f.as_ptr()) }.unwrap_or(std::ptr::null_mut());
+        // SAFETY: the gc module's static table (process lifetime).
+        unsafe {
+            let def = method_entry(table, name)
+                .ok_or_else(|| Refusal::with(Category::Fingerprint, format!("gc.{name} not found")))?;
+            let what = format!("gc.{name}");
+            cx.fingerprint_def(&what, def, fp)?;
+            cx.ml_meth_def(&what, def, kernel, orig)?;
+            if name == "set_threshold" {
+                set_threshold_def = def;
+            }
         }
-    }
-    if set_threshold_def.is_null() {
-        return Err(Refusal::with(Category::Conflict, "gc.set_threshold has no method def"));
     }
     if cx.record {
         // The dev tool's fingerprint report: declare, change nothing.
