@@ -269,6 +269,24 @@ callgrind, 3.15.1):
 | `Post(x=1)` (`__post_init__`, no kernel) | 0.531 | 1.004 | 0.531 |
 | `Plain(1, b=2)` plain class | 0.523 | 1.000 | 0.523 |
 
+Custom family with the tier (instructions per `run()` vs plain, 3.15.1 PBS, k=3 × 2,
+digests identical; "all" = every default group, "tier" = all + `interp`, "tier w/o
+data-model" = the tier and every group except this workstream's):
+
+| workload | all | tier | tier w/o data-model |
+|---|---:|---:|---:|
+| rules_engine | 0.798 | 0.804 | 0.892 |
+| report_engine | 0.838 | 0.828 | 0.828 |
+| event_ledger | 0.864 | 0.862 | 0.945 |
+| order_domain | 0.959 | 0.842 | 0.864 |
+| orm_mapper | 0.947 | 0.894 | 0.923 |
+| di_plugins | 0.957 | 0.941 | 0.967 |
+| ecs_arena | 0.955 | 0.951 | 0.951 |
+| fulfilment_sim | 0.975 | 0.955 | 0.955 |
+| task_planner | 1.000 | 0.998 | 1.001 |
+| mini_interp | 1.005 (noise, below) | 0.998 | 0.997 |
+| **geometric mean** | **0.927** | **0.905** | **0.931** |
+
 ## 5. Free-threading
 
 On 3.14t/3.15t this wave: `enum.EnumType.__call__`, `enum.Enum.__hash__`,
