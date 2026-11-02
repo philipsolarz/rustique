@@ -135,19 +135,28 @@ pub fn join_plan(args: &[JoinArg], pieces: &mut [Piece]) -> Joined {
 /// filesystem encoding the bindings accept for bytes) a byte is `/` or `.` exactly when
 /// the decoded code point is.
 pub fn normpath<T: Unit>(path: &[T]) -> Vec<T> {
-    let size = path.len();
-    if size == 0 {
-        return Vec::new();
-    }
     let mut b = path.to_vec();
+    let n = normpath_in_place(&mut b);
+    b.truncate(n);
+    b
+}
+
+/// [`normpath`] in place (as the C function works on its own buffer: the write position
+/// never passes the read position): the normalized path is `b[..n]` for the returned `n`
+/// (0: CPython returns `'.'`). No allocation.
+pub fn normpath_in_place<T: Unit>(b: &mut [T]) -> usize {
+    let size = b.len();
+    if size == 0 {
+        return 0;
+    }
     // C reads one past the end (the NUL terminator): never a separator.
     let is_sep = |b: &[T], i: usize| i < size && b[i] == T::SLASH;
     let sep_or_end = |b: &[T], i: usize| i == size || (i < size && b[i] == T::SLASH);
 
     // _Py_skiproot
-    let rootsize = if !is_sep(&b, 0) {
+    let rootsize = if !is_sep(b, 0) {
         0
-    } else if !is_sep(&b, 1) || is_sep(&b, 2) {
+    } else if !is_sep(b, 1) || is_sep(b, 2) {
         1
     } else {
         2
@@ -163,11 +172,11 @@ pub fn normpath<T: Unit>(path: &[T]) -> Vec<T> {
         min_p2 = p2 - 1;
         last = Some(b[min_p2]);
     }
-    if p1 < size && b[p1] == T::DOT && sep_or_end(&b, p1 + 1) {
+    if p1 < size && b[p1] == T::DOT && sep_or_end(b, p1 + 1) {
         // Skip leading './'
         p1 += 1;
         last = if p1 < size { Some(b[p1]) } else { None };
-        while is_sep(&b, p1) {
+        while is_sep(b, p1) {
             p1 += 1;
         }
     }
@@ -175,8 +184,8 @@ pub fn normpath<T: Unit>(path: &[T]) -> Vec<T> {
         let c = b[p1];
         if last == Some(T::SLASH) {
             if c == T::DOT {
-                let sep_at_1 = sep_or_end(&b, p1 + 1);
-                let sep_at_2 = !sep_at_1 && sep_or_end(&b, p1 + 2);
+                let sep_at_1 = sep_or_end(b, p1 + 1);
+                let sep_at_2 = !sep_at_1 && sep_or_end(b, p1 + 2);
                 if sep_at_2 && b[p1 + 1] == T::DOT {
                     let mut p3 = p2;
                     while p3 != min_p2 {
@@ -188,7 +197,7 @@ pub fn normpath<T: Unit>(path: &[T]) -> Vec<T> {
                     while p3 != min_p2 && b[p3 - 1] != T::SLASH {
                         p3 -= 1;
                     }
-                    if p2 == min_p2 || (b[p3] == T::DOT && b[p3 + 1] == T::DOT && is_sep(&b, p3 + 2)) {
+                    if p2 == min_p2 || (b[p3] == T::DOT && b[p3 + 1] == T::DOT && is_sep(b, p3 + 2)) {
                         // Previous segment is also ../, so append instead.
                         b[p2] = T::DOT;
                         b[p2 + 1] = T::DOT;
@@ -232,13 +241,46 @@ pub fn normpath<T: Unit>(path: &[T]) -> Vec<T> {
     } else {
         q -= 1;
     }
-    b.truncate((q + 1) as usize);
-    b
+    (q + 1) as usize
+}
+
+/// `normpath(s) == s` for an absolute path, decided in one pass: one leading `/` (two
+/// leading slashes are kept by `normpath`, three or more collapse: those take the full
+/// algorithm), no empty, `.` or `..` component, no trailing `/` except the root itself.
+/// Such a path passes through `_Py_normpath_and_size` unchanged (every character is copied
+/// to its own position), so callers may use the input as the normalized path.
+pub fn is_normal_abs<T: Unit>(s: &[T]) -> bool {
+    if s.first() != Some(&T::SLASH) {
+        return false;
+    }
+    if s.len() == 1 {
+        return true;
+    }
+    // Scan components: each starts after a '/', must be non-empty and not '.'/'..'.
+    let mut start = 1usize;
+    let n = s.len();
+    loop {
+        let mut end = start;
+        while end < n && s[end] != T::SLASH {
+            end += 1;
+        }
+        let len = end - start;
+        if len == 0 {
+            return false; // '//' or a trailing '/'
+        }
+        if s[start] == T::DOT && (len == 1 || (len == 2 && s[start + 1] == T::DOT)) {
+            return false;
+        }
+        if end == n {
+            return true;
+        }
+        start = end + 1;
+    }
 }
 
 /// The components of an absolute normalized path after `lstrip(sep)`, as `split(sep)`
 /// would return them (`[]` for the root itself).
-pub fn abs_components<T: Unit>(norm: &[T]) -> impl Iterator<Item = &[T]> {
+pub fn abs_components<T: Unit>(norm: &[T]) -> impl Iterator<Item = &[T]> + Clone {
     let start = norm.iter().position(|&c| c != T::SLASH).unwrap_or(norm.len());
     let rest = &norm[start..];
     let empty = rest.is_empty();
@@ -287,6 +329,33 @@ mod tests {
         ];
         for (inp, want) in cases {
             assert_eq!(np(inp), want, "normpath({inp:?})");
+        }
+    }
+
+    #[test]
+    fn normal_abs() {
+        let yes = ["/", "/a", "/a/b", "/a/.b/..c/...", "/x y/z"];
+        let no = ["", "a", "//", "//a", "///a", "/a/", "/a//b", "/a/./b", "/a/../b", "/.", "/..", "/a/.", "/a/.."];
+        for s in yes {
+            assert!(is_normal_abs(s.as_bytes()), "{s:?}");
+            assert_eq!(np(s), s, "{s:?}");
+        }
+        for s in no {
+            assert!(!is_normal_abs(s.as_bytes()), "{s:?}");
+        }
+        // Exhaustive over short strings of '/', '.', 'a': the check implies normpath(s) == s.
+        let alphabet = *b"/.a";
+        for len in 1..=7u32 {
+            for mut k in 0..3usize.pow(len) {
+                let mut v = Vec::new();
+                for _ in 0..len {
+                    v.push(alphabet[k % 3]);
+                    k /= 3;
+                }
+                if is_normal_abs(&v) {
+                    assert_eq!(normpath(&v), v, "{:?}", String::from_utf8_lossy(&v));
+                }
+            }
         }
     }
 

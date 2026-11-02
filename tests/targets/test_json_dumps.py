@@ -150,13 +150,14 @@ def test_fallbacks_are_counted():
         RED = 1
 
     cases = [
-        (lambda: json.dumps({"a": decimal.Decimal(1)}, default=str), "args"),
+        # Lazy `default=`: accepted, restarts in the original where the hook is needed.
+        (lambda: json.dumps({"a": decimal.Decimal(1)}, default=str), "deopt"),
         (lambda: json.dumps(collections.OrderedDict(a=1)), "deopt"),
         (lambda: json.dumps(D(a=1)), "deopt"),
         (lambda: json.dumps({"a": {1, 2}}), "deopt"),
         (lambda: json.dumps([math.nan], allow_nan=False), "deopt"),
         (lambda: json.dumps({"a": 1, 2: 3}, sort_keys=True), "deopt"),
-        (lambda: json.dumps([1], cls=json.JSONEncoder), "args"),
+        (lambda: json.dumps([1], cls=type("E", (json.JSONEncoder,), {})), "args"),
         (lambda: json.dumps([1], foo=1), "args"),
         (lambda: json.dumps(obj=[1]), "args"),
         (lambda: json.dumps([1], indent=10**6), "args"),
@@ -169,6 +170,43 @@ def test_fallbacks_are_counted():
         assert after[reason] == before[reason] + 1, (reason, after)
     # IntEnum and str subclasses are encoded by value by the C encoder: in the subset.
     assert json.dumps([Color.RED]) == "[1]"
+
+
+def ORIGINAL(obj, cls=None, **kw):  # noqa: N802 - CPython's own encoder path
+    return (cls or json.JSONEncoder)(**kw).encode(obj)
+
+
+def test_lazy_default_and_cls_jsonencoder_hit():
+    """`default=` that is never needed and `cls=JSONEncoder` complete natively; the hook
+    is never called; results equal CPython's."""
+    calls = []
+
+    def hook(o):
+        calls.append(o)
+        return str(o)
+
+    rec = {"id": 1, "name": "x", "tags": ["a", "b"], "score": 1.5, "none": None}
+    _tk.stats(reset=True)
+    before = counters()["hits"]
+    assert json.dumps(rec, default=hook) == ORIGINAL(rec, default=hook)
+    assert json.dumps(rec, default=hook, indent=2, sort_keys=True) == ORIGINAL(rec, default=hook, indent=2, sort_keys=True)
+    assert json.dumps(rec, cls=json.JSONEncoder) == ORIGINAL(rec, cls=json.JSONEncoder)
+    assert json.dumps(rec, default=42) == ORIGINAL(rec, default=42)  # never called: not checked
+    assert calls == []
+    assert counters()["hits"] >= before + 4
+    # Needed hook: CPython's call order and arguments.
+    rec2 = {"a": decimal.Decimal("1.5"), "b": [decimal.Decimal(2)]}
+    calls.clear()
+    got = json.dumps(rec2, default=hook)
+    got_calls = list(calls)
+    calls.clear()
+    want = ORIGINAL(rec2, default=hook)
+    assert got == want and got_calls == calls
+    with pytest.raises(TypeError) as e1:
+        json.dumps(rec2, default=42)
+    with pytest.raises(TypeError) as e2:
+        ORIGINAL(rec2, default=42)
+    assert str(e1.value) == str(e2.value)
 
 
 def test_errors_are_cpythons():

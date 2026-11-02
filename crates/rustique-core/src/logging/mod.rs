@@ -54,17 +54,19 @@ impl Out for Vec<u8> {
 /// another path).
 #[derive(Debug)]
 pub struct Buf<const N: usize> {
-    b: [u8; N],
+    /// Initialised up to `len` (no per-call zeroing of the whole buffer).
+    b: [std::mem::MaybeUninit<u8>; N],
     len: usize,
     pub overflow: bool,
 }
 
 impl<const N: usize> Buf<N> {
     pub const fn new() -> Self {
-        Buf { b: [0; N], len: 0, overflow: false }
+        Buf { b: [std::mem::MaybeUninit::uninit(); N], len: 0, overflow: false }
     }
     pub fn as_slice(&self) -> &[u8] {
-        &self.b[..self.len]
+        // SAFETY: the first `len` bytes were written by `push`/`extend`.
+        unsafe { std::slice::from_raw_parts(self.b.as_ptr().cast::<u8>(), self.len) }
     }
     pub fn clear(&mut self) {
         self.len = 0;
@@ -82,7 +84,7 @@ impl<const N: usize> Out for Buf<N> {
     #[inline]
     fn push(&mut self, c: u8) {
         if self.len < N {
-            self.b[self.len] = c;
+            self.b[self.len] = std::mem::MaybeUninit::new(c);
             self.len += 1;
         } else {
             self.overflow = true;
@@ -91,7 +93,10 @@ impl<const N: usize> Out for Buf<N> {
     #[inline]
     fn extend_from_slice(&mut self, s: &[u8]) {
         if self.len + s.len() <= N {
-            self.b[self.len..self.len + s.len()].copy_from_slice(s);
+            // SAFETY: in bounds; u8 and MaybeUninit<u8> have the same layout.
+            unsafe {
+                std::ptr::copy_nonoverlapping(s.as_ptr(), self.b.as_mut_ptr().add(self.len).cast::<u8>(), s.len())
+            };
             self.len += s.len();
         } else {
             self.overflow = true;
@@ -99,7 +104,8 @@ impl<const N: usize> Out for Buf<N> {
     }
     fn pad(&mut self, c: u8, n: usize) {
         if self.len + n <= N {
-            self.b[self.len..self.len + n].fill(c);
+            // SAFETY: in bounds.
+            unsafe { std::ptr::write_bytes(self.b.as_mut_ptr().add(self.len).cast::<u8>(), c, n) };
             self.len += n;
         } else {
             self.overflow = true;
