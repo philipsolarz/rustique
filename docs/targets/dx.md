@@ -105,7 +105,10 @@ forked pid), `test_counter_file_longer_rows`, `test_merge_adds_counters`, and
 - **Suspensions** (Phase 1: sqlglot's `deepcopy` was suspended and restarted 49% of the
   time, invisibly): `suspended Nx` per target, `suspended now (fallback|deps|conflict)`, and
   the meaning of each.
-- **Refusals by category**, unexpected categories first, each with "what to do".
+- **Refusals by category**, unexpected categories first, each with "what to do". Long
+  lists of *expected* refusals are shortened. Free-threaded builds refuse many generated
+  targets as `build`. Unexpected categories are never shortened, and the pytest plugin
+  keeps the targets accepted with `--rustique-allow-refused` ahead of any cut.
   `unvalidated-patch` names `RUSTIQUE_UNVALIDATED_PATCH=1`. `armed` (validated at the first
   call) and `unvalidated` targets are marked.
 - **Tiers**: "opt-in tiers: gc on (1 of 1 targets active), interp off (…);
@@ -437,6 +440,13 @@ out-of-process; `pyinstrument`, `yappi`-style samplers are not) is exposed.
     extension);
   - conformance: 26 CPython test modules, 0 differences;
   - report: the floor is met.
+
+  Again at 0d73921, with accel D and the interp crate:
+  - the build with `RUSTIQUE_INTERP_REQUIRE=1` compiled the handler sets;
+  - smoke: 15/15, including "interp tier installable";
+  - coverage: 90/95 (interp's targets are opt-in);
+  - tests: 1,878 passed;
+  - conformance: OK.
 
 actionlint could not be fetched in this environment (the download was not permitted). Run it
 before the first dispatch.
