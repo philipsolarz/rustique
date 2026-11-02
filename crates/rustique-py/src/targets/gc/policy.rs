@@ -56,14 +56,26 @@ pub(super) struct Params {
     pub step_aside: bool,
 }
 
-pub(super) const DEFAULT_PARAMS: Params = Params { y_low: 0.01, y_high: 0.05, kmax: 3, cap: 1.1, step_aside: true };
+/// The pause cap: 1.1 on the GIL build (w2-runtime §4.1); 1.05 on the free-threaded build,
+/// whose trigger counts net allocations, so cyclic garbage that waits for a deferred
+/// collection fills the heap one for one: at 1.1 the adversarial `late_cycles` scenario
+/// peaks at 1.07× CPython's RSS (prototype and port alike), at 1.05 at 1.04× (budget 1.05,
+/// DECISIONS §10.3), for GC work 0.80 instead of 0.77 on the 65 workloads (docs/targets/gc.md).
+pub(super) const DEFAULT_CAP: f64 = if FT { 1.05 } else { 1.1 };
+pub(super) const DEFAULT_PARAMS: Params =
+    Params { y_low: 0.01, y_high: 0.05, kmax: 3, cap: DEFAULT_CAP, step_aside: true };
 
 #[derive(Debug)]
 struct Rule {
     p: Params,
     k: u32,
-    /// Objects examined by the largest legitimate full collection.
+    /// Objects examined by the largest legitimate full collection (GIL: tracked objects;
+    /// FT: objects in the GC heap).
     max_full: isize,
+    /// FT: the same in `candidates` (marked objects; 3.15 only, 0 when unknown). The FT cap
+    /// holds in both units: the collection's walk is proportional to the first, its marking
+    /// to the second (and the pause proxy of w2-runtime §5.3 is the second).
+    max_full_cand: isize,
     fulls: u64,
     /// GIL: generation-1 collections run where CPython's rule would have run a full one.
     deferred: u64,
@@ -78,17 +90,30 @@ struct Rule {
 
 impl Rule {
     const fn new(p: Params) -> Self {
-        Rule { p, k: 0, max_full: 0, fulls: 0, deferred: 0, start_heap: -1, history: Vec::new(), first: None }
+        Rule {
+            p,
+            k: 0,
+            max_full: 0,
+            max_full_cand: 0,
+            fulls: 0,
+            deferred: 0,
+            start_heap: -1,
+            history: Vec::new(),
+            first: None,
+        }
     }
 
     /// After a full collection that freed `col` objects: `y_den` objects examined (the
     /// yield's denominator: `candidates`), `size` its size in the unit of the pause cap
     /// (GIL: tracked objects examined; FT: objects in the GC heap, the unit of
     /// `long_lived_total`).
-    fn on_full(&mut self, y_den: isize, size: isize, col: isize) {
+    fn on_full(&mut self, y_den: isize, size: isize, col: isize, cand: Option<isize>) {
         let y = if y_den > 0 { col as f64 / y_den as f64 } else { 0.0 };
-        let legit = if self.k == 0 { size } else { size - col };
-        self.max_full = self.max_full.max(legit);
+        let legit = |n: isize| if self.k == 0 { n } else { n - col };
+        self.max_full = self.max_full.max(legit(size));
+        if let Some(c) = cand {
+            self.max_full_cand = self.max_full_cand.max(legit(c));
+        }
         self.fulls += 1;
         if self.history.len() >= 40 {
             self.history.remove(0);
@@ -113,13 +138,19 @@ impl Rule {
     }
 
     /// FT: collect when `young.count >= limit` (and CPython's `count > threshold0`).
-    fn ft_field(&self, real: isize, t0: isize) -> isize {
+    /// `survivors_cand`: this collection's survivors in `candidates` units, if known.
+    fn ft_field(&self, real: isize, t0: isize, survivors_cand: Option<isize>) -> isize {
         if self.k == 0 {
             return real;
         }
         let mut limit = t0.max((real << self.k) >> 2);
         if self.p.cap > 0.0 {
-            let room = (self.p.cap * self.max_full as f64) as isize - real;
+            let mut room = (self.p.cap * self.max_full as f64) as isize - real;
+            if let Some(s) = survivors_cand
+                && self.max_full_cand > 0
+            {
+                room = room.min((self.p.cap * self.max_full_cand as f64) as isize - s);
+            }
             limit = t0.max(limit.min(room));
         }
         real.max(limit.saturating_mul(4))
@@ -324,14 +355,14 @@ pub(super) unsafe fn on_phase(py: Python<'_>, phase: *mut ffi::PyObject, info: *
         // ones too: a collection walks them all); `candidates` only the marked ones.
         let size = real + col;
         // SAFETY: per the caller.
-        let y_den = unsafe { info_get(info, pyo3::intern!(py, "candidates")) }.unwrap_or(size);
+        let cand = unsafe { info_get(info, pyo3::intern!(py, "candidates")) };
         if !first_check(l, &mut r, size, col, real) {
             return;
         }
-        r.on_full(y_den, size, col);
+        r.on_full(cand.unwrap_or(size), size, col, cand);
         REAL.store(real, Ordering::SeqCst);
         let t0 = l.i32(l.off.thresholds[0]) as isize;
-        let want = r.ft_field(real, t0);
+        let want = r.ft_field(real, t0, cand.map(|c| c - col));
         drop(r);
         apply(l, real, want);
         return;
@@ -370,7 +401,7 @@ pub(super) unsafe fn on_phase(py: Python<'_>, phase: *mut ffi::PyObject, info: *
         if !first_check(l, &mut r, examined, col, real) {
             return;
         }
-        r.on_full(examined, examined, col);
+        r.on_full(examined, examined, col, None);
         REAL.store(real, Ordering::SeqCst);
         (real, r.gil_field(real, heap))
     } else if generation == 1 && r.k > 0 {
@@ -418,6 +449,7 @@ pub(super) fn report<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
     if let Ok(r) = RULE.try_lock() {
         d.set_item("k", r.k)?;
         d.set_item("max_full", r.max_full)?;
+        d.set_item("max_full_cand", r.max_full_cand)?;
         d.set_item("fulls", r.fulls)?;
         d.set_item("deferred", r.deferred)?;
         d.set_item("history", r.history.clone())?;

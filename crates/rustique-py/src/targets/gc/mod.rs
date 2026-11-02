@@ -283,7 +283,7 @@ fn request(on: bool) {
 /// Research only: the rule's parameters (applied at the next install, and to the running
 /// rule).
 #[pyfunction]
-#[pyo3(signature = (y_low=0.01, y_high=0.05, kmax=3, cap=1.1, step_aside=true))]
+#[pyo3(signature = (y_low=0.01, y_high=0.05, kmax=3, cap=policy::DEFAULT_CAP, step_aside=true))]
 fn set_params(y_low: f64, y_high: f64, kmax: u32, cap: f64, step_aside: bool) -> PyResult<()> {
     if !(0.0..=1.0).contains(&y_low) || !(0.0..=1.0).contains(&y_high) || kmax > 8 || cap < 0.0 {
         return Err(pyo3::exceptions::PyValueError::new_err("parameter out of range"));
