@@ -383,8 +383,15 @@ fn shared_compile(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         "memoryview",
         "ValueError",
     ];
-    pin_builtins(cx, &co, &builtins, &DEPS_COMPILE)?;
-    pin_builtins(cx, &pa, &builtins, &DEPS_COMPILE)?;
+    // The snapshot pins already cover "absent from the module" (an added global shadowing a
+    // builtin deviates); pin the builtins' own entries once.
+    let bco = cx.builtins_of(&co)?;
+    if !bco.is(&cx.builtins_of(&pa)?) {
+        return Err(refuse!(Deps: "re._parser and re._compiler see different builtins"));
+    }
+    for n in builtins {
+        cx.pin(&bco, n, &DEPS_COMPILE)?;
+    }
     refs.push(keep(&sre_compile));
     refs.push(keep(cn.as_any()));
     refs.push(keep(&extra));
