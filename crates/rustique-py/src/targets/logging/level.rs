@@ -140,10 +140,12 @@ unsafe fn level_call(func: O, args: *const O, nargsf: usize, kw: O, level: O, co
                     return r;
                 }
             }
-            // Enabled (or undecided): CPython's own frames run the record path. Not a
-            // fallback streak: the kernel decided, the call is just not one it replaces
-            // (an enabled call costs the kernel's checks, ~1% of a record).
-            STATS.fallback(Reason::Deopt);
+            // Enabled (or undecided): CPython's own frames run the record path. The call
+            // costs the kernel's checks plus the vectorcall fallback (~+800 Ir), a disabled
+            // call saves ~500 Ir: the score (credit 5 per hit, debit 7 per enabled call,
+            // `LEVEL`'s spec) suspends the target in programs where enabled calls dominate
+            // (services logging every request), so they pay nothing.
+            STATS.fallback_streak(Reason::Deopt);
             return original(func, args, nargsf, kw);
         };
         STATS.fallback_streak(why);

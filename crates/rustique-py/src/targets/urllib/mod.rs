@@ -17,7 +17,7 @@
 //! Private state skipped: `_byte_quoter_factory`'s cache and `_Quoter` dicts (`quote`),
 //! the lazily built `_hextobyte` table (`unquote`).
 
-use std::ffi::{CStr, c_int};
+use std::ffi::CStr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use pyo3::ffi;
@@ -26,6 +26,7 @@ use pyo3::types::{PyList, PyString};
 use rustique_core::urlparse as up;
 
 use crate::accel::{self, Prepare, Reason, Refusal, TargetSpec};
+use crate::targets::textwrap::pep393::{self, Bufs, StrWriter, Unit, Units, with_bufs, with_units};
 use crate::targets::utils_kit::{
     Guard, O, bind, call_original, int_value, interned, is_type, keep, key, nargs, pin_global_keys, pin_keys,
 };
@@ -49,57 +50,6 @@ unsafe fn exact_str(o: O) -> bool {
     unsafe { is_type(o, &raw mut ffi::PyUnicode_Type) }
 }
 
-/// Code points of an exact `str`.
-unsafe fn ucs4(s: O) -> Option<Vec<u32>> {
-    // SAFETY: exact str.
-    unsafe {
-        let n = ffi::PyUnicode_GET_LENGTH(s) as usize;
-        let mut v = vec![0u32; n + 1];
-        if ffi::PyUnicode_AsUCS4(s, v.as_mut_ptr(), (n + 1) as ffi::Py_ssize_t, 1).is_null() {
-            ffi::PyErr_Clear();
-            return None;
-        }
-        v.truncate(n);
-        Some(v)
-    }
-}
-
-unsafe fn str_from_ucs4(v: &[u32]) -> O {
-    // SAFETY: valid buffer.
-    unsafe {
-        ffi::PyUnicode_FromKindAndData(
-            ffi::PyUnicode_4BYTE_KIND as c_int,
-            v.as_ptr().cast(),
-            v.len() as ffi::Py_ssize_t,
-        )
-    }
-}
-
-unsafe fn str_from_ascii(v: &[u8]) -> O {
-    // SAFETY: ASCII bytes.
-    unsafe {
-        ffi::PyUnicode_FromKindAndData(
-            ffi::PyUnicode_1BYTE_KIND as c_int,
-            v.as_ptr().cast(),
-            v.len() as ffi::Py_ssize_t,
-        )
-    }
-}
-
-/// UTF-8 of code points (`None`: a lone surrogate — `encode('utf-8', 'strict')` raises).
-fn utf8(v: &[u32]) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(v.len());
-    let mut buf = [0u8; 4];
-    for &c in v {
-        if c < 128 {
-            out.push(c as u8);
-        } else {
-            out.extend_from_slice(char::from_u32(c)?.encode_utf8(&mut buf).as_bytes());
-        }
-    }
-    Some(out)
-}
-
 /// `s == lit` for an exact str and an ASCII literal (no allocation, no Python code).
 unsafe fn str_is(s: O, lit: &str) -> bool {
     // SAFETY: exact str.
@@ -108,6 +58,29 @@ unsafe fn str_is(s: O, lit: &str) -> bool {
             && ffi::PyUnicode_GET_LENGTH(s) as usize == lit.len()
             && lit.bytes().enumerate().all(|(i, b)| ffi::PyUnicode_ReadChar(s, i as ffi::Py_ssize_t) == u32::from(b))
     }
+}
+
+/// A new `str` (never a cached singleton: CPython's `''.join` of several parts and
+/// `str.replace` build a fresh object even for one character) with the code points of `v`.
+/// NULL with the error cleared on failure.
+unsafe fn fresh_str<T: Unit>(v: &[T]) -> O {
+    // SAFETY: attached thread; exactly `v.len()` points of class `max_cp(v)` written.
+    unsafe {
+        match StrWriter::fresh(v.len(), pep393::max_cp(v)) {
+            Some(mut w) => {
+                w.put(v);
+                w.finish()
+            }
+            None => std::ptr::null_mut(),
+        }
+    }
+}
+
+/// The bytes of an exact `bytes` object.
+#[inline]
+unsafe fn bytes_of<'a>(b: O) -> &'a [u8] {
+    // SAFETY: exact bytes, alive while the slice is used.
+    unsafe { std::slice::from_raw_parts(ffi::PyBytes_AS_STRING(b).cast::<u8>(), ffi::PyBytes_Size(b) as usize) }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -155,9 +128,17 @@ unsafe fn checked(g: &Guard, spec: &'static TargetSpec, r: O, func: O, args: *co
 // quote / quote_plus
 // ---------------------------------------------------------------------------------------
 
-/// The bytes `quote` encodes: `string.encode('utf-8', 'strict')` of a str, or bytes as is.
-/// `None`: outside the subset (CPython raises or uses another codec).
-unsafe fn quote_input(string: O, encoding: O, errors: O) -> Option<Vec<u8>> {
+/// What `quote` encodes: the code units of a str (encoded as UTF-8 on the fly) or bytes.
+#[derive(Clone, Copy)]
+enum QIn<'a> {
+    Str(Units<'a>),
+    Bytes(&'a [u8]),
+}
+
+/// The input of `quote(string, encoding, errors)`: a str with UTF-8/`strict` (the defaults
+/// or given explicitly), or exact bytes without codec arguments. `None`: outside the subset
+/// (CPython raises or uses another codec).
+unsafe fn quote_input<'a>(string: O, encoding: O, errors: O) -> Option<QIn<'a>> {
     // SAFETY: live objects.
     unsafe {
         let none = ffi::Py_None();
@@ -165,41 +146,80 @@ unsafe fn quote_input(string: O, encoding: O, errors: O) -> Option<Vec<u8>> {
             let enc_ok =
                 encoding.is_null() || encoding == none || str_is(encoding, "utf-8") || str_is(encoding, "utf8");
             let err_ok = errors.is_null() || errors == none || str_is(errors, "strict");
-            if !(enc_ok && err_ok) {
-                return None;
-            }
-            return utf8(&ucs4(string)?);
+            return (enc_ok && err_ok).then(|| QIn::Str(pep393::units(string)));
         }
         if is_type(string, &raw mut ffi::PyBytes_Type)
             && (encoding.is_null() || encoding == none)
             && (errors.is_null() || errors == none)
         {
-            let p = ffi::PyBytes_AS_STRING(string).cast::<u8>();
-            return Some(std::slice::from_raw_parts(p, ffi::PyBytes_Size(string) as usize).to_vec());
+            return Some(QIn::Bytes(bytes_of(string)));
         }
         None
     }
 }
 
-/// The safe set of `quote_from_bytes` from a `str` or `bytes` `safe` (plus `extra`).
+/// The safe set of `quote_from_bytes` from a `str` (`safe.encode('ascii', 'ignore')`) or
+/// `bytes` (bytes < 128) `safe`, plus `extra`.
 unsafe fn safe_of(safe: O, extra: Option<u32>) -> Option<[bool; 256]> {
     // SAFETY: live object.
     unsafe {
-        let mut cps: Vec<u32> = if exact_str(safe) {
-            ucs4(safe)?
+        let mut t = if exact_str(safe) {
+            with_units!(pep393::units(safe), s => up::safe_table(s.iter().map(|&c| c.cp())))
         } else if is_type(safe, &raw mut ffi::PyBytes_Type) {
-            let p = ffi::PyBytes_AS_STRING(safe).cast::<u8>();
-            std::slice::from_raw_parts(p, ffi::PyBytes_Size(safe) as usize).iter().map(|&b| u32::from(b)).collect()
+            up::safe_table(bytes_of(safe).iter().map(|&b| u32::from(b)))
         } else {
             return None;
         };
-        cps.extend(extra);
-        Some(up::safe_table(cps))
+        if let Some(c) = extra {
+            t[c as usize] = true;
+        }
+        Some(t)
     }
 }
 
-/// `quote(string, safe, encoding, errors)`; `space_to_plus`: `quote_plus`'s
-/// `quote(string, safe + ' ', ...).replace(' ', '+')` when the input has a space.
+/// The UTF-8 bytes of code point `c` (`None`: a lone surrogate — `strict` raises).
+#[inline(always)]
+fn utf8(c: u32, buf: &mut [u8; 4]) -> Option<&[u8]> {
+    if c < 128 {
+        buf[0] = c as u8;
+        return Some(&buf[..1]);
+    }
+    Some(char::from_u32(c)?.encode_utf8(buf).as_bytes())
+}
+
+/// Visit the bytes `quote` sees (`string.encode('utf-8')` for a str); `false` if the str
+/// has a lone surrogate (the encoder raises).
+#[inline]
+fn each_byte(input: QIn<'_>, mut f: impl FnMut(u8)) -> bool {
+    match input {
+        QIn::Bytes(b) => {
+            b.iter().for_each(|&x| f(x));
+            true
+        }
+        QIn::Str(u) => with_units!(u, t => {
+            let mut buf = [0u8; 4];
+            for &c in t {
+                let c: u32 = c.cp();
+                if c < 128 {
+                    f(c as u8);
+                } else {
+                    let Some(b) = utf8(c, &mut buf) else { return false };
+                    b.iter().for_each(|&x| f(x));
+                }
+            }
+            true
+        }),
+    }
+}
+
+/// `quote(string, safe, encoding, errors)`; `plus`: `quote_plus`, i.e. when the input has
+/// a space, `quote(string, safe + ' ', ...).replace(' ', '+')`.
+///
+/// Results (identity as CPython's): `quote('')` is the argument; all bytes safe:
+/// `bs.decode()` (a new str; the singleton for one character); a single unsafe byte: the
+/// `_Quoter` cache's shared `'%XX'` object (fall back: CPython's cache owns it); otherwise
+/// `''.join(...)` of several parts (a new str). `quote_plus` with a space: `str.replace`'s
+/// new object (never a singleton).
 unsafe fn quote_kernel(
     g: &Guard,
     spec: &'static TargetSpec,
@@ -218,34 +238,74 @@ unsafe fn quote_kernel(
             if !g.ready(func) {
                 return call_original(func, args, nargsf, kw);
             }
-            // `quote('')` returns its argument; `quote(b'')` returns ''.
-            if exact_str(string) && ffi::PyUnicode_GET_LENGTH(string) == 0 {
-                if quote_input(string, encoding, errors).is_some() {
+            if let Some(input) = quote_input(string, encoding, errors) {
+                // `quote('')` returns its argument.
+                if matches!(input, QIn::Str(u) if u.is_empty()) {
                     return checked(g, spec, ffi::Py_NewRef(string), func, args, nargsf, kw);
                 }
-            } else if let Some(bs) = quote_input(string, encoding, errors)
-                && bs.len() < 200_000
-            {
-                let has_space = bs.contains(&b' ');
+                // A one-byte input that needs quoting: CPython returns the `_Quoter` cache's
+                // shared object; decide that before any other work.
+                let one = match input {
+                    QIn::Bytes(b) if b.len() == 1 => Some(u32::from(b[0])),
+                    QIn::Str(u) if u.len() == 1 && u.at(0) < 128 => Some(u.at(0)),
+                    _ => None,
+                };
+                if let Some(c) = one
+                    && !up::ALWAYS_SAFE_TABLE[c as usize]
+                    && !(c == u32::from(b'/') && !plus && safe.is_null())
+                    && !(c == 0x20 && plus)
+                    && (safe.is_null() || !safe_of(safe, None).is_some_and(|t| t[c as usize]))
+                {
+                    g.counters.fallback_streak(Reason::Args);
+                    return call_original(func, args, nargsf, kw);
+                }
+                let has_space = match input {
+                    QIn::Bytes(b) => b.contains(&b' '),
+                    QIn::Str(u) => with_units!(u, t => t.iter().any(|&c| c.cp() == 0x20)),
+                };
                 let extra = (plus && has_space).then_some(0x20);
                 let table = if safe.is_null() {
                     // defaults: quote: safe='/', quote_plus: safe=''
-                    Some(up::safe_table(extra.into_iter().chain((!plus).then_some(u32::from(b'/')))))
+                    let mut t = up::ALWAYS_SAFE_TABLE;
+                    if !plus {
+                        t[b'/' as usize] = true;
+                    }
+                    if let Some(c) = extra {
+                        t[c as usize] = true;
+                    }
+                    Some(t)
                 } else {
                     safe_of(safe, extra)
                 };
-                if let Some(table) = table {
-                    let mut out = Vec::new();
-                    up::quote_bytes(&bs, &table, &mut out);
-                    if plus && has_space {
-                        for b in &mut out {
-                            if *b == b' ' {
-                                *b = b'+';
-                            }
+                // Pass 1: input bytes and output length (UTF-8 encode errors fall back).
+                let (mut nbytes, mut out_len, mut unsafe_bytes) = (0usize, 0usize, 0usize);
+                if let Some(table) = table
+                    && each_byte(input, |b| {
+                        nbytes += 1;
+                        if table[b as usize] {
+                            out_len += 1;
+                        } else {
+                            out_len += 3;
+                            unsafe_bytes += 1;
                         }
+                    })
+                    && nbytes < 200_000
+                    && !(nbytes == 1 && unsafe_bytes == 1)
+                {
+                    let swap = plus && has_space;
+                    let w = if swap { StrWriter::fresh(out_len, 127) } else { StrWriter::new(out_len, 127) };
+                    if let Some(mut w) = w {
+                        // Pass 2: write (ASCII output).
+                        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                        each_byte(input, |b| {
+                            if table[b as usize] {
+                                w.put_ascii(&[if swap && b == b' ' { b'+' } else { b }]);
+                            } else {
+                                w.put_ascii(&[b'%', HEX[(b >> 4) as usize], HEX[(b & 15) as usize]]);
+                            }
+                        });
+                        return checked(g, spec, w.finish(), func, args, nargsf, kw);
                     }
-                    let r = str_from_ascii(&out);
-                    return checked(g, spec, r, func, args, nargsf, kw);
                 }
             }
         }
@@ -291,62 +351,91 @@ unsafe fn decode_errors(encoding: O, errors: O) -> Option<&'static CStr> {
     }
 }
 
-/// `unquote(text)` for code points containing `%`: ASCII runs percent-decoded and decoded
-/// with CPython's UTF-8 decoder (`errors`), other characters kept. `None`: the decoder
-/// raised (strict) — nothing observable happened.
-unsafe fn unquote_cps(v: &[u32], errors: &CStr) -> Option<Vec<u32>> {
+/// `unquote_plus(s)` / `unquote(s)` of the code units `t` of a str (or of a slice of one):
+/// `Ok(None)` when CPython returns its argument unchanged (no `%`, no `+` to replace),
+/// `Ok(Some(new str))`, or `Err` to fall back (a strict decode error or an allocation
+/// failure: nothing observable happened).
+///
+/// CPython: `string.replace('+', ' ')` (a new object), then with a `%`:
+/// `''.join(_generate_unquoted_parts(...))` — non-ASCII runs kept, ASCII runs percent-
+/// decoded (`_unquote_impl`) and decoded by CPython's UTF-8 decoder with `errors`; a join
+/// of at least three parts, so always a new object.
+unsafe fn unquote_t<T: Unit>(t: &[T], plus: bool, errors: &CStr, b: &mut Bufs) -> Result<Option<O>, ()> {
     // SAFETY: attached thread.
     unsafe {
-        let mut out = Vec::with_capacity(v.len());
+        let has_pct = t.iter().any(|&c| c.into() == 0x25);
+        let has_plus = plus && t.iter().any(|&c| c.into() == 0x2b);
+        if !has_pct {
+            if !has_plus {
+                return Ok(None);
+            }
+            // '+' and ' ' are both ASCII: the class of `t` is the result's.
+            let mut w = StrWriter::fresh(t.len(), pep393::max_cp(t)).ok_or(())?;
+            for &c in t {
+                let c: u32 = c.into();
+                w.put1(if c == 0x2b { 0x20 } else { c });
+            }
+            return Ok(Some(w.finish()));
+        }
+        let map = |c: u32| if has_plus && c == 0x2b { 0x20u8 } else { c as u8 };
+        let [b0, b1] = &mut b.b;
+        if t.iter().all(|&c| c.into() < 128) {
+            // One ASCII run (the common case).
+            b1.clear();
+            b1.extend(t.iter().map(|&c| map(c.into())));
+            b0.clear();
+            up::unquote_bytes(b1, b0);
+            if b0.is_ascii() {
+                let r = fresh_str(b0.as_slice());
+                return if r.is_null() { Err(()) } else { Ok(Some(r)) };
+            }
+            let d = ffi::PyUnicode_DecodeUTF8(b0.as_ptr().cast(), b0.len() as ffi::Py_ssize_t, errors.as_ptr());
+            if d.is_null() {
+                ffi::PyErr_Clear();
+                return Err(());
+            }
+            // The decoder's new string is the join's value; a one-character result may be
+            // the cached singleton, which the join would have copied.
+            if ffi::PyUnicode_GET_LENGTH(d) >= 2 && ffi::Py_REFCNT(d) == 1 {
+                return Ok(Some(d));
+            }
+            let r = with_units!(pep393::units(d), s => fresh_str(s));
+            ffi::Py_DECREF(d);
+            return if r.is_null() { Err(()) } else { Ok(Some(r)) };
+        }
+        let out = &mut b.u[0];
+        out.clear();
+        out.reserve(t.len());
         let mut i = 0;
-        let mut bytes = Vec::new();
-        while i < v.len() {
-            if v[i] >= 128 {
-                out.push(v[i]);
+        while i < t.len() {
+            let c: u32 = t[i].into();
+            if c >= 128 {
+                out.push(c);
                 i += 1;
                 continue;
             }
             let s = i;
-            while i < v.len() && v[i] < 128 {
+            while i < t.len() && t[i].into() < 128 {
                 i += 1;
             }
-            let run: Vec<u8> = v[s..i].iter().map(|&c| c as u8).collect();
-            bytes.clear();
-            up::unquote_bytes(&run, &mut bytes);
-            if bytes.is_ascii() {
-                out.extend(bytes.iter().map(|&b| u32::from(b)));
+            b1.clear();
+            b1.extend(t[s..i].iter().map(|&c| map(c.into())));
+            b0.clear();
+            up::unquote_bytes(b1, b0);
+            if b0.is_ascii() {
+                out.extend(b0.iter().map(|&x| u32::from(x)));
             } else {
-                let d =
-                    ffi::PyUnicode_DecodeUTF8(bytes.as_ptr().cast(), bytes.len() as ffi::Py_ssize_t, errors.as_ptr());
+                let d = ffi::PyUnicode_DecodeUTF8(b0.as_ptr().cast(), b0.len() as ffi::Py_ssize_t, errors.as_ptr());
                 if d.is_null() {
                     ffi::PyErr_Clear();
-                    return None;
+                    return Err(());
                 }
-                let cps = ucs4(d);
+                pep393::units(d).push_to(out);
                 ffi::Py_DECREF(d);
-                out.extend(cps?);
             }
         }
-        Some(out)
-    }
-}
-
-/// `unquote_plus(s)` / `unquote(s)` of an exact str: the result (new reference; the
-/// argument itself when CPython returns it). `None`: fall back.
-unsafe fn unquote_obj(s: O, plus: bool, errors: &CStr) -> Option<O> {
-    // SAFETY: exact str.
-    unsafe {
-        let v = ucs4(s)?;
-        let has_plus = plus && v.contains(&0x2b);
-        if !v.contains(&0x25) {
-            if !has_plus {
-                return Some(ffi::Py_NewRef(s));
-            }
-            let w: Vec<u32> = v.iter().map(|&c| if c == 0x2b { 0x20 } else { c }).collect();
-            return Some(str_from_ucs4(&w));
-        }
-        let v = if has_plus { v.iter().map(|&c| if c == 0x2b { 0x20 } else { c }).collect() } else { v };
-        Some(str_from_ucs4(&unquote_cps(&v, errors)?))
+        let r = fresh_str(out.as_slice());
+        if r.is_null() { Err(()) } else { Ok(Some(r)) }
     }
 }
 
@@ -370,8 +459,11 @@ unsafe fn unquote_kernel(
             if !g.ready(func) {
                 return call_original(func, args, nargsf, kw);
             }
-            if let Some(r) = unquote_obj(string, plus, errs) {
-                return checked(g, spec, r, func, args, nargsf, kw);
+            let r = with_bufs(|b| with_units!(pep393::units(string), t => unquote_t(t, plus, errs, b)));
+            match r {
+                Ok(None) => return checked(g, spec, ffi::Py_NewRef(string), func, args, nargsf, kw),
+                Ok(Some(o)) => return checked(g, spec, o, func, args, nargsf, kw),
+                Err(()) => {}
             }
         }
         g.counters.fallback_streak(Reason::Args);
@@ -393,9 +485,48 @@ unsafe extern "C" fn vc_unquote_plus(func: O, args: *const O, nargsf: usize, kw:
 // parse_qsl / parse_qs
 // ---------------------------------------------------------------------------------------
 
-/// The decoded `(name, value)` pairs of `parse_qsl(qs, ...)` for an exact str; `None`:
-/// fall back (CPython raises, or an unsupported argument).
-unsafe fn parse_pairs(args: *const O, nargsf: usize, kw: O, with_stacklevel: bool) -> Option<Vec<(O, O)>> {
+/// `qs.split(separator)` field ranges, in order (non-overlapping occurrences, left to right).
+fn for_fields<T: Unit>(t: &[T], sep: &[u32], mut f: impl FnMut(usize, usize) -> bool) -> bool {
+    let (n, m) = (t.len(), sep.len());
+    let mut start = 0;
+    let mut i = 0;
+    if m == 1 {
+        let s = sep[0];
+        while i < n {
+            if t[i].into() == s {
+                if !f(start, i) {
+                    return false;
+                }
+                start = i + 1;
+            }
+            i += 1;
+        }
+    } else {
+        while i + m <= n {
+            if t[i..i + m].iter().zip(sep).all(|(&a, &b)| a.into() == b) {
+                if !f(start, i) {
+                    return false;
+                }
+                i += m;
+                start = i;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    f(start, n)
+}
+
+/// `parse_qsl(qs, ...)` for an exact str, each decoded `(name, value)` handed to `emit`
+/// (new references; `emit` returns false on an allocation failure). `None`: fall back
+/// (CPython raises, or an unsupported argument) — nothing observable happened.
+unsafe fn parse_pairs(
+    args: *const O,
+    nargsf: usize,
+    kw: O,
+    with_stacklevel: bool,
+    emit: &mut dyn FnMut(O, O) -> bool,
+) -> Option<()> {
     // SAFETY: vectorcall arguments.
     unsafe {
         let names = [
@@ -432,93 +563,87 @@ unsafe fn parse_pairs(args: *const O, nargsf: usize, kw: O, with_stacklevel: boo
             return None; // strict_parsing: let CPython validate and raise
         }
         let errs = decode_errors(encoding, errors)?;
-        let sep: Vec<u32> = if sep.is_null() {
-            vec![0x26]
+        let mut sep_buf = [0u32; 8];
+        let sep: &[u32] = if sep.is_null() {
+            sep_buf[0] = 0x26;
+            &sep_buf[..1]
         } else if exact_str(sep) {
-            ucs4(sep)?
+            let u = pep393::units(sep);
+            if u.is_empty() || u.len() > sep_buf.len() {
+                return None; // ValueError / an unusual separator: CPython
+            }
+            for (i, slot) in sep_buf.iter_mut().enumerate().take(u.len()) {
+                *slot = u.at(i);
+            }
+            &sep_buf[..u.len()]
         } else {
             return None;
         };
-        if sep.is_empty() {
-            return None; // ValueError
-        }
-        let v = ucs4(qs)?;
-        // qs.split(separator)
-        let mut fields: Vec<(usize, usize)> = Vec::new();
-        let mut start = 0;
-        let mut i = 0;
-        while i + sep.len() <= v.len() {
-            if v[i..i + sep.len()] == sep[..] {
-                fields.push((start, i));
-                i += sep.len();
-                start = i;
-            } else {
-                i += 1;
-            }
-        }
-        fields.push((start, v.len()));
+        let u = pep393::units(qs);
         if !maxf.is_null() && maxf != ffi::Py_None() {
             if !is_type(maxf, &raw mut ffi::PyLong_Type) {
                 return None;
             }
             let m = int_value(maxf)?;
-            if v.is_empty() {
-                // `if not qs: return []` comes first
-            } else if m < fields.len() as i64 {
-                return None; // ValueError: Max number of fields exceeded
-            }
-        }
-        let mut out: Vec<(O, O)> = Vec::new();
-        if v.is_empty() {
-            return Some(out);
-        }
-        let fail = |out: &mut Vec<(O, O)>| {
-            for (a, b) in out.drain(..) {
-                ffi::Py_DECREF(a);
-                ffi::Py_DECREF(b);
-            }
-        };
-        for (a, b) in fields {
-            if a == b {
-                continue; // empty field (not strict)
-            }
-            // name, has_eq, value = name_value.partition('=')
-            let eq = v[a..b].iter().position(|&c| c == 0x3d).map(|p| a + p);
-            let (na, nb, va, vb) = match eq {
-                Some(e) => (a, e, e + 1, b),
-                None => (a, b, b, b),
-            };
-            if vb == va && !keep {
-                continue;
-            }
-            let name_s = ffi::PyUnicode_Substring(qs, na as ffi::Py_ssize_t, nb as ffi::Py_ssize_t);
-            let value_s = ffi::PyUnicode_Substring(qs, va as ffi::Py_ssize_t, vb as ffi::Py_ssize_t);
-            if name_s.is_null() || value_s.is_null() {
-                ffi::Py_XDECREF(name_s);
-                ffi::Py_XDECREF(value_s);
-                ffi::PyErr_Clear();
-                fail(&mut out);
-                return None;
-            }
-            let name = unquote_obj(name_s, true, errs);
-            let value = unquote_obj(value_s, true, errs);
-            ffi::Py_DECREF(name_s);
-            ffi::Py_DECREF(value_s);
-            match (name, value) {
-                (Some(n), Some(v)) => out.push((n, v)),
-                (n, v) => {
-                    if let Some(n) = n {
-                        ffi::Py_DECREF(n);
-                    }
-                    if let Some(v) = v {
-                        ffi::Py_DECREF(v);
-                    }
-                    fail(&mut out);
-                    return None;
+            if !u.is_empty() {
+                let nfields = with_units!(u, t => {
+                    let mut k = 0usize;
+                    for_fields(t, sep, |_, _| {
+                        k += 1;
+                        true
+                    });
+                    k
+                });
+                if m < nfields as i64 {
+                    return None; // ValueError: Max number of fields exceeded
                 }
             }
         }
-        Some(out)
+        if u.is_empty() {
+            return Some(()); // `if not qs: return []`
+        }
+        with_bufs(|b| {
+            with_units!(u, t => {
+                // name or value: `_unquote(part)`; the slice of `qs` itself when unchanged
+                // (`PyUnicode_Substring`: CPython's slicing, `qs` for the whole string).
+                let part = |a: usize, z: usize, b: &mut Bufs| -> Option<O> {
+                    match unquote_t(&t[a..z], true, errs, b) {
+                        Ok(Some(o)) => Some(o),
+                        Ok(None) => {
+                            let s = ffi::PyUnicode_Substring(qs, a as ffi::Py_ssize_t, z as ffi::Py_ssize_t);
+                            if s.is_null() {
+                                ffi::PyErr_Clear();
+                                None
+                            } else {
+                                Some(s)
+                            }
+                        }
+                        Err(()) => None,
+                    }
+                };
+                for_fields(t, sep, |a, z| {
+                    if a == z {
+                        return true; // empty field (not strict)
+                    }
+                    // name, has_eq, value = name_value.partition('=')
+                    let eq = t[a..z].iter().position(|&c| c.cp() == 0x3d).map(|p| a + p);
+                    let (na, nb, va, vb) = match eq {
+                        Some(e) => (a, e, e + 1, z),
+                        None => (a, z, z, z),
+                    };
+                    if vb == va && !keep {
+                        return true;
+                    }
+                    let Some(name) = part(na, nb, b) else { return false };
+                    let Some(value) = part(va, vb, b) else {
+                        ffi::Py_DECREF(name);
+                        return false;
+                    };
+                    emit(name, value)
+                })
+            })
+        })
+        .then_some(())
     }
 }
 
@@ -526,30 +651,33 @@ unsafe extern "C" fn vc_parse_qsl(func: O, args: *const O, nargsf: usize, kw: O)
     // SAFETY: vectorcall arguments.
     unsafe {
         let g = &G_PARSE_QSL;
-        if g.ready(func)
-            && let Some(pairs) = parse_pairs(args, nargsf, kw, true)
-        {
-            let out = ffi::PyList_New(pairs.len() as ffi::Py_ssize_t);
+        if g.ready(func) {
+            let out = ffi::PyList_New(0);
             if out.is_null() {
-                for (a, b) in pairs {
-                    ffi::Py_DECREF(a);
-                    ffi::Py_DECREF(b);
+                ffi::PyErr_Clear();
+            } else {
+                let mut emit = |a: O, b: O| -> bool {
+                    let t = ffi::PyTuple_New(2);
+                    if t.is_null() {
+                        ffi::PyErr_Clear();
+                        ffi::Py_DECREF(a);
+                        ffi::Py_DECREF(b);
+                        return false;
+                    }
+                    ffi::PyTuple_SET_ITEM(t, 0, a);
+                    ffi::PyTuple_SET_ITEM(t, 1, b);
+                    let ok = ffi::PyList_Append(out, t) == 0;
+                    ffi::Py_DECREF(t);
+                    if !ok {
+                        ffi::PyErr_Clear();
+                    }
+                    ok
+                };
+                if parse_pairs(args, nargsf, kw, true, &mut emit).is_some() {
+                    return checked(g, &PARSE_QSL, out, func, args, nargsf, kw);
                 }
-                return out;
+                ffi::Py_DECREF(out);
             }
-            for (i, (a, b)) in pairs.into_iter().enumerate() {
-                let t = ffi::PyTuple_New(2);
-                if t.is_null() {
-                    ffi::Py_DECREF(a);
-                    ffi::Py_DECREF(b);
-                    ffi::Py_DECREF(out);
-                    return t;
-                }
-                ffi::PyTuple_SET_ITEM(t, 0, a);
-                ffi::PyTuple_SET_ITEM(t, 1, b);
-                ffi::PyList_SET_ITEM(out, i as ffi::Py_ssize_t, t);
-            }
-            return checked(g, &PARSE_QSL, out, func, args, nargsf, kw);
         }
         g.counters.fallback_streak(Reason::Args);
         call_original(func, args, nargsf, kw)
@@ -560,17 +688,15 @@ unsafe extern "C" fn vc_parse_qs(func: O, args: *const O, nargsf: usize, kw: O) 
     // SAFETY: vectorcall arguments.
     unsafe {
         let g = &G_PARSE_QS;
-        if g.ready(func)
-            && let Some(pairs) = parse_pairs(args, nargsf, kw, false)
-        {
-            // for name, value in pairs: parsed_result.setdefault-like append
+        if g.ready(func) {
             let d = ffi::PyDict_New();
-            let mut ok = !d.is_null();
-            for (a, b) in pairs {
-                if ok {
+            if d.is_null() {
+                ffi::PyErr_Clear();
+            } else {
+                // for name, value in pairs: append to parsed_result[name] (or a new list)
+                let mut emit = |a: O, b: O| -> bool {
                     let mut cur: O = std::ptr::null_mut();
-                    let r = ffi::PyDict_GetItemRef(d, a, &mut cur);
-                    ok = match r {
+                    let ok = match ffi::PyDict_GetItemRef(d, a, &mut cur) {
                         1 => {
                             let x = ffi::PyList_Append(cur, b) == 0;
                             ffi::Py_DECREF(cur);
@@ -589,15 +715,18 @@ unsafe extern "C" fn vc_parse_qs(func: O, args: *const O, nargsf: usize, kw: O) 
                         }
                         _ => false,
                     };
+                    ffi::Py_DECREF(a);
+                    ffi::Py_DECREF(b);
+                    if !ok {
+                        ffi::PyErr_Clear();
+                    }
+                    ok
+                };
+                if parse_pairs(args, nargsf, kw, false, &mut emit).is_some() {
+                    return checked(g, &PARSE_QS, d, func, args, nargsf, kw);
                 }
-                ffi::Py_DECREF(a);
-                ffi::Py_DECREF(b);
+                ffi::Py_DECREF(d);
             }
-            if !ok {
-                ffi::Py_XDECREF(d);
-                return std::ptr::null_mut();
-            }
-            return checked(g, &PARSE_QS, d, func, args, nargsf, kw);
         }
         g.counters.fallback_streak(Reason::Args);
         call_original(func, args, nargsf, kw)
@@ -621,23 +750,36 @@ unsafe fn unsafe_list_ok() -> bool {
     }
 }
 
-/// `x.lstrip(C0)` (or `strip` when `both`) then removal of tab/CR/LF: the cleaned code
-/// points, and whether the result is the argument itself (nothing removed).
-fn clean(v: &[u32], both: bool) -> (Vec<u32>, bool) {
-    let mut a = 0;
-    while a < v.len() && up::is_c0_or_space(v[a]) {
-        a += 1;
+/// `x.lstrip(C0)` (or `strip` when `both`) then the removal of tab/CR/LF, for an exact str
+/// `x`: `(object, offset)` such that the cleaned text is `object[offset..]`'s prefix of the
+/// cleaned length — either `x` itself with the strip offset (nothing removed: CPython's
+/// `lstrip` gives a slice of `x`, `replace` returns its argument) or a new object (`replace`
+/// removed something: a new str, never a singleton). New reference.
+unsafe fn cleaned(x: O, both: bool, b: &mut Bufs) -> Option<(O, usize, usize)> {
+    // SAFETY: attached thread; exact str.
+    unsafe {
+        with_units!(pep393::units(x), t => {
+            let mut a = 0;
+            while a < t.len() && up::is_c0_or_space(t[a].cp()) {
+                a += 1;
+            }
+            let mut z = t.len();
+            if both {
+                while z > a && up::is_c0_or_space(t[z - 1].cp()) {
+                    z -= 1;
+                }
+            }
+            let s = &t[a..z];
+            if !s.iter().any(|&c| up::is_unsafe_url_char(c.cp())) {
+                return Some((ffi::Py_NewRef(x), a, z));
+            }
+            let v = &mut b.u[1];
+            v.clear();
+            v.extend(s.iter().map(|&c| c.cp()).filter(|&c| !up::is_unsafe_url_char(c)));
+            let o = fresh_str(v.as_slice());
+            (!o.is_null()).then_some((o, 0, v.len()))
+        })
     }
-    let mut b = v.len();
-    if both {
-        while b > a && up::is_c0_or_space(v[b - 1]) {
-            b -= 1;
-        }
-    }
-    let s = &v[a..b];
-    let out: Vec<u32> = s.iter().copied().filter(|&c| !up::is_unsafe_url_char(c)).collect();
-    let same = a == 0 && b == v.len() && out.len() == v.len();
-    (out, same)
 }
 
 unsafe extern "C" fn vc_urlsplit(func: O, args: *const O, nargsf: usize, kw: O) -> O {
@@ -679,53 +821,61 @@ unsafe fn urlsplit(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
         if !unsafe_list_ok() {
             return None;
         }
-        let (cu, url_same) = clean(&ucs4(url)?, false);
-        let split = up::urlsplit(&cu, allow).ok()?;
-        // The cleaned url object: the argument itself when nothing was removed.
-        let u = if url_same { ffi::Py_NewRef(url) } else { str_from_ucs4(&cu) };
-        if u.is_null() {
-            ffi::PyErr_Clear();
-            return None;
-        }
-        let sub = |r: (usize, usize)| ffi::PyUnicode_Substring(u, r.0 as ffi::Py_ssize_t, r.1 as ffi::Py_ssize_t);
-        let opt = |r: up::Range| r.map_or_else(|| ffi::Py_NewRef(none), sub);
-        let scheme_obj = match split.scheme_from_url {
-            Some(r) => {
-                let s = sub(r);
-                if s.is_null() {
-                    s
-                } else {
-                    // `url[:i].lower()` (CPython's own method: a new str)
-                    let l = ffi::PyObject_CallMethodNoArgs(s, ld(&S_LOWER));
-                    ffi::Py_DECREF(s);
-                    l
+        with_bufs(|b| {
+            // The cleaned url is `u[off..end]`; components are its slices (CPython's own
+            // slicing: `u` itself for the whole string, singletons for one character).
+            let (u, off, end) = cleaned(url, false, b)?;
+            let split = with_units!(pep393::units(u), t => up::urlsplit(&t[off..end], allow));
+            let Ok(split) = split else {
+                ffi::Py_DECREF(u);
+                return None;
+            };
+            let sub = |r: (usize, usize)| {
+                ffi::PyUnicode_Substring(u, (off + r.0) as ffi::Py_ssize_t, (off + r.1) as ffi::Py_ssize_t)
+            };
+            let opt = |r: up::Range| r.map_or_else(|| ffi::Py_NewRef(none), sub);
+            let scheme_obj = match split.scheme_from_url {
+                Some(r) => {
+                    let s = sub(r);
+                    if s.is_null() {
+                        s
+                    } else {
+                        // `url[:i].lower()` (CPython's own method: a new str)
+                        let l = ffi::PyObject_CallMethodNoArgs(s, ld(&S_LOWER));
+                        ffi::Py_DECREF(s);
+                        l
+                    }
                 }
+                None if scheme == none => ffi::Py_NewRef(none),
+                None => match cleaned(scheme, true, b) {
+                    Some((s, a, z)) => {
+                        let r = ffi::PyUnicode_Substring(s, a as ffi::Py_ssize_t, z as ffi::Py_ssize_t);
+                        ffi::Py_DECREF(s);
+                        r
+                    }
+                    None => std::ptr::null_mut(),
+                },
+            };
+            let parts = [scheme_obj, opt(split.netloc), sub(split.path), opt(split.query), opt(split.fragment)];
+            ffi::Py_DECREF(u);
+            if parts.iter().any(|p| p.is_null()) {
+                for p in parts {
+                    ffi::Py_XDECREF(p);
+                }
+                return Some(std::ptr::null_mut());
             }
-            None if scheme == none => ffi::Py_NewRef(none),
-            None => {
-                let (cs, same) = clean(&ucs4(scheme).unwrap_or_default(), true);
-                if same { ffi::Py_NewRef(scheme) } else { str_from_ucs4(&cs) }
+            let t = ffi::PyTuple_New(5);
+            if t.is_null() {
+                for p in parts {
+                    ffi::Py_DECREF(p);
+                }
+                return Some(t);
             }
-        };
-        let parts = [scheme_obj, opt(split.netloc), sub(split.path), opt(split.query), opt(split.fragment)];
-        ffi::Py_DECREF(u);
-        if parts.iter().any(|p| p.is_null()) {
-            for p in parts {
-                ffi::Py_XDECREF(p);
+            for (i, p) in parts.into_iter().enumerate() {
+                ffi::PyTuple_SET_ITEM(t, i as ffi::Py_ssize_t, p);
             }
-            return Some(std::ptr::null_mut());
-        }
-        let t = ffi::PyTuple_New(5);
-        if t.is_null() {
-            for p in parts {
-                ffi::Py_DECREF(p);
-            }
-            return Some(t);
-        }
-        for (i, p) in parts.into_iter().enumerate() {
-            ffi::PyTuple_SET_ITEM(t, i as ffi::Py_ssize_t, p);
-        }
-        Some(checked(g, &URLSPLIT, t, func, args, nargsf, kw))
+            Some(checked(g, &URLSPLIT, t, func, args, nargsf, kw))
+        })
     }
 }
 

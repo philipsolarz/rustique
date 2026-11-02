@@ -165,6 +165,22 @@ fn tiers_request(py: Python<'_>) -> Option<Option<Vec<String>>> {
     Some(Some(names.into_iter().filter(|n| known_tiers.contains(&n.as_str())).collect()))
 }
 
+/// `RUSTIQUE_VALIDATE` (`eager` | `first-call`): the validation policy. Read by every
+/// enable path (also `_accel.enable()`, once per process), so child processes of a CI job
+/// inherit it.
+pub(crate) fn apply_validate_env(py: Python<'_>) {
+    if let Some(v) = env(py, "RUSTIQUE_VALIDATE") {
+        match v.trim().to_lowercase().as_str() {
+            "eager" => registry::store_eager(true),
+            "first-call" | "" => registry::store_eager(false),
+            _ => warn(
+                py,
+                &format!("rustique: ignoring RUSTIQUE_VALIDATE={} (expected eager or first-call)", py_repr(py, &v)),
+            ),
+        }
+    }
+}
+
 /// `RUSTIQUE` set to an OFF value or empty: exactly like `0` (kill switch; the `.pth`
 /// line loads nothing).
 fn is_off(value: &str) -> bool {
@@ -331,6 +347,7 @@ pub fn switch_enable(
             sel_exclude.push(n);
         }
     }
+    apply_validate_env(py);
     // 5. Check mode.
     match check_request(py) {
         Some("warn") => stats::set_check(Some(false)),

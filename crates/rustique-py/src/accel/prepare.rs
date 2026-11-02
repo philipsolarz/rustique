@@ -28,6 +28,8 @@ use super::version;
 /// One declared site (its `Original` cell already holds the original entry point).
 pub(crate) struct SiteDecl {
     pub site: Site,
+    /// C arity of the entry point (cell sites; 0: not armable, e.g. an opcode handler).
+    pub arity: u8,
 }
 
 /// A fingerprint observed while preparing (for the dev tool's record mode).
@@ -61,6 +63,11 @@ pub struct Prepare<'py> {
     pub(crate) records: Vec<FingerprintRecord>,
     /// Record mode (dev tool): fingerprint mismatches are recorded, not refused.
     pub(crate) record: bool,
+    /// Arming (validate on first call, docs/ACCELERATION.md §3.2): only resolve and declare
+    /// the sites. Fingerprints, self-tests, memoized validations, pins and layout
+    /// calibrations are skipped; `prepare` runs again in full at the target's first call,
+    /// before any kernel is reachable.
+    pub(crate) arming: bool,
 }
 
 impl<'py> Prepare<'py> {
@@ -70,7 +77,14 @@ impl<'py> Prepare<'py> {
         module: Option<Bound<'py, PyModule>>,
         record: bool,
     ) -> Self {
-        Prepare { py, spec, module, sites: Vec::new(), pins: Vec::new(), records: Vec::new(), record }
+        Prepare { py, spec, module, sites: Vec::new(), pins: Vec::new(), records: Vec::new(), record, arming: false }
+    }
+
+    /// Whether this `prepare` only arms the target (validation deferred to its first call):
+    /// targets may skip expensive validation of their own then. Sites must still be
+    /// declared exactly as in a full `prepare`.
+    pub fn arming(&self) -> bool {
+        self.arming
     }
 
     pub fn py(&self) -> Python<'py> {
@@ -202,6 +216,9 @@ impl<'py> Prepare<'py> {
     /// Require the canonical code fingerprint of a pure-Python function (or code object)
     /// to be the one recorded for the running minor version.
     pub fn fingerprint_code(&mut self, func: &Bound<'_, PyAny>, expected: Fingerprints) -> Result<(), Refusal> {
+        if self.arming {
+            return Ok(());
+        }
         let observed = if func.cast_exact::<PyFunction>().is_ok() {
             fingerprint::function(func)?
         } else {
@@ -213,6 +230,9 @@ impl<'py> Prepare<'py> {
     /// Require the `ml_name`/`ml_flags`/`ml_doc` fingerprint of a C function or method
     /// descriptor to be the one recorded for the running minor version.
     pub fn fingerprint_c(&mut self, obj: &Bound<'_, PyAny>, expected: Fingerprints) -> Result<(), Refusal> {
+        if self.arming {
+            return Ok(());
+        }
         let observed = fingerprint::c_object(obj)?;
         self.check_fingerprint(|| describe(obj), observed, expected)
     }
@@ -227,6 +247,9 @@ impl<'py> Prepare<'py> {
         def: *const ffi::PyMethodDef,
         expected: Fingerprints,
     ) -> Result<(), Refusal> {
+        if self.arming {
+            return Ok(());
+        }
         // SAFETY: per the caller.
         let observed = unsafe { fingerprint::method_def(def) };
         self.check_fingerprint(|| what.to_owned(), observed, expected)
@@ -235,6 +258,11 @@ impl<'py> Prepare<'py> {
     /// The canonical code fingerprint of `obj` (function, code object, or C function):
     /// for targets that check fingerprints themselves.
     pub fn fingerprint_of(&self, obj: &Bound<'_, PyAny>) -> Result<String, Refusal> {
+        if self.arming {
+            // No recorded fingerprint is empty: callers comparing it fall through to
+            // `fingerprint_code`, which accepts while arming.
+            return Ok(String::new());
+        }
         Ok(fingerprint::any(obj)?)
     }
 
@@ -243,6 +271,9 @@ impl<'py> Prepare<'py> {
     /// dependencies (fingerprints of common helpers, layouts, self-tests) once. Declarations
     /// (sites, pins) must still be made by each target.
     pub fn memo(&mut self, key: &'static str, f: impl FnOnce(&mut Self) -> Result<(), Refusal>) -> Result<(), Refusal> {
+        if self.arming {
+            return Ok(());
+        }
         if let Some(r) = memo_get(key) {
             return r;
         }
@@ -254,6 +285,9 @@ impl<'py> Prepare<'py> {
     /// Run a behavioural self-test (kernel vs original on probe inputs; the `Original`s of
     /// sites declared so far are already set). `Ok(false)` or an error refuses.
     pub fn self_test(&mut self, what: &str, f: impl FnOnce(Python<'py>) -> PyResult<bool>) -> Result<(), Refusal> {
+        if self.arming {
+            return Ok(());
+        }
         match f(self.py) {
             Ok(true) => Ok(()),
             Ok(false) => Err(Refusal::with(Category::Selftest, format!("self-test failed: {what}"))),
@@ -267,7 +301,7 @@ impl<'py> Prepare<'py> {
 
     fn push_site<F: FnPtr>(&mut self, site: Site, original: &'static Original<F>) -> Result<(), Refusal> {
         self.push_site_ref(&site, original)?;
-        self.sites.push(SiteDecl { site });
+        self.sites.push(SiteDecl { site, arity: F::ARITY as u8 });
         Ok(())
     }
 
@@ -482,7 +516,7 @@ impl<'py> Prepare<'py> {
             site.release();
             return Err(r);
         }
-        self.sites.push(SiteDecl { site });
+        self.sites.push(SiteDecl { site, arity: F::ARITY as u8 });
         Ok(())
     }
 
@@ -520,7 +554,7 @@ impl<'py> Prepare<'py> {
             installed: false,
             keep: 0,
         };
-        self.sites.push(SiteDecl { site });
+        self.sites.push(SiteDecl { site, arity: 0 });
         Ok(())
     }
 
@@ -544,10 +578,10 @@ impl<'py> Prepare<'py> {
             unsafe { Bound::from_borrowed_ptr(self.py, (*func.as_ptr().cast::<ffi::PyFunctionObject>()).func_code) };
         // The local-monitoring layout the tools guard reads: calibrated on the first
         // vectorcall site of the process (a probe code object; C calls only).
-        if !version::calibrate_monitoring(self.py) {
+        if !self.arming && !version::calibrate_monitoring(self.py) {
             return Err(Refusal::with(Category::Layout, format!("{}: local monitoring layout not calibrated", what())));
         }
-        if !version::code_layout_cached(&code)? {
+        if !self.arming && !version::code_layout_cached(&code)? {
             return Err(Refusal::with(Category::Layout, format!("{}: PyCodeObject layout differs", what())));
         }
         let site = Site::vectorcall(func, kernel as usize).map_err(|e| Refusal::from(format!("{}: {e}", what())))?;
@@ -568,7 +602,7 @@ impl<'py> Prepare<'py> {
             site.release();
             return Err(Refusal::from(format!("{}: site declared twice", what())));
         }
-        self.sites.push(SiteDecl { site });
+        self.sites.push(SiteDecl { site, arity: 4 });
         Ok(())
     }
 
@@ -745,6 +779,9 @@ impl<'py> Prepare<'py> {
     /// Every key must be an exact `str`; at most 64 simultaneous deviations are tracked
     /// (beyond that the pin breaks).
     pub fn pin_dict(&mut self, dict: &Bound<'_, PyDict>, flag: &'static DepFlag) -> Result<&'static DepFlag, Refusal> {
+        if self.arming {
+            return Ok(flag);
+        }
         let py = self.py;
         // One consistent view under the dict's critical section (`PyDict_Next`; another
         // thread may be mutating the dict: never iterate it piecewise).

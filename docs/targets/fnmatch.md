@@ -1,4 +1,5 @@
-STATUS: wave 1, workstream `paths` (2026-11-01). Contract: docs/ACCELERATION.md.
+STATUS: wave 1, workstream `paths` (2026-11-01); wave 2, workstream `text` (2026-11-02: §Wave 2).
+Contract: docs/ACCELERATION.md.
 
 # Group `fnmatch`
 
@@ -62,7 +63,96 @@ Dependencies pinned: the whole `fnmatch` namespace (snapshot pin: `_compile_patt
 
 No public API exposes these.
 
-## Measurements
+## Wave 2 (workstream `text`, 2026-11-02)
+
+- **Compiled patterns: one process-wide, insert-only table** instead of wave 1's
+  per-thread cache, which compared the pattern's content against up to 32 entries per call
+  (the `any(fnmatch(f, p) for p in 12 patterns)` scan of `data/fs_inventory` paid ~150 Ir
+  per call for it, w2-floors §1). 256 slots, 4 probes, keyed by the pattern object's own
+  hash (`PyObject_Hash`: cached in the str/bytes after its first computation; CPython's
+  original computes it too, as the key of `_compile_pattern`'s `lru_cache`) and confirmed
+  by content (kind + code points), so a reused address or an equal pattern built at run
+  time both resolve correctly. An entry is published once with a release CAS and never
+  changed or freed: lookups are acquire loads, with no lock and no shared write
+  (free-threaded builds: threads matching the same patterns never bounce a cache line).
+  When all 4 probe slots hold other patterns, the pattern is compiled for that call only
+  (correct, slower; tested with 1,000+ patterns and 4 threads). The table holds no Python
+  objects (code points only); it lives as long as the process.
+- **Pattern shapes.** A pattern made of literals and at most one `*` (`*.py`, `coverage.*`,
+  `.DS_Store`, `a*b`) is matched by comparing its ends (`PRE*SUF`: length ≥ |PRE|+|SUF|,
+  prefix and suffix equal by code point; no `*`: equality) instead of interpreting the
+  program: the same result, since every literal token matches exactly its code point and
+  `*` under DOTALL matches anything. Other patterns use the port's program as before.
+- **`filter`** keeps matched names in a 64-entry inline buffer (heap beyond), no zeroing.
+- **Platforms.** `fnmatchcase` is the same code on every OS: its declarations (the
+  `fnmatch` namespace snapshot, `re.compile/_compile`, `re._parser`) stay in the group's
+  shared prepare and it installs everywhere. `fnmatch` and `filter` normalize with
+  `os.path.normcase` (`ntpath`'s `LCMapStringEx` lowering on Windows): their
+  `os.path`-is-`posixpath` declarations moved to their own prepare, which refuses as
+  `platform` off POSIX. Compile-checked for Windows/macOS/musl (posixpath.md §Wave 2);
+  runtime validation needs dx's per-platform CI job.
+
+Callgrind (3.15.1, wave 1 = bc2ce1a, wave 2 = ws2/text-paths on wave2 c9fb335):
+
+| cell | CPython Ir | wave 1 Ir | wave 2 Ir | ratio (wave 2) |
+|---|---:|---:|---:|---:|
+| `fnmatch(f, '*.py')` | 4,828 | 629 | 522 | 0.108 |
+| `fnmatch(f, 'coverage.*') miss` | 4,258 | 668 | 535 | 0.126 |
+| `fnmatch(f, '[!t]*_[0-9]*.py')` | 4,258 | 660 | 625 | 0.147 |
+| `fnmatch(fb, b'*.py') bytes` | 4,920 | 590 | 491 | 0.100 |
+| `fnmatch(fs, '*.py') str subclass` | 4,714 | 648 | 537 | 0.114 |
+| `fnmatch(Path, '*.py')` | 5,348 | 2,781 | 2,674 | 0.500 |
+| `fnmatch(f, '*.py') os.fspath patched` | 5,300 | 5,285 | 5,255 | 0.992 |
+| `fnmatch(f, '*.py') cProfile on` | 15,221 | 15,224 | 15,216 | 1.000 |
+| `fnmatchcase(f, '*.py')` | 3,307 | 629 | 522 | 0.158 |
+| `fnmatchcase(fs, '*.py') str subclass` | 3,305 | 648 | 537 | 0.162 |
+| `any(fnmatch(f, pat) for 12 pats)` | 58,934 | 13,535 | 11,480 | 0.195 |
+| `filter(32 names, '*.py')` | 61,975 | 5,287 | 3,604 | 0.058 |
+| `filter(iter, '*.py')` | 63,373 | 64,251 | 59,771 | 0.943 |
+
+8-thread rule (`benches/targets/paths_scaling.py`, 3.15.1t, enabled ÷ plain CPU per call at
+8 threads, `local` / `shared`): `fnmatch` 0.046 / 0.064, `filter(32 names)` 0.053 / 0.102,
+12-pattern scan 0.093 / 0.144. CPython's own `fnmatch` serializes on the critical section
+of `_compile_pattern`'s `lru_cache` (CPU ×2.1–2.9 at 8 threads); the kernel's table has
+no lock (×1.00–1.01 local).
+
+## `glob` and `os.scandir` (wave 2: settled, with the numbers)
+
+With Rustique on, `glob`/`os` are 54% of `data/fs_inventory`'s *cycles*
+(w2-attribution §6). Measured (wave 2):
+
+- **60% of the enabled run's cycles are system calls** (`getdents64`, `openat`,
+  `close`, `fstat`, `lstat`/`stat`: the Phase-1 eBPF profile of the enabled run,
+  `w2-attribution`), which user-space acceleration cannot touch.
+- In **instructions** (callgrind, enabled, per section of `run()`), `glob.glob(**)` is
+  379M of 843M: 36% `os.scandir` iteration and libc (`ScandirIterator_iternext`,
+  `PyUnicode_DecodeFSDefaultAndSize`, `readdir`, `opendir`'s `malloc`, the GIL release
+  around each syscall), 36% the interpreter running glob's **generators** (`_iglob`,
+  `_glob2`, `_rlistdir`, `_iterdir`, the hidden-name generator expression), 15%
+  allocation, 5% `sre` (below), 4% kernels (`join`, `relpath`, `x in tuple`).
+- What a kernel could take, and why it does not:
+  - the generators: the contract never replaces a function that returns a generator
+    (ACCELERATION §2.6);
+  - `glob._glob1` / `_listdir` are plain functions, but their work is `os.scandir`, which
+    raises the `os.scandir` audit event: from a kernel the audit hooks (user code) would
+    run without the `_glob1`/`_listdir`/`_iterdir` frames CPython has on the stack
+    (ruling 15), and the interpreter exposes no public "are audit hooks installed" check;
+  - `fnmatch.filter(names, pat)` inside `_glob1` receives the generator
+    `(x for x in names if not _ishidden(x))`: iterating it from native code would run
+    glob's Python code below the kernel (ruling 15), so `filter` falls back there (the
+    5% `sre` above is CPython's own regex match; the `filter(iter, '*.py')` fallback
+    cell stays at 0.943 in steady state);
+  - `_join`/`_ishidden` are 2–5-bytecode functions inlined by the specializer: a
+    vectorcall kernel would cost more than it saves.
+- `Path.rglob` (190M) is the same story through `glob._StringGlobber`'s closures
+  (`select_wildcard`, `select_recursive_step`) plus `Path` construction per result
+  (`_from_parsed_string` → `with_segments` → `__new__`/`__init__` kernels).
+
+Verdict: **settled** for this wave: the reachable user-space part of `glob`/`scandir` is
+the kernels already in place (`join`, `relpath`, `fnmatch`, `x in tuple`), ≤ 4% of the
+section; the rest is syscalls, C (`posix`), generator frames and allocation.
+
+## Measurements (wave 1)
 
 Callgrind as in docs/targets/posixpath.md (`benches/targets/paths_cg.py`, CPython 3.15.1).
 `f` = `'test_api_12.py'`; `pats` = the 12 ignore patterns of `data/fs_inventory`; `names` =
@@ -123,6 +213,10 @@ outcomes compared; all 24 targets of the three groups asserted installed). CPyth
 | **differences plain vs enabled** | **0** | **0** | **0** | **0** |
 
 The `test_os` failures and error are the box's environment (identical without Rustique).
+**Wave 2** (ws2/text-paths on wave2 c9fb335, same command, the 24 targets installed): the same
+counts and **0 differences** on 3.15.1, 3.15.1t, 3.14.9 and 3.14.9t
+(`benches/targets/results/paths_w2_conformance_<build>.json`); full `pytest -q`: 2205 passed /
+5 skipped (3.15.1, 3.15.1t), 2207 / 3 (3.14.9, 3.14.9t).
 Plus `tests/targets/test_posixpath.py`, `test_fnmatch.py`, `test_pathlib.py` (differential
 Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `pytest -q` on
 the four builds.
@@ -165,4 +259,6 @@ objects).
 ## Version coverage
 
 3.14 and 3.15 (`fnmatch.py` is identical in both; fingerprints recorded per minor).
+Platforms (wave 2): `fnmatchcase` on every OS (compile-checked off Linux, pending dx's CI
+job); `fnmatch` and `filter` on POSIX only (refusal category `platform` elsewhere).
 `jit_safe: true` (see Measurements: under `PYTHON_JIT=1` the steady-state cells, fallbacks included, stay within 1.05; a fallback before suspension costs +250–350 Ir, inferred from docs/atlas/mechanisms.md §1.3).

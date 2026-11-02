@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rustique-core.workspace = true
+rustique-interp.workspace = true
 pyo3.workspace = true
 hashbrown.workspace = true
 foldhash.workspace = true

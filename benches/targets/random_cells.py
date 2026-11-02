@@ -31,6 +31,19 @@ class OwnBits(random.Random):
 own_bits = OwnBits(9)
 FW = [Fraction(1)] * 6
 LD = collections.UserList(L6)
+import numpy
+NPF = numpy.float64(2.0)
+FR2 = Fraction(2)
+expovariate = random.expovariate
+gauss = random.gauss
+def ex0():
+    try:
+        rng.expovariate(0)
+    except ZeroDivisionError:
+        pass
+class OddNext(random.Random):
+    pass
+odd = OddNext(4)
 """
 
 INSTALL = """
@@ -86,6 +99,42 @@ CELLS = {
     "rng.choice(UserList) [Python sequence: fallback]": "rng.choice(LD)",
     "rng.sample(L6, k=2, counts=[1]*6) [fallback]": "rng.sample(L6, k=2, counts=[1, 1, 1, 1, 1, 1])",
     "rng.choices(L6, cum_weights=[1,2,3,4,5,6])": "rng.choices(L6, cum_weights=[1, 2, 3, 4, 5, 6])",
+    # continuous distributions (wave 2)
+    "rng.expovariate(2.0)": "rng.expovariate(2.0)",
+    "rng.expovariate() [default]": "rng.expovariate()",
+    "rng.expovariate(lambd=3) [kw, int]": "rng.expovariate(lambd=3)",
+    "expovariate(1.5) [module]": "expovariate(1.5)",
+    "rng.normalvariate(0.0, 1.0)": "rng.normalvariate(0.0, 1.0)",
+    "rng.normalvariate() [defaults]": "rng.normalvariate()",
+    "rng.normalvariate(10, 2) [ints]": "rng.normalvariate(10, 2)",
+    "rng.lognormvariate(0.0, 0.5)": "rng.lognormvariate(0.0, 0.5)",
+    "rng.paretovariate(2.0)": "rng.paretovariate(2.0)",
+    "rng.gauss(90, 60)": "rng.gauss(90, 60)",
+    "gauss() [module]": "gauss()",
+    "sub.expovariate(2.0) [subclass]": "sub.expovariate(2.0)",
+    "sub.gauss(0.0, 1.0) [subclass]": "sub.gauss(0.0, 1.0)",
+    # fallbacks of the variates (steady state: suspended after 64)
+    "own.expovariate(2.0) [random() overridden]": "own.expovariate(2.0)",
+    "own.normalvariate() [random() overridden]": "own.normalvariate()",
+    "own.lognormvariate(0.0, 0.5) [random() overridden]": "own.lognormvariate(0.0, 0.5)",
+    "own.paretovariate(2.0) [random() overridden]": "own.paretovariate(2.0)",
+    "own.gauss(0.0, 1.0) [random() overridden]": "own.gauss(0.0, 1.0)",
+    "sysr.expovariate(2.0) [SystemRandom]": "sysr.expovariate(2.0)",
+    "rng.expovariate(np.float64) [float subclass]": "rng.expovariate(NPF)",
+    "rng.expovariate(Fraction(2))": "rng.expovariate(FR2)",
+    "rng.expovariate(0) [ZeroDivisionError]": "ex0()",
+    "rng.paretovariate(0.03) [range guard]": "rng.paretovariate(0.03)",
+    "rng.lognormvariate(700.0, 1.0) [overflow guard]": "rng.lognormvariate(700.0, 1.0)",
+    "odd.gauss() [gauss_next an int]": "odd.gauss_next = 1; odd.gauss()",
+    # mixed traffic (never suspended)
+    "mixed: rng.expovariate + own.expovariate": "rng.expovariate(2.0); own.expovariate(2.0)",
+    "mixed: rng.paretovariate + rng.paretovariate(NPF)": "rng.paretovariate(2.0); rng.paretovariate(NPF)",
+    "mixed: rng.gauss + own.gauss": "rng.gauss(0.0, 1.0); own.gauss(0.0, 1.0)",
+    "mixed: rng.normalvariate + own.normalvariate": "rng.normalvariate(); own.normalvariate()",
+    # one hit for two fallbacks: at the suspension threshold of expovariate (credit 2)
+    "mixed 1:2: rng.expovariate + 2x own.expovariate": "rng.expovariate(2.0); own.expovariate(2.0); own.expovariate(2.0)",
+    "mixed 1:3: rng.gauss + 3x own.gauss": "rng.gauss(); own.gauss(); own.gauss(); own.gauss()",
+    "mixed 1:4: rng.paretovariate + 4x rng.paretovariate(NPF)": "rng.paretovariate(2.0); rng.paretovariate(NPF); rng.paretovariate(NPF); rng.paretovariate(NPF); rng.paretovariate(NPF)",
 }
 
 N = {"rng.shuffle(L100)": 20, "rng.sample(range(10**6), 20)": 40, "rng.choices(W, k=40)": 40}
