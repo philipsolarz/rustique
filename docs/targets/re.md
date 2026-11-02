@@ -134,6 +134,39 @@ Fingerprints (per minor version, `fps.rs`): `_compiler.compile`, `isstring`, `_c
   CPython's (recursive) compiler would have refused with `RecursionError`. Nesting is capped so
   the difference stays bounded.
 
+## Tests
+
+`tests/targets/test_re.py` (all four builds):
+
+- **Differential, compiler**: the arguments the kernel would pass to `_sre.compile`
+  (`_rustique._accel._re_compile_args`) against CPython's own `re._compiler.compile` code run
+  with `_sre` replaced by a recorder (a fresh function over the original code object): equal
+  pattern object, flags, code words, group count, `groupindex` items in order and `indexgroup`
+  holding the same key objects — or, where the port declines, CPython must raise, warn or be
+  outside the port. Inputs: the 8,522-pattern PyPI corpus with their own flags and 8 flag
+  combinations (~70,000 compiles), every str/bytes constant of CPython's `test_re.py` and
+  `re_tests.py` × 4 flag sets, every literal pattern passed to a `re` function in the standard
+  library × 2, Hypothesis (str patterns from 100 regex tokens, bytes patterns, arbitrary text,
+  character sets with non-BMP and case-folding characters; ~11,000 examples), 600 random large
+  Unicode sets. Plus `cargo test` on 5,242 recorded cases (`crates/rustique-core/src/re/
+  testdata/gen.py` regenerates them).
+- **Differential, templates**: the port's verdict against `re._parser.parse_template` (4,000
+  Hypothesis examples over escapes, group numbers and names, octal, bytes).
+- **Differential, module functions**: every function against an unpatched clone (same code,
+  same globals, default vectorcall) on patterns × subjects × replacements (literals,
+  templates, invalid templates, callables, bytes) × flags × counts: results, `Match` spans,
+  groups and `.re` identity, exceptions, warnings (3,000 examples).
+- **Mechanics**: errors and warnings come from CPython's frames (traceback holds
+  `_compiler.compile`), `re.DEBUG` prints, `re.Scanner` (parsed sub-patterns) falls back,
+  `mock.patch` of `_sre.compile` and of `re._compile` falls back and re-arms, `sys.settrace`
+  sees CPython's frames, introspection/pickling/deepcopy unchanged, captured references
+  (`from re import search`, `functools.partial`) accelerated, `re.purge()` works on CPython's
+  caches, callable replacements see `re.sub`'s frame, the first template `sub` of a process
+  resolves `re._compile_template` under `re.sub`'s frame (subprocess), composite `RegexFlag`s
+  keep the class unmodified, `disable()` restores.
+- **Threads**: 8 threads compiling, purging and matching against the clone; 6 threads while
+  the main thread disables and re-enables the group 15 times (free-threaded builds included).
+
 ## Version coverage
 
 3.14 and 3.15 (GIL and free-threaded builds; same fingerprints on both). Other minors refuse

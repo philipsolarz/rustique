@@ -201,8 +201,11 @@ impl Funcs {
 // SAFETY: the raw pointers are immutable after install and refer to objects kept alive by
 // `refs` (or immortal); the kernels only use them with an attached thread.
 unsafe impl Send for Compile {}
+// SAFETY: as above (the only mutable parts are atomics and a `OnceLock`).
 unsafe impl Sync for Compile {}
+// SAFETY: as above.
 unsafe impl Send for Funcs {}
+// SAFETY: as above.
 unsafe impl Sync for Funcs {}
 
 pub(crate) static COMPILE: AtomicPtr<Compile> = AtomicPtr::new(std::ptr::null_mut());

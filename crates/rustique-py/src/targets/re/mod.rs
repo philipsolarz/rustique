@@ -417,6 +417,7 @@ pub(crate) unsafe fn validate_compile(st: &state::Compile) -> Result<(), String>
     unsafe { check_fingerprints(&st.lazy)? };
     // SAFETY: attached thread; the state holds the dicts.
     let py = unsafe { Python::assume_attached() };
+    // SAFETY: a live dict held by the state.
     let cn = unsafe { Bound::from_borrowed_ptr(py, st.constants) }
         .cast_into::<PyDict>()
         .map_err(|_| "constants".to_string())?;

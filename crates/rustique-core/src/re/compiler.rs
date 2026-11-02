@@ -648,8 +648,7 @@ fn optimize_charset(charset: &[SetItem], fold: Option<Fold<'_>>, fixes: bool, en
     // compress character map
     let mut runs: Option<Vec<(usize, usize)>> = Some(Vec::new());
     let mut q = 0;
-    loop {
-        let Some(p) = charmap.find(1, q) else { break };
+    while let Some(p) = charmap.find(1, q) {
         let r = runs.as_mut().expect("set above");
         if r.len() >= 2 {
             runs = None;
