@@ -66,6 +66,9 @@ pub struct Site {
     pub original: usize,
     pub kernel: usize,
     pub installed: bool,
+    /// An object whose lifetime the site's memory depends on (the heap type of a heap-type
+    /// slot), kept alive by a strong reference while the site exists; 0 for none.
+    pub keep: usize,
 }
 
 // SAFETY: plain addresses; the referenced memory is process-global or kept alive.
@@ -294,7 +297,10 @@ impl Site {
         }
         // SAFETY: aligned pointer-sized field.
         let original = unsafe { (*(slot as *const AtomicUsize)).load(Ordering::Acquire) };
-        Ok((Site { name, kind: Kind::MlMeth, addr: slot, original, kernel, installed: false }, flags & CONV_MASK))
+        Ok((
+            Site { name, kind: Kind::MlMeth, addr: slot, original, kernel, installed: false, keep: 0 },
+            flags & CONV_MASK,
+        ))
     }
 
     /// A site on a type slot.
@@ -315,6 +321,7 @@ impl Site {
             original,
             kernel,
             installed: false,
+            keep: 0,
         })
     }
 
@@ -335,6 +342,7 @@ impl Site {
                 original,
                 kernel,
                 installed: false,
+                keep: 0,
             })
         }
     }
@@ -417,6 +425,28 @@ impl Site {
             // SAFETY: the reference taken in `vectorcall`.
             unsafe { ffi::Py_DECREF(self.addr as *mut ffi::PyObject) };
         }
+        if self.keep != 0 {
+            // SAFETY: the reference taken when the site was declared.
+            unsafe { ffi::Py_DECREF(self.keep as *mut ffi::PyObject) };
+        }
+    }
+
+    /// Installed, but the entry point no longer holds the kernel (CPython rewrote a heap
+    /// type's slot after `__get__`/`__call__` was assigned, or someone else patched it): the
+    /// original behaviour runs; `disable()` leaves the cell alone.
+    pub fn displaced(&self) -> bool {
+        self.installed && self.kind.is_cell() && self.current() != self.kernel
+    }
+}
+
+/// `PyFunction_SetVectorcall` (stops the world on free-threaded builds).
+///
+/// # Safety
+/// Attached thread; a live function object; `vc` a vectorcall function.
+pub(crate) unsafe fn set_vectorcall(func: *mut ffi::PyObject, vc: usize) {
+    // SAFETY: per the caller.
+    unsafe {
+        PyFunction_SetVectorcall(func.cast(), std::mem::transmute::<usize, ffi::vectorcallfunc>(vc));
     }
 }
 

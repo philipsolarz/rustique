@@ -596,6 +596,7 @@ unsafe extern "C" fn on_dict_event(
         // SAFETY: forwarded from CPython's callback.
         unsafe { super::registry::on_sys_modules_event(event, dict, key, new_value) };
     }
+    on_weak_event(event, dict);
     let wholesale = event > 2; // CLONED, CLEARED, DEALLOCATED
     let mut guard = tables();
     let Some(t) = guard.as_mut() else { return 0 };
@@ -1435,3 +1436,187 @@ impl std::fmt::Debug for OverrideCache {
         write!(f, "OverrideCache({:?})", self.names)
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// Per-class facts keyed by the type version tag
+// ---------------------------------------------------------------------------------------
+
+/// A cache of one 32-bit fact per class, keyed by the class's `tp_version_tag`. CPython
+/// assigns every class version a tag that is never reused in the process and resets it on
+/// any modification of the class or a base (`PyType_Modified`), so an entry can never
+/// outlive what it was computed from. Direct-mapped (`N` slots, indexed by the type's
+/// address), one `AtomicU64` per slot packing `tag << 32 | payload`: lock-free and exact on
+/// free-threaded builds. A tag of 0 (none assigned, or exhausted) never matches.
+///
+/// Facts that also depend on a dict that does not belong to the class (an enum's
+/// `_value2member_map_`) register it with [`watch_dict_invalidates`]: any change of that
+/// dict clears the slot and bumps the cache's epoch. Protocol:
+///
+/// ```ignore
+/// static FACTS: ClassCache<64> = ClassCache::new();
+/// if let Some(p) = unsafe { FACTS.get(tp) } { /* use p */ }
+/// else {
+///     let (tag, epoch) = unsafe { FACTS.begin(tp) };
+///     // compute p (under the watched dict's critical section, if any)
+///     unsafe { FACTS.put(tp, tag, epoch, p) };
+/// }
+/// ```
+pub struct ClassCache<const N: usize> {
+    slots: [AtomicU64; N],
+    epoch: AtomicU64,
+}
+
+impl<const N: usize> ClassCache<N> {
+    pub const fn new() -> Self {
+        ClassCache { slots: [const { AtomicU64::new(0) }; N], epoch: AtomicU64::new(0) }
+    }
+
+    #[inline(always)]
+    fn index(tp: *mut ffi::PyTypeObject) -> usize {
+        (tp as usize >> 4) % N
+    }
+
+    /// The class's current version tag (0: none).
+    ///
+    /// # Safety
+    /// `tp` is a live type object.
+    #[inline(always)]
+    pub unsafe fn tag(tp: *mut ffi::PyTypeObject) -> u32 {
+        // SAFETY: per the caller; an aligned 32-bit field, read atomically (CPython writes it
+        // atomically on free-threaded builds).
+        unsafe { (*(&raw const (*tp).tp_version_tag).cast::<std::sync::atomic::AtomicU32>()).load(Ordering::Acquire) }
+    }
+
+    /// The cached fact of `tp`'s current version, if any (~5 loads and compares).
+    ///
+    /// # Safety
+    /// `tp` is a live type object.
+    #[inline(always)]
+    pub unsafe fn get(&self, tp: *mut ffi::PyTypeObject) -> Option<u32> {
+        // SAFETY: per the caller.
+        let tag = unsafe { Self::tag(tp) };
+        if tag == 0 {
+            return None;
+        }
+        let v = self.slots[Self::index(tp)].load(Ordering::Acquire);
+        (v >> 32 == u64::from(tag)).then_some(v as u32)
+    }
+
+    /// Start computing a fact: assigns `tp` a version tag if it has none (no Python code)
+    /// and returns `(tag, epoch)` for [`Self::put`].
+    ///
+    /// # Safety
+    /// Attached thread; `tp` is a live type object.
+    pub unsafe fn begin(&self, tp: *mut ffi::PyTypeObject) -> (u32, u64) {
+        // SAFETY: per the caller.
+        unsafe {
+            if Self::tag(tp) == 0 && PyUnstable_Type_AssignVersionTag(tp) == 0 {
+                ffi::PyErr_Clear();
+            }
+            let epoch = self.epoch.load(Ordering::SeqCst);
+            (Self::tag(tp), epoch)
+        }
+    }
+
+    /// Store `payload` for `tp` at the version `begin` returned, unless the class changed
+    /// meanwhile; withdrawn when an invalidation raced the computation.
+    ///
+    /// # Safety
+    /// `tp` is a live type object.
+    pub unsafe fn put(&self, tp: *mut ffi::PyTypeObject, tag: u32, epoch: u64, payload: u32) {
+        // SAFETY: per the caller.
+        if tag == 0 || unsafe { Self::tag(tp) } != tag {
+            return;
+        }
+        let v = u64::from(tag) << 32 | u64::from(payload);
+        let slot = &self.slots[Self::index(tp)];
+        slot.store(v, Ordering::SeqCst);
+        if self.epoch.load(Ordering::SeqCst) != epoch {
+            let _ = slot.compare_exchange(v, 0, Ordering::SeqCst, Ordering::Relaxed);
+        }
+    }
+
+    /// Forget `tp`'s entry (whatever class shares its slot loses its entry too: a miss).
+    pub fn invalidate(&self, tp: usize) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        self.slots[(tp >> 4) % N].store(0, Ordering::SeqCst);
+    }
+
+    /// Forget everything.
+    pub fn clear(&self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        for s in &self.slots {
+            s.store(0, Ordering::SeqCst);
+        }
+    }
+}
+
+impl<const N: usize> Default for ClassCache<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> std::fmt::Debug for ClassCache<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ClassCache<{N}>")
+    }
+}
+
+/// What [`watch_dict_invalidates`] calls on a change of a watched dict.
+pub trait Invalidate: Sync {
+    fn invalidate(&self, tp: usize);
+}
+
+impl<const N: usize> Invalidate for ClassCache<N> {
+    fn invalidate(&self, tp: usize) {
+        ClassCache::invalidate(self, tp);
+    }
+}
+
+/// Weak dict interests: dict address → (cache, class address). No reference is held: the
+/// entry goes with the dict's `DEALLOCATED` event (and a dict born at the same address is
+/// not watched).
+type WeakWatches = FastMap<usize, Vec<(&'static dyn Invalidate, usize)>>;
+static WEAK: Mutex<Option<WeakWatches>> = Mutex::new(None);
+
+/// Every later change of `dict` (any key added, replaced or deleted, cleared, cloned into,
+/// deallocated) invalidates `tp`'s entry of `cache`. Holds no reference to the dict or the
+/// class (an unbounded number of short-lived dicts may be registered). Compute what you
+/// `put` while holding the dict's critical section (`pyo3::sync::with_critical_section`):
+/// CPython calls watchers before it modifies the dict, so a lock-free reader could cache
+/// the pre-modification contents after the invalidation. Idempotent per `(dict, cache, tp)`.
+pub fn watch_dict_invalidates(dict: &Bound<'_, PyDict>, cache: &'static dyn Invalidate, tp: usize) -> PyResult<()> {
+    let py = dict.py();
+    let id = dict_watcher_id()?;
+    pyo3::sync::critical_section::with_critical_section(dict.as_any(), || -> PyResult<()> {
+        // SAFETY: attached thread; we hold the dict's section, not the tables lock.
+        unsafe { watch_locked(py, id, dict.as_ptr())? };
+        let mut w = WEAK.lock().unwrap_or_else(|p| p.into_inner());
+        WEAK_ANY.store(true, Ordering::Relaxed);
+        let list = w.get_or_insert_with(Default::default).entry(dict.as_ptr() as usize).or_default();
+        let c = cache as *const dyn Invalidate as *const () as usize;
+        if !list.iter().any(|&(x, t)| x as *const dyn Invalidate as *const () as usize == c && t == tp) {
+            list.push((cache, tp));
+        }
+        Ok(())
+    })
+}
+
+/// The weak part of the dict watcher: invalidate the caches interested in `dict`.
+#[inline]
+fn on_weak_event(event: c_int, dict: *mut ffi::PyObject) {
+    if !WEAK_ANY.load(Ordering::Relaxed) {
+        return;
+    }
+    let mut w = WEAK.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(map) = w.as_mut() else { return };
+    let gone = event == 5; // DEALLOCATED
+    let hit = if gone { map.remove(&(dict as usize)) } else { map.get(&(dict as usize)).cloned() };
+    drop(w);
+    for (cache, tp) in hit.into_iter().flatten() {
+        cache.invalidate(tp);
+    }
+}
+
+static WEAK_ANY: AtomicBool = AtomicBool::new(false);

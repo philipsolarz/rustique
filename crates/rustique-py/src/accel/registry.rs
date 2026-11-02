@@ -158,6 +158,17 @@ struct Rt {
     group: Option<usize>,
     /// Flags of the target's own pins (status: `deps_intact`).
     flags: Vec<&'static guard::DepFlag>,
+    /// Dynamic vectorcall sites (`accel::dynamic::install`): functions created after
+    /// install, held by weak reference.
+    dynamic: Vec<Dyn>,
+}
+
+/// One dynamic vectorcall site: a weak reference to the function (a strong reference to
+/// the weakref object), the kernel and the original vectorcall.
+struct Dyn {
+    wr: usize,
+    kernel: usize,
+    original: usize,
 }
 
 impl Rt {
@@ -174,6 +185,7 @@ impl Rt {
             suspensions: 0,
             group: None,
             flags: Vec::new(),
+            dynamic: Vec::new(),
         }
     }
 }
@@ -531,6 +543,7 @@ extern "C" fn resync_pending(_arg: *mut std::ffi::c_void) -> c_int {
     // The registry may be held (even by this thread, while a `prepare` runs Python code):
     // then its holder picks the request up in `after_unlock`.
     after_unlock(py);
+    run_hooks(py);
     0
 }
 
@@ -568,8 +581,11 @@ pub(crate) fn deps_fallback() {
     }
 }
 
-/// Restore a target's sites to the originals (kept installed: pins stay active).
+/// Restore a target's sites to the originals (kept installed: pins stay active). Its
+/// dynamic sites are restored and forgotten (registered again at their next use after the
+/// target resumes).
 fn suspend(rt: &mut Rt, why: Suspended) -> bool {
+    restore_dynamic(rt);
     for s in rt.sites.iter_mut().rev() {
         s.uninstall(true);
     }
@@ -882,7 +898,8 @@ fn activate_inner(
         Ok(Err(r)) => return refuse(reg, r),
         Err(p) => return refuse(reg, Refusal::new(format!("prepare panicked: {}", panic_message(&*p)))),
     }
-    if staged.declared.is_empty() {
+    if staged.declared.is_empty() && spec.on_install.is_none() {
+        // (A target with only dynamic sites installs them from its `on_install` hook.)
         return refuse(reg, Refusal::new("declared no sites"));
     }
     // All-or-nothing: CAS each site from its validated original.
@@ -930,6 +947,7 @@ fn activate_inner(
     rt.suspended = None;
     rt.suspensions = 0;
     spec.counters.arm(spec.hit_credit, spec.fallback_debit);
+    queue_hook(i);
     // Deopt while unpinned: GIL builds only (see "Suspensions").
     if has_vc && !cfg!(Py_GIL_DISABLED) {
         rt.tracked = rt.flags.clone();
@@ -947,6 +965,131 @@ fn activate_inner(
     ml
 }
 
+// ---------------------------------------------------------------------------------------
+// Dynamic vectorcall sites and the on_install hook
+// ---------------------------------------------------------------------------------------
+
+/// Give every live dynamic site of `rt` its original vectorcall back (if it still holds the
+/// kernel) and drop the weak references.
+fn restore_dynamic(rt: &mut Rt) {
+    for d in rt.dynamic.drain(..) {
+        // SAFETY: attached thread (registry callers); `d.wr` is our strong reference to a
+        // weakref object; `PyWeakref_GetRef` returns a new reference or NULL.
+        unsafe {
+            let mut f: *mut ffi::PyObject = std::ptr::null_mut();
+            if ffi::PyWeakref_GetRef(d.wr as *mut ffi::PyObject, &mut f) > 0 {
+                let cur = (*f.cast::<ffi::PyFunctionObject>()).vectorcall.map_or(0, |v| v as usize);
+                if cur == d.kernel {
+                    super::site::set_vectorcall(f, d.original);
+                    super::site::restore_func_version(f.cast());
+                }
+                ffi::Py_DECREF(f);
+            } else {
+                ffi::PyErr_Clear();
+            }
+            ffi::Py_DECREF(d.wr as *mut ffi::PyObject);
+        }
+    }
+}
+
+/// See [`super::dynamic::install`].
+pub(crate) fn install_dynamic(
+    _py: Python<'_>,
+    spec: &'static TargetSpec,
+    func: &Bound<'_, PyAny>,
+    kernel: usize,
+    original: usize,
+) -> bool {
+    let Some(i) = all_specs().iter().position(|s| std::ptr::eq(*s, spec)) else { return false };
+    let Some(mut g) = REG.try_lock() else { return false };
+    let reg = registry(&mut g);
+    let rt = &mut reg.rt[i];
+    if rt.state != State::Installed || rt.suspended.is_some() {
+        return false;
+    }
+    let p = func.as_ptr();
+    // SAFETY: type check, then a layout read of an exact function object.
+    let cur = unsafe {
+        if ffi::Py_TYPE(p) != &raw mut ffi::PyFunction_Type {
+            return false;
+        }
+        (*p.cast::<ffi::PyFunctionObject>()).vectorcall.map_or(0, |v| v as usize)
+    };
+    if cur != original {
+        return false;
+    }
+    // Forget dead entries; refuse duplicates.
+    let mut dup = false;
+    rt.dynamic.retain(|d| {
+        let mut f: *mut ffi::PyObject = std::ptr::null_mut();
+        // SAFETY: our strong reference to a weakref object.
+        let alive = unsafe { ffi::PyWeakref_GetRef(d.wr as *mut ffi::PyObject, &mut f) } > 0;
+        if alive {
+            dup |= f == p;
+            // SAFETY: the new reference.
+            unsafe { ffi::Py_DECREF(f) };
+        } else {
+            // SAFETY: attached thread; our strong reference.
+            unsafe {
+                ffi::PyErr_Clear();
+                ffi::Py_DECREF(d.wr as *mut ffi::PyObject);
+            }
+        }
+        alive
+    });
+    if dup {
+        return false;
+    }
+    // SAFETY: attached thread; a live function; a new reference or NULL.
+    let wr = unsafe { ffi::PyWeakref_NewRef(p, std::ptr::null_mut()) };
+    if wr.is_null() {
+        // SAFETY: attached thread.
+        unsafe { ffi::PyErr_Clear() };
+        return false;
+    }
+    // SAFETY: a live function; `kernel` has the vectorcall signature.
+    unsafe { super::site::set_vectorcall(p, kernel) };
+    rt.dynamic.push(Dyn { wr: wr as usize, kernel, original });
+    true
+}
+
+/// Targets installed since the hooks last ran: their `on_install` runs outside the registry
+/// lock and outside every watcher ([`run_hooks`]).
+static HOOKS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+fn queue_hook(i: usize) {
+    if all_specs()[i].on_install.is_some() {
+        HOOKS.lock().unwrap_or_else(|p| p.into_inner()).push(i);
+        // A lazy activation (possibly inside the `sys.modules` watcher): the pending call
+        // runs the hook soon after; registry operations run it too.
+        schedule_pending();
+    }
+}
+
+/// Run queued `on_install` hooks of targets still installed (attached thread, registry
+/// lock not held by this thread, not in a watcher). Left queued when this thread holds the
+/// registry (a pending call during a `prepare`).
+fn run_hooks(py: Python<'_>) {
+    if HOLDING.get() {
+        return;
+    }
+    loop {
+        let batch = std::mem::take(&mut *HOOKS.lock().unwrap_or_else(|p| p.into_inner()));
+        if batch.is_empty() {
+            return;
+        }
+        for i in batch {
+            let still = match REG.lock(py) {
+                Ok(mut g) => registry(&mut g).rt[i].state == State::Installed,
+                Err(_) => false,
+            };
+            if still && let Some(f) = all_specs()[i].on_install {
+                let _ = std::panic::catch_unwind(f_with_py(f));
+            }
+        }
+    }
+}
+
 fn release_sites(sites: impl Iterator<Item = Site>) {
     for s in sites {
         s.release();
@@ -962,6 +1105,7 @@ fn site_label(name: &str, kind: Kind) -> String {
 fn deactivate(reg: &mut Registry, i: usize) -> bool {
     let rt = &mut reg.rt[i];
     let was_installed = rt.state == State::Installed;
+    restore_dynamic(rt);
     let ml = rt.sites.iter().any(|s| s.kind == Kind::MlMeth);
     for mut s in rt.sites.drain(..).rev() {
         s.uninstall(true);
@@ -1130,6 +1274,10 @@ pub fn enable_tiers(
             ml |= resume(reg, i);
             continue;
         }
+        if reg.rt[i].state == State::Installed && reg.rt[i].sites.iter().any(Site::displaced) {
+            // An entry point was rewritten over the kernel: validate afresh.
+            ml |= deactivate(reg, i);
+        }
         if matches!(reg.rt[i].state, State::Installed | State::Pending) {
             continue;
         }
@@ -1169,6 +1317,7 @@ pub fn enable_tiers(
         clear_internal_caches();
     }
     after_unlock(py);
+    run_hooks(py);
     // Release everything before finalization (registered once, outside the lock).
     super::exit::ensure_hook(py);
     Ok(())
@@ -1273,6 +1422,7 @@ pub fn installed(py: Python<'_>, names: Option<&[String]>) -> PyResult<Vec<&'sta
         clear_internal_caches();
     }
     after_unlock(py);
+    run_hooks(py);
     Ok(out)
 }
 
@@ -1375,6 +1525,35 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         {
             d.set_item(intern!(py, "degraded"), why)?;
         }
+        if rt.state == State::Installed && rt.suspended.is_none() && rt.sites.iter().any(Site::displaced) {
+            // CPython (or someone else) rewrote an entry point over the kernel.
+            d.set_item(intern!(py, "suspended"), "conflict")?;
+            d.set_item(
+                "reason",
+                "an entry point was rewritten over the kernel: the original runs until the next enable()",
+            )?;
+        }
+        if !rt.dynamic.is_empty() {
+            let live = rt
+                .dynamic
+                .iter()
+                .filter(|x| {
+                    let mut f: *mut ffi::PyObject = std::ptr::null_mut();
+                    // SAFETY: attached thread; our strong reference to a weakref object.
+                    let alive = unsafe { ffi::PyWeakref_GetRef(x.wr as *mut ffi::PyObject, &mut f) } > 0;
+                    // SAFETY: the new reference (or NULL, error cleared).
+                    unsafe {
+                        if alive {
+                            ffi::Py_DECREF(f);
+                        } else {
+                            ffi::PyErr_Clear();
+                        }
+                    }
+                    alive
+                })
+                .count();
+            d.set_item(intern!(py, "dynamic_sites"), live)?;
+        }
         if let Some(why) = rt.suspended {
             d.set_item(intern!(py, "suspended"), why.as_str())?;
             d.set_item(
@@ -1408,6 +1587,7 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     out.set_item("process", process)?;
     drop(g);
     after_unlock(py);
+    run_hooks(py);
     Ok(out)
 }
 

@@ -281,8 +281,142 @@ target!(CAS, "_selftest.cas", None, C_NONE, prepare_cas);
 target!(SNAPSHOT, "_selftest.snapshot", Some(MODULE), C_SNAP, prepare_snapshot);
 target!(SAME, "_selftest.same", Some(MODULE), C_SAME, prepare_same);
 
-pub static TARGETS: &[&TargetSpec] =
-    &[&METH, &VECTORCALL, &SLOT, &BADFP, &REFUSE, &CAS, &SNAPSHOT, &SAME, &SHARED_A, &SHARED_B, &TIER, &OPCODE];
+pub static TARGETS: &[&TargetSpec] = &[
+    &METH,
+    &VECTORCALL,
+    &SLOT,
+    &BADFP,
+    &REFUSE,
+    &CAS,
+    &SNAPSHOT,
+    &SAME,
+    &SHARED_A,
+    &SHARED_B,
+    &TIER,
+    &OPCODE,
+    &HEAP,
+    &DYN,
+];
+
+// ---------------------------------------------------------------------------------------
+// _selftest.heap: `tp_descr_get` of the Python class `_rustique_selftest.Prop` (a heap-type
+// slot holding CPython's `slot_tp_descr_get`), checked against `Prop2`'s.
+// _selftest.dyn: dynamic vectorcall sites only; `on_install` adopts `made_before`.
+// ---------------------------------------------------------------------------------------
+
+static C_HEAP: Counters = Counters::new();
+static ORIG_DESCR: Original<ffi::descrgetfunc> = Original::new();
+static PROP_TYPE: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(std::ptr::null_mut());
+
+unsafe extern "C" fn k_descr_get(d: O, obj: O, ty: O) -> O {
+    // SAFETY: tp_descr_get call.
+    unsafe {
+        if ffi::Py_TYPE(d) == PROP_TYPE.load(Ordering::Relaxed) && !obj.is_null() {
+            C_HEAP.hit();
+            return tagged(&KERNEL_STR, obj);
+        }
+        C_HEAP.fallback(Reason::Args);
+        ORIG_DESCR.get()(d, obj, ty)
+    }
+}
+
+fn prepare_heap(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let prop = cx.module_attr("Prop")?.cast_into::<PyType>().map_err(PyErr::from)?;
+    let prop2 = cx.module_attr("Prop2")?.cast_into::<PyType>().map_err(PyErr::from)?;
+    // Kept alive by the site (and compared by address only).
+    PROP_TYPE.store(prop.as_type_ptr(), Ordering::Relaxed);
+    cx.heap_slot(&prop, SlotName::TpDescrGet, k_descr_get as ffi::descrgetfunc, &ORIG_DESCR, Some(&prop2))
+}
+
+pub static HEAP: TargetSpec = TargetSpec {
+    name: "_selftest.heap",
+    group: "_selftest",
+    module: Some(MODULE),
+    versions: VERSIONS,
+    free_threaded: true,
+    counters: &C_HEAP,
+    prepare: prepare_heap,
+    ..TargetSpec::DEFAULT
+};
+
+static C_DYN: Counters = Counters::new();
+static DYN_TOOLS: Tools = Tools::new();
+
+unsafe extern "C" fn k_dyn(f: O, args: *const O, nargsf: usize, kw: O) -> O {
+    // SAFETY: vectorcall arguments from CPython; attached thread.
+    unsafe {
+        if kw.is_null() && nargsf & !ffi::PY_VECTORCALL_ARGUMENTS_OFFSET == 1 && accel::tools_quiet(&DYN_TOOLS, f) {
+            C_DYN.hit();
+            return tagged(&KERNEL_STR, *args);
+        }
+        C_DYN.fallback(Reason::Args);
+        accel::FUNCTION_VECTORCALL.get()(f, args, nargsf, kw)
+    }
+}
+
+fn prepare_dyn(_py: Python<'_>, _cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    if !accel::dynamic::capture_function_vectorcall(&accel::FUNCTION_VECTORCALL) {
+        return Err(Refusal::new("vectorcall"));
+    }
+    Ok(())
+}
+
+/// Adopt `made_before` (created before enable()).
+fn dyn_on_install(py: Python<'_>) {
+    let Ok(Some(m)) = PyModule::import(py, "sys")
+        .and_then(|s| s.getattr("modules"))
+        .and_then(|d| d.get_item(MODULE).map(Some).or_else(|_| Ok(None)))
+    else {
+        return;
+    };
+    if let Ok(f) = m.getattr("made_before") {
+        accel::dynamic::install(py, &DYN, &f, k_dyn, &accel::FUNCTION_VECTORCALL);
+    }
+}
+
+pub static DYN: TargetSpec = TargetSpec {
+    name: "_selftest.dyn",
+    group: "_selftest",
+    module: Some(MODULE),
+    versions: VERSIONS,
+    free_threaded: true,
+    counters: &C_DYN,
+    prepare: prepare_dyn,
+    on_install: Some(dyn_on_install),
+    ..TargetSpec::DEFAULT
+};
+
+/// `accel::dynamic::install` of `_selftest.dyn`'s kernel on `func`.
+#[pyfunction]
+fn _selftest_dyn_install(func: &Bound<'_, PyAny>) -> bool {
+    accel::dynamic::install(func.py(), &DYN, func, k_dyn, &accel::FUNCTION_VECTORCALL)
+}
+
+static CACHE: accel::ClassCache<16> = accel::ClassCache::new();
+
+/// The self-test class cache: `get` (payload None) or `begin` + `put` (payload given).
+#[pyfunction]
+#[pyo3(signature = (cls, payload=None))]
+fn _selftest_class_cache(cls: &Bound<'_, PyType>, payload: Option<u32>) -> Option<u32> {
+    let tp = cls.as_type_ptr();
+    // SAFETY: attached thread; live type.
+    unsafe {
+        match payload {
+            None => CACHE.get(tp),
+            Some(p) => {
+                let (tag, epoch) = CACHE.begin(tp);
+                CACHE.put(tp, tag, epoch, p);
+                CACHE.get(tp)
+            }
+        }
+    }
+}
+
+/// Changes of `d` invalidate `cls`'s entry of the self-test class cache.
+#[pyfunction]
+fn _selftest_class_cache_watch(d: &Bound<'_, pyo3::types::PyDict>, cls: &Bound<'_, PyType>) -> PyResult<()> {
+    accel::guard::watch_dict_invalidates(d, &CACHE, cls.as_type_ptr() as usize)
+}
 
 // ---------------------------------------------------------------------------------------
 // _selftest.tier: an opt-in target (tier `_selftest_tier`), `ml_meth` on `_accel._probe_t`.
@@ -661,6 +795,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_selftest_released, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_call_kernel, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_handler, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_dyn_install, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_class_cache, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_class_cache_watch, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_request_suspend, m)?)?;
     Ok(())
 }

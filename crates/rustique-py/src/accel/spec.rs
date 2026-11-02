@@ -90,6 +90,12 @@ pub struct TargetSpec {
     /// target changed that is not a site (calibrated internal state, dynamic sites, caches).
     /// Must tolerate running more than once. Default `None`.
     pub on_disable: Option<fn(Python<'_>)>,
+    /// Called after the target was installed (at `enable()`, or after a lazy activation on
+    /// the importing path), outside the registry lock and every watcher, on an attached
+    /// thread, once per install: e.g. adopt objects created before `enable()` with
+    /// `accel::dynamic::install`. The target may have been disabled again meanwhile (the
+    /// hook is skipped then). Default `None`.
+    pub on_install: Option<fn(Python<'_>)>,
 }
 
 /// Declarations shared by several targets: dependency pins (with the group's own
@@ -129,6 +135,7 @@ impl TargetSpec {
         fallback_debit: crate::accel::stats::FALLBACK_DEBIT,
         release: None,
         on_disable: None,
+        on_install: None,
     };
 
     /// Hidden targets (group starting with `_`): only selected when named explicitly.

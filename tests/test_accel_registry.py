@@ -49,6 +49,20 @@ SOURCE = textwrap.dedent(
 
     def ident(x):
         return ("orig", x)
+
+    class Prop:
+        def __get__(self, obj, cls=None):
+            return ("orig", obj)
+
+    class Prop2:
+        def __get__(self, obj, cls=None):
+            return None
+
+    class Holder:
+        p = Prop()
+
+    def made_before(x):
+        return ("orig", x)
     """
 )
 
