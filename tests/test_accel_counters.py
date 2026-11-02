@@ -92,7 +92,7 @@ def test_live_counter_file_survives_os_exit_and_forks(tmp_path):
                 A._probe(1)
             os._exit(0)
         os.waitpid(pid, 0)
-        print(os.getpid(), pid)
+        print(os.getpid(), pid, flush=True)
         os._exit(0)  # no exit hook, no JSON: the live file has everything
         """
     )

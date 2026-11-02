@@ -140,18 +140,21 @@ def test_fingerprint_v3_canonical_exception_table(supported):
     ''')
     code = f.__code__
     entries = _entries(code.co_exceptiontable)
+    # Compare copies made the same way (`replace()` rebuilds the local kinds, which the
+    # fingerprint hashes): an unchanged copy is the reference.
+    ref = types.FunctionType(code.replace(), {})
     s, n, t, dl = max(entries, key=lambda e: e[1])
     assert n >= 2
     # The same per-instruction mapping, split into two entries: v3 equal, v2 differs.
     split = [e for e in entries if e != (s, n, t, dl)] + [(s, 1, t, dl), (s + 1, n - 1, t, dl)]
     split.sort()
     g = types.FunctionType(code.replace(co_exceptiontable=_encode(split)), {})
-    assert A.fingerprint3(g)[1] == A.fingerprint3(f)[1]
-    assert A.fingerprint(g) != A.fingerprint(f)
+    assert A.fingerprint3(g)[1] == A.fingerprint3(ref)[1]
+    assert A.fingerprint(g) != A.fingerprint(ref)
     # A different handler for the protected range: v3 differs.
     moved = [(a, b, c + 1 if (a, b, c, e) == (s, n, t, dl) else c, e) for a, b, c, e in entries]
     h = types.FunctionType(code.replace(co_exceptiontable=_encode(moved)), {})
-    assert A.fingerprint3(h)[1] != A.fingerprint3(f)[1]
+    assert A.fingerprint3(h)[1] != A.fingerprint3(ref)[1]
 
 
 def test_unvalidated_opt_in_reaches_the_gate(supported):
