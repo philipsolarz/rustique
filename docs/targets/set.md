@@ -59,8 +59,11 @@ install work.
 `module: None` (installed at `enable()`), validated on 3.14 and 3.15 free-threaded builds.
 Fingerprint of both entries (`ml_name`, `ml_flags`, `ml_doc`, format v2): `9794b5c54ea800a6`
 on 3.14 and 3.15. `_PyObject_GetState` resolved by symbol (`symbol` refusal if missing).
-Install self-test: the kernel and the original on `{1, 2, 3}`, `set()` and
-`frozenset({'a', 'b'})` must return equal results.
+Install self-test: the kernel and the original on instances of a `set` subclass with
+`__slots__ = ()` (empty and `{1, 2, 3}`) and of a `frozenset` subclass with an instance
+attribute must return equal results. The probe classes cache `__slotnames__ = []`: the
+default state of an exact set always enters `copyreg._slotnames`, which would import
+`copyreg` at `enable()` (`enable()` loads no module, `tests/test_dx.py`).
 
 When CPython fixes the defect upstream (a one-line change; see `w2-threads.md` §1.2), the
 target should be restricted to the patch releases that still have it.

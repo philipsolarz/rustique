@@ -1630,9 +1630,7 @@ unsafe fn str_key(v: &StrParts, latin: bool, skip: usize) -> u64 {
 }
 
 /// One keying pass of [`sort_strs`]: keys from code point `skip` on for strings sharing
-/// the first `skip` code points of `items[0]`. `Err(())`: an item that is not an exact
-/// `str` (not applicable); `Ok(None)`: an item does not share that prefix; `Ok(Some((all
-/// keys equal, monotonic)))` otherwise.
+/// the first `skip` code points of `items[0]` (see [`Pass`]).
 ///
 /// # Safety
 /// As [`sort_strs`]; `items[0]` is an exact `str`.
@@ -1643,10 +1641,13 @@ unsafe fn key_pass(
     layout: Option<&StrLayout>,
     latin: bool,
     skip: usize,
-) -> Result<Option<(bool, Shape)>, ()> {
+) -> Pass {
     // SAFETY: each item's type is checked before its data is read.
     unsafe {
         let v0 = str_view(items[0], layout);
+        if latin && v0.kind != ffi::PyUnicode_1BYTE_KIND {
+            return Pass::NonLatin;
+        }
         let k0 = str_key(&v0, latin, skip);
         let small0 = latin_prefix(v0.data, (skip * v0.kind as usize).min(7));
         let mut diff = 0u64;
@@ -1654,19 +1655,34 @@ unsafe fn key_pass(
         buf[0].write((k0, items[0]));
         for (slot, &p) in buf[1..].iter_mut().zip(items[1..].iter()) {
             if ffi::Py_TYPE(p) != str_type() {
-                return Err(());
+                return Pass::NotStr;
             }
             let v = str_view(p, layout);
+            if latin && v.kind != ffi::PyUnicode_1BYTE_KIND {
+                return Pass::NonLatin;
+            }
             if skip > 0 && (v.len < skip || !prefix_eq(&v0, &v, skip, small0)) {
-                return Ok(None);
+                return Pass::Mismatch;
             }
             let k = str_key(&v, latin, skip);
             diff |= k ^ k0;
             mono.push(k);
             slot.write((k, p));
         }
-        Ok(Some((diff == 0, mono.shape())))
+        Pass::Done { all_equal: diff == 0, shape: mono.shape() }
     }
+}
+
+/// Outcome of a [`key_pass`].
+enum Pass {
+    /// Every key written.
+    Done { all_equal: bool, shape: Shape },
+    /// An item is not an exact `str`: not applicable.
+    NotStr,
+    /// A string wider than 1 byte in a pass keyed as 1-byte strings.
+    NonLatin,
+    /// A string without the shared prefix assumed.
+    Mismatch,
 }
 
 /// Whether keys should start after a shared prefix of `guess` code points (strings of
@@ -1793,23 +1809,22 @@ unsafe fn general_str_keys(
 ) -> Option<Shape> {
     // SAFETY: every item is type-checked before its data is read.
     unsafe {
-        let mut latin = true;
-        for &p in items.iter() {
-            if ffi::Py_TYPE(p) != str_type() {
-                return None;
-            }
-            if str_kind_data(p, layout).0 != ffi::PyUnicode_1BYTE_KIND {
-                latin = false;
-            }
-        }
         let v0 = str_view(items[0], layout);
-        let mut skip = if keys_after_prefix(guess, v0.len, if latin { 8 } else { 3 }) { guess } else { 0 };
+        // 1-byte keys first (the common case); a wider string switches to code-point keys.
+        let mut latin = v0.kind == ffi::PyUnicode_1BYTE_KIND;
+        let width = |latin: bool| if latin { 8 } else { 3 };
+        let mut skip = if keys_after_prefix(guess, v0.len, width(latin)) { guess } else { 0 };
         loop {
             let all_equal = match key_pass(items, buf, layout, latin, skip) {
-                Err(()) => return None,
-                Ok(Some((false, shape))) => return Some(shape),
-                Ok(Some((true, _))) => true,
-                Ok(None) => false,
+                Pass::NotStr => return None,
+                Pass::Done { all_equal: false, shape } => return Some(shape),
+                Pass::Done { all_equal: true, .. } => true,
+                Pass::NonLatin => {
+                    latin = false;
+                    skip = if keys_after_prefix(guess, v0.len, width(latin)) { guess } else { 0 };
+                    continue;
+                }
+                Pass::Mismatch => false,
             };
             // The exact prefix every string shares: shorter than the guess (a string did not
             // share it), or longer (every key equal). At most two more passes: the exact
@@ -1817,6 +1832,9 @@ unsafe fn general_str_keys(
             // to their ends.
             let mut l = v0.len;
             for &p in items.iter() {
+                if ffi::Py_TYPE(p) != str_type() {
+                    return None;
+                }
                 l = l.min(common_len(&v0, &str_view(p, layout)));
             }
             if all_equal && l <= skip {

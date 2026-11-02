@@ -105,15 +105,30 @@ fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     cx.ml_meth(&m1, set_kernel as ffi::PyCFunction, &ORIG_SET)?;
     cx.ml_meth(&m2, frozenset_kernel as ffi::PyCFunction, &ORIG_FROZENSET)?;
     cx.self_test("set.__reduce__ probes", |py| {
-        let s = pyo3::types::PySet::new(py, [1, 2, 3])?;
-        let f = pyo3::types::PyFrozenSet::new(py, ["a", "b"])?;
-        let e = pyo3::types::PySet::empty(py)?;
+        // Probes of subclasses whose `__slotnames__` is cached in the class: the default
+        // state then never calls `copyreg._slotnames` (which would import `copyreg` at
+        // `enable()`; exact sets always reach it, their static type cannot cache it).
+        let ty = py.get_type::<pyo3::types::PyType>();
+        let ns = |slots: bool| -> PyResult<Bound<'_, pyo3::types::PyDict>> {
+            let d = pyo3::types::PyDict::new(py);
+            d.set_item("__slotnames__", pyo3::types::PyList::empty(py))?;
+            if slots {
+                d.set_item("__slots__", pyo3::types::PyTuple::empty(py))?;
+            }
+            Ok(d)
+        };
+        let s_cls = ty.call1(("_RqSetProbe", (set_t.clone(),), ns(true)?))?;
+        let f_cls = ty.call1(("_RqFrozenProbe", (fset_t.clone(),), ns(false)?))?;
+        let s = s_cls.call1(([1, 2, 3],))?;
+        let e = s_cls.call0()?;
+        let f = f_cls.call1((["a", "b"],))?;
+        f.setattr("x", 1)?;
         // SAFETY: the original METH_NOARGS functions and the kernels on the same receivers.
         unsafe {
             for (o, orig, k) in [
-                (s.as_any(), ORIG_SET.get(), set_kernel as ffi::PyCFunction),
-                (e.as_any(), ORIG_SET.get(), set_kernel as ffi::PyCFunction),
-                (f.as_any(), ORIG_FROZENSET.get(), frozenset_kernel as ffi::PyCFunction),
+                (&s, ORIG_SET.get(), set_kernel as ffi::PyCFunction),
+                (&e, ORIG_SET.get(), set_kernel as ffi::PyCFunction),
+                (&f, ORIG_FROZENSET.get(), frozenset_kernel as ffi::PyCFunction),
             ] {
                 let a = Bound::from_owned_ptr_or_err(py, orig(o.as_ptr(), std::ptr::null_mut()))?;
                 let b = Bound::from_owned_ptr_or_err(py, k(o.as_ptr(), std::ptr::null_mut()))?;
