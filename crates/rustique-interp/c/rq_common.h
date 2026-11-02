@@ -35,11 +35,31 @@ static py_tail_call_funcptr *rq_core_tracing_table;
 #  define RQ_ST(x, v) ((x) = (v))
 #endif
 
-/* _PyType_LookupStackRefAndVersion (not exported; its address comes from the verified-builds
- * table, rq_init). Used on free-threaded builds, where a borrowed type-dict entry may be
- * freed by a concurrent class mutation. */
-typedef unsigned int (*rq_lookup_ref_fn)(PyTypeObject *, PyObject *, _PyStackRef *);
-static rq_lookup_ref_fn rq_type_lookup_ref;
+#ifdef Py_GIL_DISABLED
+/* A strong reference to the MRO lookup of `name` on tp and the version tag it belongs to, or
+ * 0. Free-threaded builds only (a borrowed type-dict entry may be freed by a concurrent class
+ * mutation). Uses the exported _PyType_LookupRef bracketed by two acquire loads of the tag: a
+ * class mutation resets the tag (type_modified_unlocked) before it changes the type's dict
+ * (type_update_dict), so a lookup that saw a changed dict sees a different tag afterwards.
+ * (Not _PyType_LookupStackRefAndVersion: it is not exported, and calling an LTO-internalized
+ * function by address is not safe; its calling convention may have been changed.) */
+static int
+rq_lookup_ref(PyTypeObject *tp, PyObject *name, PyObject **descr, unsigned int *version)
+{
+    unsigned int v1 = _Py_atomic_load_uint32_acquire(&tp->tp_version_tag);
+    if (v1 == 0) {
+        return 0;
+    }
+    PyObject *d = _PyType_LookupRef(tp, name);
+    if (_Py_atomic_load_uint32_acquire(&tp->tp_version_tag) != v1) {
+        Py_XDECREF(d);
+        return 0;
+    }
+    *descr = d;
+    *version = v1;
+    return 1;
+}
+#endif
 
 /* ---- Override groups and net-benefit suspension (ACCELERATION 5.6 for handlers) ------------
  *

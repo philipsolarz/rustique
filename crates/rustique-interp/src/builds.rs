@@ -23,8 +23,6 @@ pub struct VerifiedBuild {
     pub handler_table: usize,
     /// `instruction_funcptr_tracing_table` (0 when the build has no tier 2).
     pub tracing_table: usize,
-    /// `_PyType_LookupStackRefAndVersion` (not exported; used on free-threaded builds).
-    pub type_lookup_ref: usize,
     /// (opcode, `_TAIL_CALL_<op>` of the core) for every handler the tier may swap, and NOP.
     pub handlers: &'static [(u8, usize)],
 }
@@ -39,7 +37,6 @@ pub static VERIFIED: &[VerifiedBuild] = &[
         source: "python-build-standalone cpython-3.15.1-linux-x86_64-gnu (uv)",
         handler_table: 0x14cdbf0,
         tracing_table: 0x14ce400,
-        type_lookup_ref: 0x18b5780,
         handlers: &[
             (79, 0x1818612), // LOAD_ATTR
             (186, 0x1801396), // LOAD_ATTR_INSTANCE_VALUE
@@ -69,7 +66,6 @@ pub static VERIFIED: &[VerifiedBuild] = &[
         source: "python-build-standalone cpython-3.15.1+freethreaded-linux-x86_64-gnu (uv)",
         handler_table: 0x1493a90,
         tracing_table: 0x0,
-        type_lookup_ref: 0x1831480,
         handlers: &[
             (79, 0x1832788), // LOAD_ATTR
             (186, 0x1801a0c), // LOAD_ATTR_INSTANCE_VALUE
@@ -99,7 +95,6 @@ pub static VERIFIED: &[VerifiedBuild] = &[
         source: "python-build-standalone cpython-3.15.2-linux-x86_64-gnu (uv)",
         handler_table: 0x14d21d0,
         tracing_table: 0x14d29e0,
-        type_lookup_ref: 0x18b0cc0,
         handlers: &[
             (79, 0x180e64a), // LOAD_ATTR
             (186, 0x1801310), // LOAD_ATTR_INSTANCE_VALUE
@@ -129,7 +124,6 @@ pub static VERIFIED: &[VerifiedBuild] = &[
         source: "python-build-standalone cpython-3.15.2+freethreaded-linux-x86_64-gnu (uv)",
         handler_table: 0x149b500,
         tracing_table: 0x0,
-        type_lookup_ref: 0x185e00e,
         handlers: &[
             (79, 0x18339cc), // LOAD_ATTR
             (186, 0x1802080), // LOAD_ATTR_INSTANCE_VALUE

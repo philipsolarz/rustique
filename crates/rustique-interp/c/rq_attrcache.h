@@ -28,8 +28,9 @@
  * specialized inline caches. Free-threaded builds: entries hold only integers and pointers
  * compared for identity (never dereferenced); they are seqlocked; a hit that needs the class
  * attribute gets a strong reference from _PyType_LookupStackRefAndVersion and requires the
- * same version tag; instance values and slots are read with _Py_TryXGetRef (CPython's own
- * lock-free read), and any contention runs the generic code. */
+ * same version tag (rq_lookup_ref, rq_common.h); instance values and slots are read with
+ * _Py_TryXGetRef / _Py_TryIncrefCompare (CPython's own lock-free reads), and any contention
+ * runs the generic code. */
 #ifndef RQ_ATTRCACHE_H
 #define RQ_ATTRCACHE_H
 
@@ -67,9 +68,9 @@ rq_ac_classify(PyTypeObject *tp, PyObject *name, rq_ac_e *out)
     unsigned int v;
     PyObject *descr;
 #ifdef Py_GIL_DISABLED
-    _PyStackRef ref = PyStackRef_NULL;
-    v = rq_type_lookup_ref(tp, name, &ref);
-    descr = PyStackRef_AsPyObjectBorrow(ref);
+    if (!rq_lookup_ref(tp, name, &descr, &v)) {
+        return 0;
+    }
 #else
     v = tp->tp_version_tag;
     descr = _PyType_Lookup(tp, name);
@@ -162,7 +163,7 @@ rq_ac_classify(PyTypeObject *tp, PyObject *name, rq_ac_e *out)
     ok = 1;
 done:
 #ifdef Py_GIL_DISABLED
-    PyStackRef_XCLOSE(ref);
+    Py_XDECREF(descr);
 #endif
     return ok;
 }
@@ -305,21 +306,24 @@ rq_site_mark(_Py_CODEUNIT *instr, PyTypeObject *tp)
  * (same version tag, same object, same descriptor type and type version), or 0. */
 #ifdef Py_GIL_DISABLED
 static Py_NO_INLINE int
-rq_ac_descr_ref(PyTypeObject *tp, PyObject *name, const rq_ac_e *e, _PyStackRef *ref)
+rq_ac_descr_ref(PyTypeObject *tp, PyObject *name, const rq_ac_e *e, PyObject **ref)
 {
-    unsigned int v = rq_type_lookup_ref(tp, name, ref);
-    PyObject *descr = PyStackRef_AsPyObjectBorrow(*ref);
+    PyObject *descr;
+    unsigned int v;
+    if (!rq_lookup_ref(tp, name, &descr, &v)) {
+        return 0;
+    }
     if (v != e->version || descr != e->descr || descr == NULL
         || (e->dtype != NULL
             && (Py_TYPE(descr) != e->dtype
                 || FT_ATOMIC_LOAD_UINT32_RELAXED(e->dtype->tp_version_tag) != e->dversion))) {
-        PyStackRef_XCLOSE(*ref);
-        *ref = PyStackRef_NULL;
+        Py_XDECREF(descr);
         return 0;
     }
+    *ref = descr;
     return 1;
 }
-#  define RQ_REF_CLOSE() PyStackRef_XCLOSE(ref)
+#  define RQ_REF_CLOSE() Py_XDECREF(ref)
 #else
 #  define RQ_REF_CLOSE() ((void)0)
 #endif
@@ -346,7 +350,7 @@ rq_attr_fast(PyThreadState *tstate, PyObject *obj, PyObject *name, int meth, PyO
         return 0;
     }
 #ifdef Py_GIL_DISABLED
-    _PyStackRef ref = PyStackRef_NULL;
+    PyObject *ref = NULL;
     if (e->dtype != NULL && !rq_ac_descr_ref(tp, name, e, &ref)) {
         return 0;   /* the class attribute changed (or its kind may have): generic code */
     }
@@ -459,16 +463,16 @@ rq_attr_fast(PyThreadState *tstate, PyObject *obj, PyObject *name, int meth, PyO
     }
     /* Not in the instance: the class attribute itself. */
 #ifdef Py_GIL_DISABLED
-    if (PyStackRef_IsNull(ref) && !rq_ac_descr_ref(tp, name, e, &ref)) {
+    if (ref == NULL && !rq_ac_descr_ref(tp, name, e, &ref)) {
         return 0;
     }
-    PyObject *descr = PyStackRef_AsPyObjectBorrow(ref);
+    PyObject *descr = ref;
 #else
     PyObject *descr = e->descr;
 #endif
     if (e->kind == RQ_K_PLAIN || meth) {
 #ifdef Py_GIL_DISABLED
-        *res = PyStackRef_AsPyObjectSteal(ref);
+        *res = ref;     /* the strong reference from the lookup */
 #else
         *res = Py_NewRef(descr);
 #endif

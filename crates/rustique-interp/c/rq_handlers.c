@@ -129,13 +129,7 @@ rq_init(const rq_init_args *a)
     }
     rq_core_handler_table = (py_tail_call_funcptr *)a->core_handler_table;
     rq_core_tracing_table = (py_tail_call_funcptr *)a->core_tracing_table;
-    rq_type_lookup_ref = (rq_lookup_ref_fn)a->type_lookup_ref;
     rq_on_suspend = a->on_suspend;
-#ifdef Py_GIL_DISABLED
-    if (rq_type_lookup_ref == NULL) {
-        return -1;
-    }
-#endif
 #ifdef _Py_TIER2
     if (rq_core_tracing_table == NULL) {
         return -1;

@@ -28,7 +28,6 @@ use builds::{VERIFIED, VerifiedBuild};
 struct RqInitArgs {
     core_handler_table: *mut c_void,
     core_tracing_table: *mut c_void,
-    type_lookup_ref: *mut c_void,
     on_suspend: Option<unsafe extern "C" fn(c_int)>,
 }
 
@@ -294,11 +293,6 @@ fn locate_uncached() -> Result<Located, Refuse> {
             std::ptr::null_mut()
         } else {
             (obj.bias + build.tracing_table) as *mut c_void
-        },
-        type_lookup_ref: if build.type_lookup_ref == 0 {
-            std::ptr::null_mut()
-        } else {
-            (obj.bias + build.type_lookup_ref) as *mut c_void
         },
         on_suspend: Some(on_suspend),
     };

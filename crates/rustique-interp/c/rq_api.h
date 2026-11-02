@@ -8,7 +8,6 @@
 typedef struct {
     void *core_handler_table;    /* &instruction_funcptr_handler_table[0] of the core */
     void *core_tracing_table;    /* &instruction_funcptr_tracing_table[0], NULL without tier 2 */
-    void *type_lookup_ref;       /* _PyType_LookupStackRefAndVersion (needed on t builds) */
     void (*on_suspend)(int group);
 } rq_init_args;
 

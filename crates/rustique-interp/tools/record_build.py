@@ -97,9 +97,6 @@ def main():
                 break
         if not tracing:
             raise SystemExit("no tracing table (JIT build expected for the GIL configuration)")
-    lookup = syms.get("_PyType_LookupStackRefAndVersion", [0])
-    if len(lookup) != 1:
-        raise SystemExit("_PyType_LookupStackRefAndVersion: ambiguous")
     weak = re.findall(r"#pragma weak (\w+)", open(os.path.join(gen, "rq_weak.h")).read())
     # The handlers reference only what a compile of this configuration keeps; rq_weak.h is the
     # union over configurations, so only report, per configuration, what the binary lacks.
@@ -114,7 +111,6 @@ def main():
         f'        source: "{a.source}",',
         f"        handler_table: {table:#x},",
         f"        tracing_table: {tracing:#x},",
-        f"        type_lookup_ref: {lookup[0]:#x},",
         "        handlers: &[",
     ]
     for op, addr, n in handlers:
