@@ -109,3 +109,31 @@ def test_live_counter_file_survives_os_exit_and_forks(tmp_path):
     assert (hits, args) == (7, 1)
     assert c["pid"] == child and c["ppid"] == parent
     assert c["rows"]["_selftest.meth"][0] == 2  # the child's own, from zero
+
+
+AT_FORK = """
+import gc, os
+def sentinel(): pass
+os.register_at_fork(after_in_child=sentinel)
+(registry,) = [o for o in gc.get_referrers(sentinel) if type(o) is list]  # the interpreter's
+before = list(registry)
+import rustique
+from rustique import _rustique
+rustique.enable()
+_rustique._accel.stats(True, False)  # counters turned on later, without a live file
+print(len(registry) - len(before), registry[: len(before)] == before)
+"""
+
+
+@pytest.mark.skipif(not hasattr(os, "register_at_fork"), reason="no os.register_at_fork")
+@pytest.mark.parametrize("live_file", [False, True])
+def test_default_enable_leaves_the_at_fork_registry_unchanged(tmp_path, live_file):
+    # Plain CPython has no extra Python object in the at-fork registry (gc introspection sees
+    # it): the C handler covers the counters' reset; the Python hook exists only for the
+    # live counter file.
+    e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE") or k == "RUSTIQUE_VALIDATE"}
+    if live_file:
+        e.update(RUSTIQUE_REPORT=str(tmp_path / "r.json"), RUSTIQUE_STATS="1")
+    r = subprocess.run([sys.executable, "-c", AT_FORK], capture_output=True, text=True, env=e, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == [str(int(live_file)), "True"], r.stdout

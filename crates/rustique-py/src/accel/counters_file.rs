@@ -5,9 +5,11 @@
 //! **Fork.** A `pthread_atfork` child handler (atomics only) zeroes every target's counters
 //! and detaches them from the parent's file, before any Python code runs in the child; the
 //! kernel state (scores, suspensions) is inherited. `status()["process"]["ppid"]` is the
-//! parent's pid in a child forked after the first `enable()`. A `posix.register_at_fork`
-//! `after_in_child` hook (no import: the builtin module from `sys.modules`) then gives the
-//! child its own live file. Children of `fork()`+`exec` (subprocess) create nothing.
+//! parent's pid in a child forked after the first `enable()`. When the live file is on, a
+//! `posix.register_at_fork` `after_in_child` hook (no import: the builtin module from
+//! `sys.modules`) then gives the child its own live file; it is registered only then, so a
+//! default `enable()` leaves the interpreter's at-fork registry (a Python list, visible to
+//! `gc`) as plain CPython has it. Children of `fork()`+`exec` (subprocess) create nothing.
 //!
 //! **Live counter file** (Unix; Windows gets the exit-hook JSON only): when counters are on
 //! and `RUSTIQUE_REPORT` is a `*.json` path `P`, each process keeps its counters in a
@@ -44,6 +46,7 @@ const HEADER: usize = 64;
 /// The parent's pid in a child forked after the first `enable()` (0: not forked).
 static FORKED_FROM: AtomicU64 = AtomicU64::new(0);
 static HOOKS: AtomicBool = AtomicBool::new(false);
+static PY_HOOK: AtomicBool = AtomicBool::new(false);
 /// `P` of the live file (`RUSTIQUE_REPORT`), when the live file is on.
 static PATH: Mutex<Option<String>> = Mutex::new(None);
 /// The current mapping (address, length), for the exit flag.
@@ -86,8 +89,9 @@ unsafe extern "C" fn after_fork_child() {
     }
 }
 
-/// Register the fork hooks (once per process, at the first `enable()`).
-pub(crate) fn ensure_hooks(py: Python<'_>) {
+/// Register the C fork handler (once per process, at the first `enable()`): no Python
+/// object.
+pub(crate) fn ensure_hooks(_py: Python<'_>) {
     if HOOKS.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -97,7 +101,14 @@ pub(crate) fn ensure_hooks(py: Python<'_>) {
     unsafe {
         sys::pthread_atfork(None, None, Some(after_fork_child));
     }
-    // `posix.register_at_fork(after_in_child=...)`: the child's own live file.
+}
+
+/// `posix.register_at_fork(after_in_child=...)`: the child's own live file (once, when the
+/// live file is turned on).
+fn ensure_py_hook(py: Python<'_>) {
+    if PY_HOOK.swap(true, Ordering::AcqRel) {
+        return;
+    }
     if let Ok(Some(posix)) = super::prepare::sys_modules(py).map(|m| m.get_item("posix").ok().flatten())
         && let Ok(f) = wrap_pyfunction!(after_in_child, py)
     {
@@ -118,7 +129,9 @@ fn after_in_child() {
 }
 
 /// Turn the live file on for report path `p` (a `*.json` path) and create this process's.
-pub(crate) fn start(p: &str) {
+pub(crate) fn start(py: Python<'_>, p: &str) {
+    ensure_hooks(py);
+    ensure_py_hook(py);
     *PATH.lock().unwrap_or_else(|e| e.into_inner()) = Some(p.to_owned());
     if MAP.load(Ordering::Relaxed) == 0 {
         open(p);

@@ -369,7 +369,7 @@ pub fn switch_enable(
         && r.ends_with(".json")
         && stats::enabled()
     {
-        super::counters_file::start(r);
+        super::counters_file::start(py, r);
     }
     // 7. Install (quiet). An empty `only` (every RUSTIQUE_ONLY name unknown) installs
     // nothing.
