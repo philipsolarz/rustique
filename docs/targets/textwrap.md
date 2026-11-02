@@ -121,9 +121,90 @@ module, per test id; every target asserted `installed`), on 3.15.1, 3.15.1t, 3.1
 `pytest -q`). The runner normalizes object addresses in subTest ids (`0x…`), which differ
 between processes (`test_urlparse` parametrizes with function reprs).
 
+Wave 2 (allocation-free kernels, merged base `ws2/text` c9fb335): `test.test_textwrap` 68 pass,
+0 differences on 3.15.1, 3.15.1t, 3.14.9 and 3.14.9t; the whole `pytest -q` green on the four
+builds (3.15.1/1t: 2212 passed, 5 skipped; 3.14.9/9t: 2214 passed, 3 skipped), including
+`test_textwrap_identity.py` (identity-level differential tests, Hypothesis, 8-thread and
+re-entrancy tests).
+
 ## 6. Measurements
 
-### 6.1 Instructions per call (callgrind)
+### 6.0 Wave 2: allocation-free kernels (Phase 2, `ws2/text-tw`)
+
+What changed (w2-floors §1: in wave 1, 45% of `fill`'s instructions were `malloc`/`free`/
+`realloc` of per-word `Vec`s plus a UCS-4 copy of every input; w2-threads §3.1: per-call
+heap traffic goes through glibc's arena lock on free-threaded builds):
+
+- **Inputs are read in place** (`textwrap/pep393.rs`: the PEP 393 buffer as `u8`/`u16`/`u32`
+  units, the algorithms in `rustique_core::textwrap` generic over the unit width) — no
+  `PyUnicode_AsUCS4` copy.
+- **Per-thread scratch** (munged text, chunks, line pieces, option texts) reused from call
+  to call: no heap allocation in the steady state; a buffer grown past 64 Ki elements is
+  released after the call; a re-entrant use (a finalizer calling a kernel) gets one-off
+  buffers.
+- **Lines are piece lists** (`Seg`: a range of the munged text, an indent, the placeholder,
+  or the two spaces of `_fix_sentence_endings`), contiguous chunks merged, and each result
+  `str` is written once, straight into `PyUnicode_New(len, maxchar)` with the exact PEP 393
+  class (no intermediate `Vec<u32>`, no `PyUnicode_FromKindAndData` scan); `dedent` and
+  `indent` write straight from the argument's buffer.
+- **Chunking** skips to the next `-` or whitespace in one scan (no tail can match in between),
+  munging is the identity map without tabs.
+- **Identity** (§1): one-character results follow CPython's builders (slice: singleton;
+  `''.join` of several parts: a new object); a line that is the placeholder object is
+  returned as that object (`shorten(t, 5, placeholder='...')` → the argument itself);
+  `max_lines` with an empty placeholder falls back before any other work.
+
+Instructions per call (`python benches/targets/utils_cg.py textwrap_cells`, callgrind,
+3.15.1, dev box, merged base `ws2/text` c9fb335; wave-1 column: the same cells on `ws2/text`
+bc2ce1a before this work). **M**.
+
+| cell | CPython Ir | wave 1 Ir (ratio) | wave 2 Ir | ratio |
+|---|---:|---:|---:|---:|
+| `fill(desc, 88, indents) [report_render]` | 501,170 | 76,194 (0.152) | 18,875 | **0.038** |
+| `shorten(title, 30, placeholder) [report_render]` | 108,453 | 18,100 (0.167) | 6,863 | **0.063** |
+| `indent(30 lines, '  ') [report_render]` | 34,092 | 11,742 (0.345) | 8,457 | **0.248** |
+| `wrap(540 chars)` | 1,085,786 | 158,154 (0.151) | 40,753 | **0.038** |
+| `fill(short)` | 31,818 | 7,528 (0.236) | 3,441 | **0.108** |
+| `wrap(word)` | 18,781 | 5,541 (0.296) | 3,333 | **0.177** |
+| `dedent(20 lines)` | 52,906 | 24,575 (0.464) | 12,028 | **0.227** |
+| `dedent('x')` | 6,468 | 1,018 (0.157) | 622 | **0.096** |
+| `indent('x', '> ')` | 2,545 | 2,106 (0.821) | 1,212 | **0.476** |
+| `TextWrapper.wrap(540)` | 1,082,714 | 165,852 (0.159) | 43,580 | **0.040** |
+| `TextWrapper.fill(desc)` | 502,366 | 81,771 (0.162) | 20,979 | **0.042** |
+| `fill(desc, Latin-1)` | 541,027 | — | 19,321 | **0.036** |
+| `fill(desc, UCS-2)` | 602,412 | — | 19,418 | **0.032** |
+| `shorten(title, 12) [max_lines cut]` | 101,224 | — | 6,096 | **0.060** |
+| `shorten(title, 5, '...') [line is the placeholder object]` | 102,861 | — | 5,649 | **0.055** |
+| `fill(max_lines, empty placeholder) [fallback]` | 97,942 | — | 95,512 | **0.975** |
+| `wrap(str subclass) [fallback]` | 103,352 | 103,135 (0.999) | 103,352 | **1.000** |
+| `subclass with _split [fallback]` | 215,107 | 215,102 (1.001) | 215,284 | **1.001** |
+| `indent(predicate) [fallback]` | 41,778 | 41,773 (1.000) | 41,778 | **1.000** |
+| `dedent(str subclass) [fallback]` | 7,091 | 7,096 (0.998) | 7,077 | **0.998** |
+
+The `report_render` cells are **4.0× (`fill`), 2.6× (`shorten`) and 1.4× (`indent`) fewer
+instructions than wave 1**. `fill` of ~330 characters is now ~57 Ir per character; a
+breakdown of the cell (`benches/floors/cg_breakdown.py`, build before the last tuning) put
+two thirds of it in chunking and `_wrap_chunks` and none in `malloc`/`free`. `indent` and
+`dedent` stay at 1.5–1.7× the floors w2-floors estimated (line scanning). Every fallback
+cell is ≤ 1.001.
+
+**First 64 fallback calls** (fresh process, one hit of the target first so one-time
+validation is outside the region; `utils_first64.py` method): `dedent(str subclass)` 1.045
+(+337 Ir/call, as wave 1), `fill(..., max_lines=1, placeholder='')` 1.028 (+2.7k: the
+module function's fallback reaches `TextWrapper.fill`, whose kernel reads two options and
+falls back too). After 64 consecutive fallbacks the target is suspended (1.000).
+
+**Free-threaded scaling** (`python benches/targets/tw_scaling.py`, 3.15.1t, 8 cores, CPU
+time per call; the 8-thread rule is enabled/plain CPU at 8 threads ≤ 1.05): see the table
+in docs/targets/urllib.md §6.0 (both groups are measured together). textwrap: enabled/plain
+CPU at 8 threads 0.03–0.27 (worst: `dedent` of one shared input 0.273); per-call CPU
+grows ≤ ×1.06 from 1 to 8 threads with per-thread inputs.
+
+**Workloads** (`python benches/targets/text_wl.py`, user-space instructions per steady-state
+`run()`, identical digests, details in docs/targets/urllib.md §6.0): `data/report_render`
+0.593 → **0.538** with only `textwrap`,`urllib` on, 0.348 → **0.293** with every group.
+
+### 6.1 Instructions per call (callgrind) — wave 1
 
 `python benches/targets/utils_cg.py textwrap_cells [--jit]`, CPython 3.15.1, dev box
 (method: random.md §6.1). **M**.

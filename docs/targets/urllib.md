@@ -101,9 +101,125 @@ module, per test id; every target asserted `installed`), on 3.15.1, 3.15.1t, 3.1
 `pytest -q`). The runner normalizes object addresses in subTest ids (`0x…`), which differ
 between processes (`test_urlparse` parametrizes with function reprs).
 
+Wave 2 (allocation-free kernels, merged base `ws2/text` c9fb335): `test.test_urlparse` 78 pass,
+5 skip (3.15) / 74 pass, 5 skip (3.14) and `test.test_urllib` 104 pass, 2 skip, 0 differences
+on 3.15.1, 3.15.1t, 3.14.9 and 3.14.9t; the whole `pytest -q` green on the four builds,
+including `test_urllib_identity.py` (identity-level differential tests incl. one-character
+singletons and the `_Quoter` cache object, Hypothesis, 8-thread test).
+
 ## 6. Measurements
 
-### 6.1 Instructions per call (callgrind)
+### 6.0 Wave 2: allocation-free kernels (Phase 2, `ws2/text-tw`)
+
+What changed (w2-floors §1: 15–30% of every kernel was Rust heap traffic plus UCS-4 copies;
+w2-threads §3.1: `quote`'s `Vec<u8>` growth went through glibc's arena lock, CPU per call
+×19.6 at 8 threads on 3.15.1t):
+
+- **`quote`/`quote_plus`**: two passes over the argument's PEP 393 buffer (UTF-8 encoded on
+  the fly; a lone surrogate falls back before anything is built): the output length, then
+  the `%XX` text written straight into the result `str`. No allocation besides the result.
+- **`unquote`/`unquote_plus`**: code units read in place; the percent-decoded bytes of an
+  ASCII run go to a per-thread scratch buffer, then either straight into the result (ASCII)
+  or through CPython's UTF-8 decoder, whose new string is returned as is when it is the
+  whole result.
+- **`parse_qsl`/`parse_qs`**: fields and `=` found on the buffer; a name or value without
+  `%`/`+` is CPython's slice (`PyUnicode_Substring`), others are decoded from the range
+  directly; pairs go straight into the result list/dict.
+- **`_urlsplit`**: the cleaned url is the argument at the strip offset (a copy only when
+  tab/CR/LF are removed); components are slices of it.
+- **Identity** (§1) now follows CPython's builders, including one-character results and the
+  `_Quoter` cache object (5 wave-1 identity differences fixed).
+
+Instructions per call (`python benches/targets/utils_cg.py urllib_cells`, callgrind, 3.15.1,
+dev box, merged base `ws2/text` c9fb335; wave-1 column: the same cells on `ws2/text` bc2ce1a
+before this work). **M**.
+
+| cell | CPython Ir | wave 1 Ir (ratio) | wave 2 Ir | ratio |
+|---|---:|---:|---:|---:|
+| `quote(path)` | 15,373 | 3,173 (0.207) | 1,824 | **0.119** |
+| `quote('abc') [all safe]` | 4,790 | 1,639 (0.340) | 1,000 | **0.209** |
+| `quote_plus('a b&c')` | 11,136 | 1,804 (0.161) | 1,110 | **0.100** |
+| `unquote('a%20b%C3%A9')` | 21,788 | 3,708 (0.171) | 2,040 | **0.094** |
+| `unquote('plain') [no %]` | 1,365 | 823 (0.603) | 562 | **0.411** |
+| `unquote_plus('a+b')` | 2,457 | 1,399 (0.569) | 934 | **0.380** |
+| `parse_qsl(5 fields)` | 38,881 | 12,905 (0.332) | 5,609 | **0.144** |
+| `parse_qs(5 fields)` | 44,499 | 14,753 (0.332) | 7,099 | **0.160** |
+| `urlparse(URL) [uncached]` | 27,082 | 15,866 (0.586) | 12,833 | **0.474** |
+| `urlsplit(new url) [lru miss]` | 25,497 | 14,283 (0.560) | 11,375 | **0.446** |
+| `urlsplit(URL) [lru hit]` | 975 | 975 (1.000) | 975 | **1.000** |
+| `_urlsplit(URL)` | 18,386 | 7,075 (0.385) | 4,017 | **0.218** |
+| `urljoin(base, rel)` | 45,185 | 29,899 (0.662) | 26,193 | **0.580** |
+| `quote(path, UCS-2)` | 15,056 | — | 1,902 | **0.126** |
+| `unquote(mixed, UCS-2)` | 24,017 | — | 2,734 | **0.114** |
+| `quote(bytes)` | 8,504 | — | 1,025 | **0.120** |
+| `quote(' ') [fallback: _Quoter cache object]` | 6,948 | — | 6,948 | **1.000** |
+| `quote(str subclass) [fallback]` | 8,437 | 8,447 (1.001) | 8,437 | **1.000** |
+| `quote(s, encoding='latin-1') [fallback]` | 14,752 | 14,772 (1.003) | 14,743 | **0.999** |
+| `unquote(s, encoding='latin-1') [fallback]` | 16,645 | 16,639 (0.985) | 16,579 | **0.996** |
+| `urlparse('http://[::1]/') [fallback]` | 50,440 | 50,538 (1.001) | 50,460 | **1.000** |
+| `parse_qsl(bytes) [fallback]` | 23,748 | 23,772 (1.001) | 23,762 | **1.001** |
+
+`quote` 1.7×, `unquote` 1.8×, `parse_qsl`/`parse_qs` 2.1–2.3×, `_urlsplit` 1.8× fewer
+instructions than wave 1; `_urlsplit` (4.0k) is now mostly the five component objects, the
+tuple and the `str.lower()` call. Every fallback cell is ≤ 1.001.
+
+**First 64 fallback calls** (fresh process, one hit first; `utils_first64.py` method):
+`quote(str subclass)` 1.046 (+433 Ir/call, as wave 1); `quote(' ')` / `quote('%')` (a one-byte
+input that needs quoting: CPython returns its `_Quoter` cache's shared object, so the kernel
+falls back) **1.069** (+528 Ir/call on a 7.7k-Ir call) — a first-64 exceedance (§5.6 of the
+contract; listed for DECISIONS): after 64 consecutive such calls the target is suspended
+(1.000), and mixed with any other `quote` call the hit pays for it many times over.
+
+**Free-threaded scaling (8-thread rule)** — `python benches/targets/tw_scaling.py` plain
+and `--enable` (fresh processes, `taskset` 8 cores, `-t 1,8 -r 3`), 3.15.1t, CPU time per
+call (sum of the workers' `thread_time()` / calls), merged base. **M**.
+
+| cell | inputs | plain ns (1 thr) | enabled/plain (1 thr) | plain CPU ns x8/x1 | enabled CPU ns x8/x1 | enabled/plain CPU (8 thr) | plain eff | enabled eff | enabled/plain wall (8 thr) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| textwrap.fill | local | 33016 | 0.034 | 1.02 | 1.02 | 0.031 | 0.31 | 0.28 | 0.037 |
+| textwrap.fill | shared | 33952 | 0.032 | 1.00 | 1.06 | 0.034 | 0.29 | 0.31 | 0.031 |
+| textwrap.wrap | local | 71089 | 0.040 | 1.01 | 0.99 | 0.038 | 0.34 | 0.32 | 0.042 |
+| textwrap.wrap | shared | 69400 | 0.040 | 1.01 | 0.99 | 0.038 | 0.29 | 0.33 | 0.035 |
+| textwrap.shorten | local | 7267 | 0.063 | 1.00 | 0.98 | 0.059 | 0.29 | 0.34 | 0.055 |
+| textwrap.shorten | shared | 7213 | 0.063 | 1.02 | 0.98 | 0.058 | 0.35 | 0.25 | 0.090 |
+| textwrap.dedent | local | 3485 | 0.235 | 1.01 | 1.01 | 0.218 | 0.37 | 0.28 | 0.313 |
+| textwrap.dedent | shared | 3491 | 0.225 | 1.02 | 1.24 | 0.273 | 0.30 | 0.23 | 0.298 |
+| textwrap.indent | local | 2640 | 0.184 | 1.02 | 1.00 | 0.183 | 0.30 | 0.32 | 0.172 |
+| textwrap.indent | shared | 2518 | 0.195 | 1.04 | 1.21 | 0.220 | 0.34 | 0.26 | 0.254 |
+| urllib.quote | local | 1139 | 0.137 | 2.56 | 1.01 | 0.053 | 0.16 | 0.31 | 0.071 |
+| urllib.quote | shared | 1158 | 0.131 | 2.17 | 1.01 | 0.061 | 0.16 | 0.26 | 0.080 |
+| urllib.quote_plus | local | 957 | 0.112 | 2.12 | 1.05 | 0.053 | 0.18 | 0.21 | 0.096 |
+| urllib.quote_plus | shared | 1007 | 0.107 | 2.10 | 1.05 | 0.052 | 0.18 | 0.32 | 0.059 |
+| urllib.unquote | local | 1989 | 0.075 | 1.75 | 1.01 | 0.040 | 0.17 | 0.29 | 0.045 |
+| urllib.unquote | shared | 2035 | 0.071 | 1.68 | 1.01 | 0.042 | 0.17 | 0.29 | 0.041 |
+| urllib.parse_qsl | local | 2882 | 0.124 | 1.02 | 1.03 | 0.140 | 0.22 | 0.22 | 0.124 |
+| urllib.parse_qsl | shared | 2583 | 0.160 | 1.00 | 1.02 | 0.142 | 0.23 | 0.37 | 0.098 |
+| urllib.parse_qs | local | 3322 | 0.150 | 1.00 | 1.00 | 0.154 | 0.29 | 0.26 | 0.167 |
+| urllib.parse_qs | shared | 3531 | 0.148 | 1.00 | 0.99 | 0.156 | 0.33 | 0.20 | 0.236 |
+| urllib._urlsplit | local | 1344 | 0.188 | 1.02 | 1.02 | 0.208 | 0.35 | 0.22 | 0.298 |
+| urllib._urlsplit | shared | 1273 | 0.197 | 1.02 | 1.02 | 0.205 | 0.26 | 0.23 | 0.222 |
+
+Every kernel of both groups: enabled/plain CPU per call at 8 threads **0.04–0.27** (rule:
+≤ 1.05). `quote`'s own CPU per call grows ×1.01 from 1 to 8 threads (wave 1: ×19.6, the glibc
+arena lock); `quote`/`quote_plus`/`unquote` now scale better than CPython itself (×2.1–2.6:
+the original's `_Quoter`/`lru_cache` lookups on shared objects). Shared-input `dedent`/
+`indent` grow ×1.2 (CPython ×1.0) and stay at 0.22–0.27 of the original. Wall-time
+efficiency columns are not a claim (shared, loaded box).
+
+**Workloads** — user-space instructions per steady-state `run()` (`python benches/targets/text_wl.py`,
+`perf stat -e instructions:u`, (I_K − I_1)/(K − 1), median of 3 runs, `web/requests_local`
+5: its server thread polls, so its count varies with wall time), 3.15.1, identical digests
+plain/enabled in every run. **M**.
+
+| workload | `--only textwrap,urllib`: wave 1 → wave 2 | all groups: wave 1 → wave 2 |
+|---|---:|---:|
+| `data/report_render` (`textwrap.fill` ×4,003/run, `shorten`, `indent`) | 0.593 → **0.538** | 0.348 → **0.293** |
+| `web/requests_local` (`requests`' `quote`/`urlparse`, `parse_qs`) | 0.958 → **0.943** | 0.895 → **0.882** |
+| `data/log_analytics` (`urlsplit` misses, `parse_qs`) | 0.980 → **0.971** | 0.614 → **0.601** |
+
+(wave 1: `ws2/text` bc2ce1a built on the same box; wave 2: this branch on the merged base.)
+
+### 6.1 Instructions per call (callgrind) — wave 1
 
 `python benches/targets/utils_cg.py urllib_cells [--jit]`, CPython 3.15.1, dev box (method:
 random.md §6.1). **M**.
