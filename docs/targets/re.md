@@ -193,4 +193,67 @@ fat LTO, PYTHONHASHSEED=0); M = measured.
 kernel call instead (ACCELERATION §5.7: a failure degrades the targets), once per process; with
 them at install the group cost 1.58M (7.3%).
 
-TODO: cells, imports, workloads, conformance.
+### Cells (M, `benches/targets/re_cells.py`: instructions per call, plain vs group installed)
+
+Compile (`re._compiler.compile(P, F)`, the kernel's site, no cache):
+
+| pattern | plain Ir | Rustique Ir | ratio |
+|---|---:|---:|---:|
+| `\d+` | 79,504 | 9,598 | **0.121** |
+| `(?P<major>[0-9]+)\.(?P<minor>[0-9]+)` | 268,488 | 24,286 | **0.090** |
+| URL with 5 named groups | 943,008 | 69,357 | **0.074** |
+| verbose tokenizer (6 named alternatives, `re.X`) | 2,901,281 | 256,465 | **0.088** |
+| RFC 5322 e-mail (`re.I`, ASCII sets) | 11,220,781 | 3,460,098 | 0.308 |
+| Unicode IGNORECASE set (`[a-z\u00e0-\u017f]+`) | 1,294,925 | 363,985 | 0.281 |
+| BIGCHARSET (Cyrillic, Armenian, Hebrew, Arabic, kana, CJK) | 1,322,651 | 347,761 | 0.263 |
+| ASCII IGNORECASE (`(?ai)content-type...`) | 555,601 | 47,234 | 0.085 |
+| bytes HTTP request line | 393,748 | 39,872 | 0.101 |
+| `''` | 29,712 | 3,761 | 0.127 |
+| `re.purge(); re.compile(medium)` (a real miss) | 285,516 | 41,670 | **0.146** |
+| `re.purge(); re.compile(\d+)` | 96,559 | 26,593 | 0.275 |
+
+The Unicode-IGNORECASE and big-set cells are bounded by `_sre.compile` itself and by the
+per-code-point case mapping over ranges (as CPython's compiler, but in Rust).
+
+Declined patterns (fall back to CPython's compiler; an all-decline stream suspends the target
+after 64 calls, ACCELERATION §5.6): `\N{...}` 1.000, bytes LOCALE 1.000, FutureWarning 0.999,
+error 0.997, `RegexFlag` flags (`_compiler.compile` called directly) 1.000, `int`-subclass flags
+1.000. Before suspension a decline costs the caller's inlined frame push plus the port's
+attempt: +2.7k Ir on an error pattern (1.056 of its 48.8k) measured before the attempt stopped
+allocating; see the `[fallback+hit]` cells for the current value.
+
+Module functions (cache hits):
+
+| call | plain Ir | Rustique Ir | ratio |
+|---|---:|---:|---:|
+| `re.match(P, s)` | 4,060 | 2,757 | **0.679** |
+| `re.match(P, s, re.I)` | 4,868 | 3,070 | **0.631** |
+| `re.match(P, s, flags=0)` | 4,280 | 3,010 | 0.703 |
+| `re.match` (no match) | 3,595 | 2,287 | 0.636 |
+| `re.fullmatch` | 4,335 | 3,178 | 0.733 |
+| `re.search` (version in a sentence) | 6,009 | 4,790 | 0.797 |
+| `re.search` (URL in a log line) | 10,289 | 8,893 | 0.864 |
+| `re.findall` (digits of a log line) | 32,671 | 32,076 | 0.982 |
+| `list(re.finditer(...))` | 14,803 | 13,610 | 0.919 |
+| `re.split(r'\s+', s)` | 10,793 | 9,880 | 0.915 |
+| `re.split(..., maxsplit=1)` | 6,449 | 5,041 | 0.782 |
+| `re.sub` literal | 11,286 | 9,972 | 0.884 |
+| `re.sub` template `\1` | 18,367 | 17,535 | 0.955 |
+| `re.subn` literal | 11,668 | 10,354 | 0.887 |
+| `re.sub(..., count=1)` | 6,522 | 5,143 | 0.789 |
+| `re.compile(P)` (hit) | 2,214 | 995 | **0.449** |
+| `re.compile(P, re.I)` (hit) | 2,928 | 1,255 | 0.428 |
+| `re.match(bytes P, bytes)` | 4,890 | 3,659 | 0.748 |
+| `re.match(compiled, s)` | 7,339 | 2,407 | **0.328** |
+
+Fallbacks: callable replacement mixed 1:1 with hits 1.006; positional `count` (DeprecationWarning
+path) mixed 0.964; str/bytes mismatch (TypeError) mixed 0.965; `int`-subclass flags mixed 0.870;
+`re.purge(); re.search(...)` (a miss: the compile kernel takes it) 0.302; an all-callable `re.sub`
+stream 0.994 (suspended); an all-`int`-subclass-flags `re.match` stream **1.046** (suspended
+after 64 calls; the remaining 4.6% is the call site staying unspecialized after the
+suspension restores CPython's vectorcall — a property of every suspended vectorcall target).
+A template naming groups (`\g<name>`) measured 1.094 when checked (the lookup through
+`Pattern.groupindex`, a mapping proxy built per access, costs more than the kernel saves), so
+such templates decline: see the `[fallback]` value of that cell.
+
+TODO: imports, workloads, conformance (final).
