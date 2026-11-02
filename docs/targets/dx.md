@@ -490,14 +490,15 @@ for when the lead asks, once the target workstreams are merged:
   signal sampler (CPU not waiting, threads, handler restored, steps aside for a program's
   own SIGPROF), the profiler (C children, thread clock), and the command.
 
-Full suite per build, at 8aadff7 (wave2 74eeb03 merged; dev box, `pytest -q tests`, M):
+Full suite per build, at 9012995 / 12ab2e5 (wave2 d1c0a78 merged, with accel D, core, text,
+datamodel and interp; dev box, `pytest -q tests`, M):
 
 | build | result |
 |---|---|
-| 3.15.1 | 2,234 passed, 6 skipped |
-| 3.15.1t | 2,234 passed, 6 skipped |
-| 3.14.9 | 2,236 passed, 4 skipped |
-| 3.14.9t | 2,236 passed, 4 skipped |
+| 3.15.1 | 2,466 passed, 36 skipped |
+| 3.15.1t | 2,481 passed, 21 skipped |
+| 3.14.9 | 2,450 passed, 52 skipped |
+| 3.14.9t | 2,465 passed, 37 skipped |
 
 Skips that are dx's:
 - the fork-pool counter test, until accel D;
