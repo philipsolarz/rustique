@@ -569,3 +569,16 @@ def test_template_check_against_parse_template(p, repl):
     elif "\u00e9" not in (repl if isinstance(repl, str) else repl.decode("latin-1")):
         # declines only where CPython raises (or for non-ASCII group names)
         assert not _template_reference(p, repl) or "\\g<\u00e9" in str(repl), (p, repl)
+
+
+def test_flag_operations_keep_regexflag_unmodified():
+    """Composite flags create pseudo-members at run time; the class must not count as
+    modified (its version tag guards the `flags.value` read)."""
+    rearm()
+    flags = [re.I | re.M, re.RegexFlag(10), ~re.I & re.M, re.I ^ re.S, re.X | re.A | re.I, re.RegexFlag(2 | 64 | 8)]
+    for f in flags:
+        assert re.search("(?:a)", "A", f | re.I)
+    assert re.search("x", "X", re.I | re.M)  # compiled (a miss)
+    before = hits("re.search")
+    assert re.search("x", "X", re.I | re.M)
+    assert hits("re.search") == before + 1

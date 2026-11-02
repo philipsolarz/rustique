@@ -371,7 +371,13 @@ pub(crate) unsafe fn kernel(
             return fallback(Reason::Deps);
         };
         if !st.tags_intact() {
-            return fallback(Reason::Deps);
+            // A modified class is not a pin: debit, so that a program that keeps one modified
+            // gets the target suspended instead of paying the fallback on every call.
+            return fallback(Reason::Args);
+        }
+        if !super::funcs_ready(st) {
+            // degraded (or validating on another thread): debit, so that suspension follows
+            return fallback(Reason::Args);
         }
         if !accel::tools_quiet(&rt.tools, f) {
             return fallback(Reason::Tools);

@@ -81,8 +81,8 @@ macro_rules! func_target {
             // SAFETY: installed as this function's vectorcall by the registry.
             unsafe { funcs::kernel(&$rt, &$spec, $method, f, args, nargsf, kw) }
         }
-        fn $prep(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-            prep_func(cx, $attr, $kernel)
+        fn $prep(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+            prep_func(py, cx, $attr, $kernel)
         }
         #[allow(clippy::needless_update)]
         pub static $spec: TargetSpec = TargetSpec {
@@ -145,34 +145,38 @@ fn release(_py: Python<'_>) {
 // Validation helpers
 // ---------------------------------------------------------------------------------------
 
-/// Require the recorded fingerprint of `obj` (named `name` in [`fps::FPS`]).
-fn check_fp(cx: &mut Prepare<'_>, name: &str, obj: &Bound<'_, PyAny>) -> Result<(), Refusal> {
-    let fps =
-        fps::FPS.iter().find(|(n, _)| *n == name).map(|(_, f)| *f).ok_or_else(|| refuse!("{name}: no fingerprint"))?;
-    cx.fingerprint_code(obj, fps)
-}
-
-/// A class's own `__dict__` entry `name` (plain dict read).
-fn class_attr<'py>(cx: &Prepare<'py>, ty: &Bound<'py, PyType>, name: &str) -> Result<Bound<'py, PyAny>, Refusal> {
-    cx.type_attr(ty, name)
-}
-
-/// The `int` value of `d[name]` (an `int` or `_NamedIntConstant`).
-fn int_of(cx: &Prepare<'_>, d: &Bound<'_, PyDict>, name: &str) -> Result<u64, Refusal> {
-    let v = cx.get(d, name)?;
-    // SAFETY: attached thread; a live object.
-    let x = unsafe {
-        if ffi::PyLong_Check(v.as_ptr()) == 0 {
-            return Err(refuse!(Deps: "{name} is not an int"));
-        }
-        ffi::PyLong_AsUnsignedLongLong(v.as_ptr())
-    };
-    if x == u64::MAX {
+/// `d[name]` with a plain dict read (no interning: install cost), refusing when absent.
+fn dget<'py>(py: Python<'py>, d: &Bound<'py, PyDict>, name: &str) -> Result<Bound<'py, PyAny>, Refusal> {
+    let key = std::ffi::CString::new(name).map_err(|_| refuse!("bad name {name}"))?;
+    // SAFETY: attached thread; an exact dict and a str key: no Python code runs.
+    let v = unsafe { ffi::PyDict_GetItemString(d.as_ptr(), key.as_ptr()) };
+    if v.is_null() {
         // SAFETY: attached thread.
         unsafe { ffi::PyErr_Clear() };
-        return Err(refuse!(Deps: "{name} out of range"));
+        return Err(refuse!(Deps: "missing {name}"));
     }
-    Ok(x)
+    // SAFETY: a borrowed reference kept alive by the dict.
+    Ok(unsafe { Bound::from_borrowed_ptr(py, v) })
+}
+
+/// The `int` value of `v` (an `int` or `_NamedIntConstant`), if it fits `u64`.
+fn int_value(v: &Bound<'_, PyAny>) -> Option<u64> {
+    // SAFETY: attached thread; a live object.
+    unsafe {
+        if ffi::PyLong_Check(v.as_ptr()) == 0 {
+            return None;
+        }
+        let x = ffi::PyLong_AsUnsignedLongLong(v.as_ptr());
+        if x == u64::MAX && !ffi::PyErr_Occurred().is_null() {
+            ffi::PyErr_Clear();
+            return None;
+        }
+        Some(x)
+    }
+}
+
+fn int_of(py: Python<'_>, d: &Bound<'_, PyDict>, name: &str) -> Result<u64, Refusal> {
+    int_value(&dget(py, d, name)?).ok_or_else(|| refuse!(Deps: "{name} is not a small int"))
 }
 
 fn as_type<'py>(o: Bound<'py, PyAny>, what: &str) -> Result<Bound<'py, PyType>, Refusal> {
@@ -204,16 +208,97 @@ fn pin_builtins(
     Ok(())
 }
 
+/// First-call validation: every recorded fingerprint (the objects collected at install).
+///
+/// # Safety
+/// Attached thread; the objects are alive (held by the state's references).
+unsafe fn check_fingerprints(lazy: &state::Lazy) -> Result<(), String> {
+    // SAFETY: per the caller.
+    let py = unsafe { Python::assume_attached() };
+    let (major, minor) = crate::accel::version::running();
+    for &(name, obj) in &lazy.fps {
+        let want = fps::FPS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, f)| *f)
+            .ok_or_else(|| format!("{name}: no fingerprint"))?;
+        // SAFETY: a live object held by the state.
+        let obj = unsafe { Bound::from_borrowed_ptr(py, obj) };
+        let got = crate::accel::fingerprint::any(&obj).map_err(|e| format!("{name}: {e}"))?;
+        match crate::accel::fingerprint::expected_for(want, major, minor) {
+            Some(w) if w == got => {}
+            Some(w) => return Err(format!("fingerprint: {name}: {got} != expected {w}")),
+            None => return Err(format!("version: {name}: no fingerprint recorded for {major}.{minor}")),
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------------------
 // The compiler
 // ---------------------------------------------------------------------------------------
 
-/// Everything `re._compiler.compile` reaches on its success path, validated and pinned once:
-/// the `_sre` constants and functions, `re._constants`' values against the port's table,
-/// the fingerprints of every function and method of the parser and compiler, the
-/// `_EXTRA_CASES` table; the module namespaces (snapshot pins), the classes (version tags)
-/// and the builtins they use.
-fn shared_compile(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+const COMPILER_FNS: &[&str] = &[
+    "compile",
+    "isstring",
+    "_code",
+    "_compile_info",
+    "_compile",
+    "_compile_charset",
+    "_optimize_charset",
+    "_mk_bitmap",
+    "_bytes_to_codes",
+    "_simple",
+    "_generate_overlap_table",
+    "_get_iscased",
+    "_get_literal_prefix",
+    "_get_charset_prefix",
+    "_combine_flags",
+];
+const PARSER_FNS: &[&str] =
+    &["parse", "fix_flags", "_parse_sub", "_parse", "_parse_flags", "_escape", "_class_escape", "_uniq"];
+const PARSER_METHODS: &[(&str, &[&str])] = &[
+    (
+        "Tokenizer",
+        &[
+            "__init__",
+            "_Tokenizer__next",
+            "match",
+            "get",
+            "getwhile",
+            "getuntil",
+            "tell",
+            "seek",
+            "checkgroupname",
+            "pos",
+        ],
+    ),
+    ("State", &["__init__", "opengroup", "closegroup", "checkgroup", "checklookbehindgroup", "groups"]),
+    (
+        "SubPattern",
+        &["__init__", "__len__", "__delitem__", "__getitem__", "__setitem__", "insert", "append", "getwidth"],
+    ),
+];
+
+/// The fingerprint table's name for a parser method (`_Tokenizer__next` → `__next`).
+fn method_fp_name(class: &str, m: &str) -> &'static str {
+    let rec = if m == "_Tokenizer__next" { "__next" } else { m };
+    let full = format!("re._parser.{class}.{rec}");
+    fps::FPS.iter().find(|(n, _)| *n == full).map(|(n, _)| *n).unwrap_or("?")
+}
+
+fn fn_fp_name(module: &str, f: &str) -> &'static str {
+    let full = format!("{module}.{f}");
+    fps::FPS.iter().find(|(n, _)| *n == full).map(|(n, _)| *n).unwrap_or("?")
+}
+
+/// What `re._compiler.compile` reaches on its success path. At install (cheap): the modules'
+/// identities, `_sre`'s code-word size and limits, the version tags of the parser's classes,
+/// the pins (snapshots of the `re._compiler`, `re._parser` and `_sre` namespaces, the
+/// builtins they use). On the first call ([`validate_compile`]): the fingerprints of every
+/// function and method of the parser and compiler, `re._constants`' values against the port's
+/// table, the `_EXTRA_CASES` table.
+fn shared_compile(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     use rustique_core::re::consts as k;
     let red = cx.module()?.dict();
     let co_m = cx.loaded_module("re._compiler")?;
@@ -221,109 +306,54 @@ fn shared_compile(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> 
     let cn_m = cx.loaded_module("re._constants")?;
     let sre_m = cx.loaded_module("_sre")?;
     let (co, pa, cn, sre) = (co_m.dict(), pa_m.dict(), cn_m.dict(), sre_m.dict());
-    if !cx.get(&red, "_compiler")?.is(&co_m) || !cx.get(&co, "_parser")?.is(&pa_m) || !cx.get(&co, "_sre")?.is(&sre_m) {
+    if !dget(py, &red, "_compiler")?.is(&co_m)
+        || !dget(py, &co, "_parser")?.is(&pa_m)
+        || !dget(py, &co, "_sre")?.is(&sre_m)
+    {
         return Err(refuse!(Deps: "re._compiler's modules are not the imported ones"));
     }
     // _sre: the code-word size and limits the port assumes
-    if int_of(cx, &sre, "MAGIC")? != k::MAGIC as u64 || int_of(cx, &cn, "MAGIC")? != k::MAGIC as u64 {
+    if int_of(py, &sre, "MAGIC")? != k::MAGIC as u64 || int_of(py, &cn, "MAGIC")? != k::MAGIC as u64 {
         return Err(refuse!(Version: "_sre.MAGIC differs from the port's"));
     }
-    if int_of(cx, &sre, "CODESIZE")? != 4 {
+    if int_of(py, &sre, "CODESIZE")? != 4 {
         return Err(refuse!(Platform: "_sre.CODESIZE is not 4"));
     }
-    let maxrepeat = int_of(cx, &sre, "MAXREPEAT")?;
-    let maxgroups = int_of(cx, &sre, "MAXGROUPS")?;
+    let maxrepeat = int_of(py, &sre, "MAXREPEAT")?;
+    let maxgroups = int_of(py, &sre, "MAXGROUPS")?;
     if maxrepeat > u32::MAX as u64 || maxgroups > u32::MAX as u64 {
         return Err(refuse!(Platform: "_sre limits out of range"));
     }
-    for (name, v) in k::OPCODE_NAMES.iter().chain(k::ATCODE_NAMES).chain(k::CHCODE_NAMES).chain(k::FLAG_NAMES) {
-        if int_of(cx, &cn, name)? != *v as u64 {
-            return Err(refuse!(Version: "re._constants.{name} differs from the port's"));
-        }
+    let mut refs: Vec<O> = Vec::new();
+    let mut fps: Vec<(&'static str, O)> = Vec::new();
+    for name in COMPILER_FNS {
+        let f = dget(py, &co, name)?;
+        fps.push((fn_fp_name("re._compiler", name), keep(&f)));
     }
-    for (name, v) in [("MAXREPEAT", maxrepeat), ("MAXGROUPS", maxgroups)] {
-        if int_of(cx, &cn, name)? != v {
-            return Err(refuse!(Deps: "re._constants.{name} is not _sre's"));
-        }
-    }
-    // fingerprints of the call graph
-    for name in [
-        "compile",
-        "isstring",
-        "_code",
-        "_compile_info",
-        "_compile",
-        "_compile_charset",
-        "_optimize_charset",
-        "_mk_bitmap",
-        "_bytes_to_codes",
-        "_simple",
-        "_generate_overlap_table",
-        "_get_iscased",
-        "_get_literal_prefix",
-        "_get_charset_prefix",
-        "_combine_flags",
-    ] {
-        let f = cx.get(&co, name)?;
-        check_fp(cx, &format!("re._compiler.{name}"), &f)?;
-    }
-    for name in ["parse", "fix_flags", "_parse_sub", "_parse", "_parse_flags", "_escape", "_class_escape", "_uniq"] {
-        let f = cx.get(&pa, name)?;
-        check_fp(cx, &format!("re._parser.{name}"), &f)?;
+    for name in PARSER_FNS {
+        let f = dget(py, &pa, name)?;
+        fps.push((fn_fp_name("re._parser", name), keep(&f)));
     }
     let mut tags = Vec::new();
-    for (class, methods) in [
-        (
-            "Tokenizer",
-            &[
-                "__init__",
-                "_Tokenizer__next",
-                "match",
-                "get",
-                "getwhile",
-                "getuntil",
-                "tell",
-                "seek",
-                "checkgroupname",
-                "pos",
-            ][..],
-        ),
-        ("State", &["__init__", "opengroup", "closegroup", "checkgroup", "checklookbehindgroup", "groups"][..]),
-        (
-            "SubPattern",
-            &["__init__", "__len__", "__delitem__", "__getitem__", "__setitem__", "insert", "append", "getwidth"][..],
-        ),
-    ] {
-        let ty = as_type(cx.get(&pa, class)?, class)?;
-        for m in methods {
-            let mut f = class_attr(cx, &ty, m)?;
+    for (class, methods) in PARSER_METHODS {
+        let ty = as_type(dget(py, &pa, class)?, class)?;
+        let td = crate::accel::prepare::type_dict(&ty)?;
+        for m in *methods {
+            let mut f = dget(py, &td, m)?;
             if matches!(*m, "pos" | "groups") {
-                f = f.getattr("fget")?; // property
+                f = f.getattr("fget")?; // property (a C getter of the property object)
             }
-            let rec = if *m == "_Tokenizer__next" { "__next" } else { m };
-            check_fp(cx, &format!("re._parser.{class}.{rec}"), &f)?;
+            fps.push((method_fp_name(class, m), keep(&f)));
         }
         tags.push(tag_of(&ty, class)?);
     }
-    let nic = as_type(cx.get(&cn, "_NamedIntConstant")?, "_NamedIntConstant")?;
+    let nic = as_type(dget(py, &cn, "_NamedIntConstant")?, "_NamedIntConstant")?;
     tags.push(tag_of(&nic, "_NamedIntConstant")?);
-    // _EXTRA_CASES (the compiler's own reference: `from ._casefix import _EXTRA_CASES`)
-    let extra = cx.get(&co, "_EXTRA_CASES")?;
-    let extra = extra.cast_into::<PyDict>().map_err(|_| refuse!(Deps: "_EXTRA_CASES is not a dict"))?;
-    let mut pairs = Vec::with_capacity(extra.len());
-    for (key, v) in extra.iter() {
-        let key: u32 = key.extract().map_err(|_| refuse!(Deps: "_EXTRA_CASES key"))?;
-        let v: Vec<u32> = v.extract().map_err(|_| refuse!(Deps: "_EXTRA_CASES value"))?;
-        pairs.push((key, v));
+    let extra = dget(py, &co, "_EXTRA_CASES")?;
+    if !extra.is_exact_instance_of::<PyDict>() {
+        return Err(refuse!(Deps: "_EXTRA_CASES is not a dict"));
     }
-    let hash = extra_cases_hash(&pairs);
-    let (major, minor) = cx.version();
-    let want = fps::EXTRA_CASES.iter().find(|(a, b, _)| (*a, *b) == (major, minor)).map(|e| e.2);
-    if want != Some(hash.as_str()) {
-        return Err(refuse!(Fingerprint: "re._casefix._EXTRA_CASES: {hash} != recorded {want:?}"));
-    }
-    // `_sre` functions the compiler calls (their C fingerprints are their identity: pinned)
-    let sre_compile = cx.get(&sre, "compile")?;
+    let sre_compile = dget(py, &sre, "compile")?;
     // pins: the namespaces as validated (any rebinding, addition or deletion falls back)
     cx.pin_dict(&co, &DEPS_COMPILE)?;
     cx.pin_dict(&pa, &DEPS_COMPILE)?;
@@ -351,7 +381,10 @@ fn shared_compile(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> 
     ];
     pin_builtins(cx, &co, &builtins, &DEPS_COMPILE)?;
     pin_builtins(cx, &pa, &builtins, &DEPS_COMPILE)?;
-    let mut refs = vec![keep(&sre_compile)];
+    refs.push(keep(&sre_compile));
+    refs.push(keep(cn.as_any()));
+    refs.push(keep(&extra));
+    refs.extend(fps.iter().map(|(_, o)| *o));
     refs.extend(tags.iter().map(|t| {
         // SAFETY: attached thread; the classes stay referenced by the state.
         unsafe { ffi::Py_NewRef(t.ty.cast::<ffi::PyObject>()) }
@@ -360,11 +393,67 @@ fn shared_compile(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> 
         sre_compile: sre_compile.as_ptr(),
         maxrepeat: maxrepeat as u32,
         maxgroups: maxgroups as u32,
-        cases: state::Cases { extra: rustique_core::re::ExtraCases::new(pairs) },
+        cases: std::sync::OnceLock::new(),
+        constants: cn.as_ptr(),
+        extra: extra.as_ptr(),
+        lazy: state::Lazy::new(fps),
         tags,
         refs,
     });
     Ok(())
+}
+
+/// The compiler's first-call validation (see [`shared_compile`]).
+///
+/// # Safety
+/// Attached thread.
+pub(crate) unsafe fn validate_compile(st: &state::Compile) -> Result<(), String> {
+    use rustique_core::re::consts as k;
+    // SAFETY: per the caller.
+    unsafe { check_fingerprints(&st.lazy)? };
+    // SAFETY: attached thread; the state holds the dicts.
+    let py = unsafe { Python::assume_attached() };
+    let cn = unsafe { Bound::from_borrowed_ptr(py, st.constants) }
+        .cast_into::<PyDict>()
+        .map_err(|_| "constants".to_string())?;
+    for (name, v) in k::OPCODE_NAMES.iter().chain(k::ATCODE_NAMES).chain(k::CHCODE_NAMES).chain(k::FLAG_NAMES) {
+        let got = dget(py, &cn, name).ok().and_then(|o| int_value(&o));
+        if got != Some(*v as u64) {
+            return Err(format!("version: re._constants.{name} differs from the port's"));
+        }
+    }
+    for (name, v) in [("MAXREPEAT", st.maxrepeat), ("MAXGROUPS", st.maxgroups)] {
+        if dget(py, &cn, name).ok().and_then(|o| int_value(&o)) != Some(v as u64) {
+            return Err(format!("deps: re._constants.{name} is not _sre's"));
+        }
+    }
+    // SAFETY: as above.
+    let extra = unsafe { Bound::from_borrowed_ptr(py, st.extra) };
+    let extra = extra.cast_into::<PyDict>().map_err(|_| "deps: _EXTRA_CASES is not a dict".to_string())?;
+    let mut pairs = Vec::with_capacity(extra.len());
+    for (key, v) in extra.iter() {
+        let key: u32 = key.extract().map_err(|_| "deps: _EXTRA_CASES key".to_string())?;
+        let v: Vec<u32> = v.extract().map_err(|_| "deps: _EXTRA_CASES value".to_string())?;
+        pairs.push((key, v));
+    }
+    let hash = extra_cases_hash(&pairs);
+    let (major, minor) = crate::accel::version::running();
+    let want = crate::accel::fingerprint::expected_for(fps::EXTRA_CASES, major, minor);
+    if want != Some(hash.as_str()) {
+        return Err(format!("fingerprint: re._casefix._EXTRA_CASES: {hash} != recorded {want:?}"));
+    }
+    let _ = st.cases.set(state::Cases { extra: rustique_core::re::ExtraCases::new(pairs) });
+    Ok(())
+}
+
+/// The compiler target is validated (running the first-call validation if needed).
+///
+/// # Safety
+/// Attached thread.
+#[inline(always)]
+pub(crate) unsafe fn compile_ready(st: &state::Compile) -> bool {
+    // SAFETY: per the caller.
+    st.lazy.ready(|| unsafe { validate_compile(st) }, |r| crate::accel::degrade(&TARGET_COMPILE, r))
 }
 
 /// FNV-1a 64 over the little-endian u32 words `k, len(v), *v` of the sorted items
@@ -388,9 +477,9 @@ fn extra_cases_hash(pairs: &[(u32, Vec<u32>)]) -> String {
     format!("{h:016x}")
 }
 
-fn prep_compile(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn prep_compile(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let co = cx.loaded_module("re._compiler")?.dict();
-    let f = cx.get(&co, "compile")?;
+    let f = dget(py, &co, "compile")?;
     cx.vectorcall(&f, compile::k_compile, &accel::FUNCTION_VECTORCALL)
 }
 
@@ -399,44 +488,45 @@ fn prep_compile(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 // ---------------------------------------------------------------------------------------
 
 /// What the module functions read on a cache hit (`re` globals, `RegexFlag` and the
-/// `Pattern` type) and on a template `sub` (`parse_template`, `_compile_template`).
+/// `Pattern` type) and on a template `sub` (`parse_template`, `_compile_template`). The
+/// fingerprints are checked on the first call ([`funcs_ready`]).
 fn shared_funcs(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let red = cx.module()?.dict();
     let pa_m = cx.loaded_module("re._parser")?;
     let pa = pa_m.dict();
     let sre = cx.loaded_module("_sre")?.dict();
     let minor = cx.version().1;
-    // fingerprints: every function, `_compile` (its hit path), the template path
+    let mut fps: Vec<(&'static str, O)> = Vec::new();
     let match_name = if minor >= 15 { "prefixmatch" } else { "match" };
     for name in
         [match_name, "fullmatch", "search", "sub", "subn", "split", "findall", "finditer", "compile", "_compile"]
     {
-        let f = cx.get(&red, name)?;
-        check_fp(cx, &format!("re.{}", if name == "prefixmatch" { "match" } else { name }), &f)?;
+        let f = dget(py, &red, name)?;
+        fps.push((fn_fp_name("re", if name == "prefixmatch" { "match" } else { name }), keep(&f)));
     }
-    if minor >= 15 && !cx.get(&red, "match")?.is(&cx.get(&red, "prefixmatch")?) {
+    if minor >= 15 && !dget(py, &red, "match")?.is(&dget(py, &red, "prefixmatch")?) {
         return Err(refuse!(Deps: "re.match is not re.prefixmatch"));
     }
-    let ct = cx.get(&red, "_compile_template")?;
-    check_fp(cx, "re._compile_template", &ct.getattr("__wrapped__")?)?;
-    check_fp(cx, "re._parser.parse_template", &cx.get(&pa, "parse_template")?)?;
-    if !cx.get(&red, "_parser")?.is(&pa_m) {
+    let ct = dget(py, &red, "_compile_template")?;
+    fps.push(("re._compile_template", keep(&ct.getattr("__wrapped__")?)));
+    fps.push(("re._parser.parse_template", keep(&dget(py, &pa, "parse_template")?)));
+    if !dget(py, &red, "_parser")?.is(&pa_m) {
         return Err(refuse!(Deps: "re._parser is not the imported module"));
     }
-    let tok = as_type(cx.get(&pa, "Tokenizer")?, "Tokenizer")?;
+    let tok = as_type(dget(py, &pa, "Tokenizer")?, "Tokenizer")?;
+    let td = crate::accel::prepare::type_dict(&tok)?;
     for m in ["__init__", "_Tokenizer__next", "match", "get", "getuntil", "checkgroupname"] {
-        let rec = if m == "_Tokenizer__next" { "__next" } else { m };
-        check_fp(cx, &format!("re._parser.Tokenizer.{rec}"), &class_attr(cx, &tok, m)?)?;
+        fps.push((method_fp_name("Tokenizer", m), keep(&dget(py, &td, m)?)));
     }
     // classes: Pattern (immutable C type), RegexFlag (+ its metaclass), _ZeroSentinel
-    let pattern_t = as_type(cx.get(&red, "Pattern")?, "re.Pattern")?;
+    let pattern_t = as_type(dget(py, &red, "Pattern")?, "re.Pattern")?;
     // SAFETY: attached thread; type flags of a live type.
     if unsafe { ffi::PyType_GetFlags(pattern_t.as_type_ptr()) } & ffi::Py_TPFLAGS_IMMUTABLETYPE == 0 {
         return Err(refuse!(Deps: "re.Pattern is not immutable"));
     }
-    let regexflag = as_type(cx.get(&red, "RegexFlag")?, "re.RegexFlag")?;
+    let regexflag = as_type(dget(py, &red, "RegexFlag")?, "re.RegexFlag")?;
     let enumtype = regexflag.get_type();
-    let zero = cx.get(&red, "_zero_sentinel")?;
+    let zero = dget(py, &red, "_zero_sentinel")?;
     let zero_t = zero.get_type();
     // `flags.value` is `self._value_`: plain attribute lookup (no descriptor named
     // `_value_` in the MRO, generic getattr)
@@ -451,40 +541,44 @@ fn shared_funcs(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
             return Err(refuse!(Deps: "RegexFlag defines _value_ on a class"));
         }
     }
-    check_fp(cx, "re._compile", &cx.get(&red, "_compile")?)?;
     let tags =
         vec![tag_of(&regexflag, "RegexFlag")?, tag_of(&enumtype, "EnumType")?, tag_of(&zero_t, "_ZeroSentinel")?];
     // Pattern methods called on a hit (the C method descriptors of the immutable type)
-    let pd = pattern_t.getattr("__dict__")?;
-    let get_m = |n: &str| -> Result<Bound<'_, PyAny>, Refusal> { Ok(pd.get_item(n)?) };
+    let pd = crate::accel::prepare::type_dict(&pattern_t)?;
     let methods = [
-        get_m(match_name)?,
-        get_m("fullmatch")?,
-        get_m("search")?,
-        get_m("findall")?,
-        get_m("finditer")?,
-        get_m("sub")?,
-        get_m("subn")?,
-        get_m("split")?,
+        dget(py, &pd, match_name)?,
+        dget(py, &pd, "fullmatch")?,
+        dget(py, &pd, "search")?,
+        dget(py, &pd, "findall")?,
+        dget(py, &pd, "finditer")?,
+        dget(py, &pd, "sub")?,
+        dget(py, &pd, "subn")?,
+        dget(py, &pd, "split")?,
         // `re.compile` calls no method: any live object will do
         pattern_t.clone().into_any(),
     ];
-    // pins
+    // pins: the `re` globals the hit path and the template path read, what `parse_template`
+    // and `_compile_template` read from `re._parser` and `_sre`, the builtins
     for name in
         ["_compile", "_cache2", "RegexFlag", "_zero_sentinel", "Pattern", "_compile_template", "_parser", "_sre"]
     {
         cx.pin(&red, name, &DEPS_FUNCS)?;
     }
     pin_builtins(cx, &red, &["isinstance", "type"], &DEPS_FUNCS)?;
-    cx.pin_dict(&pa, &DEPS_FUNCS)?;
-    cx.pin_dict(&sre, &DEPS_FUNCS)?;
-    let cache2 = cx.get(&red, "_cache2")?;
+    for name in ["parse_template", "Tokenizer", "MAXGROUPS", "OCTDIGITS", "DIGITS", "ESCAPES", "ASCIILETTERS"] {
+        cx.pin(&pa, name, &DEPS_FUNCS)?;
+    }
+    pin_builtins(cx, &pa, &["chr", "int", "len", "KeyError", "isinstance", "str"], &DEPS_FUNCS)?;
+    cx.pin(&sre, "template", &DEPS_FUNCS)?;
+    cx.pin(&sre, "compile", &DEPS_FUNCS)?;
+    let cache2 = dget(py, &red, "_cache2")?;
     if !cache2.is_exact_instance_of::<PyDict>() {
         return Err(refuse!(Deps: "re._cache2 is not a dict"));
     }
     let names = ["flags", "count", "maxsplit", "_value_", "groups", "groupindex", "pattern"]
         .map(|n| crate::accel::prepare::interned(py, n).into_any());
-    let mut refs: Vec<O> = vec![keep(&cache2), keep(&pattern_t), keep(&regexflag), keep(&zero), keep(&zero_t)];
+    let mut refs: Vec<O> = vec![keep(&cache2), keep(&pattern_t), keep(&regexflag), keep(&zero)];
+    refs.extend(fps.iter().map(|(_, o)| *o));
     refs.extend(tags.iter().map(|t| {
         // SAFETY: attached thread; live classes.
         unsafe { ffi::Py_NewRef(t.ty.cast::<ffi::PyObject>()) }
@@ -498,6 +592,7 @@ fn shared_funcs(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         zero: zero.as_ptr(),
         tags,
         methods: methods.map(|m| m.as_ptr()),
+        lazy: state::Lazy::new(fps),
         n_flags: names[0].as_ptr(),
         n_count: names[1].as_ptr(),
         n_maxsplit: names[2].as_ptr(),
@@ -510,9 +605,27 @@ fn shared_funcs(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     Ok(())
 }
 
-fn prep_func(cx: &mut Prepare<'_>, attr: &str, kernel: ffi::vectorcallfunc) -> Result<(), Refusal> {
+/// The module functions are validated (running the first-call validation if needed; a
+/// failure degrades all of them).
+///
+/// # Safety
+/// Attached thread.
+#[inline(always)]
+pub(crate) unsafe fn funcs_ready(st: &state::Funcs) -> bool {
+    st.lazy.ready(
+        // SAFETY: per the caller.
+        || unsafe { check_fingerprints(&st.lazy) },
+        |r| {
+            for spec in &TARGETS[1..] {
+                crate::accel::degrade(spec, r);
+            }
+        },
+    )
+}
+
+fn prep_func(py: Python<'_>, cx: &mut Prepare<'_>, attr: &str, kernel: ffi::vectorcallfunc) -> Result<(), Refusal> {
     let red = cx.module()?.dict();
     let attr = if attr == "match" && cx.version().1 >= 15 { "prefixmatch" } else { attr };
-    let f = cx.get(&red, attr)?;
+    let f = dget(py, &red, attr)?;
     cx.vectorcall(&f, kernel, &accel::FUNCTION_VECTORCALL)
 }

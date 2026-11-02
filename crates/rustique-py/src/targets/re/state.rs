@@ -2,7 +2,8 @@
 //! the group's `prepare`, dropped by `release` at exit), the interpreter's case mappings,
 //! and the class version tags that stand for "no class the originals use was modified".
 
-use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering};
 
 use pyo3::ffi;
 
@@ -83,13 +84,69 @@ unsafe fn read_tag(ty: *mut ffi::PyTypeObject) -> u32 {
     unsafe { (*(&raw const (*ty).tp_version_tag).cast::<AtomicU32>()).load(Ordering::Relaxed) }
 }
 
+/// Validation done on a group's first kernel call instead of at install (ACCELERATION §5.7:
+/// a failure degrades the targets, whose kernels then fall back): the fingerprints of the
+/// Python functions the kernels stand in for, and the tables they read. The install itself
+/// only checks identities and declares sites and pins (`docs/targets/re.md`, install cost).
+pub(crate) struct Lazy {
+    state: AtomicU8,
+    /// (name in `fps::FPS`, object) of every function to fingerprint (references in `refs`).
+    pub fps: Vec<(&'static str, O)>,
+}
+
+const PENDING: u8 = 0;
+const RUNNING: u8 = 1;
+const OK: u8 = 2;
+const FAILED: u8 = 3;
+
+impl Lazy {
+    pub fn new(fps: Vec<(&'static str, O)>) -> Self {
+        Lazy { state: AtomicU8::new(PENDING), fps }
+    }
+
+    /// Validated (running `check` once, on the first call that gets here). A thread that finds
+    /// another one validating falls back rather than waits (no lock is held while CPython
+    /// code runs).
+    #[inline(always)]
+    pub fn ready(&self, check: impl FnOnce() -> Result<(), String>, fail: impl FnOnce(&str)) -> bool {
+        match self.state.load(Ordering::Acquire) {
+            OK => true,
+            PENDING => self.run(check, fail),
+            _ => false,
+        }
+    }
+
+    #[cold]
+    fn run(&self, check: impl FnOnce() -> Result<(), String>, fail: impl FnOnce(&str)) -> bool {
+        if self.state.compare_exchange(PENDING, RUNNING, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return self.state.load(Ordering::Acquire) == OK;
+        }
+        match check() {
+            Ok(()) => {
+                self.state.store(OK, Ordering::Release);
+                true
+            }
+            Err(reason) => {
+                fail(&reason);
+                self.state.store(FAILED, Ordering::Release);
+                false
+            }
+        }
+    }
+}
+
 /// The compile kernel's state.
 pub(crate) struct Compile {
     /// `_sre.compile` (pinned: `_sre.__dict__['compile']`).
     pub sre_compile: O,
     pub maxrepeat: u32,
     pub maxgroups: u32,
-    pub cases: Cases,
+    /// Built by the first-call validation from `_EXTRA_CASES`.
+    pub cases: OnceLock<Cases>,
+    /// `re._constants.__dict__` and `re._compiler._EXTRA_CASES` (checked on first call).
+    pub constants: O,
+    pub extra: O,
+    pub lazy: Lazy,
     /// `Tokenizer`, `State`, `SubPattern`, `_NamedIntConstant`.
     pub tags: Vec<Tag>,
     /// Strong references held (dropped by `release`).
@@ -97,8 +154,10 @@ pub(crate) struct Compile {
 }
 
 impl Compile {
-    pub fn env(&self) -> Env<'_> {
-        Env { maxrepeat: self.maxrepeat, maxgroups: self.maxgroups, case: &self.cases }
+    /// The port's environment (after validation: the case tables are set).
+    pub fn env(&self) -> Option<Env<'_>> {
+        let cases = self.cases.get()?;
+        Some(Env { maxrepeat: self.maxrepeat, maxgroups: self.maxgroups, case: cases })
     }
     #[inline(always)]
     pub fn tags_intact(&self) -> bool {
@@ -120,6 +179,7 @@ pub(crate) struct Funcs {
     pub tags: Vec<Tag>,
     /// `Pattern.__dict__` method descriptors, by [`super::funcs::Method`].
     pub methods: [O; 9],
+    pub lazy: Lazy,
     /// Interned names.
     pub n_flags: O,
     pub n_count: O,

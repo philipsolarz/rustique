@@ -176,7 +176,7 @@ pub(crate) unsafe fn port(st: &state::Compile, pattern: O, flags: O) -> Option<C
     unsafe {
         let fl = flags_of(flags)?;
         let (units, istext) = pattern_units(pattern)?;
-        core::compile(&units, istext, fl, &st.env()).ok()
+        core::compile(&units, istext, fl, &st.env()?).ok()
     }
 }
 
@@ -199,6 +199,9 @@ pub(crate) unsafe extern "C" fn k_compile(f: O, args: *const O, nargsf: usize, k
             return fallback(Reason::Deps);
         };
         if !st.tags_intact() {
+            return fallback(Reason::Deps);
+        }
+        if !super::compile_ready(st) {
             return fallback(Reason::Deps);
         }
         if !accel::tools_quiet(&COMPILE_TOOLS, f) {
@@ -290,6 +293,9 @@ pub(crate) fn _re_compile_args<'py>(
     };
     // SAFETY: attached thread; live arguments.
     unsafe {
+        if !super::compile_ready(st) {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err("the re group failed its validation"));
+        }
         let Some(c) = port(st, pattern.as_ptr(), flags.as_ptr()) else {
             return Ok(None);
         };
