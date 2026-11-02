@@ -45,9 +45,8 @@ fn enable<'py>(
     if quiet { Ok(None) } else { status(py).map(Some) }
 }
 
-/// Restore the matching targets (all when `names` is None; then also stop the native
-/// tier's import rewriting if `rustique._takeover` started it). Returns None, or
-/// `status()` with `quiet=False`.
+/// Restore the matching targets (all when `names` is None). Returns None, or `status()`
+/// with `quiet=False`.
 #[pyfunction]
 #[pyo3(signature = (names=None, quiet=true))]
 fn disable<'py>(
@@ -60,27 +59,11 @@ fn disable<'py>(
     if all {
         super::switch::reset_source();
     }
-    if all && !NATIVE.lock().unwrap_or_else(|p| p.into_inner()).is_empty() {
-        let modules = py.import("sys")?.getattr("modules")?;
-        if let Ok(hook) = modules.get_item("rustique._takeover._hook") {
-            hook.call_method0("uninstall")?;
-        }
-        NATIVE.lock().unwrap_or_else(|p| p.into_inner()).clear();
-    }
     if quiet { Ok(None) } else { status(py).map(Some) }
 }
 
-/// Native-tier patterns (set by `rustique._takeover` when `native=` is used), for status.
-static NATIVE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-#[pyfunction]
-fn _set_native(patterns: Vec<String>) {
-    *NATIVE.lock().unwrap_or_else(|p| p.into_inner()) = patterns;
-}
-
 /// `{"targets": [...], "process": {...}}` (docs/ACCELERATION.md §6.2), including the
-/// switch state (`process["switch"]`), `process["free_threaded"]` and the native tier's
-/// patterns.
+/// switch state (`process["switch"]`) and `process["free_threaded"]`.
 #[pyfunction]
 pub(crate) fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     let st = registry::status(py)?;
@@ -88,12 +71,6 @@ pub(crate) fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         .get_item("process")?
         .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("status without process"))?
         .cast_into::<PyDict>()?;
-    let hook = py.import("sys")?.getattr("modules")?.get_item("rustique._takeover._hook").ok();
-    let native: Vec<String> = match hook {
-        Some(h) => h.call_method0("patterns")?.extract()?,
-        None => NATIVE.lock().unwrap_or_else(|p| p.into_inner()).clone(),
-    };
-    process.set_item("native", PyTuple::new(py, native)?)?;
     super::switch::describe(py, &process)?;
     Ok(st)
 }
@@ -207,6 +184,12 @@ fn func_version(func: &Bound<'_, pyo3::types::PyFunction>) -> u32 {
     unsafe { (*func.as_ptr().cast::<pyo3::ffi::PyFunctionObject>()).func_version }
 }
 
+/// Lock-order violations of the pin tables' leaf rule seen in this process (tests assert 0).
+#[pyfunction]
+fn _lock_violations() -> u64 {
+    super::guard::lock_violations()
+}
+
 /// Is the exit hook registered (tests)?
 #[pyfunction]
 fn exit_hook_registered() -> bool {
@@ -228,6 +211,7 @@ fn add_extras(sub: &Bound<'_, PyModule>) -> PyResult<()> {
         sub.add_function(wrap_pyfunction!(vectorcall_is_original, sub)?)?;
         sub.add_function(wrap_pyfunction!(super::exit::exit_hook, sub)?)?;
         sub.add_function(wrap_pyfunction!(exit_hook_registered, sub)?)?;
+        sub.add_function(wrap_pyfunction!(_lock_violations, sub)?)?;
         sub.add("RustiqueCheckError", sub.py().get_type::<super::check::RustiqueCheckError>())?;
         crate::targets::register(sub)
     })?;
@@ -252,21 +236,29 @@ fn accel_getattr(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let sub = PyModule::new(m.py(), "_accel")?;
-    sub.add_function(wrap_pyfunction!(enable, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(disable, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(status, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(stats, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(_set_native, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(installed, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(check, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(check_mode, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(accel_getattr, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::startup, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::py_switch_enable, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::killed, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::report_to, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::record, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::report_at_exit, &sub)?)?;
-    sub.add("FREE_THREADED", super::version::FREE_THREADED)?;
-    m.add("_accel", sub)
+    // Through the module dict, not `PyModule::add`: `add` maintains `__all__`, whose first
+    // lookup raises AttributeError, and PyO3's `PyErr::take` then creates its
+    // `PanicException` type (~40k instructions at startup; docs/atlas/w2-startup.md §1.5).
+    let d = sub.dict();
+    macro_rules! set {
+        ($name:literal, $f:path) => {
+            d.set_item(pyo3::intern!(m.py(), $name), wrap_pyfunction!($f, &sub)?)?
+        };
+    }
+    set!("enable", enable);
+    set!("disable", disable);
+    set!("status", status);
+    set!("stats", stats);
+    set!("installed", installed);
+    set!("check", check);
+    set!("check_mode", check_mode);
+    set!("__getattr__", accel_getattr);
+    set!("startup", super::switch::startup);
+    set!("switch_enable", super::switch::py_switch_enable);
+    set!("killed", super::switch::killed);
+    set!("report_to", super::switch::report_to);
+    set!("_record", super::switch::record);
+    set!("_report_at_exit", super::switch::report_at_exit);
+    d.set_item("FREE_THREADED", super::version::FREE_THREADED)?;
+    m.dict().set_item("_accel", sub)
 }
