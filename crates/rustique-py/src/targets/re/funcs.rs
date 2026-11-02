@@ -12,7 +12,7 @@ use rustique_core::re::template;
 use super::compile::{bytes_units, str_units};
 use super::state::{self, O};
 use super::{DEPS_FUNCS, FuncRt};
-use crate::accel::{self, Reason};
+use crate::accel::{self, Reason, TargetSpec};
 
 /// The `Pattern` method a module function ends in (index into `Funcs::methods`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -267,7 +267,7 @@ unsafe fn repl_ok(st: &state::Funcs, p: O, repl: O, istext: bool) -> bool {
             }
             let b = std::slice::from_raw_parts(
                 ffi::PyBytes_AS_STRING(repl).cast::<u8>(),
-                ffi::PyBytes_GET_SIZE(repl) as usize,
+                ffi::Py_SIZE(repl) as usize,
             );
             !b.contains(&b'\\')
         };
@@ -352,7 +352,15 @@ pub(crate) unsafe fn template_ok(p: O, repl: O) -> bool {
 /// # Safety
 /// Vectorcall arguments as received by the kernel of `rt`'s target.
 #[inline(always)]
-pub(crate) unsafe fn kernel(rt: &FuncRt, m: Method, f: O, args: *const O, nargsf: usize, kw: O) -> O {
+pub(crate) unsafe fn kernel(
+    rt: &FuncRt,
+    spec: &'static TargetSpec,
+    m: Method,
+    f: O,
+    args: *const O,
+    nargsf: usize,
+    kw: O,
+) -> O {
     // SAFETY: per the caller; guards run before anything observable.
     unsafe {
         let fallback = |why: Reason| {
@@ -433,7 +441,11 @@ pub(crate) unsafe fn kernel(rt: &FuncRt, m: Method, f: O, args: *const O, nargsf
             return fallback(Reason::Args);
         };
         if m == Method::Compile {
-            rt.counters.hit_streak();
+            if rt.counters.hit_check_streak() {
+                return accel::check::verify(spec, p, std::slice::from_raw_parts(args, n + nk), || {
+                    accel::FUNCTION_VECTORCALL.get()(f, args, nargsf, kw)
+                });
+            }
             return p;
         }
         let string = *args.add(npos - 1);
@@ -449,7 +461,7 @@ pub(crate) unsafe fn kernel(rt: &FuncRt, m: Method, f: O, args: *const O, nargsf
             ffi::Py_DECREF(p);
             return fallback(Reason::Args);
         }
-        rt.counters.hit_streak();
+        let check = rt.counters.hit_check_streak() && rt.checkable;
         let meth = st.methods[m as usize];
         let r = match m.shape() {
             Shape::Sub => {
@@ -466,6 +478,11 @@ pub(crate) unsafe fn kernel(rt: &FuncRt, m: Method, f: O, args: *const O, nargsf
             }
         };
         ffi::Py_DECREF(p);
+        if check {
+            return accel::check::verify(spec, r, std::slice::from_raw_parts(args, n + nk), || {
+                accel::FUNCTION_VECTORCALL.get()(f, args, nargsf, kw)
+            });
+        }
         r
     }
 }

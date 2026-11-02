@@ -14,6 +14,7 @@ python_extern! {
     fn _PyUnicode_ToLowercase(ch: u32) -> u32;
     fn _PyUnicode_ToUppercase(ch: u32) -> u32;
     fn PyUnstable_Type_AssignVersionTag(ty: *mut ffi::PyTypeObject) -> std::ffi::c_int;
+    pub(crate) fn _PyType_Lookup(ty: *mut ffi::PyTypeObject, name: *mut ffi::PyObject) -> *mut ffi::PyObject;
 }
 
 /// The running interpreter's case mappings: what `_sre.unicode_tolower` /
@@ -113,9 +114,8 @@ pub(crate) struct Funcs {
     pub pattern_t: *mut ffi::PyTypeObject,
     /// `re.RegexFlag`
     pub regexflag_t: *mut ffi::PyTypeObject,
-    /// `re._zero_sentinel` and its type
+    /// `re._zero_sentinel`
     pub zero: O,
-    pub zero_t: *mut ffi::PyTypeObject,
     /// `RegexFlag`, `type(RegexFlag)` (`EnumType`), `_ZeroSentinel`.
     pub tags: Vec<Tag>,
     /// `Pattern.__dict__` method descriptors, by [`super::funcs::Method`].

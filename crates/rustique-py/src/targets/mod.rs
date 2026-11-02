@@ -19,6 +19,7 @@ pub mod logging;
 pub mod pathlib;
 pub mod posixpath;
 pub mod random;
+pub mod re;
 pub mod statistics;
 pub mod textwrap;
 pub mod urllib;
@@ -41,6 +42,7 @@ pub static ALL: &[&[&TargetSpec]] = &[
     datetime::TARGETS,
     copy::TARGETS,
     copy::dc::TARGETS,
+    re::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,
@@ -56,5 +58,6 @@ pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {
     fnmatch::register(accel)?;
     datetime::register(accel)?;
     copy::register(accel)?;
+    re::register(accel)?;
     Ok(())
 }

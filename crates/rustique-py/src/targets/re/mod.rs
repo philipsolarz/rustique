@@ -16,7 +16,7 @@ use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule, PyType};
 
-use crate::accel::{self, Category, Counters, DepFlag, GroupSpec, Prepare, Refusal, TargetSpec, Tools};
+use crate::accel::{self, Counters, DepFlag, GroupSpec, Prepare, Refusal, TargetSpec, Tools};
 use crate::refuse;
 
 mod compile;
@@ -344,7 +344,7 @@ fn shared_funcs(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let pa_m = cx.loaded_module("re._parser")?;
     let pa = pa_m.dict();
     let sre = cx.loaded_module("_sre")?.dict();
-    let (major, minor) = cx.version();
+    let minor = cx.version().1;
     // fingerprints: every function, `_compile` (its hit path), the template path
     let match_name = if minor >= 15 { "prefixmatch" } else { "match" };
     for name in [match_name, "fullmatch", "search", "sub", "subn", "split", "findall", "finditer", "compile", "_compile"] {
@@ -380,11 +380,11 @@ fn shared_funcs(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     // SAFETY: attached thread; live types.
     unsafe {
         let rf = regexflag.as_type_ptr();
-        if (*rf).tp_getattro != Some(ffi::PyObject_GenericGetAttr) {
+        if (*rf).tp_getattro.map(|f| f as usize) != Some(ffi::PyObject_GenericGetAttr as *const () as usize) {
             return Err(refuse!(Deps: "RegexFlag has a custom __getattribute__"));
         }
         let name = pyo3::intern!(py, "_value_");
-        if !ffi::_PyType_Lookup(rf, name.as_ptr()).is_null() {
+        if !state::_PyType_Lookup(rf, name.as_ptr()).is_null() {
             return Err(refuse!(Deps: "RegexFlag defines _value_ on a class"));
         }
     }
@@ -426,13 +426,11 @@ fn shared_funcs(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     }));
     refs.extend(methods.iter().map(keep));
     refs.extend(names.iter().map(keep));
-    let _ = major;
     state::publish_funcs(state::Funcs {
         cache2: cache2.as_ptr(),
         pattern_t: pattern_t.as_type_ptr(),
         regexflag_t: regexflag.as_type_ptr(),
         zero: zero.as_ptr(),
-        zero_t: zero_t.as_type_ptr(),
         tags,
         methods: methods.map(|m| m.as_ptr()),
         n_flags: names[0].as_ptr(),
@@ -452,9 +450,4 @@ fn prep_func(cx: &mut Prepare<'_>, attr: &str, kernel: ffi::vectorcallfunc) -> R
     let attr = if attr == "match" && cx.version().1 >= 15 { "prefixmatch" } else { attr };
     let f = cx.get(&red, attr)?;
     cx.vectorcall(&f, kernel, &accel::FUNCTION_VECTORCALL)
-}
-
-#[allow(dead_code)]
-fn category_unused() -> Category {
-    Category::Other
 }

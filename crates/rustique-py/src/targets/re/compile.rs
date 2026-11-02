@@ -40,7 +40,7 @@ pub(crate) unsafe fn str_units(s: O) -> Vec<u32> {
 pub(crate) unsafe fn bytes_units(b: O) -> Vec<u32> {
     // SAFETY: per the caller.
     unsafe {
-        let n = ffi::PyBytes_GET_SIZE(b) as usize;
+        let n = ffi::Py_SIZE(b) as usize;
         std::slice::from_raw_parts(ffi::PyBytes_AS_STRING(b).cast::<u8>(), n).iter().map(|&c| c as u32).collect()
     }
 }
