@@ -167,11 +167,51 @@ use super::spec::{Category, Refusal};
 
 static PROCESS: std::sync::OnceLock<Result<(), Refusal>> = std::sync::OnceLock::new();
 
-/// Facts every target needs: a final release, not a debug build, the minor this extension
-/// was compiled for. Computed once, without importing anything.
+/// The platforms Rustique is built and validated for (the CI wheel matrix): 64-bit
+/// little-endian x86-64 or AArch64, on Linux (glibc or musl), macOS or Windows. Anything
+/// else (an sdist built for i686, armv7, s390x, ppc64le, riscv64, FreeBSD, ...) refuses every
+/// target with category `platform`: a working, never-wrong install.
+pub const PLATFORM_VALIDATED: bool = cfg!(all(
+    target_pointer_width = "64",
+    target_endian = "little",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    any(
+        all(target_os = "linux", any(target_env = "gnu", target_env = "musl")),
+        target_os = "macos",
+        target_os = "windows"
+    )
+));
+
+/// `arch-os[-env]` of this build (refusal reasons, status).
+pub fn platform() -> String {
+    let mut s = format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS);
+    if cfg!(target_env = "gnu") {
+        s.push_str("-gnu");
+    } else if cfg!(target_env = "musl") {
+        s.push_str("-musl");
+    } else if cfg!(target_env = "msvc") {
+        s.push_str("-msvc");
+    }
+    if cfg!(target_endian = "big") {
+        s.push_str(" (big-endian)");
+    }
+    if cfg!(target_pointer_width = "32") {
+        s.push_str(" (32-bit)");
+    }
+    s
+}
+
+/// Facts every target needs: a validated platform, a final release, not a debug build, the
+/// minor this extension was compiled for. Computed once, without importing anything.
 pub fn process_gate() -> Result<(), Refusal> {
     PROCESS
         .get_or_init(|| {
+            if !PLATFORM_VALIDATED {
+                return Err(Refusal::with(
+                    Category::Platform,
+                    format!("built from source for {}, a platform Rustique has not validated", platform()),
+                ));
+            }
             let v = runtime_version();
             let (major, minor, level) = ((v >> 24) & 0xff, (v >> 16) & 0xff, (v >> 4) & 0xf);
             if major != 3 || minor as u8 != compiled_minor() {
@@ -198,9 +238,83 @@ pub fn process_gate() -> Result<(), Refusal> {
         .clone()
 }
 
-/// Per-target part of the gate: validated minor and free-threading.
+/// How the running patch release was validated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Validation {
+    /// A recorded patch release (its conformance suites passed before its fingerprints were
+    /// recorded).
+    Recorded,
+    /// Not recorded; installed because `RUSTIQUE_UNVALIDATED_PATCH=1`: targets whose code
+    /// fingerprints match a recorded release.
+    Unvalidated,
+}
+
+impl Validation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Validation::Recorded => "recorded",
+            Validation::Unvalidated => "unvalidated",
+        }
+    }
+}
+
+/// `3.15.1` / `3.15.1t`: the running patch release as recorded.
+pub fn patch_release() -> String {
+    let v = runtime_version();
+    format!("{}.{}.{}{}", (v >> 24) & 0xff, (v >> 16) & 0xff, (v >> 8) & 0xff, if FREE_THREADED { "t" } else { "" })
+}
+
+static PATCH: std::sync::OnceLock<Result<Validation, Refusal>> = std::sync::OnceLock::new();
+
+/// The patch-release gate (DECISIONS §10.5): the running patch release must be one
+/// recorded in the fingerprint data, unless `RUSTIQUE_UNVALIDATED_PATCH=1` (then targets
+/// install when their fingerprints match a recorded release, reported "unvalidated").
+/// Computed once (the environment is read at the first gate).
+pub fn patch_gate() -> Result<Validation, Refusal> {
+    PATCH
+        .get_or_init(|| {
+            // SAFETY: gates run on attached threads.
+            let py = unsafe { Python::assume_attached() };
+            patch_decision(&patch_release(), super::switch::env_on(py, "RUSTIQUE_UNVALIDATED_PATCH"))
+        })
+        .clone()
+}
+
+/// The patch-release decision for release `id` (`"3.15.1"`, `"3.15.1t"`), with or without
+/// the explicit opt-in.
+pub fn patch_decision(id: &str, opt_in: bool) -> Result<Validation, Refusal> {
+    if super::fingerprint::patches().any(|p| p == id) {
+        return Ok(Validation::Recorded);
+    }
+    if opt_in {
+        return Ok(Validation::Unvalidated);
+    }
+    let free_threaded = id.ends_with('t');
+    let mut parts = id.trim_end_matches('t').split('.');
+    let (major, minor) = (parts.next().unwrap_or("?"), parts.next().unwrap_or("?"));
+    let prefix = format!("{major}.{minor}.");
+    let same: Vec<&str> =
+        super::fingerprint::patches().filter(|p| p.starts_with(&prefix) && p.ends_with('t') == free_threaded).collect();
+    Err(Refusal::with(
+        Category::UnvalidatedPatch,
+        format!(
+            "CPython {id} is not a patch release this Rustique build has validated (validated: {}); \
+             RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+            if same.is_empty() { "none".to_owned() } else { same.join(", ") }
+        ),
+    ))
+}
+
+/// The process-level refusal, if any (platform, version, build, layout, patch release).
+pub fn process_refusal() -> Option<Refusal> {
+    process_gate().err().or_else(|| patch_gate().err())
+}
+
+/// Per-target part of the gate: validated minor and free-threading (after the process
+/// gate and the patch-release gate).
 pub fn target_gate(versions: &[(u8, u8)], free_threaded: bool) -> Result<(), Refusal> {
     process_gate()?;
+    patch_gate()?;
     let (major, minor) = running();
     if !versions.contains(&(major, minor)) {
         return Err(Refusal::with(Category::Version, format!("CPython {major}.{minor} not validated for this target")));

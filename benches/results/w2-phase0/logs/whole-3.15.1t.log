@@ -1,0 +1,54 @@
+data/state_snapshot/plain: Mean +- std dev: 1.45 sec +- 0.01 sec
+data/state_snapshot/enabled: Mean +- std dev: 754 ms +- 3 ms
+data/state_snapshot/enabled: Mean +- std dev: 755 ms +- 2 ms
+data/state_snapshot/plain: Mean +- std dev: 1.45 sec +- 0.01 sec
+data/state_snapshot/plain: Mean +- std dev: 1.45 sec +- 0.01 sec
+data/state_snapshot/enabled: Mean +- std dev: 753 ms +- 5 ms
+data/state_snapshot/enabled: Mean +- std dev: 753 ms +- 2 ms
+data/state_snapshot/plain: Mean +- std dev: 1.44 sec +- 0.00 sec
+data/state_snapshot: digests 60ac4add24b433fd5afea2dd74cbfa51cc06d61c5c6858c27afb52521d69dc96 rustique=False 60ac4add24b433fd5afea2dd74cbfa51cc06d61c5c6858c27afb52521d69dc96 rustique=True 
+data/log_analytics/plain: Mean +- std dev: 1.03 sec +- 0.01 sec
+data/log_analytics/enabled: Mean +- std dev: 665 ms +- 3 ms
+data/log_analytics/enabled: Mean +- std dev: 673 ms +- 4 ms
+data/log_analytics/plain: Mean +- std dev: 1.03 sec +- 0.01 sec
+data/log_analytics/plain: Mean +- std dev: 1.03 sec +- 0.01 sec
+data/log_analytics/enabled: Mean +- std dev: 671 ms +- 4 ms
+data/log_analytics/enabled: Mean +- std dev: 668 ms +- 3 ms
+data/log_analytics/plain: Mean +- std dev: 1.03 sec +- 0.01 sec
+data/log_analytics: digests a09430e3ccf377c7f90db10a1d2c9b1bb657855934a567ed2e6ef42628d89d31 rustique=False a09430e3ccf377c7f90db10a1d2c9b1bb657855934a567ed2e6ef42628d89d31 rustique=True 
+data/report_render/plain: Mean +- std dev: 502 ms +- 1 ms
+data/report_render/enabled: Mean +- std dev: 240 ms +- 2 ms
+data/report_render/enabled: Mean +- std dev: 240 ms +- 1 ms
+data/report_render/plain: Mean +- std dev: 502 ms +- 2 ms
+data/report_render/plain: Mean +- std dev: 503 ms +- 2 ms
+data/report_render/enabled: Mean +- std dev: 241 ms +- 1 ms
+data/report_render/enabled: Mean +- std dev: 241 ms +- 1 ms
+data/report_render/plain: Mean +- std dev: 502 ms +- 1 ms
+data/report_render: digests b0d81bfd49ec5f46c92a754a353c2c5e73adbe9017768ac00cf364ac473f6deb rustique=False b0d81bfd49ec5f46c92a754a353c2c5e73adbe9017768ac00cf364ac473f6deb rustique=True 
+web/json_api/plain: Mean +- std dev: 708 ms +- 1 ms
+web/json_api/enabled: Mean +- std dev: 573 ms +- 2 ms
+web/json_api/enabled: Mean +- std dev: 572 ms +- 2 ms
+web/json_api/plain: Mean +- std dev: 706 ms +- 1 ms
+web/json_api/plain: Mean +- std dev: 707 ms +- 1 ms
+web/json_api/enabled: Mean +- std dev: 574 ms +- 3 ms
+web/json_api/enabled: Mean +- std dev: 574 ms +- 2 ms
+web/json_api/plain: Mean +- std dev: 705 ms +- 2 ms
+web/json_api: digests b415aa0582fc118b79dfbc9cb439dcfcb2a302322c87d28ba0f944c1e684e912 rustique=False b415aa0582fc118b79dfbc9cb439dcfcb2a302322c87d28ba0f944c1e684e912 rustique=True 
+devtools/pytest_networkx/plain: Mean +- std dev: 1.21 sec +- 0.00 sec
+devtools/pytest_networkx/enabled: Mean +- std dev: 1.18 sec +- 0.00 sec
+devtools/pytest_networkx/enabled: Mean +- std dev: 1.18 sec +- 0.01 sec
+devtools/pytest_networkx/plain: Mean +- std dev: 1.21 sec +- 0.01 sec
+devtools/pytest_networkx/plain: Mean +- std dev: 1.22 sec +- 0.00 sec
+devtools/pytest_networkx/enabled: Mean +- std dev: 1.18 sec +- 0.01 sec
+devtools/pytest_networkx/enabled: Mean +- std dev: 1.19 sec +- 0.00 sec
+devtools/pytest_networkx/plain: Mean +- std dev: 1.21 sec +- 0.01 sec
+devtools/pytest_networkx: digests 4a86d28b258e14d4060bcd5ccb9b88a8c3da4c16aa1f5cb345d671cc0a915f37 rustique=False 4a86d28b258e14d4060bcd5ccb9b88a8c3da4c16aa1f5cb345d671cc0a915f37 rustique=True 
+devtools/import_startup/plain: Mean +- std dev: 2.27 sec +- 0.01 sec
+devtools/import_startup/enabled: Mean +- std dev: 2.31 sec +- 0.00 sec
+devtools/import_startup/enabled: Mean +- std dev: 2.31 sec +- 0.00 sec
+devtools/import_startup/plain: Mean +- std dev: 2.26 sec +- 0.00 sec
+devtools/import_startup/plain: Mean +- std dev: 2.26 sec +- 0.00 sec
+devtools/import_startup/enabled: Mean +- std dev: 2.31 sec +- 0.00 sec
+devtools/import_startup/enabled: Mean +- std dev: 2.31 sec +- 0.00 sec
+devtools/import_startup/plain: Mean +- std dev: 2.26 sec +- 0.00 sec
+devtools/import_startup: digests 1d82b0f355eb258d1d9478ec28b04ad61290cdba7bec6c7e99326c37b277e1c4 rustique=True 80b60af41db2a724ae01bcc21d64a029a5cedc5326cc91f8a0f08e503fe9870c rustique=False 

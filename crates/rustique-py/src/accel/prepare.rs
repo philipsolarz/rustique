@@ -32,12 +32,16 @@ pub(crate) struct SiteDecl {
     pub arity: u8,
 }
 
-/// A fingerprint observed while preparing (for the dev tool's record mode).
+/// A fingerprint observed while preparing (for the dev tool's record mode): the original's
+/// id, its v3 fingerprint and the recorded ones (comma-separated), and its v2 fingerprint
+/// and the inline expected one.
 #[derive(Debug, Clone)]
 pub struct FingerprintRecord {
     pub what: String,
     pub observed: String,
-    pub expected: Option<&'static str>,
+    pub expected: Option<String>,
+    pub v2: String,
+    pub v2_expected: Option<&'static str>,
 }
 
 /// `ml_flags` calling-convention bits → C arity of `ml_meth`.
@@ -57,6 +61,9 @@ fn meth_arity(flags: c_int) -> Option<usize> {
 pub struct Prepare<'py> {
     py: Python<'py>,
     spec: &'static TargetSpec,
+    /// Whose fingerprints these are in the recorded data: the target's name, or the shared
+    /// group's (`GroupSpec::name`) while a group prepares.
+    owner: &'static str,
     module: Option<Bound<'py, PyModule>>,
     pub(crate) sites: Vec<SiteDecl>,
     pub(crate) pins: Vec<PendingPin>,
@@ -77,7 +84,31 @@ impl<'py> Prepare<'py> {
         module: Option<Bound<'py, PyModule>>,
         record: bool,
     ) -> Self {
-        Prepare { py, spec, module, sites: Vec::new(), pins: Vec::new(), records: Vec::new(), record, arming: false }
+        Prepare {
+            py,
+            spec,
+            owner: spec.name,
+            module,
+            sites: Vec::new(),
+            pins: Vec::new(),
+            records: Vec::new(),
+            record,
+            arming: false,
+        }
+    }
+
+    /// The context of a shared group's `prepare` (its fingerprints are recorded under the
+    /// group's name, whichever target activates it first).
+    pub(crate) fn for_group(
+        py: Python<'py>,
+        spec: &'static TargetSpec,
+        group: &'static super::spec::GroupSpec,
+        module: Option<Bound<'py, PyModule>>,
+        record: bool,
+    ) -> Self {
+        let mut cx = Self::new(py, spec, module, record);
+        cx.owner = group.name;
+        cx
     }
 
     /// Whether this `prepare` only arms the target (validation deferred to its first call):
@@ -183,8 +214,9 @@ impl<'py> Prepare<'py> {
     // Fingerprints and self-tests.
     // -----------------------------------------------------------------------------------
 
-    /// `what` (a readable name) is only built for a refusal or in record mode.
-    fn check_fingerprint(
+    /// The legacy (format v2, inline) check, for originals the recorded v3 data does not
+    /// cover yet. `what` (a readable name) is only built for a refusal or in record mode.
+    fn check_v2(
         &mut self,
         what: impl FnOnce() -> String,
         observed: String,
@@ -192,17 +224,11 @@ impl<'py> Prepare<'py> {
     ) -> Result<(), Refusal> {
         let (major, minor) = version::running();
         let want = fingerprint::expected_for(expected, major, minor);
-        let ok = want == Some(observed.as_str());
-        if self.record {
-            self.records.push(FingerprintRecord { what: what(), observed, expected: want });
-            return Ok(());
-        }
-        if ok {
+        if want == Some(observed.as_str()) {
             return Ok(());
         }
         let what = what();
         match want {
-            _ if ok => Ok(()),
             None => Err(Refusal::with(
                 Category::Version,
                 format!("{what}: no fingerprint recorded for CPython {major}.{minor}"),
@@ -213,31 +239,79 @@ impl<'py> Prepare<'py> {
         }
     }
 
-    /// Require the canonical code fingerprint of a pure-Python function (or code object)
-    /// to be the one recorded for the running minor version.
+    /// The check of one original: its v3 fingerprint against the hashes recorded for this
+    /// target and the running minor (`fingerprints.txt`); originals with no recorded entry
+    /// fall back to the inline v2 `expected` (`v2` computes it lazily).
+    fn check_original(
+        &mut self,
+        id: String,
+        v3: u64,
+        v2: impl FnOnce() -> Result<String, Refusal>,
+        expected: Fingerprints,
+    ) -> Result<(), Refusal> {
+        let accepted = fingerprint::accepted(self.owner, &id);
+        if self.record {
+            let (major, minor) = version::running();
+            let v2 = v2().unwrap_or_default();
+            self.records.push(FingerprintRecord {
+                what: id,
+                observed: fingerprint::hex(v3),
+                expected: accepted.map(|a| a.iter().map(fingerprint::hex).collect::<Vec<_>>().join(",")),
+                v2,
+                v2_expected: fingerprint::expected_for(expected, major, minor),
+            });
+            return Ok(());
+        }
+        match accepted {
+            Some(set) if set.contains(v3) => Ok(()),
+            Some(_) => {
+                let (major, minor) = version::running();
+                Err(Refusal::with(
+                    Category::Fingerprint,
+                    format!(
+                        "{id}: code fingerprint {} differs from every one recorded for CPython {major}.{minor}",
+                        fingerprint::hex(v3)
+                    ),
+                ))
+            }
+            None => {
+                let observed = v2()?;
+                self.check_v2(|| id, observed, expected)
+            }
+        }
+    }
+
+    /// Require the canonical code fingerprint (format v3) of a pure-Python function (or
+    /// code object) to be one recorded for this target on the running minor version
+    /// (`accel/fingerprints.txt`); originals not recorded there are checked against the
+    /// inline (v2) `expected`, which is otherwise unused.
     pub fn fingerprint_code(&mut self, func: &Bound<'_, PyAny>, expected: Fingerprints) -> Result<(), Refusal> {
         if self.arming {
             return Ok(());
         }
-        let observed = if func.cast_exact::<PyFunction>().is_ok() {
-            fingerprint::function(func)?
-        } else {
-            fingerprint::code(func)?
+        let (id, v3) = fingerprint::any_v3(func)?;
+        let v2 = || -> Result<String, Refusal> {
+            Ok(if func.cast_exact::<PyFunction>().is_ok() {
+                fingerprint::function(func)?
+            } else {
+                fingerprint::code(func)?
+            })
         };
-        self.check_fingerprint(|| describe(func), observed, expected)
+        self.check_original(id, v3, v2, expected)
     }
 
-    /// Require the `ml_name`/`ml_flags`/`ml_doc` fingerprint of a C function or method
-    /// descriptor to be the one recorded for the running minor version.
+    /// Require the `ml_name`/`ml_flags` fingerprint (format v3; v2 also hashed `ml_doc`) of
+    /// a C function or method descriptor to be one recorded for the running minor version.
     pub fn fingerprint_c(&mut self, obj: &Bound<'_, PyAny>, expected: Fingerprints) -> Result<(), Refusal> {
         if self.arming {
             return Ok(());
         }
-        let observed = fingerprint::c_object(obj)?;
-        self.check_fingerprint(|| describe(obj), observed, expected)
+        let (id, v3) = fingerprint::any_v3(obj)?;
+        self.check_original(id, v3, || Ok(fingerprint::c_object(obj)?), expected)
     }
 
-    /// Same as [`Self::fingerprint_c`] for a method table entry found directly.
+    /// Same as [`Self::fingerprint_c`] for a method table entry found directly (`what` is
+    /// its id in the recorded data).
     ///
     /// # Safety
     /// `def` is a live `PyMethodDef`.
@@ -251,8 +325,9 @@ impl<'py> Prepare<'py> {
             return Ok(());
         }
         // SAFETY: per the caller.
-        let observed = unsafe { fingerprint::method_def(def) };
-        self.check_fingerprint(|| what.to_owned(), observed, expected)
+        let v3 = unsafe { fingerprint::method_def_v3(def) };
+        // SAFETY: per the caller.
+        self.check_original(what.to_owned(), v3, || Ok(unsafe { fingerprint::method_def(def) }), expected)
     }
 
     /// The canonical code fingerprint of `obj` (function, code object, or C function):
@@ -817,7 +892,7 @@ impl<'py> Prepare<'py> {
     /// The caller is responsible for the signature `F` (validate per minor version).
     pub fn symbol<F: FnPtr>(&mut self, name: &CStr, cell: &'static Original<F>) -> Result<F, Refusal> {
         let addr = dlsym_default(name);
-        if addr == 0 && !cfg!(unix) {
+        if addr == 0 && !cfg!(any(unix, windows)) {
             return Err(Refusal::with(
                 Category::Platform,
                 format!("symbol {}: no runtime symbol lookup on this platform", name.to_string_lossy()),
@@ -852,7 +927,35 @@ fn dlsym_default(name: &CStr) -> usize {
     unsafe { dlsym(handle, name.as_ptr()) as usize }
 }
 
-#[cfg(not(unix))]
+/// Windows: `GetProcAddress` on the Python DLL. Its handle is `sys.dllhandle` (set by
+/// CPython's `sysmodule.c` on Windows from `PyWin_DLLhModule`; a borrowed lookup in the `sys`
+/// dict, no import and no Python code: safe inside the `sys.modules` watcher). Every
+/// `PyAPI_FUNC` is `__declspec(dllexport)` (Include/exports.h), so internal-but-exported
+/// symbols resolve as `dlsym` resolves them on Unix. No `dllhandle` (an interpreter linked
+/// statically into its host): 0, the target refuses (`symbol`).
+#[cfg(windows)]
+fn dlsym_default(name: &CStr) -> usize {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetProcAddress(module: *mut std::ffi::c_void, name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    }
+    // SAFETY: attached thread (prepare); `PySys_GetObject` returns a borrowed reference or
+    // NULL without setting an error; GetProcAddress is thread-safe.
+    unsafe {
+        let h = ffi::PySys_GetObject(c"dllhandle".as_ptr());
+        if h.is_null() {
+            return 0;
+        }
+        let module = ffi::PyLong_AsVoidPtr(h);
+        if module.is_null() {
+            ffi::PyErr_Clear();
+            return 0;
+        }
+        GetProcAddress(module, name.as_ptr()) as usize
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn dlsym_default(_name: &CStr) -> usize {
     0
 }
@@ -1017,6 +1120,12 @@ unsafe extern "C" {
         funcname: *const std::ffi::c_char,
         firstlineno: std::ffi::c_int,
     ) -> *mut ffi::PyObject;
+}
+
+/// `Type.method` / `module.function` of a C original (the id of C originals in the
+/// recorded fingerprint data).
+pub(crate) fn c_name_of(obj: &Bound<'_, PyAny>, def: *mut ffi::PyMethodDef) -> String {
+    c_name(obj, def)
 }
 
 /// `Type.method` / `module.function` of a C original, without Python calls.

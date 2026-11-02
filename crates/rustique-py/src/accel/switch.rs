@@ -18,7 +18,7 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 
 use super::{registry, stats};
 
-const VARIABLES: [&str; 7] = [
+const VARIABLES: [&str; 8] = [
     "RUSTIQUE",
     "RUSTIQUE_ONLY",
     "RUSTIQUE_EXCLUDE",
@@ -26,6 +26,7 @@ const VARIABLES: [&str; 7] = [
     "RUSTIQUE_REPORT",
     "RUSTIQUE_CHECK",
     "RUSTIQUE_TIERS",
+    "RUSTIQUE_UNVALIDATED_PATCH",
 ];
 const ON: [&str; 4] = ["1", "true", "yes", "on"];
 const OFF: [&str; 4] = ["0", "false", "no", "off"];
@@ -80,6 +81,11 @@ fn env(py: Python<'_>, name: &str) -> Option<String> {
         return None;
     }
     std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
+}
+
+/// A `RUSTIQUE*` variable set to an ON value (respecting `-E`/`-I`).
+pub(crate) fn env_on(py: Python<'_>, name: &str) -> bool {
+    env(py, name).is_some_and(|v| flag(&v) == Some(true))
 }
 
 /// `Some(true)` for ON values, `Some(false)` for OFF values, `None` otherwise.
@@ -355,9 +361,15 @@ pub fn switch_enable(
         Some(_) => stats::set_check(None),
         None => {}
     }
-    // 6. Counters.
+    // 6. Counters; with a `*.json` report, the live per-process counter file.
     if report.is_some() || env(py, "RUSTIQUE_STATS").is_some_and(|v| flag(&v) == Some(true)) {
         stats::set_enabled(true);
+    }
+    if let Some(r) = &report
+        && r.ends_with(".json")
+        && stats::enabled()
+    {
+        super::counters_file::start(r);
     }
     // 7. Install (quiet). An empty `only` (every RUSTIQUE_ONLY name unknown) installs
     // nothing.
@@ -497,5 +509,6 @@ pub fn report_at_exit(py: Python<'_>) -> PyResult<()> {
     let Some(target) = state().report.take() else { return Ok(()) };
     let accel = crate::module(py)?.getattr("_accel")?;
     py.import("rustique._report")?.call_method1("write", (target, accel.getattr("_record")?))?;
+    super::counters_file::mark_json_written();
     Ok(())
 }

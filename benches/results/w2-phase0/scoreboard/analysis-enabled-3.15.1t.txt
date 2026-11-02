@@ -1,0 +1,9 @@
+=== 3.15.1t impl=enabled
+-- 0-100 elements (instructions): cells 3814, with ratio 3814 (metrics {'instr': 3814}), <= 1.05: 3812/3814, geomean 0.8642, mismatch 0, error 0
+   kernel path: 586 cells, geomean 0.6492, median 0.7378, > 1.05: 0, < 0.95: 482, min 0.082, max 1.045
+   unchanged code: 3228 cells, geomean 0.9103, median 1.0000, > 1.05: 2, < 0.95: 177, min 0.019, max 1.074
+   cells > 1.05 (2):
+       1.074  list/x + y/str/8
+       1.068  list/x * 2/str/8
+   worst kernel-path cells: list/miss in x/object/1 1.045, tuple/miss in x/object/1 1.038, dict/any(x)/int/0 1.033, dict/any(x)/str/0 1.033, dict/any(x)/mixed/0 1.033
+-- headline cells (1M, wall-time ratio, rel. std builtin/enabled)

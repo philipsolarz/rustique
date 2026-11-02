@@ -325,6 +325,7 @@ def main():
     variants = args[args.index("--variants") + 1].split(",") if "--variants" in args else ["orig", "rs"]
     first = "--first" in args
     env = {**os.environ, "PYTHONHASHSEED": "0", "PYTHON_JIT": "1" if jit else "0", "PATHS_CG_FIRST": "1" if first else "0"}
+    env.setdefault("RUSTIQUE_VALIDATE", "eager")  # states read right after enable are final
     todo = [(i, c) for i, c in enumerate(cells(only)) if c[2] in variants]
     rows: dict = {}
     with cf.ThreadPoolExecutor(jobs) as ex:

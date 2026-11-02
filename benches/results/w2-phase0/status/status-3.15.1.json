@@ -1,0 +1,1727 @@
+{
+ "summary": {
+  "python": "3.15.1 (main, Oct 21 2026, 17:48:50) [Clang 23.1.3 ]",
+  "free_threaded": false,
+  "rustique": "0.2.0",
+  "targets": 84,
+  "groups": [
+   "builtins",
+   "containers",
+   "copy",
+   "dataclasses",
+   "datetime",
+   "float",
+   "fnmatch",
+   "json",
+   "logging",
+   "pathlib",
+   "posixpath",
+   "random",
+   "statistics",
+   "textwrap",
+   "urllib"
+  ],
+  "counts": {
+   "installed": 84
+  },
+  "refused": [],
+  "pending": [],
+  "disabled": [],
+  "imported": [
+   "json",
+   "copy",
+   "dataclasses",
+   "datetime",
+   "_strptime",
+   "time",
+   "posixpath",
+   "os.path",
+   "fnmatch",
+   "glob",
+   "pathlib",
+   "logging",
+   "random",
+   "textwrap",
+   "urllib.parse",
+   "statistics"
+  ],
+  "import_failed": {}
+ },
+ "status": {
+  "targets": [
+   {
+    "name": "list.sort",
+    "group": "containers",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "list.sort (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "deps_intact": true
+   },
+   {
+    "name": "list.index",
+    "group": "containers",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "list.index (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "deps_intact": true
+   },
+   {
+    "name": "list.count",
+    "group": "containers",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "list.count (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "deps_intact": true
+   },
+   {
+    "name": "tuple.index",
+    "group": "containers",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "tuple.index (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "deps_intact": true
+   },
+   {
+    "name": "tuple.count",
+    "group": "containers",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "tuple.count (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "deps_intact": true
+   },
+   {
+    "name": "list.__contains__",
+    "group": "containers",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "list.sq_contains (slot)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "deps_intact": true
+   },
+   {
+    "name": "tuple.__contains__",
+    "group": "containers",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "tuple.sq_contains (slot)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "deps_intact": true
+   },
+   {
+    "name": "builtins.sum",
+    "group": "builtins",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "builtins.sum (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "deps_intact": true
+   },
+   {
+    "name": "builtins.min",
+    "group": "builtins",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "builtins.min (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "deps_intact": true
+   },
+   {
+    "name": "builtins.max",
+    "group": "builtins",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "builtins.max (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "deps_intact": true
+   },
+   {
+    "name": "builtins.sorted",
+    "group": "builtins",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "builtins.sorted (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "deps_intact": true
+   },
+   {
+    "name": "builtins.any",
+    "group": "builtins",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "builtins.any (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "deps_intact": true
+   },
+   {
+    "name": "builtins.all",
+    "group": "builtins",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "builtins.all (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "deps_intact": true
+   },
+   {
+    "name": "float.repr",
+    "group": "float",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "float.tp_repr (slot)",
+     "float.__format__ (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "deps_intact": true
+   },
+   {
+    "name": "json.dumps",
+    "group": "json",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "dumps (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "json",
+    "deps_intact": true,
+    "shared": "json"
+   },
+   {
+    "name": "json.loads",
+    "group": "json",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "loads (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "json",
+    "deps_intact": true,
+    "shared": "json"
+   },
+   {
+    "name": "logging.Logger.level",
+    "group": "logging",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "Logger.debug (vectorcall)",
+     "Logger.info (vectorcall)",
+     "Logger.warning (vectorcall)",
+     "Logger.error (vectorcall)",
+     "Logger.critical (vectorcall)",
+     "Logger.log (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "logging",
+    "deps_intact": true,
+    "shared": "logging"
+   },
+   {
+    "name": "logging.Logger.findCaller",
+    "group": "logging",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "Logger.findCaller (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "logging",
+    "deps_intact": true,
+    "shared": "logging"
+   },
+   {
+    "name": "logging.LogRecord.__init__",
+    "group": "logging",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "LogRecord.__init__ (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "logging",
+    "deps_intact": true,
+    "shared": "logging"
+   },
+   {
+    "name": "logging.Formatter.formatTime",
+    "group": "logging",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "Formatter.formatTime (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "logging",
+    "deps_intact": true,
+    "shared": "logging"
+   },
+   {
+    "name": "logging.Formatter.format",
+    "group": "logging",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "Formatter.format (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "logging",
+    "deps_intact": true,
+    "shared": "logging"
+   },
+   {
+    "name": "random.randint",
+    "group": "random",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "Random.randint (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random",
+    "deps_intact": true,
+    "shared": "random"
+   },
+   {
+    "name": "random.randrange",
+    "group": "random",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "Random.randrange (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random",
+    "deps_intact": true,
+    "shared": "random"
+   },
+   {
+    "name": "random.choice",
+    "group": "random",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "Random.choice (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random",
+    "deps_intact": true,
+    "shared": "random"
+   },
+   {
+    "name": "random.shuffle",
+    "group": "random",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "Random.shuffle (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random",
+    "deps_intact": true,
+    "shared": "random"
+   },
+   {
+    "name": "random.sample",
+    "group": "random",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "Random.sample (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random",
+    "deps_intact": true,
+    "shared": "random"
+   },
+   {
+    "name": "random.choices",
+    "group": "random",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "Random.choices (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random",
+    "deps_intact": true,
+    "shared": "random"
+   },
+   {
+    "name": "statistics.mean",
+    "group": "statistics",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "mean (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics",
+    "deps_intact": true,
+    "shared": "statistics"
+   },
+   {
+    "name": "statistics.variance",
+    "group": "statistics",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "variance (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics",
+    "deps_intact": true,
+    "shared": "statistics"
+   },
+   {
+    "name": "statistics.pvariance",
+    "group": "statistics",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "pvariance (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics",
+    "deps_intact": true,
+    "shared": "statistics"
+   },
+   {
+    "name": "statistics.stdev",
+    "group": "statistics",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "stdev (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics",
+    "deps_intact": true,
+    "shared": "statistics"
+   },
+   {
+    "name": "statistics.pstdev",
+    "group": "statistics",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "pstdev (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics",
+    "deps_intact": true,
+    "shared": "statistics"
+   },
+   {
+    "name": "textwrap.wrap",
+    "group": "textwrap",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "wrap (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap",
+    "deps_intact": true,
+    "shared": "textwrap"
+   },
+   {
+    "name": "textwrap.fill",
+    "group": "textwrap",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "fill (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap",
+    "deps_intact": true,
+    "shared": "textwrap"
+   },
+   {
+    "name": "textwrap.shorten",
+    "group": "textwrap",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "shorten (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap",
+    "deps_intact": true,
+    "shared": "textwrap"
+   },
+   {
+    "name": "textwrap.dedent",
+    "group": "textwrap",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "dedent (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap",
+    "deps_intact": true,
+    "shared": "textwrap"
+   },
+   {
+    "name": "textwrap.indent",
+    "group": "textwrap",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "indent (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap",
+    "deps_intact": true,
+    "shared": "textwrap"
+   },
+   {
+    "name": "textwrap.TextWrapper.wrap",
+    "group": "textwrap",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "TextWrapper.wrap (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap",
+    "deps_intact": true,
+    "shared": "textwrap"
+   },
+   {
+    "name": "textwrap.TextWrapper.fill",
+    "group": "textwrap",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "TextWrapper.fill (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap",
+    "deps_intact": true,
+    "shared": "textwrap"
+   },
+   {
+    "name": "urllib.parse.quote",
+    "group": "urllib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "quote (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse",
+    "deps_intact": true,
+    "shared": "urllib"
+   },
+   {
+    "name": "urllib.parse.quote_plus",
+    "group": "urllib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "quote_plus (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse",
+    "deps_intact": true,
+    "shared": "urllib"
+   },
+   {
+    "name": "urllib.parse.unquote",
+    "group": "urllib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "unquote (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse",
+    "deps_intact": true,
+    "shared": "urllib"
+   },
+   {
+    "name": "urllib.parse.unquote_plus",
+    "group": "urllib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "unquote_plus (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse",
+    "deps_intact": true,
+    "shared": "urllib"
+   },
+   {
+    "name": "urllib.parse.parse_qsl",
+    "group": "urllib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "parse_qsl (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse",
+    "deps_intact": true,
+    "shared": "urllib"
+   },
+   {
+    "name": "urllib.parse.parse_qs",
+    "group": "urllib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "parse_qs (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse",
+    "deps_intact": true,
+    "shared": "urllib"
+   },
+   {
+    "name": "urllib.parse._urlsplit",
+    "group": "urllib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "_urlsplit (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse",
+    "deps_intact": true,
+    "shared": "urllib"
+   },
+   {
+    "name": "posixpath.join",
+    "group": "posixpath",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "join (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath",
+    "deps_intact": true,
+    "shared": "posixpath"
+   },
+   {
+    "name": "posixpath.split",
+    "group": "posixpath",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "split (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath",
+    "deps_intact": true,
+    "shared": "posixpath"
+   },
+   {
+    "name": "posixpath.splitext",
+    "group": "posixpath",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "splitext (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath",
+    "deps_intact": true,
+    "shared": "posixpath"
+   },
+   {
+    "name": "posixpath.basename",
+    "group": "posixpath",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "basename (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath",
+    "deps_intact": true,
+    "shared": "posixpath"
+   },
+   {
+    "name": "posixpath.dirname",
+    "group": "posixpath",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "dirname (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath",
+    "deps_intact": true,
+    "shared": "posixpath"
+   },
+   {
+    "name": "posixpath.isabs",
+    "group": "posixpath",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "isabs (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath",
+    "deps_intact": true,
+    "shared": "posixpath"
+   },
+   {
+    "name": "posixpath.relpath",
+    "group": "posixpath",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "relpath (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath",
+    "deps_intact": true,
+    "shared": "posixpath"
+   },
+   {
+    "name": "posixpath.abspath",
+    "group": "posixpath",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "abspath (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath",
+    "deps_intact": true,
+    "shared": "posixpath"
+   },
+   {
+    "name": "fnmatch.fnmatch",
+    "group": "fnmatch",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "fnmatch (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "fnmatch",
+    "deps_intact": true,
+    "shared": "fnmatch"
+   },
+   {
+    "name": "fnmatch.fnmatchcase",
+    "group": "fnmatch",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "fnmatchcase (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "fnmatch",
+    "deps_intact": true,
+    "shared": "fnmatch"
+   },
+   {
+    "name": "fnmatch.filter",
+    "group": "fnmatch",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "filter (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "fnmatch",
+    "deps_intact": true,
+    "shared": "fnmatch"
+   },
+   {
+    "name": "pathlib.PurePath.__new__",
+    "group": "pathlib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "PurePath.__new__ (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib",
+    "deps_intact": true,
+    "shared": "pathlib"
+   },
+   {
+    "name": "pathlib.Path.__new__",
+    "group": "pathlib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "Path.__new__ (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib",
+    "deps_intact": true,
+    "shared": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__init__",
+    "group": "pathlib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "PurePath.__init__ (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib",
+    "deps_intact": true,
+    "shared": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__str__",
+    "group": "pathlib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "PurePath.__str__ (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib",
+    "deps_intact": true,
+    "shared": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__truediv__",
+    "group": "pathlib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "PurePath.__truediv__ (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib",
+    "deps_intact": true,
+    "shared": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.parent",
+    "group": "pathlib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "PurePath.parent (vectorcall)"
+    ],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib",
+    "deps_intact": true,
+    "shared": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.name",
+    "group": "pathlib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "PurePath.name (vectorcall)"
+    ],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib",
+    "deps_intact": true,
+    "shared": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.suffix",
+    "group": "pathlib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "PurePath.suffix (vectorcall)"
+    ],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib",
+    "deps_intact": true,
+    "shared": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.stem",
+    "group": "pathlib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "PurePath.stem (vectorcall)"
+    ],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib",
+    "deps_intact": true,
+    "shared": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.parts",
+    "group": "pathlib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "PurePath.parts (vectorcall)"
+    ],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib",
+    "deps_intact": true,
+    "shared": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.relative_to",
+    "group": "pathlib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "PurePath.relative_to (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib",
+    "deps_intact": true,
+    "shared": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__eq__",
+    "group": "pathlib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "PurePath.__eq__ (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib",
+    "deps_intact": true,
+    "shared": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__hash__",
+    "group": "pathlib",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "PurePath.__hash__ (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib",
+    "deps_intact": true,
+    "shared": "pathlib"
+   },
+   {
+    "name": "datetime.datetime.strptime",
+    "group": "datetime",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "datetime.datetime.strptime (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime",
+    "deps_intact": true,
+    "shared": "datetime"
+   },
+   {
+    "name": "datetime.date.strptime",
+    "group": "datetime",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "datetime.date.strptime (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime",
+    "deps_intact": true,
+    "shared": "datetime"
+   },
+   {
+    "name": "datetime.time.strptime",
+    "group": "datetime",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "datetime.time.strptime (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime",
+    "deps_intact": true,
+    "shared": "datetime"
+   },
+   {
+    "name": "time.strptime",
+    "group": "datetime",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "time.strptime (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime",
+    "deps_intact": true,
+    "shared": "datetime"
+   },
+   {
+    "name": "datetime.date.strftime",
+    "group": "datetime",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "datetime.date.strftime (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime",
+    "deps_intact": true,
+    "shared": "datetime"
+   },
+   {
+    "name": "datetime.time.strftime",
+    "group": "datetime",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "datetime.time.strftime (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime",
+    "deps_intact": true,
+    "shared": "datetime"
+   },
+   {
+    "name": "time.strftime",
+    "group": "datetime",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "time.strftime (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "time",
+    "deps_intact": true
+   },
+   {
+    "name": "datetime.datetime.isoformat",
+    "group": "datetime",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "datetime.datetime.isoformat (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime",
+    "deps_intact": true,
+    "shared": "datetime"
+   },
+   {
+    "name": "datetime.date.isoformat",
+    "group": "datetime",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "datetime.date.isoformat (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime",
+    "deps_intact": true,
+    "shared": "datetime"
+   },
+   {
+    "name": "datetime.time.isoformat",
+    "group": "datetime",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "datetime.time.isoformat (ml_meth)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime",
+    "deps_intact": true,
+    "shared": "datetime"
+   },
+   {
+    "name": "copy.deepcopy",
+    "group": "copy",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "deepcopy (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "copy",
+    "deps_intact": true,
+    "shared": "copy"
+   },
+   {
+    "name": "copy.copy",
+    "group": "copy",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "copy (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "copy",
+    "deps_intact": true,
+    "shared": "copy"
+   },
+   {
+    "name": "dataclasses.asdict",
+    "group": "dataclasses",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "asdict (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "dataclasses",
+    "deps_intact": true,
+    "shared": "dataclasses"
+   },
+   {
+    "name": "dataclasses.astuple",
+    "group": "dataclasses",
+    "state": "installed",
+    "reason": null,
+    "refusal": null,
+    "sites": [
+     "astuple (vectorcall)"
+    ],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "dataclasses",
+    "deps_intact": true,
+    "shared": "dataclasses"
+   }
+  ],
+  "process": {
+   "python": "3.15.1",
+   "hexversion": 51315184,
+   "build": "default",
+   "jit": false,
+   "rustique": "0.2.0",
+   "interpreter": null,
+   "enabled": true,
+   "stats": false,
+   "check": null,
+   "only": null,
+   "exclude": [],
+   "native": [],
+   "switch": {
+    "source": "rustique.enable()",
+    "only": null,
+    "exclude": [],
+    "killed_calls": 0,
+    "report": null,
+    "killed": false,
+    "stats": false,
+    "check": null,
+    "env": {}
+   },
+   "free_threaded": false
+  }
+ }
+}

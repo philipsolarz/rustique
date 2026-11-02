@@ -49,10 +49,12 @@
 //! ```
 
 pub mod check;
+pub mod counters_file;
 pub mod dynamic;
 pub mod exit;
 pub mod fingerprint;
 pub mod guard;
+pub mod opcodes;
 pub mod prepare;
 pub mod py;
 pub mod registry;

@@ -47,7 +47,7 @@ def m(tmp_path, monkeypatch):
 def test_ml_meth_target_is_armed_then_validated_by_its_first_call():
     A.enable(["_selftest.meth"])
     assert state("_selftest.meth")[0] == "armed"
-    assert A.status()["process"]["validation"] == "first-call"
+    assert A.status()["process"]["validate"] == "first-call"
     assert "_selftest.meth" in A.installed()  # armed counts as installed there
     assert A._probe("a") == ("orig", "a")  # the first call: validated, then the kernel falls back
     assert state("_selftest.meth")[0] == "installed"

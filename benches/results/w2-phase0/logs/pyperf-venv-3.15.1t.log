@@ -1,0 +1,464 @@
+Using Python 3.15.1 environment at: pyperf/3.15.1t/driver
+packaging==26.3
+psutil==7.2.2
+pyperf==2.10.0
+pyperformance==1.14.0
+Creating the virtual environment /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a
+# /home/ubuntu/.local/share/uv/python/cpython-3.15.1+freethreaded-linux-x86_64-gnu/bin/python3.15t -m venv --without-pip /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a
+# /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/bin/python -m ensurepip -v
+Using pip 26.2.2 from /tmp/tmpvpzuaieb/pip-26.2.2-py3-none-any.whl/pip (python 3.15)
+Looking in links: /tmp/tmpvpzuaieb
+Processing /tmp/tmpvpzuaieb/pip-26.2.2-py3-none-any.whl
+Installing collected packages: pip
+  changing mode of /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/bin/pip3 to 775
+  changing mode of /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/bin/pip3.15 to 775
+Successfully installed pip-26.2.2
+# /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/bin/python -m pip install -U 'setuptools>=18.5' wheel
+Collecting setuptools>=18.5
+  Using cached setuptools-84.2.1-py3-none-any.whl.metadata (6.6 kB)
+Collecting wheel
+  Using cached wheel-0.48.0-py3-none-any.whl.metadata (2.3 kB)
+Collecting packaging>=24.0 (from wheel)
+  Using cached packaging-26.3-py3-none-any.whl.metadata (3.5 kB)
+Using cached setuptools-84.2.1-py3-none-any.whl (876 kB)
+Using cached wheel-0.48.0-py3-none-any.whl (33 kB)
+Using cached packaging-26.3-py3-none-any.whl (129 kB)
+Installing collected packages: setuptools, packaging, wheel
+
+Successfully installed packaging-26.3 setuptools-84.2.1 wheel-0.48.0
+# /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/bin/python -m pip --version
+pip 26.2.2 from /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/lib/python3.15t/site-packages/pip (python 3.15)
+# /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/bin/python -m ensurepip -v -U
+Using pip 26.2.2 from /tmp/tmpxoj2si1o/pip-26.2.2-py3-none-any.whl/pip (python 3.15)
+Looking in links: /tmp/tmpxoj2si1o
+Requirement already satisfied: pip in ./venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/lib/python3.15t/site-packages (26.2.2)
+# /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/bin/python -m pip install -U 'setuptools>=18.5' wheel
+Requirement already satisfied: setuptools>=18.5 in ./venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/lib/python3.15t/site-packages (84.2.1)
+Requirement already satisfied: wheel in ./venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/lib/python3.15t/site-packages (0.48.0)
+Requirement already satisfied: packaging>=24.0 in ./venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/lib/python3.15t/site-packages (from wheel) (26.3)
+installing pyperformance in the venv at /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a
+Installing requirements into the virtual environment /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a
+# /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/bin/python -m pip install pyperformance==1.14.0
+Collecting pyperformance==1.14.0
+  Using cached pyperformance-1.14.0-py3-none-any.whl.metadata (2.3 kB)
+Requirement already satisfied: packaging in ./venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/lib/python3.15t/site-packages (from pyperformance==1.14.0) (26.3)
+Collecting pyperf (from pyperformance==1.14.0)
+  Using cached pyperf-2.10.0-py3-none-any.whl.metadata (6.2 kB)
+Collecting psutil>=5.9.0 (from pyperf->pyperformance==1.14.0)
+  Downloading psutil-7.2.2.tar.gz (493 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Using cached pyperformance-1.14.0-py3-none-any.whl (9.1 MB)
+Using cached pyperf-2.10.0-py3-none-any.whl (144 kB)
+Building wheels for collected packages: psutil
+  Building wheel for psutil (pyproject.toml): started
+  Building wheel for psutil (pyproject.toml): finished with status 'done'
+  Created wheel for psutil: filename=psutil-7.2.2-cp315-cp315t-linux_x86_64.whl size=184838 sha256=76bbf982da81f3c63ae12204af365a79c0c5a9f7d63e87c37416c108264d094f
+  Stored in directory: /home/ubuntu/.cache/pip/wheels/5b/86/76/377e4c4f0377482324629bbcf63f01928cc063a781d1046527
+Successfully built psutil
+Installing collected packages: psutil, pyperf, pyperformance
+
+Successfully installed psutil-7.2.2 pyperf-2.10.0 pyperformance-1.14.0
+# /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/bin/python -m pip freeze
+packaging==26.3
+psutil==7.2.2
+pyperf==2.10.0
+pyperformance==1.14.0
+setuptools==84.2.1
+wheel==0.48.0
+Installing requirements into the virtual environment /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a
+# /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/bin/python -m pip install psutil
+Requirement already satisfied: psutil in ./venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/lib/python3.15t/site-packages (7.2.2)
+# /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/bin/python -m pip freeze
+packaging==26.3
+psutil==7.2.2
+pyperf==2.10.0
+pyperformance==1.14.0
+setuptools==84.2.1
+wheel==0.48.0
+Installing requirements into the virtual environment /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a
+# /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/bin/python -m pip install mako==1.1.4 markupsafe==2.0.1 asgiref==3.3.4 django==3.2.4 pytz==2021.1 sqlparse==0.4.1 legacy-cgi==2.6 pyaes==1.6.1 coverage==7.3.2 greenlet==3.2.4 sqlalchemy==1.4.19 'dask[distributed]==2024.10.0' genshi==0.7.7 six==1.16.0 sphinx==7.3.7 python-docs-theme==2024.6 docutils==0.18.1 mpmath==1.2.1 sympy==1.8 sqlglot==4.6.0 tomli==2.0.1 fastapi==0.121.0 httpx==0.28.1 uvicorn==0.38.0 networkx==3.4.2 networkx==3.4.2 html5lib==1.1 six==1.16.0 webencodings==0.5.1 sqlglot==4.6.0 websockets==11.0.3 sqlglot==4.6.0 tornado==6.5.2 certifi==2021.5.30 dulwich==0.20.23 urllib3==1.26.5 greenlet==3.2.4 sqlalchemy==1.4.19 xdsl==0.54.3 networkx==3.4.2 chameleon==4.6.0 sqlglot==4.6.0
+Collecting mako==1.1.4
+  Using cached Mako-1.1.4-py2.py3-none-any.whl.metadata (2.8 kB)
+Collecting markupsafe==2.0.1
+  Using cached MarkupSafe-2.0.1.tar.gz (18 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting asgiref==3.3.4
+  Using cached asgiref-3.3.4-py3-none-any.whl.metadata (9.1 kB)
+Collecting django==3.2.4
+  Using cached Django-3.2.4-py3-none-any.whl.metadata (3.9 kB)
+Collecting pytz==2021.1
+  Using cached pytz-2021.1-py2.py3-none-any.whl.metadata (21 kB)
+Collecting sqlparse==0.4.1
+  Using cached sqlparse-0.4.1-py3-none-any.whl.metadata (3.4 kB)
+Collecting legacy-cgi==2.6
+  Using cached legacy_cgi-2.6-py3-none-any.whl.metadata (1.4 kB)
+Collecting pyaes==1.6.1
+  Using cached pyaes-1.6.1-py3-none-any.whl
+Collecting coverage==7.3.2
+  Using cached coverage-7.3.2.tar.gz (764 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting greenlet==3.2.4
+  Using cached greenlet-3.2.4.tar.gz (188 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting sqlalchemy==1.4.19
+  Using cached SQLAlchemy-1.4.19.tar.gz (7.7 MB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting dask==2024.10.0 (from dask[distributed]==2024.10.0)
+  Using cached dask-2024.10.0-py3-none-any.whl.metadata (3.7 kB)
+Collecting genshi==0.7.7
+  Using cached Genshi-0.7.7-py3-none-any.whl.metadata (1.3 kB)
+Collecting six==1.16.0
+  Using cached six-1.16.0-py2.py3-none-any.whl.metadata (1.8 kB)
+Collecting sphinx==7.3.7
+  Using cached sphinx-7.3.7-py3-none-any.whl.metadata (6.0 kB)
+Collecting python-docs-theme==2024.6
+  Using cached python_docs_theme-2024.6-py3-none-any.whl.metadata (2.3 kB)
+Collecting docutils==0.18.1
+  Using cached docutils-0.18.1-py2.py3-none-any.whl.metadata (2.9 kB)
+Collecting mpmath==1.2.1
+  Using cached mpmath-1.2.1-py3-none-any.whl.metadata (8.3 kB)
+Collecting sympy==1.8
+  Using cached sympy-1.8-py3-none-any.whl.metadata (11 kB)
+Collecting sqlglot==4.6.0
+  Using cached sqlglot-4.6.0-py3-none-any.whl.metadata (9.5 kB)
+Collecting tomli==2.0.1
+  Using cached tomli-2.0.1-py3-none-any.whl.metadata (8.9 kB)
+Collecting fastapi==0.121.0
+  Using cached fastapi-0.121.0-py3-none-any.whl.metadata (28 kB)
+Collecting httpx==0.28.1
+  Using cached httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+Collecting uvicorn==0.38.0
+  Using cached uvicorn-0.38.0-py3-none-any.whl.metadata (6.8 kB)
+Collecting networkx==3.4.2
+  Using cached networkx-3.4.2-py3-none-any.whl.metadata (6.3 kB)
+Collecting html5lib==1.1
+  Using cached html5lib-1.1-py2.py3-none-any.whl.metadata (16 kB)
+Collecting webencodings==0.5.1
+  Using cached webencodings-0.5.1-py2.py3-none-any.whl.metadata (2.1 kB)
+Collecting websockets==11.0.3
+  Using cached websockets-11.0.3-py3-none-any.whl.metadata (6.6 kB)
+Collecting tornado==6.5.2
+  Downloading tornado-6.5.2.tar.gz (510 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting certifi==2021.5.30
+  Using cached certifi-2021.5.30-py2.py3-none-any.whl.metadata (3.0 kB)
+Collecting dulwich==0.20.23
+  Using cached dulwich-0.20.23.tar.gz (414 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting urllib3==1.26.5
+  Using cached urllib3-1.26.5-py2.py3-none-any.whl.metadata (43 kB)
+Collecting xdsl==0.54.3
+  Using cached xdsl-0.54.3-py3-none-any.whl.metadata (9.5 kB)
+Collecting chameleon==4.6.0
+  Using cached Chameleon-4.6.0-py3-none-any.whl.metadata (51 kB)
+Collecting click>=8.1 (from dask==2024.10.0->dask[distributed]==2024.10.0)
+  Using cached click-8.5.0-py3-none-any.whl.metadata (2.6 kB)
+Collecting cloudpickle>=3.0.0 (from dask==2024.10.0->dask[distributed]==2024.10.0)
+  Using cached cloudpickle-3.1.2-py3-none-any.whl.metadata (7.1 kB)
+Collecting fsspec>=2021.09.0 (from dask==2024.10.0->dask[distributed]==2024.10.0)
+  Using cached fsspec-2026.9.0-py3-none-any.whl.metadata (10 kB)
+Requirement already satisfied: packaging>=20.0 in ./venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/lib/python3.15t/site-packages (from dask==2024.10.0->dask[distributed]==2024.10.0) (26.3)
+Collecting partd>=1.4.0 (from dask==2024.10.0->dask[distributed]==2024.10.0)
+  Using cached partd-1.4.2-py3-none-any.whl.metadata (4.6 kB)
+Collecting pyyaml>=5.3.1 (from dask==2024.10.0->dask[distributed]==2024.10.0)
+  Using cached pyyaml-6.0.3.tar.gz (130 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting toolz>=0.10.0 (from dask==2024.10.0->dask[distributed]==2024.10.0)
+  Using cached toolz-1.2.0-py3-none-any.whl.metadata (5.2 kB)
+Collecting sphinxcontrib-applehelp (from sphinx==7.3.7)
+  Using cached sphinxcontrib_applehelp-2.0.0-py3-none-any.whl.metadata (2.3 kB)
+Collecting sphinxcontrib-devhelp (from sphinx==7.3.7)
+  Using cached sphinxcontrib_devhelp-2.0.0-py3-none-any.whl.metadata (2.3 kB)
+Collecting sphinxcontrib-jsmath (from sphinx==7.3.7)
+  Using cached sphinxcontrib_jsmath-2.0.0-py3-none-any.whl.metadata (2.6 kB)
+Collecting sphinxcontrib-htmlhelp>=2.0.0 (from sphinx==7.3.7)
+  Using cached sphinxcontrib_htmlhelp-2.1.0-py3-none-any.whl.metadata (2.3 kB)
+Collecting sphinxcontrib-serializinghtml>=1.1.9 (from sphinx==7.3.7)
+  Using cached sphinxcontrib_serializinghtml-2.0.0-py3-none-any.whl.metadata (2.4 kB)
+Collecting sphinxcontrib-qthelp (from sphinx==7.3.7)
+  Using cached sphinxcontrib_qthelp-2.0.0-py3-none-any.whl.metadata (2.3 kB)
+Collecting Jinja2>=3.0 (from sphinx==7.3.7)
+  Using cached jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+Collecting Pygments>=2.14 (from sphinx==7.3.7)
+  Using cached pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
+Collecting snowballstemmer>=2.0 (from sphinx==7.3.7)
+  Using cached snowballstemmer-3.1.1-py3-none-any.whl.metadata (7.9 kB)
+Collecting babel>=2.9 (from sphinx==7.3.7)
+  Using cached babel-2.18.0-py3-none-any.whl.metadata (2.2 kB)
+Collecting alabaster~=0.7.14 (from sphinx==7.3.7)
+  Using cached alabaster-0.7.16-py3-none-any.whl.metadata (2.9 kB)
+Collecting imagesize>=1.3 (from sphinx==7.3.7)
+  Using cached imagesize-2.0.1-py3-none-any.whl.metadata (7.0 kB)
+Collecting requests>=2.25.0 (from sphinx==7.3.7)
+  Using cached requests-2.34.2-py3-none-any.whl.metadata (4.8 kB)
+Collecting starlette<0.50.0,>=0.40.0 (from fastapi==0.121.0)
+  Using cached starlette-0.49.3-py3-none-any.whl.metadata (6.4 kB)
+Collecting pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4 (from fastapi==0.121.0)
+  Using cached pydantic-2.14.2-py3-none-any.whl.metadata (137 kB)
+Collecting typing-extensions>=4.8.0 (from fastapi==0.121.0)
+  Using cached typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+Collecting annotated-doc>=0.0.2 (from fastapi==0.121.0)
+  Using cached annotated_doc-0.0.5-py3-none-any.whl.metadata (6.5 kB)
+Collecting anyio (from httpx==0.28.1)
+  Using cached anyio-4.16.0-py3-none-any.whl.metadata (4.7 kB)
+Collecting httpcore==1.* (from httpx==0.28.1)
+  Using cached httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+Collecting idna (from httpx==0.28.1)
+  Using cached idna-3.20-py3-none-any.whl.metadata (7.2 kB)
+Collecting h11>=0.8 (from uvicorn==0.38.0)
+  Using cached h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+Collecting immutabledict<4.2.3 (from xdsl==0.54.3)
+  Using cached immutabledict-4.2.2-py3-none-any.whl.metadata (3.5 kB)
+Collecting ordered-set==4.1.0 (from xdsl==0.54.3)
+  Using cached ordered_set-4.1.0-py3-none-any.whl.metadata (5.3 kB)
+Collecting distributed==2024.10.0 (from dask[distributed]==2024.10.0)
+  Using cached distributed-2024.10.0-py3-none-any.whl.metadata (3.3 kB)
+Collecting locket>=1.0.0 (from distributed==2024.10.0->dask[distributed]==2024.10.0)
+  Using cached locket-1.0.0-py2.py3-none-any.whl.metadata (2.8 kB)
+Collecting msgpack>=1.0.2 (from distributed==2024.10.0->dask[distributed]==2024.10.0)
+  Downloading msgpack-1.2.4-cp315-cp315t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (8.3 kB)
+Requirement already satisfied: psutil>=5.8.0 in ./venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/lib/python3.15t/site-packages (from distributed==2024.10.0->dask[distributed]==2024.10.0) (7.2.2)
+Collecting sortedcontainers>=2.0.5 (from distributed==2024.10.0->dask[distributed]==2024.10.0)
+  Using cached sortedcontainers-2.4.0-py2.py3-none-any.whl.metadata (10 kB)
+Collecting tblib>=1.6.0 (from distributed==2024.10.0->dask[distributed]==2024.10.0)
+  Using cached tblib-3.2.2-py3-none-any.whl.metadata (27 kB)
+Collecting zict>=3.0.0 (from distributed==2024.10.0->dask[distributed]==2024.10.0)
+  Using cached zict-3.0.0-py2.py3-none-any.whl.metadata (899 bytes)
+Collecting annotated-types>=0.6.0 (from pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4->fastapi==0.121.0)
+  Using cached annotated_types-0.8.0-py3-none-any.whl.metadata (15 kB)
+Collecting pydantic-core==2.50.2 (from pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4->fastapi==0.121.0)
+  Downloading pydantic_core-2.50.2-cp315-cp315t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (6.5 kB)
+Collecting typing-inspection>=0.4.4 (from pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4->fastapi==0.121.0)
+  Using cached typing_inspection-0.4.4-py3-none-any.whl.metadata (2.6 kB)
+Collecting charset_normalizer<4,>=2 (from requests>=2.25.0->sphinx==7.3.7)
+  Downloading charset_normalizer-3.5.2-cp315-cp315t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (46 kB)
+INFO: pip is looking at multiple versions of requests to determine which version is compatible with other requirements. This could take a while.
+Collecting requests>=2.25.0 (from sphinx==7.3.7)
+  Using cached requests-2.34.1-py3-none-any.whl.metadata (4.8 kB)
+  Using cached requests-2.34.0-py3-none-any.whl.metadata (4.8 kB)
+  Using cached requests-2.33.1-py3-none-any.whl.metadata (4.8 kB)
+  Using cached requests-2.33.0-py3-none-any.whl.metadata (5.1 kB)
+  Using cached requests-2.32.5-py3-none-any.whl.metadata (4.9 kB)
+Using cached Mako-1.1.4-py2.py3-none-any.whl (75 kB)
+Using cached asgiref-3.3.4-py3-none-any.whl (22 kB)
+Using cached Django-3.2.4-py3-none-any.whl (7.9 MB)
+Using cached pytz-2021.1-py2.py3-none-any.whl (510 kB)
+Using cached sqlparse-0.4.1-py3-none-any.whl (42 kB)
+Using cached legacy_cgi-2.6-py3-none-any.whl (19 kB)
+Using cached dask-2024.10.0-py3-none-any.whl (1.3 MB)
+Using cached Genshi-0.7.7-py3-none-any.whl (177 kB)
+Using cached six-1.16.0-py2.py3-none-any.whl (11 kB)
+Using cached sphinx-7.3.7-py3-none-any.whl (3.3 MB)
+Using cached docutils-0.18.1-py2.py3-none-any.whl (570 kB)
+Using cached python_docs_theme-2024.6-py3-none-any.whl (19 kB)
+Using cached mpmath-1.2.1-py3-none-any.whl (532 kB)
+Using cached sympy-1.8-py3-none-any.whl (6.1 MB)
+Using cached sqlglot-4.6.0-py3-none-any.whl (100 kB)
+Using cached tomli-2.0.1-py3-none-any.whl (12 kB)
+Using cached fastapi-0.121.0-py3-none-any.whl (109 kB)
+Using cached httpx-0.28.1-py3-none-any.whl (73 kB)
+Using cached uvicorn-0.38.0-py3-none-any.whl (68 kB)
+Using cached networkx-3.4.2-py3-none-any.whl (1.7 MB)
+Using cached html5lib-1.1-py2.py3-none-any.whl (112 kB)
+Using cached webencodings-0.5.1-py2.py3-none-any.whl (11 kB)
+Using cached websockets-11.0.3-py3-none-any.whl (118 kB)
+Using cached certifi-2021.5.30-py2.py3-none-any.whl (145 kB)
+Using cached urllib3-1.26.5-py2.py3-none-any.whl (138 kB)
+Using cached xdsl-0.54.3-py3-none-any.whl (4.1 MB)
+Using cached Chameleon-4.6.0-py3-none-any.whl (88 kB)
+Using cached distributed-2024.10.0-py3-none-any.whl (1.0 MB)
+Using cached ordered_set-4.1.0-py3-none-any.whl (7.6 kB)
+Using cached alabaster-0.7.16-py3-none-any.whl (13 kB)
+Using cached httpcore-1.0.9-py3-none-any.whl (78 kB)
+Using cached immutabledict-4.2.2-py3-none-any.whl (4.7 kB)
+Using cached pydantic-2.14.2-py3-none-any.whl (490 kB)
+Downloading pydantic_core-2.50.2-cp315-cp315t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (2.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.2/2.2 MB 53.6 MB/s  0:00:00
+Using cached starlette-0.49.3-py3-none-any.whl (74 kB)
+Using cached anyio-4.16.0-py3-none-any.whl (134 kB)
+Using cached typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+Using cached annotated_doc-0.0.5-py3-none-any.whl (5.3 kB)
+Using cached annotated_types-0.8.0-py3-none-any.whl (13 kB)
+Using cached babel-2.18.0-py3-none-any.whl (10.2 MB)
+Using cached click-8.5.0-py3-none-any.whl (125 kB)
+Using cached cloudpickle-3.1.2-py3-none-any.whl (22 kB)
+Using cached fsspec-2026.9.0-py3-none-any.whl (221 kB)
+Using cached h11-0.16.0-py3-none-any.whl (37 kB)
+Using cached idna-3.20-py3-none-any.whl (69 kB)
+Using cached imagesize-2.0.1-py3-none-any.whl (14 kB)
+Using cached jinja2-3.1.6-py3-none-any.whl (134 kB)
+Using cached locket-1.0.0-py2.py3-none-any.whl (4.4 kB)
+Downloading msgpack-1.2.4-cp315-cp315t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (470 kB)
+Using cached partd-1.4.2-py3-none-any.whl (18 kB)
+Using cached pygments-2.21.0-py3-none-any.whl (1.3 MB)
+Using cached requests-2.32.5-py3-none-any.whl (64 kB)
+Downloading charset_normalizer-3.5.2-cp315-cp315t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (260 kB)
+Using cached snowballstemmer-3.1.1-py3-none-any.whl (104 kB)
+Using cached sortedcontainers-2.4.0-py2.py3-none-any.whl (29 kB)
+Using cached sphinxcontrib_htmlhelp-2.1.0-py3-none-any.whl (98 kB)
+Using cached sphinxcontrib_serializinghtml-2.0.0-py3-none-any.whl (92 kB)
+Using cached tblib-3.2.2-py3-none-any.whl (12 kB)
+Using cached toolz-1.2.0-py3-none-any.whl (60 kB)
+Using cached typing_inspection-0.4.4-py3-none-any.whl (14 kB)
+Using cached zict-3.0.0-py2.py3-none-any.whl (43 kB)
+Using cached sphinxcontrib_applehelp-2.0.0-py3-none-any.whl (119 kB)
+Using cached sphinxcontrib_devhelp-2.0.0-py3-none-any.whl (82 kB)
+Using cached sphinxcontrib_jsmath-2.0.0-py3-none-any.whl (78 kB)
+Using cached sphinxcontrib_qthelp-2.0.0-py3-none-any.whl (88 kB)
+Building wheels for collected packages: markupsafe, coverage, greenlet, sqlalchemy, tornado, dulwich, pyyaml
+  Building wheel for markupsafe (pyproject.toml): started
+  Building wheel for markupsafe (pyproject.toml): finished with status 'done'
+  Created wheel for markupsafe: filename=markupsafe-2.0.1-cp315-cp315t-linux_x86_64.whl size=31883 sha256=8319749af5ff9377681bbc1041e9b599b30c524105ff2d6589e47741cb67f46d
+  Stored in directory: /home/ubuntu/.cache/pip/wheels/d9/e3/0e/baec92b336b3ebfe7190b6385aa9f637a4aebb09dfa1aba605
+  Building wheel for coverage (pyproject.toml): started
+  Building wheel for coverage (pyproject.toml): finished with status 'done'
+  Created wheel for coverage: filename=coverage-7.3.2-cp315-cp315t-linux_x86_64.whl size=242107 sha256=a801d478cfc5c998473acd64ada40655bb657762d889311a1de7bdff383ce154
+  Stored in directory: /home/ubuntu/.cache/pip/wheels/02/a3/34/bee141450c9c41dc64a34216c22d3960b4a8111e98ed5e83ee
+  Building wheel for greenlet (pyproject.toml): started
+  Building wheel for greenlet (pyproject.toml): finished with status 'done'
+  Created wheel for greenlet: filename=greenlet-3.2.4-cp315-cp315t-linux_x86_64.whl size=648297 sha256=4606cdc0bb38c188eb11e6b6cc92b9baa6f66e1a850d8b420e83e67e0351f971
+  Stored in directory: /home/ubuntu/.cache/pip/wheels/a9/4f/bf/fd5bcc2323205867983a24f46f0d2b3dfca77da47f82055a25
+  Building wheel for sqlalchemy (pyproject.toml): started
+  Building wheel for sqlalchemy (pyproject.toml): finished with status 'done'
+  Created wheel for sqlalchemy: filename=sqlalchemy-1.4.19-cp315-cp315t-linux_x86_64.whl size=1491593 sha256=70c70f8d08b03f9f4484e0cb0bebcce06070665ab98c4b19f973178a0912df91
+  Stored in directory: /home/ubuntu/.cache/pip/wheels/9b/e1/00/852f81eb38274fb68abbd986b0a967dab96373fc29053347ad
+  Building wheel for tornado (pyproject.toml): started
+  Building wheel for tornado (pyproject.toml): finished with status 'done'
+  Created wheel for tornado: filename=tornado-6.5.2-cp315-cp315t-linux_x86_64.whl size=444759 sha256=1cf464c76355f7a2c9b845ea2347525103d29e811b9490ff7e3570107faeb7dd
+  Stored in directory: /home/ubuntu/.cache/pip/wheels/e9/28/8b/ef1cf829374da4416e5311b5e1e693c479cd50c06a5cf6acfb
+  Building wheel for dulwich (pyproject.toml): started
+  Building wheel for dulwich (pyproject.toml): finished with status 'done'
+  Created wheel for dulwich: filename=dulwich-0.20.23-cp315-cp315t-linux_x86_64.whl size=530205 sha256=7334a59c8a8df71e50db24983c12909713d2b87a611f23f94789cc3ea2a462f7
+  Stored in directory: /home/ubuntu/.cache/pip/wheels/d1/03/d1/9785369f5aae3a9bd0f9966ad40f316e431e231f1b263f4881
+  Building wheel for pyyaml (pyproject.toml): started
+  Building wheel for pyyaml (pyproject.toml): finished with status 'done'
+  Created wheel for pyyaml: filename=pyyaml-6.0.3-cp315-cp315t-linux_x86_64.whl size=45465 sha256=198ccdb2a247eb78cc9c88d92633c892f4c8e0f5e88ab2021bb97f05ff512ce0
+  Stored in directory: /home/ubuntu/.cache/pip/wheels/39/c5/03/188d3f8dc792f835b1e767b5e6e0fec41846dc06f6dd368652
+Successfully built markupsafe coverage greenlet sqlalchemy tornado dulwich pyyaml
+Installing collected packages: webencodings, sqlglot, sortedcontainers, pytz, pyaes, mpmath, certifi, zict, websockets, urllib3, typing-extensions, tornado, toolz, tomli, tblib, sympy, sqlparse, sphinxcontrib-serializinghtml, sphinxcontrib-qthelp, sphinxcontrib-jsmath, sphinxcontrib-htmlhelp, sphinxcontrib-devhelp, sphinxcontrib-applehelp, snowballstemmer, six, pyyaml, python-docs-theme, Pygments, ordered-set, networkx, msgpack, markupsafe, locket, legacy-cgi, immutabledict, imagesize, idna, h11, greenlet, fsspec, docutils, coverage, cloudpickle, click, charset_normalizer, chameleon, babel, asgiref, annotated-types, annotated-doc, alabaster, xdsl, uvicorn, typing-inspection, sqlalchemy, requests, pydantic-core, partd, mako, Jinja2, httpcore, html5lib, genshi, dulwich, django, anyio, starlette, sphinx, pydantic, httpx, dask, fastapi, distributed
+
+Successfully installed Jinja2-3.1.6 Pygments-2.21.0 alabaster-0.7.16 annotated-doc-0.0.5 annotated-types-0.8.0 anyio-4.16.0 asgiref-3.3.4 babel-2.18.0 certifi-2021.5.30 chameleon-4.6.0 charset_normalizer-3.5.2 click-8.5.0 cloudpickle-3.1.2 coverage-7.3.2 dask-2024.10.0 distributed-2024.10.0 django-3.2.4 docutils-0.18.1 dulwich-0.20.23 fastapi-0.121.0 fsspec-2026.9.0 genshi-0.7.7 greenlet-3.2.4 h11-0.16.0 html5lib-1.1 httpcore-1.0.9 httpx-0.28.1 idna-3.20 imagesize-2.0.1 immutabledict-4.2.2 legacy-cgi-2.6 locket-1.0.0 mako-1.1.4 markupsafe-2.0.1 mpmath-1.2.1 msgpack-1.2.4 networkx-3.4.2 ordered-set-4.1.0 partd-1.4.2 pyaes-1.6.1 pydantic-2.14.2 pydantic-core-2.50.2 python-docs-theme-2024.6 pytz-2021.1 pyyaml-6.0.3 requests-2.32.5 six-1.16.0 snowballstemmer-3.1.1 sortedcontainers-2.4.0 sphinx-7.3.7 sphinxcontrib-applehelp-2.0.0 sphinxcontrib-devhelp-2.0.0 sphinxcontrib-htmlhelp-2.1.0 sphinxcontrib-jsmath-2.0.0 sphinxcontrib-qthelp-2.0.0 sphinxcontrib-serializinghtml-2.0.0 sqlalchemy-1.4.19 sqlglot-4.6.0 sqlparse-0.4.1 starlette-0.49.3 sympy-1.8 tblib-3.2.2 tomli-2.0.1 toolz-1.2.0 tornado-6.5.2 typing-extensions-4.16.0 typing-inspection-0.4.4 urllib3-1.26.5 uvicorn-0.38.0 webencodings-0.5.1 websockets-11.0.3 xdsl-0.54.3 zict-3.0.0
+# /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/bin/python -m pip freeze
+alabaster==0.7.16
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.16.0
+asgiref==3.3.4
+babel==2.18.0
+certifi==2021.5.30
+Chameleon==4.6.0
+charset-normalizer==3.5.2
+click==8.5.0
+cloudpickle==3.1.2
+coverage==7.3.2
+dask==2024.10.0
+distributed==2024.10.0
+Django==3.2.4
+docutils==0.18.1
+dulwich==0.20.23
+fastapi==0.121.0
+fsspec==2026.9.0
+Genshi==0.7.7
+greenlet==3.2.4
+h11==0.16.0
+html5lib==1.1
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.20
+imagesize==2.0.1
+immutabledict==4.2.2
+Jinja2==3.1.6
+legacy-cgi==2.6
+locket==1.0.0
+Mako==1.1.4
+MarkupSafe==2.0.1
+mpmath==1.2.1
+msgpack==1.2.4
+networkx==3.4.2
+ordered-set==4.1.0
+packaging==26.3
+partd==1.4.2
+psutil==7.2.2
+pyaes==1.6.1
+pydantic==2.14.2
+pydantic_core==2.50.2
+Pygments==2.21.0
+pyperf==2.10.0
+pyperformance==1.14.0
+python-docs-theme==2024.6
+pytz==2021.1
+PyYAML==6.0.3
+requests==2.32.5
+setuptools==84.2.1
+six==1.16.0
+snowballstemmer==3.1.1
+sortedcontainers==2.4.0
+Sphinx==7.3.7
+sphinxcontrib-applehelp==2.0.0
+sphinxcontrib-devhelp==2.0.0
+sphinxcontrib-htmlhelp==2.1.0
+sphinxcontrib-jsmath==2.0.0
+sphinxcontrib-qthelp==2.0.0
+sphinxcontrib-serializinghtml==2.0.0
+SQLAlchemy==1.4.19
+sqlglot==4.6.0
+sqlparse==0.4.1
+starlette==0.49.3
+sympy==1.8
+tblib==3.2.2
+tomli==2.0.1
+toolz==1.2.0
+tornado==6.5.2
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+urllib3==1.26.5
+uvicorn==0.38.0
+webencodings==0.5.1
+websockets==11.0.3
+wheel==0.48.0
+xdsl==0.54.3
+zict==3.0.0
+The virtual environment /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a has been created
+benchmark venv python: /work/w2p0/pyperf/3.15.1t/venv/cpython3.15-632f0c91d813-compat-31b33d68c68a/bin/python
+enabled: rustique loaded via sitecustomize: True /work/w2p0/w/3.15.1t/python/rustique/__init__.py installed: 23
+plain: rustique loaded: False

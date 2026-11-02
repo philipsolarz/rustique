@@ -1,0 +1,278 @@
+   Compiling cfg-if v1.0.5
+   Compiling once_cell v1.21.4
+   Compiling libc v0.2.191
+   Compiling rand_core v0.10.1
+   Compiling crossbeam-utils v0.8.23
+   Compiling either v1.19.0
+   Compiling static_assertions v1.1.0
+   Compiling itoa v1.0.18
+   Compiling zmij v1.0.23
+   Compiling equivalent v1.0.3
+   Compiling allocator-api2 v0.2.21
+   Compiling foldhash v0.2.0
+   Compiling castaway v0.2.4
+   Compiling bitflags v2.13.2
+   Compiling linux-raw-sys v0.12.1
+   Compiling fastrand v2.5.0
+   Compiling quick-error v1.2.3
+   Compiling cpufeatures v0.3.1
+   Compiling bit-vec v0.10.1
+   Compiling fnv v1.0.7
+   Compiling num-traits v0.2.19
+   Compiling regex-syntax v0.8.11
+   Compiling rand_xorshift v0.5.0
+   Compiling chacha20 v0.10.2
+   Compiling core_detect v1.0.0
+   Compiling unarray v0.1.4
+   Compiling scopeguard v1.2.0
+   Compiling smallvec v1.16.4
+   Compiling rustique-py v0.2.0 (/work/w2p0/src/crates/rustique-py)
+   Compiling lock_api v0.5.0
+   Compiling bit-set v0.11.1
+   Compiling compact_str v0.10.0
+   Compiling hashbrown v0.17.1
+   Compiling rustix v1.1.5
+   Compiling crossbeam-epoch v0.9.21
+   Compiling crossbeam-deque v0.8.8
+   Compiling rayon-core v1.13.0
+   Compiling getrandom v0.4.3
+   Compiling pyo3-ffi v0.30.1
+   Compiling wait-timeout v0.2.1
+   Compiling parking_lot_core v0.10.0
+   Compiling rayon v1.12.0
+   Compiling rand v0.10.3
+   Compiling parking_lot v0.13.0
+   Compiling pyo3 v0.30.1
+   Compiling tempfile v3.27.0
+   Compiling rusty-fork v0.3.1
+   Compiling proptest v1.12.0
+   Compiling rustique-core v0.2.0 (/work/w2p0/src/crates/rustique-core)
+   Compiling rustique-api v0.2.0 (/work/w2p0/src/crates/rustique-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.49s
+     Running unittests src/lib.rs (/work/w2p0/target/rust-ci/debug/deps/rustique_api-15eafe60c3f24450)
+
+running 2 tests
+test tests::dtype_codes_match_the_abi ... ok
+test tests::str_list_parts_are_validated ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/work/w2p0/target/rust-ci/debug/deps/rustique_core-ba9e18bf21256c6d)
+
+running 148 tests
+test column::tests::int_of_ranges ... ok
+test column::tests::push_get_set_remove ... ok
+test column::tests::strings ... ok
+test datetime::cal::tests::weekdays ... ok
+test column::tests::slices_and_bulk ... ok
+test datetime::strftime::tests::offsets ... ok
+test datetime::strftime::tests::formats ... ok
+test datetime::strftime::tests::scan_rules ... ok
+test datetime::strptime::tests::backtracking_order ... ok
+test datetime::strptime::tests::basics ... ok
+test datetime::strptime::tests::optional_z_315 ... ok
+test datetime::strptime::tests::regex_name_order_is_stable_length_sort ... ok
+test datetime::strptime::tests::rejects ... ok
+test dtype::tests::buffer_formats_round_trip ... ok
+test dtype::tests::names_round_trip ... ok
+test dtype::tests::ranges ... ok
+test expr::kernels::tests::exact_int_float_comparison ... ok
+test expr::kernels::tests::float_semantics ... ok
+test expr::kernels::tests::float_to_int_conversion ... ok
+test expr::kernels::tests::int_floor_semantics ... ok
+test expr::kernels::tests::int_pow_and_shifts ... ok
+test expr::kernels::tests::true_division_is_correctly_rounded ... ok
+test expr::kernels::tests::bounds_match_checked_ops ... ok
+test float_repr::tests::layout_rules ... ok
+test expr::text::tests::ints ... ok
+test float_repr::tests::longest_fits ... ok
+test expr::text::tests::reprs ... ok
+test expr::text::tests::floats ... ok
+test index::tests::candidates_lists_all_equal_hashes ... ok
+test index::tests::compaction_remaps_positions ... ok
+test index::tests::empty_index ... ok
+test index::tests::find_or_push_and_lazy_tombstones ... ok
+test index::tests::dummy_slots_are_reused_and_skipped ... ok
+test index::tests::colliding_hashes_with_closures ... ok
+test index::tests::identity_hashes_probe_like_cpython ... ok
+test index::tests::key_index_insert_with_builds_lazily ... ok
+test index::tests::key_index_str_borrow_lookup ... ok
+test index::tests::ordered_map_basics ... ok
+test index::tests::push_find_remove_tombstones ... ok
+test index::tests::remap_collect_returns_removed ... ok
+test index::tests::candidates_are_distinct_even_when_the_probe_sequence_revisits_a_slot ... ok
+test index::tests::replace_at_swaps_live_keys_only ... ok
+test expr::tests::float_power_errors ... ok
+test expr::tests::bools_and_logic ... ok
+test expr::tests::arithmetic_and_masks ... ok
+test expr::tests::first_failing_element_wins ... ok
+test expr::tests::casts ... ok
+test expr::tests::strings ... ok
+test expr::tests::python_int_overflow_falls_back ... ok
+test expr::tests::types_render_and_limits ... ok
+test expr::tests::exact_comparisons ... ok
+test expr::tests::python_division_semantics ... ok
+test expr::tests::shared_subexpressions_are_planned_once_and_size_is_bounded ... ok
+test expr::tests::fixed_width_semantics ... ok
+test index::tests::table_sizes_follow_cpython ... ok
+test expr::tests::fixed_width_shifts_drop_bits_and_check_the_count ... ok
+test index::tests::repeated_small_reservations_stay_cheap ... ok
+test index::tests::truncate_and_rehash ... ok
+test index::tests::try_find_gives_up_or_finds ... ok
+test json::scan::tests::strings_like_cpython ... ok
+test json::scan::tests::whitespace ... ok
+test json::escape::tests::matches_cpython ... ok
+test json::escape::tests::text_widens ... ok
+test json::itoa::tests::edges ... ok
+test json::scan::tests::numbers_like_cpython ... ok
+test kernels::tests::int_float_ordering_is_exact ... ok
+test kernels::tests::int_float_equality_is_exact ... ok
+test float_repr::tests::matches_cpython_table ... ok
+test json::scan::tests::special_scan_matches_naive ... ok
+test kernels::tests::search_edge_cases ... ok
+test kernels::tests::min_max_edge_cases ... ok
+test kernels::tests::list_ordering_edge_cases ... ok
+test json::itoa::tests::same_as_std ... ok
+test logging::tests::declines ... ok
+test logging::tests::numeric_directives ... ok
+test index::tests::heavy_churn_keeps_order_and_memory_bounded ... ok
+test kernels::tests::sum_edge_cases ... ok
+test logging::tests::msecs ... ok
+test logging::tests::parse ... ok
+test logging::tests::paths ... ok
+test logging::tests::render_matches_python ... ok
+test logging::tests::stack_buffers ... ok
+test paths::posix::tests::components ... ok
+test paths::glob::tests::basics ... ok
+test paths::posix::tests::join_cases ... ok
+test kernels::tests::sort_edge_cases ... ok
+test paths::posix::tests::normpath_cases ... ok
+test index::tests::widths_grow_with_positions ... ok
+test paths::posix::tests::split_and_ext ... ok
+test pyfmt::tests::f32_layout_rules ... ok
+test pyhash::tests::floats_match_cpython ... ok
+test pyfmt::tests::layout_rules ... ok
+test pyhash::tests::frexp_matches_c ... ok
+test expr::tests::large_columns_split_across_workers ... ok
+test pyfmt::tests::round_trips ... ok
+test pyhash::tests::pointer_hash_rotates ... ok
+test random::tests::getrandbits128_matches_word_order ... ok
+test pyfmt::tests::f32_round_trips ... ok
+test random::tests::getrandbits_word_order ... ok
+test pyhash::tests::integral_floats_hash_like_ints ... ok
+test random::tests::randbelow_rejects_like_cpython ... ok
+test pyhash::tests::ints_match_cpython ... ok
+test random::tests::reference_outputs ... ok
+test pyhash::tests::float_hash_is_odd_and_never_minus_one ... ok
+test random::tests::random_is_res53 ... ok
+test slice::tests::assign_contiguous_grows_and_inserts ... ok
+test pyhash::tests::ints_agree_across_widths ... ok
+test kernels::tests::scalar_comparisons_match_reference ... ok
+test slice::tests::assign_extended_checks_length ... ok
+test slice::tests::python_examples ... ok
+test pyfmt::tests::normal_values_round_trip ... ok
+test slice::tests::indices ... ok
+test pyfmt::tests::matches_cpython_table ... ok
+test stats::tests::accumulates_exactly ... ok
+test stats::tests::decompose_round_trips ... ok
+test textwrap::tests::em_dashes_and_hyphens ... ok
+test textwrap::tests::doc_example ... ok
+test urlparse::tests::split_basic ... ok
+test urlparse::tests::quote_matches_doc ... ok
+test urlparse::tests::unquote_rules ... ok
+test textwrap::tests::dedent_and_indent ... ok
+test textwrap::tests::wrap_basics ... ok
+test slice::tests::delete_matches_model ... ok
+test slice::tests::take_matches_model ... ok
+test kernels::tests::comparisons_match_reference ... ok
+test datetime::strptime::tests::numeric_matchers_match_regex_tables ... ok
+test kernels::tests::find_and_count_match_reference ... ok
+test datetime::cal::tests::ordinal_round_trip ... ok
+test random::tests::sample_setsize_matches_float_formula ... ok
+test kernels::tests::min_max_match_reference ... ok
+test kernels::tests::sum_matches_reference ... ok
+test kernels::tests::sort_matches_stable_reference ... ok
+test kernels::tests::float_sum_matches_cpython_port ... ok
+test index::tests::str_keys_match_model ... ok
+test float_repr::tests::round_trips ... ok
+test float_repr::tests::agrees_with_pyfmt ... ok
+test float_repr::tests::agrees_with_pyfmt_near_layout_cutoffs ... ok
+test kernels::tests::large_float_kernels ... ok
+test expr::tests::fixed_u8_match_reference ... ok
+test expr::tests::fixed_i8_match_reference ... ok
+test expr::tests::python_bools_match_reference ... ok
+test index::tests::raw_index_with_forced_collisions ... ok
+test expr::tests::strings_match_reference ... ok
+test index::tests::ordered_map_matches_model ... ok
+test kernels::tests::large_integer_kernels ... ok
+test expr::tests::fixed_i64_match_reference ... ok
+test expr::tests::python_ints_match_reference ... ok
+test expr::tests::python_floats_match_reference ... ok
+
+test result: ok. 148 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.53s
+
+     Running tests/float_repr_cpython.rs (/work/w2p0/target/rust-ci/debug/deps/float_repr_cpython-122301cef90c5c67)
+
+running 1 test
+test matches_cpython_repr ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.25s
+
+     Running tests/kernels_cpython.rs (/work/w2p0/target/rust-ci/debug/deps/kernels_cpython-1cecf3e86d8f07a4)
+
+running 4 tests
+test list_comparison_matches_cpython ... ok
+test sum_matches_cpython ... ok
+test min_max_match_cpython ... ok
+test sort_matches_cpython ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+     Running unittests src/lib.rs (/work/w2p0/target/rust-ci/debug/deps/rustique_py-d8e771cfa03e6905)
+
+running 17 tests
+test builtins::tests::compensated_sum_matches_cpython_rules ... ok
+test builtins::tests::int_float_comparison_is_exact ... ok
+test capi::tests::dtype_codes_are_stable ... ok
+test capi::tests::null_objects_need_no_interpreter ... ok
+test capi::tests::table_describes_itself ... ok
+test dict::keys::tests::int_hash_matches_cpython_rules ... ok
+test dict::keys::tests::mix_is_invertible ... ok
+test dict::keys::tests::integral_floats ... ok
+test dict::keys::tests::native_value_equality_follows_python ... ok
+test dict::keys::tests::preimages_invert_the_hash ... ok
+test set::tests::frozenset_hash_matches_cpython ... ok
+test set::tests::native_kernels_follow_set_semantics ... ok
+test set::tests::scrambled_visits_every_position_once ... ok
+test list::tests::from_temporary_list_steals_only_unique_lists ... ok
+test sync::tests::writers_do_not_starve_a_reader ... ok
+test sync::tests::readers_do_not_starve_a_writer ... ok
+test sync::tests::waiting_writer_leaves_the_lock_alone ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+   Doc-tests rustique_api
+
+running 1 test
+test crates/rustique-api/src/lib.rs - (line 13) - compile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.15s; merged doctests compilation took 0.15s
+   Doc-tests rustique_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rustique_py
+
+running 4 tests
+test crates/rustique-py/src/accel/check.rs - accel::check (line 12) ... ignored
+test crates/rustique-py/src/accel/guard.rs - accel::guard::OverrideCache (line 1083) ... ignored
+test crates/rustique-py/src/accel/mod.rs - accel (line 19) ... ignored
+test crates/rustique-py/src/accel/spec.rs - accel::spec::TargetSpec (line 23) ... ignored
+
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.10s; merged doctests compilation took 0.09s

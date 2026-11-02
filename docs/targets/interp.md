@@ -7,6 +7,16 @@ is **M** (measured; tool named) or **I** (inferred; source named).
 
 # The `interp` tier: opcode-handler overrides
 
+**Status at the end of wave 2 (lead's decision, DECISIONS §10):** the tier ships **opt-in** as
+it is. Every measured cell is ≤ 1.05, and every whole run is ≤ 1.0043, inside the round's T1
+bar (no workload > 1.02). Its own **default-eligibility gate (every whole run ≤ 1.00) is not
+met**: pycodestyle_stdlib 1.0043 is genuine copy cost (its attribute group pays by the rule,
+so our copies of the specialized `LOAD_ATTR` forms stay), and four workloads keep unattributed
+residuals of 0.07–0.25% (task_planner, pandas_etl, tz_events, billing_engine; §4.2). First items
+for the next wave: (1) never swap the specialized family members on programs without
+polymorphic sites; (2) a multi-run measurement protocol for whole-run instruction counts
+(single runs move by 0.07–0.3% with Rustique merely imported or with the harness).
+
 An opt-in tier (`TargetSpec.opt_in = Some("interp")`, group `interp`): turned on with
 `RUSTIQUE_TIERS=interp` (with `RUSTIQUE=1` or `rustique.enable()`) or
 `_accel.enable(tiers=["interp"])`; never on by default. Sites are accel's opcode-handler kind
@@ -158,17 +168,20 @@ Each group counts executions of its overridden path and fast-path hits (attribut
 fills excluded) and decides twice: **early**, after the first 65,536 executions, when its hits
 are below a quarter of break-even (its cost is visible already); **final**, after 16 windows
 (~1M executions), at break-even, a horizon long enough to average out start-up phases for
-borderline groups. Break-even ratios: attribute family 5, `object.__setattr__` 64, keyword
-instantiation 64, `isinstance` 4 (a hit saves 27–490 Ir, a fallback through ABCs, hooks or
-unions costs +12–45 Ir). A
+borderline groups, with every cache fill debited 16 times (fills that keep coming — types
+created or modified per run, conflicting entries — are a cost, not a warm-up). Break-even
+ratios: attribute family 5, `object.__setattr__` 64, keyword instantiation 64, `isinstance` 4.
+`isinstance` counts only paths that save or cost: negative and metaclass answers are credited,
+the slow `__class__` lookup and fallbacks (ABCs, hooks, unions) debited; exact and plain
+positive answers are not counted (no counter on the cheapest paths). A
 suspension asks the registry (`Counters::request_suspend`), which restores the core's handlers
 for the process and reports the target `suspended`; a later `enable()` reinstalls it and the
 group counts afresh. The early decision fixed the T1 misses of the first measurement
 (task_planner 1.0008, email_mime 1.0023, billing_engine 1.0013, pandas_etl 1.0016 with the
 tier alone): groups that never hit there (no frozen dataclasses, few keyword
 instantiations) kept their handler copies until ~1M executions. `_accel._t_interp.info()["groups"]` shows executions, hits, fills and
-`suspended`; the registry records the suspension in `status()` once accel's merge B handles
-every site kind. `rustique.stats()` shows no per-call counts for these targets (the handlers
+`suspended`; the registry records the suspension in `status()` (`"suspended": "fallback"`).
+`rustique.stats()` shows no per-call counts for these targets (the handlers
 count in C, always on, for the suspension rule): reporting tools read
 `_accel._t_interp.info()`.
 
@@ -217,19 +230,20 @@ polymorphic site (lead's ruling, 2026-11-02).
 ## 4. Measurements
 
 ### 4.1 Cells (M, `benches/interp/cells_cg.py`, callgrind Ir per operation, fresh process per
-cell, 3.15.1, PGO build; "per 4": a loop over 4 objects of 3 types)
+cell, 3.15.1, PGO build of the final code (isinstance rows) and of `0d73921` (others, unchanged
+within ±1%); "per 4": a loop over 4 objects of 3 types)
 
 | override | cell | plain | tier | ratio |
 |---|---|---:|---:|---:|
-| isinstance | exact type | 178 | 151 | 0.848 |
-| | subclass, positive | 271 | 266 | 0.981 |
-| | **negative, plain class** | 354 | 219 | **0.619** |
-| | negative, int instance | 358 | 221 | 0.618 |
-| | **metaclass, negative** | 727 | 236 | **0.325** |
-| | tuple `(Other, A)` | 630 | 495 | 0.786 |
-| | `__getattr__` class, negative (fallback) | 529 | 541 | 1.022 |
-| | ABCMeta negative (fallback) | 1665 | 1710 | 1.027 |
-| | union `int \| str` (fallback) | 3171 | 3217 | 1.014 |
+| isinstance | exact type | 178 | 161 | 0.904 |
+| | subclass, positive | 271 | 263 | 0.970 |
+| | **negative, plain class** | 354 | 221 | **0.624** |
+| | negative, int instance | 358 | 223 | 0.623 |
+| | **metaclass, negative** | 727 | 240 | **0.330** |
+| | tuple `(Other, A)` | 630 | 496 | 0.787 |
+| | `__getattr__` class, negative (fallback) | 529 | 539 | 1.019 |
+| | ABCMeta negative (fallback) | 1665 | 1713 | 1.029 |
+| | union `int \| str` (fallback) | 3171 | 3213 | 1.013 |
 | attribute cache | **polymorphic `o.x`** (per 4) | 1068 | 888 | **0.831** |
 | | polymorphic `o.m()` (per 4) | 2316 | 2055 | 0.887 |
 | | **polymorphic inherited `__slots__`** (per 4) | 1114 | 839 | **0.754** |
@@ -260,7 +274,46 @@ descriptor 1.073, `dict.__setitem__` 1.056): the exported copies of `_PyObject_G
 and `_Py_VectorCall_StackRefSteal` that a swapped handler calls are laid out as cold code in the
 PBS binary (the core inlines them); `c/rq_inline.h` fixed both.
 
-WHOLE
+### 4.2 Whole runs
+
+M, `benches/interp/wl_cg.py`: callgrind, exact Ir of one steady-state `run()` after `setup()`
+and two warm-up runs, fresh process, `PYTHONHASHSEED=0`, 3.15.1. Families (geometric means):
+
+| family | tier alone | default groups | default + tier |
+|---|---:|---:|---:|
+| frameworks (6) | 0.977 | 0.960 | **0.939** (T5 ≤ 0.96: met) |
+| custom (10) | 0.945 | 0.988 | **0.930** (T5 ≤ 0.90: not met) |
+
+Best: falcon_api 0.817 (default + tier), report_engine 0.830, order_domain 0.864, sqlglot 0.876
+(tier alone), pytest_networkx 0.914, rules_engine 0.893. The other 47 workloads, tier alone:
+0.97–1.00 (rows in `/work/w2ws-interp/out/wlcg-rest2.txt` on the dev box).
+
+**The default-eligibility gate (whole run ≤ 1.00) is not met on 5 workloads** (the round's
+T1 bar, no workload > 1.02, is met: worst 1.0043), tier alone vs plain, final build:
+task_planner 1.0007, pandas_etl 1.0007, tz_events 1.0022, billing_engine 1.0025 (identical in 3
+repeats), pycodestyle_stdlib 1.0043 (earlier build). Attribution (`_accel._t_interp.info()`,
+callgrind per function):
+- by the measured run every group except isinstance (and kwinit in billing, 50 executions)
+  has suspended itself and the handlers are verifiably restored; the remaining differences
+  are in CPython's own generic method lookups and dict lookups (`_PyObject_GetMethodStackRef`,
+  `_Py_dict_lookup_threadsafe_stackref`) and allocator calls;
+- the same functions move by 0.07–0.3% when Rustique is only imported (`noop`) or when the
+  harness changes (tz_events: tier/plain 1.0022 with `wl_cg.py`, 1.00015 with a per-function
+  harness; tier/noop 1.0008): single-run instruction counts of these workloads are not
+  resolvable at the 0.1% level, and the effect that remains after suspension (state left by
+  the active phase, or Rustique's own footprint) is not yet attributed;
+- pycodestyle keeps its attribute group (59% hits, few fills): its 0.43% is the cost of the
+  family copies there and needs a different rule (e.g. never swapping the specialized members
+  on programs without polymorphic sites).
+
+**Digests.** Every workload gives the same digest plain and with the tier in normal runs.
+Under valgrind, sphinx_autodoc's digest differs between plain and tier runs, and from normal
+runs: Sphinx strips memory addresses from default-value reprs only when they have 8–16 hex
+digits (`sphinx.util.inspect`), and valgrind's heap addresses have 7 (`<function
+IS_CHARACTER_JUNK at 0x5a24670>` in `difflib.html`, `re.Pattern ... at 0x5126f60` in
+`json.html`), so the rendered address, which differs with any change in allocation, enters
+the pages (M, `valgrind --tool=none` dumps diffed; the same pages are identical plain vs tier
+outside valgrind, 2 runs each).
 
 
 ## 5. Conformance and gates
@@ -282,6 +335,12 @@ without swapping anything (the harness's own footprint), `tier` also enables the
 | 3.15.2 | noop / tier | 47,274 | 65 / 65 | 2,998 / 3,000 | 23 / 23 | 3,813 / 3,817 | 0 file differences; per-test: `test_os` `test_closerange` ×2 skipped with the tier (it skips when no range of free file descriptors is available; on 3.15.2t it went the other way) |
 | 3.15.2t | noop / tier | 47,323 | 66 / 65 | 2,968 / 2,966 | 24 / 23 | 3,819 / 3,812 | 0 failing only with the tier; per-test: the same two `test_closerange` (skipped in noop) and `test_multiprocessing_fork` `test_put` (failed in noop) |
 | 3.15.1, `PYTHON_JIT=1` | 20 files (isinstance, descr, class, dataclasses, functools, inspect, opcache, monitoring, sys_settrace, generators, coroutines, typing, enum, abc, property, super, types, unittest, json, ast) | 5,551 | 49 | 71 | 3 | 123 | **0 differences** (5,510 outcomes) |
+
+Final build (`0d73921`, wave2 with this tier): 3.15.1t tier vs noop 0 differences (47,091
+outcomes, 3,803 processes); 3.15.1: 2 differences, `test_os` `TimerfdTests.test_timerfd_interval`
+and `test_timerfd_select` failed with the tier at load average ~60 on the shared box; both pass
+with the tier 3 times out of 3 when rerun (and with the harness alone): timer-interval tests
+under load, not the tier.
 
 The plain failures are environmental (python-build-standalone ships no `_testcapi`, no `Lib/test`
 of its own, no `idlelib.idle_test`; perf; `-I` subprocesses); the noop harness adds three
