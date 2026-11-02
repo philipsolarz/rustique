@@ -26,8 +26,9 @@ EXPECTED = ("version", "build", "jit", "platform", "symbol")
 PRELUDE = """
 import gc, json, sys, threading, time
 import rustique
+ONLY = __import__("os").environ.get("RQ_GC_ONLY", "gc").split(",")
 T = rustique._accel._t_gc
-rustique.enable(only=["gc"])
+rustique.enable(only=ONLY)
 _st = {t["name"]: t for t in rustique.status()["targets"]}["gc.adaptive"]
 if _st["state"] != "installed":
     print(json.dumps({"refused": _st.get("refusal"), "reason": _st["reason"]}))
@@ -59,7 +60,7 @@ def work(seconds, seed, base=60_000, cyclic=True):
 
 def run(body: str) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
-    env["RUSTIQUE_TIERS"] = "gc"
+    env["RUSTIQUE_TIERS"] = os.environ.get("RQ_GC_TIERS", "gc")
     r = subprocess.run([sys.executable, "-c", PRELUDE + textwrap.dedent(body)], capture_output=True, text=True,
                        env=env, timeout=600)
     if r.returncode == SKIP:
@@ -148,7 +149,7 @@ def test_enable_disable_under_load():
         for k in range(40):
             rustique.disable()
             time.sleep(0.01)
-            rustique.enable(only=["gc"])
+            rustique.enable(only=ONLY)
             st = {t["name"]: t for t in rustique.status()["targets"]}["gc.adaptive"]
             states.append(st["state"])
             time.sleep(0.01)

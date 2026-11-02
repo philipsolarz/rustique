@@ -3,6 +3,7 @@
 Every test runs its program in a fresh interpreter (the tier acts on the process-wide
 collector), with the tier requested through `RUSTIQUE_TIERS=gc` and enabled alone
 (`rustique.enable(only=["gc"])`) before the program runs, as a launch-time switch would.
+`RQ_GC_TIERS=gc,interp RQ_GC_ONLY=gc,interp` runs the same tests with the `interp` tier on too.
 Differential tests run the same program plain and with the tier and compare the output.
 
 Ported from the prototype's `benches/runtime/test_gcadapt.py` (a1 configuration round-trip,
@@ -30,13 +31,14 @@ EXPECTED = ("version", "build", "jit", "platform", "symbol")
 PRELUDE = """
 import gc, json, os, sys
 import rustique
+ONLY = __import__("os").environ.get("RQ_GC_ONLY", "gc").split(",")
 _accel = rustique._accel
 T = _accel._t_gc
 PARAMS = {params!r}
 if PARAMS:
     T.set_params(**PARAMS)
 {before}
-rustique.enable(only=["gc"])
+rustique.enable(only=ONLY)
 _st = {{t["name"]: t for t in rustique.status()["targets"]}}["gc.adaptive"]
 if _st["state"] != "installed":
     print(json.dumps({{"refused": _st.get("refusal"), "reason": _st["reason"]}}))
@@ -89,7 +91,7 @@ def _env(tier: bool) -> dict:
     env.pop("RUSTIQUE_ONLY", None)
     env.pop("RUSTIQUE_EXCLUDE", None)
     if tier:
-        env["RUSTIQUE_TIERS"] = "gc"
+        env["RUSTIQUE_TIERS"] = os.environ.get("RQ_GC_TIERS", "gc")
     else:
         env.pop("RUSTIQUE_TIERS", None)
     return env
@@ -332,7 +334,7 @@ def test_disable_restores_and_reenable_rearms():
         assert hits == ["start", "stop"], hits
         gc.set_threshold(2000, 10, 10)           # plain CPython function again: no step-aside
         assert R()["stepped_aside"] is None
-        rustique.enable(only=["gc"])
+        rustique.enable(only=ONLY)
         rep = R()
         assert rep["armed"] and rep["k"] == 0 and rep["forwarding"], rep
         assert rep["callbacks_ptr"] == rep["private_list"] and rep["program_list"] == id(cb), rep
@@ -403,7 +405,7 @@ def test_disable_from_inside_a_callback():
         assert order == [("a", "start"), ("b", "start"), ("a", "stop"), ("b", "stop")] * 2, order
         rep = R()
         assert not rep["armed"] and not rep["dirty"] and rep["forwarding"], rep
-        rustique.enable(only=["gc"])
+        rustique.enable(only=ONLY)
         rustique.disable()
         rep = R()
         assert not rep["forwarding"] and rep["callbacks_ptr"] == id(gc.callbacks), rep
@@ -412,11 +414,12 @@ def test_disable_from_inside_a_callback():
 
 def test_installs_without_importing_gc():
     env = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
-    env["RUSTIQUE_TIERS"] = "gc"
+    env["RUSTIQUE_TIERS"] = os.environ.get("RQ_GC_TIERS", "gc")
     src = textwrap.dedent("""
         import sys, json
         import rustique
-        rustique.enable(only=["gc"])
+        ONLY = __import__("os").environ.get("RQ_GC_ONLY", "gc").split(",")
+        rustique.enable(only=ONLY)
         st = {t["name"]: t for t in rustique.status()["targets"]}["gc.adaptive"]
         if st["state"] != "installed":
             print(json.dumps({"refused": st.get("refusal"), "reason": st["reason"]})); sys.exit(77)

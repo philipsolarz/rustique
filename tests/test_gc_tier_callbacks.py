@@ -48,10 +48,11 @@ gc.collect()
 
 TIER = """
 import rustique
+ONLY = __import__("os").environ.get("RQ_GC_ONLY", "gc").split(",")
 T = rustique._accel._t_gc
 if {armed}:
     T.set_params(step_aside=False)
-rustique.enable(only=["gc"])
+rustique.enable(only=ONLY)
 _st = {{t["name"]: t for t in rustique.status()["targets"]}}["gc.adaptive"]
 if _st["state"] != "installed":
     print(json.dumps({{"refused": _st.get("refusal"), "reason": _st["reason"]}}))
@@ -67,7 +68,7 @@ print(json.dumps(LOG, default=repr))
 def _env(tier: bool) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
     if tier:
-        env["RUSTIQUE_TIERS"] = "gc"
+        env["RUSTIQUE_TIERS"] = os.environ.get("RQ_GC_TIERS", "gc")
     return env
 
 

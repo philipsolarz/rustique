@@ -256,10 +256,13 @@ CPython's own test modules, plain vs with the tier enabled before `test` is impo
 test id's outcome compared (M, dev box, `benches/runtime/conformance.sh`: 3 parallel groups
 per build, `CPYTHON_SRC` of the running patch release):
 
-- **standard** (`tests/conformance/run_target_suites.py --targets gc`, `RUSTIQUE_TIERS=gc`):
-  the modules that tune the GC (`test_gc`, `test_weakref`, `test_finalization` disable it in
-  setUp, `test_generators` sets a threshold) make the policy step aside; the forwarder serves
-  every callback test;
+- **standard** (`benches/runtime/policy_suites.py --policy tier`: `RUSTIQUE_TIERS=gc` +
+  `rustique.enable(only=["gc"])` before `test` is imported — the gate of
+  `tests/conformance/run_target_suites.py`, whose environment-free `_takeover.enable` cannot
+  request a tier): the modules that tune the GC make the policy step aside where expected
+  (`gc.disable` in `test_gc`, `test_weakref`, `test_finalization`; `gc.set_threshold` in
+  `test_generators`; `gc.freeze` in `test_free_threading.test_gc`), the forwarder serves every
+  callback test;
 - **armed** (`benches/runtime/policy_suites.py --policy tier:step_aside=0`): the policy is kept
   acting through the modules' own GC tuning (research switch), so deferral, re-inflation and
   the forwarder all run under `test_gc` (incl. `GCCallbackTests`), `test_weakref`,
@@ -300,13 +303,13 @@ cell | 3.15.1 plain → tier | × | 3.15.1t plain → tier | ×
 `gc.set_debug(0)` | 247 → 257 | 1.040 | 256 → 266 | 1.038
 `gc.freeze(); gc.unfreeze()` | 565 → 585 | 1.035 | 1,351,599 → 1,367,355 | 1.012
 `gc.get_threshold()`, `gc.isenabled()` (not hooked) | 858, 246 | 1.000 | 867, 254 | 1.000
-the first tuning call (steps aside, one-time) | 3,561 → 3,602 | 1.012 | PENDING-FT1 |
-`gc.collect()`, bare interpreter heap | 4,633,539 → 4,666,000 | 1.007 | PENDING-FT2 |
-`gc.collect()`, 100 k-object heap | 27,183,803 → 27,216,189 | 1.001 | PENDING-FT3 |
-automatic young collection (`[[] for _ in range(2001)]`, 100 k heap) | 897,016 → 884,757 | 0.986 | PENDING-FT4 |
-`gc.collect(0)` + one program callback | 10,555 → 11,335 | **1.074** | PENDING-FT5 |
-`gc.collect(0)`, empty young generation, no callback | 1,257 → 10,539 | **8.38** | PENDING-FT6 |
-install: `enable(["gc"], tiers=["gc"])` vs the same call without the tier | 28,187 → 64,277 | +36 k | PENDING-FT7 |
+the first tuning call (steps aside, one-time) | 3,561 → 3,602 | 1.012 | 4,134 → 4,422 | 1.070 (once) |
+`gc.collect()`, bare interpreter heap | 4,633,539 → 4,666,000 | 1.007 | 4,915,101 → 4,962,240 | 1.010 |
+`gc.collect()`, 100 k-object heap | 27,183,803 → 27,216,189 | 1.001 | 29,944,612 → 29,976,485 | 1.001 |
+automatic young collection (`[[] for _ in range(2001)]`, 100 k heap) | 897,016 → 884,757 | 0.986 | 908,489 → 908,667 | 1.000 |
+`gc.collect(0)` + one program callback | 10,555 → 11,335 | **1.074** | 4,930,913 → 4,959,907 | 1.006 |
+`gc.collect(0)`, empty young generation, no callback | 1,257 → 10,539 | **8.38** | 4,915,209 → 4,962,347 | 1.010 |
+install: `enable(["gc"], tiers=["gc"])` vs the same call without the tier | 28,187 → 64,277 | +36 k | 29,120 → 63,731 | +35 k |
 
 - **Per collection the tier costs ~9.3 k instructions (≈ 2–3 µs), of which ~8.5 k is CPython's
   own work**: `invoke_gc_callback` builds the `info` dict (`Py_BuildValue` of five keys, twice per
@@ -314,9 +317,11 @@ install: `enable(["gc"], tiers=["gc"])` vs the same call without the tier | 28,1
   observer, the policy and the forwarder are the remaining ~0.8 k (M: callgrind function profile,
   1,000 `gc.collect(0)`). Against a collection that examines objects this is ≤ 1%: an automatic
   young collection (≈ 2,000 objects) or any full collection (≥ 30 k objects in a bare
-  interpreter) is 1.00–1.01×. Two cells exceed 1.05: an explicit `gc.collect(0)`/`(1)` on an empty
-  generation (8.4×: the cheapest collection there is, 1.3 k instructions) and the same with one
-  program callback (1.07×, the program's own callback already pays the `info` dict). The
+  interpreter) is 1.00–1.01×. Two GIL cells exceed 1.05: an explicit `gc.collect(0)`/`(1)` on an
+  empty generation (8.4×: the cheapest collection there is, 1.3 k instructions) and the same with
+  one program callback (1.07×, the program's own callback already pays the `info` dict). On the
+  free-threaded build every collection walks the heap (≥ 4.9 M instructions in a bare
+  interpreter), so the same cells are 1.006–1.010. The
   prototype's `gc.callbacks` entry pays the same `info` dict plus a Python call. No layout of
   this mechanism avoids it: CPython offers no other per-collection hook.
 - Hooked calls: +10 instructions in steady state (one relaxed load and the indirect call),
@@ -339,12 +344,35 @@ Tables: `gctable.py scoreboard DIR --base default`, `policyrows.py DIR --policy 
 ## 9. Versions and files
 
 Validated: 3.14 and 3.15, GIL and free-threaded (layout tables in `layout.rs`, fingerprints of
-the six hooked functions identical on all four primary builds). Other minors, pre-releases and
+the six hooked functions identical on all four primary builds); recorded on 3.15.2, 3.15.2t and
+3.14.10 (the tier installs, its 37 tests pass). Other minors, pre-releases and
 debug builds refuse (registry gate). Tests: `tests/test_gc_tier.py` (mechanics, a1–a3, d),
 `tests/test_gc_tier_callbacks.py` (forwarder, differential + Hypothesis),
 `tests/test_gc_tier_threads.py` (allocating threads, callback mutation, step-aside races,
 enable/disable under load). Benchmarks and tools: `benches/runtime/` (`gcprobe.py`,
 `gcpolicy.py` policies `default`/`loaded`/`rustique`/`tier[:k=v]`, `gctable.py`,
-`policyrows.py`, `advtable.py`, `adv_tier.sh`, `tier_instr.py`, `gc_tier_cg.py`,
+`policyrows.py`, `t6table.py`, `advtable.py`, `adv_tier.sh`, `tier_instr.py`, `gc_tier_cg.py`,
 `conformance.sh`, `setup_tier.sh`, `run_quiet.sh`, `quiet_driver.sh`; the prototype
 `gcadapt.py` and its tests stay as the reference).
+
+## 10. Open issues and decisions for the lead
+
+1. **Default eligibility.** Both declared deviations that DECISIONS §10.3 says block default
+   status are gone (§3); what remains is the quiet-box confirmation (§8) and a ruling on the
+   mechanism itself: the tier writes two fields of CPython's internal collector state
+   (`long_lived_total`, `callbacks`), located through `_PyRuntime.debug_offsets` and checked
+   against the interpreter's own getters at install. That is a new kind of entry point (not an
+   ACCELERATION §1 site); it needs a DECISIONS entry before any default.
+2. **T6.** 0.87 on the > 10% GC workloads is out of reach for the decided rule (§5.2: dev-box
+   estimates 0.99 GIL / 0.97 t, instructions 0.996 / 0.989); "max pause ≤ the default's"
+   conflicts with any cap above 1.0 (measured ≤ 1.02 GIL, ≤ 1.07 t on that set).
+3. **Free-threaded cap 1.05** instead of the decided 1.1, to meet the RSS budget on the
+   adversarial suite (§1, §5.4); GC work 0.82 instead of 0.77 on the 65 workloads.
+4. **Fixed per-collection cost** (§7): ~9 k instructions per collection, mostly CPython's own
+   `info` dict; explicit collections of an empty generation are 8.4× on the GIL build (1.3 k →
+   10.5 k instructions), 1.07× with one program callback. Every collection that examines
+   objects is ≤ 1.01×.
+5. **Known limits** (not documented-API deviations): `importlib.reload(gc)` shows the
+   observer's private list in `gc.callbacks` until the next collection repairs it (§3); an
+   `enable()` that races with a running collection on a free-threaded build waits up to 0.2 s,
+   then refuses ("a garbage collection is running") until the next `enable()`.

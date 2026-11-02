@@ -200,6 +200,13 @@ fn tuned_at_install(l: &layout::Layout) -> Option<u8> {
 }
 
 fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    if cx.arming() {
+        // The policy acts from install on, not at a call of its sites (the hooks only hand
+        // control back): validated on first call it would stay passive until the program
+        // tunes the GC. A prepare that declares no site in arming mode is validated at once
+        // (registry `arm` → `activate`).
+        return Ok(());
+    }
     let l = layout::calibrate(py).map_err(layout_refusal)?;
     let table = gc_method_table(py, cx)?;
     validate(py, l, table)?;
