@@ -135,6 +135,8 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static DIRTY: AtomicBool = AtomicBool::new(false);
 /// CPython's `long_lived_total` as of its last write (−1: unknown).
 static REAL: AtomicIsize = AtomicIsize::new(-1);
+/// Research switch (`Params::step_aside`).
+static STEP_ASIDE: AtomicBool = AtomicBool::new(true);
 /// Why the policy stepped aside for good (0: it did not).
 static STEPPED: AtomicU8 = AtomicU8::new(0);
 /// `gc.set_threshold`'s method def and the hook installed there: the policy acts only while
@@ -227,11 +229,19 @@ pub(super) fn disarm() {
 
 /// The program tuned the GC: step aside for the rest of the process.
 pub(super) fn program_tuned(reason: u8) {
-    if !PARAMS.lock().map(|p| p.step_aside).unwrap_or(true) {
+    if !STEP_ASIDE.load(Ordering::Relaxed) {
         return;
     }
     let _ = STEPPED.compare_exchange(0, reason, Ordering::SeqCst, Ordering::SeqCst);
     disarm();
+}
+
+/// The hooks' fast test: is there a policy to hand control back from? (One relaxed load:
+/// once the policy stepped aside, or while it is passive, a hooked call costs CPython's
+/// function plus this.)
+#[inline(always)]
+pub(super) fn watching() -> bool {
+    ACTIVE.load(Ordering::Relaxed)
 }
 
 pub(super) fn stepped_aside() -> Option<&'static str> {
@@ -242,6 +252,7 @@ pub(super) fn stepped_aside() -> Option<&'static str> {
 }
 
 pub(super) fn set_params(p: Params) {
+    STEP_ASIDE.store(p.step_aside, Ordering::Relaxed);
     *PARAMS.lock().unwrap_or_else(|e| e.into_inner()) = p;
     rule().p = p;
 }

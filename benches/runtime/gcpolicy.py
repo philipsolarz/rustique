@@ -149,7 +149,8 @@ class Tier(Policy):
         import rustique
 
         r = rustique._accel._t_gc.report()
-        keep = ("k", "fulls", "deferred", "max_full", "history", "stepped_aside", "armed", "first_full", "params")
+        keep = ("active", "armed", "k", "fulls", "deferred", "max_full", "history", "stepped_aside", "first_full",
+                "params")
         return {k: r.get(k) for k in keep}
 
 

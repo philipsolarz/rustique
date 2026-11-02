@@ -81,7 +81,7 @@ macro_rules! hook {
             // SAFETY: the original of this site, with the caller's arguments.
             let r = unsafe { $orig.get()(m, a) };
             // SAFETY: attached thread (a C function called by CPython).
-            if !r.is_null() && unsafe { crate::accel::in_main_interpreter() } {
+            if !r.is_null() && policy::watching() && unsafe { crate::accel::in_main_interpreter() } {
                 policy::program_tuned($reason);
             }
             r
