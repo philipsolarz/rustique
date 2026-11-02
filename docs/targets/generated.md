@@ -100,9 +100,11 @@ rich_render, pylint_stdlib, strawberry_graphql, json_api, instructions per `run(
 ### 3.3 Free-threading
 
 The slot store is a compare-and-swap (`AtomicUsize` on the field): a concurrent reader sees
-either function, and both allocate identically. `on_disable` restores by compare-and-swap.
-The 8-thread rule (CPU per call at 8 threads, 3.15.1t): `F(1, 2)` in
-`benches/datamodel/ft_scaling.py` (final report).
+either function, and both allocate identically. `on_disable` (also run on a suspension,
+possibly inside a call: it only swaps pointers and drops weak references) restores by
+compare-and-swap. This wave the target is not validated on free-threaded builds: it
+depends on the dataclass `__init__` kernel, a dynamic site, and dynamic sites refuse there
+(every `PyFunction_SetVectorcall` stops the world; `docs/targets/datamodel.md` §5).
 
 ## 4. Proposed amendment to ACCELERATION §3.6 (for DECISIONS)
 
