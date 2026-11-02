@@ -30,7 +30,7 @@ EXPECTED = ("version", "build", "jit", "platform", "symbol")
 PRELUDE = """
 import gc, json, os, sys
 import rustique
-from rustique._rustique import _accel
+_accel = rustique._accel
 T = _accel._t_gc
 PARAMS = {params!r}
 if PARAMS:
@@ -50,12 +50,14 @@ class Leaf:
 def grow(n):  # long-lived, acyclic: full collections find nothing -> the policy backs off
     return [[Leaf(i) for i in range(4)] for _ in range(n // 5)]
 
-def steady(rounds=12, base=600_000, chunk=150_000):
-    # a large live heap, then long-lived temporaries that reach the old generation and die
-    # acyclically: full collections find nothing, the heap stays the same size
+def steady(rounds=8, base=200_000, peak=600_000):
+    # a live heap, then large acyclic structures that reach the old generation and are
+    # dropped: full collections find nothing; the heap returns below its peak (free-threaded
+    # build: deferral needs room under 1.1x the largest legitimate collection, since its
+    # trigger counts net allocations)
     keep = grow(base)
     for _ in range(rounds):
-        tmp = grow(chunk)
+        tmp = grow(peak)
         del tmp
     return keep
 
@@ -70,10 +72,10 @@ class Leaf:
     def __init__(self, a): self.a = a
 def grow(n):
     return [[Leaf(i) for i in range(4)] for _ in range(n // 5)]
-def steady(rounds=12, base=600_000, chunk=150_000):
+def steady(rounds=8, base=200_000, peak=600_000):
     keep = grow(base)
     for _ in range(rounds):
-        tmp = grow(chunk)
+        tmp = grow(peak)
         del tmp
     return keep
 class Cyc:
@@ -186,7 +188,7 @@ def test_reinflated_after_every_full_collection():
 
 def test_defers_full_collections():
     body = """
-        keep = steady(rounds=30)
+        keep = steady(rounds=20)
         print(gc.get_stats()[0 if {ft} else 2]["collections"])
     """.format(ft=FT)
     plain, tier = both(body)
@@ -325,7 +327,9 @@ def test_disable_restores_and_reenable_rearms():
         gc.callbacks.append(lambda p, i: hits.append(p))
         gc.collect(0)   # the next collection gives CPython its value back
         rep = R()
-        assert not rep["dirty"] and rep["long_lived_total"] == rep["real_total"], rep
+        assert not rep["dirty"], rep
+        if not rep["ft"]:   # (a free-threaded collection then writes its own new value)
+            assert rep["long_lived_total"] == rep["real_total"], rep
         assert hits == ["start", "stop"], hits   # the forwarder keeps forwarding
         gc.set_threshold(2000, 10, 10)           # plain CPython function again: no step-aside
         assert R()["stepped_aside"] is None
@@ -352,7 +356,7 @@ def test_exit_restores_the_program_list():
 
 def test_exit_hook_releases_everything():
     run("""
-        from rustique._rustique import _accel as A
+        A = rustique._accel
         keep = steady()
         cb = gc.callbacks
         A._exit_hook()
