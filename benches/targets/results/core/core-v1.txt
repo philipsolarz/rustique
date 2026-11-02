@@ -1,0 +1,14 @@
+asdict(Order, customer.id=UUID) [json_api]                                  162375     55387  0.341
+asdict(Order, customer.id=int)                                              132897     50072  0.377
+asdict(Customer with UUID)                                                   44129     11584  0.262
+deepcopy(UUID)                                                               27610      5223  0.189
+deepcopy([UUID, UUID])                                                       35014      6683  0.191
+deepcopy(UUID, memo={})                                                      27641      7432  0.269
+dumps(rec)                                                                   31115      6577  0.211
+dumps(rec, default=encode) [hook not needed]                                 36763      6727  0.183
+dumps(payload, default=str) [logging_service]                                27821      5430  0.195
+dumps(rec, cls=json.JSONEncoder)                                             36671      6775  0.185
+dumps(rec, default=encode, indent=2, sort_keys=True)                         49444     13477  0.273
+dumps(rec_dt, default=encode) [hook needed: restart]                         48364     37942  0.785
+dumps(rec_dt, cls=Enc) [subclass: fallback]                                  48408     37993  0.785
+dumps(rec_dt, default=encode, ensure_ascii=False, separators) [json_api]     49309     38842  0.788

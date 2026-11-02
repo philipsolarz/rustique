@@ -189,8 +189,11 @@ callgrind, Ir per call ratio enabled / plain, 3.15.1, `builtins` + `containers` 
 The other sort-family cells (`sort_cells.py family`, 90 cells: `reverse=True`, in-place
 `x[:].sort()` at n = 2/20/1000, 2-byte strings, long strings with a 9-byte shared prefix,
 tuples, sets, generators, `key=`, declines after the copy): see the workstream report for
-the maximum; the cells above 1.0 are the hand-offs (`x[:].sort()` of 2 strings 1.049: the
-check before CPython's sort; `key=` 1.018; tuples 1.004–1.007). `min`/`max`
+**max 1.049** (`x[:].sort()` of 2 strings: the check before CPython's sort). Above 1.0
+only: those hand-offs (1.046–1.049), long strings sharing a 9-byte prefix, presorted
+(1.012; 0.97–0.99 at n = 20/100), `key=` 1.018, tuples 1.004–1.007; raw outputs in
+`benches/targets/results/core/` (`family-v11.txt`, `family-str-v12.txt` after the last
+str change). `min`/`max`
 (`sort_cells.py minmax`, 133 cells: str/2-byte/long str at n = 1–1000 in three orders,
 int/float, two- and three-argument forms, `key=`, `default=`): **max 1.012** (`max(key=len)`,
 a fallback), every fast cell ≤ 0.90.
@@ -264,3 +267,35 @@ the loop around it; it is within the rule.)
 
 `sum`/`min`/`max`/`any`/`all` no longer recognise the retired `rustique.List`/`Set`/... types
 (DECISIONS §10.1); builtin containers keep their wave-1 behaviour.
+
+### Conformance (wave 2, `benches/targets/core_conformance.sh`, measured)
+
+Same outcome for every test id with and without the groups, all targets installed, on
+3.15.1, 3.15.1t, 3.14.9 and 3.14.9t: `test_list` (68 / 67 on 3.14 pass, 1 skip),
+`test_tuple` 38, `test_sort` 21, `test_builtin` (150 + 7 skip / 141 + 6 skip),
+`test_contains` 4; 0 differences (`benches/targets/results/core/conformance.log`, which
+also has the json/float, copy/dataclasses/uuid and set runs, all 0 differences).
+
+### Workloads (workstream `core`, all groups enabled, measured)
+
+Instructions per steady-state `run()`, enabled ÷ plain, dev box, `perf stat` over
+`run.py one -n 1 / -n 4` (`benches/targets/core_workloads.sh`); digests identical in every
+pair. Run-to-run noise on the loaded box: ±1–3% (isort measured 0.737 and 0.758). Wave-1
+code (w2-floors' Phase-1 table, same method) in the last column.
+
+| workload | 3.15.1 | 3.15.1t | wave 1 (3.15.1) |
+|---|---:|---:|---:|
+| `web/json_api` | **0.772** | 0.795 | 0.858 |
+| `web/logging_service` | **0.608** | 0.673 | 0.735 |
+| `data/csv_etl` | 0.591 | 0.609 | 0.591 |
+| `data/state_snapshot` | 0.568 | 0.583 | 0.566 |
+| `devtools/isort_stdlib` | 0.737–0.758 | 0.727 (wall 0.26: T7) | 0.734 |
+| `devtools/sqlglot_transpile` | 0.952 | 0.954 | 0.956 |
+| `data/xml_feeds` | 1.001 | | 0.999 |
+| custom family (10), geometric mean | 0.989 (0.919–1.005) | | |
+| threads family (5): compute_pool / http_server / pipeline_queue / request_pool / shared_cache | 0.956 / 0.897 / 0.551 / 0.585 / 0.610 | 0.967 / 0.906 / 0.573 / 0.615 / 0.674 | |
+
+Custom family per workload (3.15.1): di_plugins 0.996, ecs_arena 0.993, event_ledger 1.000,
+fulfilment_sim 0.997, mini_interp 1.000, order_domain 1.004, orm_mapper 0.980,
+report_engine 0.919, rules_engine 1.004, task_planner 1.005 (all within the box's noise of
+1.00 where above it; none of these reaches a changed kernel on a hot path).
