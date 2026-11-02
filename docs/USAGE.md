@@ -152,10 +152,16 @@ you set one). Output that differs between any two runs of a program is masked be
 comparing:
 
 - memory addresses (`0x7f…`);
-- pytest durations and `tmp_path` directories;
+- log timestamps (ISO 8601 date-times, `[02/Nov/2026:12:30:15]`) and local test servers' ports;
+- pytest durations, `tmp_path` directories and progress characters (each test's outcome is
+  compared on its own), and test ids that differ only in digits (a parametrization with
+  `now()`) when they pair up one to one;
 - `pytest-randomly` seeds.
 
-Mask more with `--ignore REGEX`, or compare byte for byte with `--no-normalize`.
+When only stdout or stderr differ, `diff` runs the plain side once more: a stream that also
+differs between two plain runs (a test server's thread writing between other output) is
+reported as *volatile* instead of as a difference. Mask more with `--ignore REGEX`, compare
+volatile streams anyway with `--strict-output`, or compare byte for byte with `--no-normalize`.
 
 ```
 $ python -m rustique diff -- pytest -q tests
@@ -276,8 +282,9 @@ python -m rustique [run] [--only G,..] [--exclude G,..] [--report] [--check | --
                          [--native PATTERN]... [--no-builtins] (script.py | -m module | -c command) [args...]
 python -m rustique status [--json]
 python -m rustique report [--json] [-o FILE] [--limit N] [--check] -- <command...>
-python -m rustique diff [--repeat N] [--ignore REGEX]... [--no-normalize] [--keep DIR]
+python -m rustique diff [--repeat N] [--ignore REGEX]... [--no-normalize] [--strict-output] [--keep DIR]
                         [--timeout S] [--quiet] [--check] -- <command...>
+python -m rustique estimate [--json] -- <command...>     # prototype: predicted speedup, per target
 ```
 
 `run` is the default subcommand. To run a script that is literally named `status`, write
