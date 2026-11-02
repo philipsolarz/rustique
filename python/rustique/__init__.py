@@ -34,10 +34,13 @@ PYTEST_DONT_REWRITE (pytest would warn that this package, imported at startup un
 
 # The extension: top-level `_rustique` in every installed layout (a release wheel's
 # extension itself, or the `_rustique.py` shim of the in-package layout); the
-# package-relative import is the last resort, for a tree without the shim.
+# package-relative import is the last resort, for a tree without the shim. Any other
+# ImportError (a refused subinterpreter, a broken build) propagates as it is.
 try:
     import _rustique
-except ImportError:
+except ModuleNotFoundError as e:
+    if e.name != "_rustique":
+        raise
     from rustique import _rustique
 
 __version__ = _rustique.__version__

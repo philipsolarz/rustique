@@ -72,6 +72,11 @@ pub struct Counters {
     pub suspend_requested: AtomicBool,
     /// Times the registry suspended the target for persistent fallback.
     pub suspensions: AtomicU64,
+    /// The target's sites hold its kernels (installed, validated, not suspended): set by
+    /// the registry. Dynamic sites check it per call and retire when it is false.
+    live: AtomicBool,
+    /// Dynamic sites installed and not yet retired (status `dynamic_sites`).
+    pub dynamic: AtomicU64,
 }
 
 fn set_bits(bits: u8, on: bool) {
@@ -124,7 +129,20 @@ impl Counters {
             floor: AtomicI32::new(-STREAK_LIMIT * FALLBACK_DEBIT as i32),
             suspend_requested: AtomicBool::new(false),
             suspensions: AtomicU64::new(0),
+            live: AtomicBool::new(false),
+            dynamic: AtomicU64::new(0),
         }
+    }
+
+    /// Whether the target is live (installed with its kernels in place): one relaxed load.
+    /// Kernels of dynamic sites retire their site when it is not (`accel::dynamic::retire`).
+    #[inline(always)]
+    pub fn live(&self) -> bool {
+        self.live.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_live(&self, on: bool) {
+        self.live.store(on, Ordering::Relaxed);
     }
 
     /// Set the score policy (the registry, from the installing target's spec; counters
@@ -200,8 +218,13 @@ impl Counters {
         }
     }
 
+    /// Ask the registry to suspend the target(s) using these counters (any site kind):
+    /// their sites get their originals back until the next `enable()`. Performed on this
+    /// thread when the registry is free (only pointer swaps happen: callable from a kernel or
+    /// handler about to fall back, attached, outside any watcher), else by the registry's
+    /// holder or a pending call. The net-benefit score calls it at its floor.
     #[cold]
-    fn request_suspend(&self) {
+    pub fn request_suspend(&self) {
         self.suspend_requested.store(true, Ordering::Release);
         super::registry::suspend_from_kernel();
     }
