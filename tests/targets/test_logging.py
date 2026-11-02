@@ -19,14 +19,18 @@ import time
 import types
 from unittest import mock
 
+import sysconfig
+
 import pytest
 
 from rustique import _rustique
 import rustique as rt
 
 A = _rustique._accel
+FT = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+# `Logger.level` is not installed on free-threaded builds (8-thread rule: docs/targets/logging.md §0)
 TARGETS = [
-    "logging.Logger.level",
+    *([] if FT else ["logging.Logger.level"]),
     "logging.Logger.findCaller",
     "logging.LogRecord.__init__",
     "logging.Formatter.formatTime",
@@ -102,7 +106,8 @@ def test_status_installed_with_sites():
     assert set(st) == set(TARGETS)
     for t in st.values():
         assert t["state"] == "installed", t
-    assert len(st["logging.Logger.level"]["sites"]) == 6
+    if not FT:
+        assert len(st["logging.Logger.level"]["sites"]) == 6
 
 
 def test_introspection_unchanged():
@@ -370,6 +375,7 @@ def make_logger(name, level=logging.INFO):
     return lg, h
 
 
+@pytest.mark.skipif(FT, reason='Logger.level is not installed on free-threaded builds')
 def test_disabled_calls_are_kernel_hits_and_enabled_calls_log():
     lg, h = make_logger("t.level")
     lg.isEnabledFor(10), lg.isEnabledFor(5)  # fill the level cache (a miss takes the lock: CPython's path)
@@ -990,6 +996,7 @@ def test_record_subclass_presetting_attributes_keeps_dict_order():
     assert a == b
 
 
+@pytest.mark.skipif(FT, reason='Logger.level is not installed on free-threaded builds')
 def test_level_target_steps_aside_when_enabled_calls_dominate():
     lg, h = make_logger("t.busy")
     lg.isEnabledFor(20)

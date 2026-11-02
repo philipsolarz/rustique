@@ -649,13 +649,17 @@ macro_rules! target {
 /// Net benefit (ACCELERATION §5.6, measured on `L.info("x %s", 5)` / `L.debug(...)`,
 /// 3.15.1): a disabled call saves ~500 Ir, an enabled one costs ~+800 Ir (kernel checks +
 /// vectorcall fallback): credit 5 / debit 7 keeps the target while ≥ ~58% of the calls
-/// are disabled ones.
+/// are disabled ones. Not on free-threaded builds (wave 2, DECISIONS §10.9): there the
+/// shadowing check of `isEnabledFor` (`_PyObject_GetMethod`) takes a reference to the
+/// shared function object on every call — CPython's specialized call does not — and at 8
+/// threads that cost 2–3× CPython's CPU per disabled call (`text_scaling.py`), for a gain of
+/// ~200 Ir at one thread.
 pub static LEVEL: TargetSpec = TargetSpec {
     name: "logging.Logger.level",
     group: "logging",
     module: Some("logging"),
     versions: VERSIONS,
-    free_threaded: true,
+    free_threaded: false,
     counters: &level::STATS,
     prepare: prepare_level,
     checkable: true,

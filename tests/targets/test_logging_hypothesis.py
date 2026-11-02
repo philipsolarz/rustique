@@ -28,7 +28,9 @@ A = _rustique._accel
 def logging_targets():
     A.disable(["logging"])
     rt.enable(only=["logging"])
-    assert len(A.installed(["logging"])) == 6
+    import sysconfig
+
+    assert len(A.installed(["logging"])) == (5 if sysconfig.get_config_var("Py_GIL_DISABLED") else 6)
     A.stats(True, True)
     yield
     A.stats(False, True)
@@ -232,7 +234,12 @@ def test_log_record_init(name, level, pathname, lineno, args, func, sinfo):
 def test_kernels_were_exercised():
     """The examples above reached every kernel's fast path (and its fallbacks)."""
     s = A.stats()
-    for name in ("logging.Logger.level", "logging.Logger.findCaller", "logging.LogRecord.__init__",
-                 "logging.Formatter.formatTime", "logging.Formatter.format"):
+    import sysconfig
+
+    names = ["logging.Logger.findCaller", "logging.LogRecord.__init__", "logging.Formatter.formatTime",
+             "logging.Formatter.format"]
+    if not sysconfig.get_config_var("Py_GIL_DISABLED"):
+        names.append("logging.Logger.level")  # not installed on free-threaded builds
+    for name in names:
         assert s[name]["hits"] > 50, (name, s[name])
         assert sum(s[name]["fallback"].values()) > 0, (name, s[name])
