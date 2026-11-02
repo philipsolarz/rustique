@@ -134,7 +134,24 @@ Python frames. Only the C stack differs (outside the contract, §5.8). GIL build
 cache holds `__init__` borrowed under the class's version tag, as the specializer's own init
 cache does; the free-threaded build refuses it (category `build`).
 
-### 2.5 Net-benefit suspension (ACCELERATION §5.6 per override group)
+### 2.5 Not shipped: `getattr` / `hasattr` (`targets/interp/getattr.rs`, `rq_getattr_fast`)
+
+Built and measured, not registered: `ml_meth` kernels (the existing site kind: fallback costs a few Ir) on `builtins.getattr` and
+`builtins.hasattr` that resolve through the attribute cache. `getattr(o, name)` is
+`PyObject_GetAttr`, `getattr(o, name, default)` and `hasattr(o, name)` are
+`PyObject_GetOptionalAttr`; for a type with `PyObject_GenericGetAttr` both are
+`_PyObject_GenericGetAttrWithDict` (suppress 0 or 1), whose resolution a hit replays. An
+attribute absent from the MRO and the instance is a hit only for the suppressing forms
+(CPython returns the default, or False, without creating the AttributeError). Everything
+else (other argument counts, non-str or non-immortal names, hooks, data descriptors, class
+owners, misses) calls the original with the unchanged arguments. Differential tests passed
+(Hypothesis, 200 examples, GIL and t), but the cells fail the never-slower rule (M, callgrind):
+hits gain little because `builtin_getattr` is already cheap around the lookup (`getattr(o, 'x')`
+0.962, polymorphic 0.970, `hasattr` 0.973), while fallbacks pay the probe plus a second
+dispatch (data descriptor 1.126, `__getattr__` 1.142, class owner 1.355). Next step if wanted:
+reject non-generic owners and negative entries before the probe in the kernel itself.
+
+### 2.6 Net-benefit suspension (ACCELERATION §5.6 per override group)
 
 Each group counts executions of its overridden path and fast-path hits. After 16 windows of
 65,536 executions (~1M) a group whose cumulative hits are below 1/ratio of its steady
@@ -170,6 +187,22 @@ every site kind.
   (`test_jit_process`). Decision: allowed (`jit_safe`), evidence §5.
 - **Native tools** (perf, gdb, py-spy native): swapped handlers appear as
   `_TAIL_CALL_<op>` of the Rustique extension; `_PyEval_EvalFrameDefault` stays on the stack.
+
+### 3.1 Caches beside accel's ClassCache
+
+accel's ClassCache (merge C) is the shared FT-safe per-class cache for Rust kernels. The
+interp caches are separate because they are probed inside generated C handlers on every
+generic `LOAD_ATTR`/`isinstance` execution, where a cross-language call (and the register
+saves a `preserve_none` caller does not do) would cost ~15–25 Ir, the whole gain of a
+polymorphic site (lead's ruling, 2026-11-02).
+
+| | interp attribute cache | interp isinstance facts | interp keyword-init cache | ClassCache (accel) |
+|---|---|---|---|---|
+| key | (type `tp_version_tag`, interned immortal name) | type `tp_version_tag` | class `tp_version_tag` | type version tag |
+| holds | kind, dict kind, shared-keys index; descriptor borrowed (GIL) or identity only (t); `type(descr)` + its tag | one bit | `__init__` borrowed (GIL only) | per accel |
+| invalidation | any change to the type or a base changes the tag (CPython's method-cache rule; tags never reused); the descriptor's type tag is re-checked on every hit; entries for dead tags are never matched | same | same, and the vectorcall is re-checked on every hit | same rule |
+| free-threading | seqlocked entries; references through `_PyType_LookupRef` between two acquire loads of the tag, `_Py_TryIncrefCompare` | one 64-bit word per entry | refused on t | FT-safe by construction (accel) |
+| interpreters | main only (`tstate->interp`) | main only | main only | per accel |
 
 ## 4. Measurements
 
@@ -214,4 +247,68 @@ inline-cache entries of generic `LOAD_ATTR` instructions: visible only through t
 
 ## Appendix A: proposed contract text (ACCELERATION §1/§3/§4/§5/§6)
 
-APPENDIX
+**§1 Site — a fourth kind, the opcode handler** (kind D): one entry of the core interpreter's
+tail-call dispatch table (`instruction_funcptr_handler_table`), replaced by a handler generated
+from the running patch release's own `Python/bytecodes.c` by that release's cases generator
+with a Rustique override file. Only in tail-calling builds whose (release, configuration, ELF
+build-id) is recorded (python-build-standalone). Handlers are process-global (every
+interpreter dispatches through the table).
+
+**§3 Install** (additions):
+- (a) A target of kind D declares table entries only on a recorded build: the release is
+  exactly `Py_Version`, the configuration matches, and the build-id of the object holding the
+  interpreter (found through the mapping of `PyEval_EvalCode`) is in the target's verified list,
+  which gives the table and per-handler addresses. Every entry the target may swap is compared
+  with the recorded core handler before the swap; any mismatch refuses (`conflict`); anything
+  else unrecorded refuses (`version`, `build`, `platform`).
+- (b) An install-time ABI self-test proves the calling convention in both directions (the
+  core's `NOP` handler tail-calls a probe through a private table) before the first swap.
+- (c) Never swapped: `INSTRUMENTED_*` opcodes, `ENTER_EXECUTOR`, `JUMP_BACKWARD*`,
+  `RESUME_CHECK_JIT`, `TRACE_RECORD`, labels. A build-time check proves no swapped handler can
+  reach tier 2 (`__attribute__((error))` on the JIT entry and the trace compiler).
+- (d) A generated handler names the core's dispatch and tracing tables (`DISPATCH_TABLE`,
+  `TRACING_DISPATCH_TABLE`) and keeps the core's `IS_PEP523_HOOKED`, so it re-dispatches and
+  traces exactly as the core's own handler.
+- (e) An override that must see the deopt traffic of specialized forms swaps the whole family
+  (deopts jump directly to the generic handler of the same file).
+- (f) Swaps are CAS on aligned pointers; `disable()` and exit restore the recorded originals;
+  handler code stays mapped for the life of the process.
+- (g) The extension must load on every CPython: every interpreter symbol a handler set
+  references is weak; non-exported functions are never called (their calling convention may
+  have been changed by LTO).
+- (h) One handler set per patch release, generated from that tag; overridden ops and copied
+  core helpers are pinned by hash (`overrides.lock`) and generation stops when CPython changed
+  one of them.
+
+**§4 Guard** (additions): an override decides its exact subset from the state CPython's own
+code reads (type version tags, descriptor kinds, dict kinds, the callable's identity), before
+anything observable. Caches are keyed by version tags (CPython's method-cache rule) and hold
+only per-main-interpreter facts; the interpreter comes from the handler's `tstate`
+(`tstate->interp == main`, else CPython's code). On free-threaded builds cache entries are
+single words or seqlocked, hold no dereferenced borrowed pointers, and obtain references with
+the primitives CPython's own generic path uses.
+
+**§5 Fallback** (additions):
+- Outside the fast path an override runs CPython's original op body, verbatim from
+  `bytecodes.c` (with core helpers the core inlines copied verbatim); it never re-dispatches.
+- Never slower: every cell ≤ 1.05, including each override's fallbacks and the specialized
+  forms of a swapped family; whole-run instructions ≤ 1.00 on every workload of the reference
+  set.
+- §5.5 (ruling 15) applies unchanged: an override calls user code only where CPython's C code
+  does, with no Python frame in between (a non-data descriptor's `tp_descr_get`,
+  `PyObject_GenericSetAttr`).
+- §5.5 extension (frame pushes): an override may push a Python frame inline instead of calling
+  through C only as an existing CPython specialized form pushes it for the same kind of callee
+  (keyword instantiation = `CALL_ALLOC_AND_ENTER_INIT` + `CALL_KW_PY`); only the C stack
+  differs (§5.8).
+- §5.6 per override group: executions debit, fast-path hits credit (cache fills excluded); one
+  decision after ~1M executions; below the group's ratio its original handlers are restored for
+  the process and `status()` reports `suspended`.
+
+**§6 Report**: sites are named `opcode <NAME>` (kind `opcode-handler`); per group executions,
+hits, cache fills and suspension (`_accel._t_interp.info()`).
+
+**§7 Definition of done** for kind D: CPython's full regression suite with the tier on in every
+process equals the same harness without it (per-test outcomes) on each verified build;
+Hypothesis differential suites for the overridden semantics; race tests (table writes under
+threads, enable/disable with frames inside the handlers); sys.monitoring/settrace untouched.

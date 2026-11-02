@@ -14,12 +14,11 @@
 //! - `interp.attr`: the LOAD_ATTR family (megamorphic attribute cache in the generic handler;
 //!   the specialized forms are verbatim copies so their deopts reach it);
 //! - `interp.setattr`: CALL_NON_PY_GENERAL (`object.__setattr__` direct);
-//! - `interp.kwinit`: CALL_KW_NON_PY (keyword instantiation pushed inline; GIL builds only);
-//! - `interp.getattr`, `interp.hasattr`: `ml_meth` kernels on the builtins that resolve
-//!   through the same attribute cache (`getattr.rs`).
+//! - `interp.kwinit`: CALL_KW_NON_PY (keyword instantiation pushed inline; GIL builds only).
 
 use std::sync::atomic::Ordering;
 
+#[allow(dead_code)]
 mod getattr;
 
 use pyo3::prelude::*;
@@ -186,7 +185,11 @@ pub static KWINIT: TargetSpec = TargetSpec {
     ..TargetSpec::DEFAULT
 };
 
-pub static TARGETS: &[&TargetSpec] = &[&ISINSTANCE, &ATTR, &SETATTR, &KWINIT, &getattr::GETATTR, &getattr::HASATTR];
+/// `getattr.rs` (`interp.getattr`/`interp.hasattr`, `ml_meth` kernels through the same cache)
+/// is not registered: hits measured 0.96–0.98 per call, but its fallbacks (data descriptors,
+/// `__getattr__`, class owners) 1.13–1.36 (callgrind, `benches/interp/cells_cg.py`): it does not
+/// meet the never-slower rule yet.
+pub static TARGETS: &[&TargetSpec] = &[&ISINSTANCE, &ATTR, &SETATTR, &KWINIT];
 
 /// `_accel._t_interp.info()`: where the tier stands in this process (for tests, benches and
 /// status tooling).
