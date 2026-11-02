@@ -457,3 +457,66 @@ workloads fall back on (`docs/atlas/phase3.md` §4.2), discounted by risk:
 9. **zlib/crc32** only if the upstream Rust zlib (3.16) slips.
 10. **Upstream reports**: PEP 829 `.start` files cost 1.72× startup (`site` imports `pkgutil`
    and `re`); `copy.deepcopy` is 2–4× slower on free-threaded 3.15.1t than on the GIL build.
+
+# Part 3: wave 2, from stdlib-heavy programs to all Python programs (November 2026)
+
+Evidence: `docs/IMPACT_ATLAS.md` Part 2 (§7–§14, the wave-2 atlas), `docs/atlas/w2-*.md` (one
+per Phase-1 slice) and `docs/atlas/w2-phase0.md` (ground truth). Tags: (M) measured, (I)
+inferred. §10 records the Phase-1 decisions; results follow in Phase 3.
+
+## 10. What was decided at the end of Phase 1, and why
+
+**Workstreams and targets.** Nine Phase-2 workstreams (`engine`, `accel`, `core`, `text`,
+`datamodel`, `re`, `interp`, `gc`, `dx`) and thirteen measurable targets (T1–T13), chosen and
+justified in IMPACT_ATLAS §14. The headline is the speedup on real workloads per family,
+framework-heavy and custom software included.
+
+**Rulings** (each with its evidence in the slice doc named):
+
+1. **Opt-in native types are retired** (`w2-startup.md` §4): `List`/`Dict`/`Set`/`Tuple`/
+   `FrozenSet`, `X` expressions, fixed-width scalars, the C-API capsule and `rustique-api`,
+   `enable(native=...)`, `--native`, `@rs.native`. They are 60% of the extension's code, 68% of
+   test time and a quarter of build time; none speeds up an existing entry point without a code
+   change; the extension shrinks from 6.84 to 2.31 MB, which is a third of the startup fix. The
+   in-place kernels that came from the same program (`list.sort`, `sum`/`min`/`max`/…,
+   containers' `in`/`index`/`count`) are the new way of working and stay. The last commit that
+   contains the native tier is tagged before deletion, with a migration note.
+2. **A new site kind, the opcode handler (M2), ships as an opt-in `interp` tier**
+   (`w2-interp.md` §8–§9): on verified tail-calling builds (python-build-standalone), handlers
+   generated from the running patch release's `bytecodes.c`, every table entry verified before
+   the swap. Default-eligible only after its gates hold (full regrtest 0 differences on each
+   verified build, differential suites, every cell ≤ 1.05, whole runs ≤ 1.00). M1 (a copied
+   loop as a PEP 523 hook) stays research: 1.02–1.04 on whole programs (M).
+3. **The adaptive GC policy ships as an opt-in `gc` tier, not as a default**
+   (`w2-runtime.md` §5). Criterion (a), "documented `gc` APIs report nothing different", is
+   defined as in `w2-runtime.md` §5.1: values that depend on collection timing (`get_count`,
+   `get_stats`, the number of callback invocations, `collect()` return values) are outside the
+   contract, as they already are for every Rustique kernel that allocates less than CPython
+   (ACCELERATION §5.8). The prototype's two declared deviations — `get_threshold()` reports
+   the configured thresholds rather than the ones in force, and `gc.callbacks` holds one extra
+   entry — are acceptable in an opt-in tier and **block default status** on both builds.
+   Memory budget: peak RSS ≤ 1.05× per workload and per adversarial scenario.
+4. **"Fast exit" is not shipped**, not even opt-in (`w2-runtime.md` §6): skipping the
+   exit-time collections loses the finalization of cyclic garbage (buffered data in files only
+   reachable from cycles), which changes semantics, not just timing.
+5. **Unrecorded CPython patch releases refuse by default** (`w2-floors.md` §5): fingerprints
+   cannot see C behaviour changes (3.15.2's `tuple_hash` recursion guard). Fingerprint v3
+   drops docstrings and canonicalizes exception tables; accepted hashes are recorded per patch
+   release by a CI job that runs the conformance suite first; an unrecorded patch release shows
+   the refusal category `unvalidated-patch`, and an explicit opt-in installs targets whose v3
+   fingerprints match a recorded hash, reported as "unvalidated".
+6. **Asynchronous exceptions are outside the contract** (ACCELERATION §5.8 amendment,
+   `w2-floors.md` §5.3): signals and `PyThreadState_SetAsyncExc` arriving while a kernel runs
+   are delivered when it returns, at the next eval-breaker check; their timing is already
+   nondeterministic in CPython.
+7. **Packaging**: the extension becomes top-level `_rustique`, loaded directly by the `.pth`
+   line, by repacking the wheels in CI (`w2-dx.md` §7, `w2-startup.md` §1); the loader falls
+   back to the in-package path for sdist and editable installs. setuptools-rust was rejected
+   (rebuilding the proven wheel matrix for 0.46M instructions).
+8. **Platforms**: the process gate gets an allowlist of the validated platforms; anything
+   else refuses with category `platform`, and Rustique's own test suite skips on `version` and
+   `platform` refusals (`w2-dx.md` §2).
+9. **Free-threading**: the framework is hardened (no panic escapes `enable()`; dict snapshots
+   outside the registry lock; the registry lock is a leaf; suspension decided on the thread that
+   falls back) before any target pins a class attribute (`w2-threads.md` §3). A kernel scaling
+   rule joins the never-slower bar: CPU time per call at 8 threads ≤ 1.05× CPython's original.

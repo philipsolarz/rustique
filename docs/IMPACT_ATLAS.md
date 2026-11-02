@@ -1,8 +1,9 @@
-STATUS: Phase 1 result, 2026-11-01. Decided wave 1; §6 compares its predictions with what
-wave 1 measured (Phase 3), and `docs/DECISIONS.md` §9 ranks the next waves. Evidence lives in `docs/atlas/`
-(`workloads-{web,data,devtools}.md`, `static-usage.md`, `headroom-{text,objects}.md`,
-`mechanisms.md`) and the raw profiles in `~/rustique-research/` (roll-up script:
-`benches/workloads/rollup.py`). Every number is **measured** (M) or **inferred** (I).
+STATUS: Part 1 (§1–§6): wave 1's atlas (2026-11-01) and its outcome. **Part 2 (§7–§14): wave 2's
+atlas (2026-11-02)**, the Phase-1 result that chose wave 2's workstreams and targets. Evidence lives
+in `docs/atlas/` (wave 1: `workloads-*.md`, `static-usage.md`, `headroom-*.md`, `mechanisms.md`;
+wave 2: `w2-*.md`, one per Phase-1 slice, and `w2-phase0.md`) and the raw data in
+`~/rustique-research/` (wave 2: `~/rustique-research/w2/<slice>/`). Every number is **measured**
+(M) or **inferred** (I).
 
 # Impact atlas: where real Python spends its time, and what Rust can take
 
@@ -198,3 +199,283 @@ datetime text, ranked 4th, gave the largest per-workload gains (its `ml_meth` me
 free fallbacks and its kernels run 0.07–0.20 of CPython). Not reached: the time in
 interpreting bytecode, allocation and GC (§3), as predicted.
 
+
+# Part 2: wave 2 — from stdlib-heavy programs to all Python programs
+
+## 7. The answer in eight lines (wave 2, Phase 1)
+
+1. **The workload set now represents real software**: 65 programs in 8 families. Wave 1's 34
+   (web, data, devtools) plus 31 new: framework apps (6), third-party-heavy code (6),
+   long-running services (4), complex custom applications (10, stdlib-only, written like
+   in-house code), multi-threaded programs (5). Every new workload is deterministic and
+   self-checking; all 65 give identical digests plain and with Rustique on both builds (M).
+2. **Where the time goes** (M, 65 workloads, 3.15.1, distortion-free sampling, §9): own code
+   10.1%, generated code 2.1%, language operations 13.8%, stdlib 32.0%, third-party 20.5%,
+   runtime 19.7%. The families differ completely: custom code is 42% its own bytecode,
+   frameworks and libraries 36–49% third-party, data and web scripts ~50% stdlib, devtools
+   32% runtime (GC up to 49%).
+3. **The interpreter layer is not out of reach any more.** Wave 1's "46%" was 41.1% measured
+   without distortion (`-X perf` disables inlined calls). Inside it, the specialized handler
+   fast paths are a floor, but the *generic* paths the specializer gave up on are reachable by
+   a new mechanism, **opcode-handler swap** (M2): in tail-calling builds each opcode handler is
+   a function in a writable dispatch table, and Rustique can replace chosen entries with
+   handlers generated from the same `bytecodes.c`, at zero cost for every other opcode (M).
+   Measured whole runs: custom 0.952, frameworks 0.982, sqlglot 0.894 (instructions); CPython's
+   full regression suite shows 0 differences with all 229 handlers swapped (M, §10).
+4. **CPython-provided machinery** under custom and framework code (enum, namedtuple, dataclass-
+   generated methods, `contextmanager`, `singledispatch`, `inspect`) is ≤ 1.3% each in
+   framework apps but 2–40% of the custom programs that lean on it. Exact kernels: enum
+   0.21–0.53 per call, namedtuple 0.22–0.65, frozen dataclass `__init__` 0.51–0.55; together
+   0.962 on the custom family (M).
+5. **Runtime**: deallocation 7.4%, steady GC 6.1% (max 49%), allocation 3.8% (M). An adaptive
+   GC policy that defers full collections while they find nothing cuts GC work to 0.886
+   (3.15.1) / 0.772 (3.15.1t), billing to 0.71, with peak RSS ≤ 1.03 and no longer pauses (M,
+   dev box); it reports two API deviations, so it ships opt-in. `mimalloc` on the GIL build is
+   slower (1.051, M); exit-time GC (40% of a whole pylint run) cannot be cut exactly.
+6. **Free-threading**: CPU +17% on 3.15.1t (M). One CPython bug, `set.__reduce__` contending
+   with its own critical section, is 70% of `isort` and 27% of `state_snapshot` there; an
+   exact `ml_meth` kernel removes it (isort 0.26 with the copy group off, M). Threaded programs
+   scale 2.2–6.4× at 8 threads on 3.15.1t and Rustique keeps 0.73–0.82 of their time (M);
+   four kernel scaling cliffs and two framework thread-safety bugs were found.
+7. **Startup, install, versions**: wave 1 misattributed its startup overage (the `.pth`
+   loader string's compile is 32–44%, `dlopen` 22%); three fixes reach 1.026 / 1.027
+   instructions (M). The opt-in native types are 60% of the extension and earn nothing on the
+   default path. Older patch releases silently lose up to half the targets (3.15.0: 43/84) —
+   fingerprints hash docstrings and compiler-version details (M).
+8. **The developer journey**: 14 real projects' own suites (~53k outcomes) show 0 behaviour
+   differences (M). But a shipped kernel breaks "never slower" (`list.sort` on ordered or
+   string input, up to 1.84× instructions / 3.2× wall, M), the CI `diff` gave false alarms on
+   6 of 14 suites, reports lose forked processes and never show suspensions, sdist installs on
+   unvalidated platforms enable every target, and a prototype estimator predicts a program's
+   gain within ±0.02 on 22 of 34 workloads.
+
+## 8. Method (wave 2)
+
+- **Ten Phase-1 slices in parallel** (one agent each, `docs/atlas/w2-<slice>.md`): workloads
+  (`wl-frameworks`, `wl-custom`), free-threading (`threads`), layer attribution (`attribution`),
+  the interpreter (`interp`), generated code and machinery (`machinery`), allocation and GC
+  (`runtime`), startup/import/native types (`startup`), the 84 existing targets (`floors`), the
+  developer journey (`dx`). **Phase 0** (`w2-phase0.md`) re-measured wave 1 on a quiet AWS
+  c7a.8xlarge: workloads 0.877 / 0.843 (wave 1: 0.880 / 0.843), every workload within 2%,
+  conformance 0 differences on 3.15.1/1t/2, 3.14.9/10, every result identical (M).
+- **Attribution without distortion** (`benches/atlas/layers.py --modes bpf`): eBPF sampling on
+  hardware cycles, the current Python frame read from `tstate` through `_Py_DebugOffsets`, the
+  opcode handler from the frame-pointer chain (3.15's tail-calling interpreter compiles each
+  opcode to its own `_TAIL_CALL_<OP>` function). Owner exact for 98–100% of samples, validated
+  on four known cases (M). Wave 1's `-X perf` method installed a PEP 523 trampoline that
+  disables inlined Python calls (1.06–1.4× slower processes, interpreter share +5 points).
+- **Six layers** (shared vocabulary of all slices): own, generated, language, stdlib,
+  thirdparty, runtime (definitions in `w2-attribution.md` §2.2).
+- **Score**, as in §2: `I × F × (1 − K) × (1 − U) × (0.5 + R)`. For handler-swap candidates F
+  folds in build reach (tail-calling builds only); for opt-in tiers the score is what users of
+  the tier get.
+- Dev-box wall times were noisy (load 14–70): every claim below a 1.3× effect rests on
+  callgrind instruction counts or CPU time per call; quiet-box wall time comes in Phase 3.
+
+## 9. Where the time goes (M, 3.15.1 steady state, % of cycles, `w2-attribution.md` §3)
+
+| family | n | own | generated | language | stdlib | third-party | runtime | other |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| custom | 10 | 41.8 | 6.8 | 17.5 | 18.4 | 0.0 | 14.0 | 1.6 |
+| frameworks | 6 | 1.7 | 1.0 | 20.2 | 21.4 | 35.7 | 16.7 | 3.3 |
+| libs | 6 | 1.3 | 4.9 | 16.4 | 11.1 | 49.2 | 14.9 | 2.2 |
+| services | 4 | 3.1 | 0.2 | 10.9 | 37.0 | 25.0 | 21.9 | 2.0 |
+| threads | 5 | 16.8 | 0.5 | 12.4 | 50.4 | 0.0 | 18.4 | 1.6 |
+| web | 10 | 3.9 | 0.6 | 11.6 | 47.8 | 19.4 | 14.3 | 2.4 |
+| data | 12 | 6.9 | 0.8 | 9.6 | 50.5 | 10.9 | 20.4 | 1.0 |
+| devtools | 12 | 0.1 | 1.0 | 13.5 | 18.0 | 33.3 | 32.2 | 1.8 |
+| **all** | 65 | **10.1** | **2.1** | **13.8** | **32.0** | **20.5** | **19.7** | 1.9 |
+
+3.15.1t has the same shape (all: 9.9 / 2.0 / 14.8 / 32.6 / 19.3 / 19.3); its costs differ (§7.6).
+
+**Inside the interpreter** (M, `w2-attribution.md` §4, `w2-interp.md` §2): 90.1% of cycles
+run under an opcode handler, 37.7% inside handlers themselves (custom 52%, frameworks 43%,
+data 22%). Specialized forms carry 56% (inline plus callees), generic or non-specializing
+forms 32%. The generic paths that end in C, where the specializer gave up:
+
+| generic path | all 65 | frameworks | custom | why it stays generic (django_blog, M) |
+|---|---:|---:|---:|---|
+| `LOAD_ATTR` → `PyObject_GenericGetAttr` / `_PyObject_GetMethodStackRef` (+ `STORE_ATTR`, `getattr`/`hasattr`) | 5.5 | 11.6 | 4.3 | polymorphic sites 31%, methods on polymorphic or dict-materialized instances 25%, `cached_property` 10.6%, class attributes 5.7%, `__getattribute__` 3.9% |
+| C→Python call machinery (`type_call` with kwargs, `f(*a, **k)`, `__call__`, `partial`) | ~2.5 | 4.1 | | +155 to +1,331 Ir per call over the inlined form |
+| `CALL_ISINSTANCE` | 1.6 (sqlglot 11.4) | 0.9 | 0.7 | negative checks look up `x.__class__` (155 of 347 Ir); metaclasses build a bound `__instancecheck__` |
+| `object.__setattr__` (frozen dataclasses) | 0.4 | | 2.2 (order_domain 6.5) | `wrapper_descriptor` has no vectorcall |
+
+The `CALL_*_NON_PY` handlers (10.2% + 5.4%) are dominated by the C callee's own work (zlib,
+`_json`, `_sre`, `pydantic_core`), not dispatch.
+
+**Third-party code** (M, `w2-attribution.md` §5): in the 35 programs that use it, it is the
+innermost owner of 71% of cycles, and half of that is CPython's work on its behalf: language
+operations 7.4 points (attribute lookup 2.5, dict 1.6), stdlib Python 5.8, C stdlib 2.9,
+runtime 7.2 (allocation 4.2, GC 3.0). That is what Rustique can reach for third-party code.
+
+**What wave 1 left** (M, `w2-attribution.md` §6): with all 15 groups on, 4.8% of time remains in
+wave-1 modules (12.1% before): logging handlers (53% of `logging_service`), `glob`/`os.scandir`
+(54% of `fs_inventory`), dataclasses in isort (16%), json with `default=` (10% of `json_api`),
+zoneinfo arithmetic (17% of `tz_events`).
+
+**Whole processes** (M): interpreter startup 1.3%, workload imports 0.8%, setup 14.1%,
+finalization 6.0% — but exit-time GC is 40.6% of a whole `pylint` run and 16–21% of pytest,
+Sphinx, SQLAlchemy and FastAPI runs. Real programs' import time (12 programs, M,
+`w2-startup.md` §3): class machinery 22%, unmarshal 16%, importlib 13%, compiling generated
+source 8.4%, `re.compile` 7.5%.
+
+## 10. What can be reached, and how (per layer)
+
+| layer | pool | least invasive mechanism | verdict (evidence) |
+|---|---|---|---|
+| own / third-party bytecode | specialized handler self time (≈ 37%) | none beats CPython's BOLT-laid-out handler on its own fast path | **floor** (our generated copies 0.96–1.00, `w2-interp.md` §3) |
+| | generic paths (≈ 10%) | **M2 opcode-handler swap** on tail-calling builds (python-build-standalone / uv: Linux x86_64 measured, aarch64/macOS expected) | **pursue as opt-in tier**: isinstance 0.30–0.60, attribute cache 0.57–0.80, `object.__setattr__` 0.40 per op; whole runs custom 0.952, frameworks 0.982; full regrtest 0 differences (swap-all), two override bugs caught by it and fixed |
+| | the same on GCC/computed-goto builds (Debian, Fedora, Docker, pyenv, Homebrew, conda) | M1: a generated copy of the loop as a 3.15 PEP 523 hook that keeps specialization | **research only**: 0.98–0.99 per call but 1.02–1.04 on whole programs (no BOLT/LTO inlining) |
+| | | CPython's own JIT as a policy | **no**: slower on 5 of 6 workloads (cycles 1.03–1.35, `w2-interp.md` §3.4) |
+| | | vectorcall "Rust JIT" of user functions | **no**: caller penalty, no exact deopt story, tiny share |
+| generated | dataclass / namedtuple / attrs-style generated functions | vectorcall on the *generated* function objects, recognised by re-running CPython's generator and comparing code (lazy, ≤ 1.2% of import) | **pursue**: namedtuple 0.22–0.65, frozen dataclass (keyword calls) 0.51; positional `__init__` calls bypass vectorcall (`CALL_ALLOC_AND_ENTER_INIT`), reached only by M2 |
+| | enum machinery | slot swaps on stdlib heap types (`enum.property.tp_descr_get`, `EnumType.tp_call`) + vectorcall on functions reached only from C slots (fallback +2–3 Ir) | **pursue**: 0.21–0.53 per call, 39% PyPI reach |
+| language | str/dict/list/formatting/getattr builtins | already C; Rust re-implementations of C gain ≤ 1.1× at real sizes (wave 1) | **settled**; cache-based fast paths only (M2, or `getattr`/`hasattr` `ml_meth` with the attribute cache) |
+| stdlib | remaining wave-1 gaps, new Python modules | wave 1's entry-point kernels (`ml_meth`, slots, vectorcall) | **pursue**: gaps first (json `default=`, logging, paths, copy of UUID/PurePath), then `contextlib`/`singledispatch` bookkeeping, `re`, `inspect` |
+| third-party | their bytecode | not a target by contract (fingerprints would churn) | reached through the language/stdlib/runtime they call (half their time) |
+| runtime: GC | full collections that find nothing (1.6% mean, 1.9% on t; billing 34%) | opt-in policy on public `gc` APIs, steps aside when the program tunes the GC | **pursue as opt-in tier** (`w2-runtime.md`) |
+| runtime: exit | exit-time collections (pylint 40%) | none exact: every process has finalizable objects and weakref callbacks at exit; "fast exit" loses finalization of cyclic garbage | **settled: not shipped** (changes semantics, not just timing) |
+| runtime: allocation | allocator choice, freelists | `PYTHONMALLOC=mimalloc` | **settled no** (1.051, worst 1.30, RSS +7.5%); Rustique's kernels already allocate 10–64% less |
+| runtime: startup | Rustique's own `RUSTIQUE=1` cost | lean init, top-level extension import, no native types | **pursue** (1.026 / 1.027) |
+| runtime: import | `re.compile` at import (7.5%), generated-source compile (8.4%) | a Rust `re` parser/compiler emitting exactly `_sre.compile`'s arguments; a persistent code cache | **`re`: pursue**; code cache: **no** (disk writes are side effects) |
+| runtime: free-threading | `set.__reduce__` self-contention; 3.15t `isinstance(x, ABC)` serialization | `ml_meth` kernels | **pursue** (`set.__reduce__` now; ABC cache later) |
+
+## 11. Candidates scored (wave 2)
+
+`s` and F/K/U/R are the owning slice's estimates, normalized here; shares are means over the 65
+workloads (max). "Mandatory" items are never-slower or safety fixes and are not ranked by score.
+
+| # | candidate | layer | mechanism | share mean / max | s | I | F | K | U | R | score | evidence |
+|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | `set/frozenset.__reduce__` (3.15.1t only) | runtime:ft | `ml_meth` | t: 1.5 / 70 (isort) | 50 | 1.5 | 1.0 | 0.1 | 0.3 | 0.3 | **0.76** | w2-threads §1–2 |
+| 2 | adaptive GC tier (opt-in) | runtime:gc | policy on public `gc` APIs + `ml_meth` swaps of `gc` setters | 1.6 / 34 (billing) taken; t 1.9 | — | 0.5 (t 1.0) | 0.8 | 0.3 | 0 | 1.0 | **0.42** (t 0.84) | w2-runtime §3–4 |
+| 3 | interp: megamorphic attribute cache | language | M2: `LOAD_ATTR` family | 3.7 / 13.8 (drf) | 1.6 | 1.39 | 0.45 | 0.4 | 0.35 | 0.9 | **0.34** | w2-interp §4.2 |
+| 4 | interp: `isinstance` | language | M2: `CALL_ISINSTANCE` | 1.6 / 11.4 (sqlglot) | 2 | 0.8 | 0.6 | 0.3 | 0.5 | 0.9 | **0.24** | w2-interp §4.1 |
+| 5 | interp: C→Python frame pushes | language | M2: `CALL_KW_NON_PY`, `CALL_EX_*`, `CALL_NON_PY_GENERAL` | 2.5 / 4.1 (frameworks) | 1.8 | 1.1 | 0.35 | 0.4 | 0.35 | 0.8 | **0.20** | w2-interp §4.5 |
+| 6 | `getattr`/`hasattr` with the attribute cache (all builds) | language | `ml_meth` | 1.2 / 16 (mini_interp) | 1.4 | 0.34 | 0.7 | 0.2 | 0.2 | 0.8 | **0.20** | w2-interp §9 |
+| 7 | enum group | generated | heap-type slots + slot-reached vectorcall | 0.6 / 5.0 (rules_engine) | 3 | 0.4 | 0.8 | 0.25 | 0.1 | 0.39 | **0.19** | w2-machinery §4 |
+| 8 | json: lazy `default=`, `make_encoder` route, UUID/PurePath in copy/asdict | stdlib | existing json/copy sites | 0.6 / 18 (logging_service) | 2 | 0.3 | 0.9 | 0.2 | 0 | 0.32 | **0.18** | w2-floors §2 |
+| 9 | logging remainder: handler/format path, `findCaller` cache, FT format-cache lock | stdlib | existing logging sites | 1.2 / 53 (logging_service) | 1.5 | 0.4 | 0.6 | 0.35 | 0 | 0.40 | **0.14** | w2-floors §1, w2-threads §4 |
+| 10 | `xml.etree` serializer | stdlib | vectorcall | 0.8 / 50 (xml_feeds) | 6 | 0.67 | 0.7 | 0.3 | 0.2 | 0.05 | **0.14** | wave-1 atlas #17, w2-attribution §3 |
+| 11 | namedtuple generated methods | generated | vectorcall on generated functions | 0.4 / 4.1 (pylint `TokenInfo._make`) | 2 | 0.2 | 0.8 | 0.2 | 0 | 0.35 | **0.11** | w2-machinery §3 |
+| 12 | paths remainder: `glob`/`scandir` helpers, `relpath` | stdlib | vectorcall | 0.8 / 54 (fs_inventory) | 1.5 | 0.27 | 0.6 | 0.3 | 0 | 0.49 | **0.11** | w2-attribution §6 |
+| 13 | email/http header parsing | stdlib | vectorcall | 1.2 / 59 (email_mime) | 3 | 0.8 | 0.3 | 0.5 | 0 | 0.30 | **0.10** | wave-1 atlas #5 |
+| 14 | dataclass generated code (frozen `__init__`, `__eq__`) | generated | vectorcall (+ M2 `object.__setattr__` for positional calls) | 1.0 / 16 (order_domain) | 1.5 | 0.3 | 0.5 | 0.3 | 0.2 | 0.29 | **0.07** | w2-machinery §3, w2-interp §4.3 |
+| 15 | `inspect.signature` / `getfullargspec` | stdlib | vectorcall | 0.6 / 31 (di_plugins) | 3 | 0.4 | 0.4 | 0.4 | 0 | 0.19 | **0.07** | w2-wl-custom §5 |
+| 16 | `contextmanager` construction, `singledispatch` dispatch cache | stdlib | vectorcall (ruling 15 leaves only the bookkeeping) | 1.2 / 40 (event_ledger) | 1.1–1.3 | 0.1 | 0.7 | 0.3 | 0 | 0.4 | **0.05** | w2-machinery §5 |
+| 17 | weakref containers (`WeakValueDictionary.get`) | stdlib | vectorcall | 0.2 / 6.4 (orm_mapper) | 2 | 0.1 | 0.7 | 0.3 | 0 | 0.23 | **0.04** | w2-wl-custom §6 |
+| 18 | `re` module functions + Rust `re` compiler | stdlib + runtime:import | vectorcall on `re.match`…, `re._compiler.compile` | steady 0.5; **startup**: 7.5% of import time (42% of `import yaml`) | 1.4 / 5 | 0.14 steady; whole-process of short CLIs ≈ 1.2 (I) | 0.6 | 0.3 | 0 | 0.49 | **0.06** steady / **0.50** whole-process (I) | w2-startup §3, w2-machinery §6 |
+| — | never-slower and safety fixes | — | — | — | — | — | — | — | — | — | **mandatory** | §13 |
+
+## 12. Floors: what is settled, and why
+
+- **The 84 wave-1 targets** (`w2-floors.md` §1): 48 settled (at or near the floor of result
+  allocation and C-call overhead, or too small a share), 36 open; the open remainder is Rust
+  `Vec` traffic in textwrap/urllib/`relpath`, format strings re-parsed per call in
+  `strptime`/`strftime`, and `findCaller`'s line-number decoding (79% of its time).
+- **Settled, with the reason** (M unless tagged):
+  - specialized handler self time: no entry point; our copies reach 0.96–1.00 at best;
+  - the classic PEP 523 hook (4.5–6.8× per call) and M1 as a default (1.02–1.04 whole);
+  - CPython's JIT as a policy (slower on 5 of 6), a vectorcall "Rust JIT" (I);
+  - language operations that are already C (str methods, dict/list ops, formatting): ≤ 1.1×
+    at real input sizes (wave 1);
+  - allocator switching (`mimalloc` 1.051 on the GIL build), static GC thresholds and
+    freeze-based policies (memory up to 15×, hidden objects), fast exit (finalization lost);
+  - `key=` sorts, `sum`/`min`/`max` over generators, user `__deepcopy__` restarts (ruling 15),
+    `html.parser` handlers (user callbacks), exceptions and generators (≤ 0.8%);
+  - class needles in `in` (0.33–0.54 per call, but 0.26% of pyflakes) and tuple needles
+    (black, ~0.8%): cheap to keep, not a priority;
+  - a persistent code cache for generated source (writes to disk are side effects).
+- **Upstream items** (documented, not filed this round): `set.__reduce__`'s nested critical
+  section (3.14t–3.16a1t), `isinstance`'s `__class__` lookup on negative checks, the
+  `utf-8-sig` decode that every `.pth` file costs at startup (0.61–0.66M instructions), a
+  vectorcall for `wrapper_descriptor` (frozen dataclasses), and remote-frame sampling crashing
+  3.15.1t.
+
+## 13. Where the developer journey breaks (`w2-dx.md`, `w2-floors.md` §5, `w2-threads.md`, `w2-startup.md`)
+
+| step | break (M unless tagged) | severity | fix |
+|---|---|---|---|
+| never slower | `list.sort`/`sorted` up to 1.84× instructions / 3.2× wall on ordered and short-string input (22 of 90 cells > 1.05) | **high** | run detection + hand-offs (prototype: 90/90 ≤ 1.05) |
+| never slower | unconfirmed: sqlglot's `deepcopy` calls replayed on 3.15.1t 4.4× slower enabled (0.57 on GIL) | **check** | measure first in Phase 2 |
+| threads | `enable()` raises `PanicException` when another thread mutates a pinned module dict (3.15.1t, 1 in 834); two latent lock inversions; suspension decided only on the main thread | **high** | accel hardening before any class-attribute pin |
+| install | sdist on unvalidated platforms (s390x, ppc64le, armv7, FreeBSD) enables every target; maturin silently downloads a 1.4 GB toolchain | **high** (I) | platform allowlist in the process gate, `--only-binary` guidance |
+| versions | older patch releases lose 12–41 targets silently (3.15.0: 43/84); 3.16 tests fail instead of skipping on version refusals | medium | fingerprint v3, recorded sets per patch, refusal `unvalidated-patch`, suite skips on refusal |
+| startup | `RUSTIQUE=1` 1.045 / 1.063 instructions, 1.08–1.11 wall | medium | engine fixes (1.026 / 1.027 measured) |
+| trust | `python -m rustique diff` reported DIFFERENT on 6 of 14 suites, all false | medium | fixed on `w2/p1-dx` (volatile-output rule) |
+| visibility | reports lose fork-pool and worker processes, double-count forked children, never show suspensions or call sites | medium | per-process counters, zeroed after fork; suspensions in the report |
+| runner | `python -m rustique app.py` added traceback frames, a relative `__file__`, no child acceleration | fixed | `w2/p1-dx` |
+| platforms | Windows 30 targets, macOS/musl 74 | medium | patches to 48 / 77 + a per-platform CI job |
+| "will it help me?" | no answer before trying | — | `python -m rustique estimate` (median error 0.007 on 34 workloads; disabled on 3.15.1t) |
+
+## 14. Decisions for wave 2
+
+### 14.1 The highest-impact targets
+
+1. **The interpreter's generic paths through an opt-in `interp` tier** (M2): attribute cache,
+   `isinstance`, `object.__setattr__`, C→Python frame pushes — the only lever on framework apps
+   and custom code beyond machinery kernels (#3–5).
+2. **Runtime policy through an opt-in `gc` tier** (#2): GC-heavy programs (billing, pylint,
+   pyflakes, black, xml) and the free-threaded build, where every collection walks the heap.
+3. **Free-threading**: `set.__reduce__` (#1) and the kernel scaling cliffs.
+4. **The data-model machinery custom code leans on**: enum, namedtuple, dataclass-generated
+   code, `contextmanager`/`singledispatch` bookkeeping, `inspect` (#7, #11, #14–16).
+5. **Closing wave 1's gaps** where real workloads still spend time: json, logging, paths,
+   copy (#8, #9, #12).
+
+### 14.2 The best places to start
+
+- **Never-slower and safety first**: the sort fix, the free-threading hardening of the
+  framework, the `deepcopy` check on 3.15.1t, the platform allowlist.
+- **Foundations that unblock everything else**: retire the opt-in native types (the
+  extension shrinks from 6.8 to 2.3 MB, test time −68%), validate each target on its first
+  call (startup and install budgets at once), fingerprint v3 with recorded patch releases,
+  cost-weighted credits.
+- **Low-risk wins that prove a new layer**: `isinstance` and `object.__setattr__` as the first
+  M2 overrides (small, exact, measurable); enum as the first heap-type-slot group.
+
+### 14.3 Phase-2 workstreams (one worktree and agent each; branch `ws2/<name>`, base `wave2`)
+
+| workstream | scope | owns |
+|---|---|---|
+| `engine` | retire the opt-in native types cleanly; lean extension init; top-level `_rustique` (wheel repack in CI, in-package fallback); every startup cell ≤ 1.05 | `crates/rustique-py/src/lib.rs` and the native-tier modules, `crates/rustique-api`, `examples/`, `python/rustique/__init__.py` API, `pyproject.toml`, `.pth` |
+| `accel` | free-threading hardening; validate on first call; fingerprint v3 + recorded patch sets + `unvalidated-patch`; platform allowlist; credits v2 (cost-weighted, deopt split, suspensions visible); fork-safe per-process counters; site support for stdlib heap-type slots; ACCELERATION amendments | `crates/rustique-py/src/accel/` |
+| `core` | sort fix; `set/frozenset.__reduce__`; json lazy `default=` + `make_encoder` route; UUID/PurePath native copying; needles; shared-list scaling; the `deepcopy` t check | `targets/{containers,builtins,json,copy,dataclasses,float}`, new `targets/set` |
+| `text` | logging remainder (+ FT lock), datetime format plans, allocation-free textwrap/urllib/`relpath`, `glob`/`scandir` helpers, `random` variates | `targets/{logging,datetime,textwrap,urllib,posixpath,pathlib,fnmatch,random,statistics}` |
+| `datamodel` | enum group; namedtuple and dataclass generated code; `contextmanager`/`singledispatch` bookkeeping; `inspect.signature` (if a prototype meets the bar); adoption of classes created before `enable()` | new `targets/{enum,generated,functools,contextlib,inspect}` |
+| `re` | a Rust `re` parser/compiler producing exactly `_sre.compile`'s arguments; `re` module-function fast path | new `targets/re`, `rustique-core/src/re` |
+| `interp` | the M2 `interp` tier (opt-in): per-patch generated handlers, build verification and ABI self-test, overrides (isinstance, attribute cache, `object.__setattr__`, keyword instantiation), FT-safe caches, full-regrtest gate | new `crates/rustique-interp` (C + Rust), `targets/interp` |
+| `gc` | the adaptive GC tier (opt-in), in Rust, stepping aside on user tuning, its eligibility tests | new `targets/gc` |
+| `dx` | ship the `diff`/runner fixes; reports (per-process, suspensions); `estimate`; wheel repack with `engine`; platform patches + per-platform CI; refusal UX and suite skips; opt-in tier switches; docs | `python/rustique/` CLI/report/diff, `.github/`, `docs/USAGE.md` |
+
+### 14.4 Measurable targets for wave 2 (Phase 3, quiet c7a.8xlarge; default tier unless stated)
+
+Baselines: wave 1's 34 workloads 0.877 / 0.843 (Phase 0, M); the 31 new workloads with wave-1
+code ≈ 0.98 (frameworks), 0.95 (libs), 0.85 (services), 0.98 (custom), 0.82 (threads on t at
+8 threads) (dev-box instruction counts, I).
+
+| # | target | metric |
+|---|---|---|
+| T1 | never slower | no workload > 1.02; no measured cell > 1.05 (small inputs, fallbacks, sort, install, startup, 8-thread CPU per call) |
+| T2 | wave 1's 34 workloads | ≤ 0.85 (3.15.1), ≤ 0.80 (3.15.1t) |
+| T3 | all 65 workloads | ≤ 0.88 (3.15.1), ≤ 0.84 (3.15.1t) |
+| T4 | per family (3.15.1) | custom ≤ 0.95, frameworks ≤ 0.98, libs ≤ 0.95, services ≤ 0.85; threads on 3.15.1t at 8 threads ≤ 0.78 |
+| T5 | `interp` tier (opt-in, PBS 3.15.1) | frameworks ≤ 0.96, custom ≤ 0.90; CPython's full regression suite 0 differences (GIL and t) |
+| T6 | `gc` tier (opt-in) | workloads with GC > 10%: geometric mean ≤ 0.87; peak RSS ≤ 1.05×; max pause ≤ default; others ≤ 1.02 |
+| T7 | free-threading | isort / state_snapshot on 3.15.1t with the copy group off ≤ 0.35 / 0.75 |
+| T8 | startup | `RUSTIQUE=1` vs unset ≤ 1.05 instructions and wall on 3.14.9 and 3.15.1 (except the documented upstream `.pth` floor in bare 3.14 venvs); extension ≤ 2.5 MB |
+| T9 | install | every lazy install ≤ max(5% of the module's import, 0.1M instructions) |
+| T10 | reach | ≥ 80 targets on every recorded 3.15.x and ≥ 75 on every 3.14.x patch release; Windows ≥ 48, macOS/musl ≥ 77; unvalidated platforms and patches refuse visibly |
+| T11 | correctness | CPython's test modules of every group: 0 differences on 4 builds; 14 real-project suites: 0; Hypothesis differential suites for every new target |
+| T12 | pyperformance | ≤ 0.93 (3.15.1), ≤ 0.94 (3.15.1t) |
+| T13 | "will it help me?" | `estimate` within ±0.03 of the measured ratio on ≥ 80% of the 65 workloads |
+
+### 14.5 Not in wave 2 (ranked next)
+
+1. email/http header parsing (#13), `xml.etree` serializer (#10).
+2. `inspect.signature` and weakref containers if `datamodel` cannot meet the bar this wave.
+3. The `interp` tier on GCC builds (M1 needs BOLT-class layout to reach 1.00), and as the
+   default on verified builds once its gates have held for a release.
+4. The `isinstance(x, ABC)` positive cache for 3.15t threads; `functools.cache` hits under
+   threads.
+5. The upstream items of §12.
