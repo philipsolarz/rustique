@@ -185,7 +185,7 @@ fn fingerprint3(obj: &Bound<'_, PyAny>) -> PyResult<(String, String)> {
 /// The recorded patch releases and the running one: `(recorded, running)`.
 #[pyfunction]
 fn patch_releases() -> (Vec<String>, String) {
-    (super::fingerprint::data().patches.clone(), super::version::patch_release())
+    (super::fingerprint::patches().map(str::to_owned).collect(), super::version::patch_release())
 }
 
 /// Pins of an installed target: `[(key, absent, intact, broken)]`.

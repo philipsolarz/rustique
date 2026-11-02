@@ -671,16 +671,30 @@ fn resync(_py: Python<'_>, reg: &mut Registry, from_kernel: bool) -> (bool, bool
     (ml, more)
 }
 
+/// Every module some target waits for, with the indices of its targets (built once).
+fn modules_index() -> &'static [(&'static str, Vec<usize>)] {
+    static INDEX: OnceLock<Vec<(&'static str, Vec<usize>)>> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let mut out: Vec<(&'static str, Vec<usize>)> = Vec::new();
+        for (i, s) in all_specs().iter().enumerate() {
+            if let Some(m) = s.module {
+                match out.iter_mut().find(|(n, _)| *n == m) {
+                    Some((_, v)) => v.push(i),
+                    None => out.push((m, vec![i])),
+                }
+            }
+        }
+        out
+    })
+}
+
 fn refresh_pending(reg: &Registry) {
-    let names: Vec<&'static str> = all_specs()
+    // No sort per activation: the module index is built once.
+    let names: Vec<&'static str> = modules_index()
         .iter()
-        .enumerate()
-        .filter(|(i, _)| reg.rt[*i].state == State::Pending)
-        .filter_map(|(_, s)| s.module)
+        .filter(|(_, idx)| idx.iter().any(|&i| reg.rt[i].state == State::Pending))
+        .map(|(m, _)| *m)
         .collect();
-    let mut names = names;
-    names.sort_unstable();
-    names.dedup();
     if names.is_empty() {
         guard::unwatch_sys_modules();
     }

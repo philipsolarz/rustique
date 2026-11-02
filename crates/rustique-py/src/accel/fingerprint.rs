@@ -527,45 +527,222 @@ fn cache3_put(code: &Bound<'_, PyAny>, fp: u64) {
     drop(old);
 }
 
-/// The recorded fingerprint data (`fingerprints.txt`).
-pub struct Data {
-    /// Recorded patch releases (`"3.15.1"`, `"3.15.1t"`).
-    pub patches: Vec<String>,
-    /// `(target, original id, minor)` → accepted v3 hashes.
-    pub accepted: std::collections::HashMap<(String, String, u8), Vec<u64>, foldhash::fast::FixedState>,
+// The recorded data (`fingerprints.txt`), indexed at compile time: no parsing at run time
+// (a run-time parse of the file cost ~1.2M instructions at the first gate, on every
+// `RUSTIQUE=1` start). The file's entries must be sorted by (minor, owner, id): checked at
+// compile time (the recorder writes them sorted).
+
+const TEXT: &str = include_str!("fingerprints.txt");
+
+/// One accepted-hashes line: minor and byte ranges of owner, id and the hashes in [`TEXT`].
+#[derive(Clone, Copy)]
+struct Entry {
+    minor: u8,
+    owner: (u32, u32),
+    id: (u32, u32),
+    hashes: (u32, u32),
 }
 
-/// The recorded data, parsed once from the file compiled into the extension.
-pub fn data() -> &'static Data {
-    static DATA: std::sync::OnceLock<Data> = std::sync::OnceLock::new();
-    DATA.get_or_init(|| parse(include_str!("fingerprints.txt")))
+const fn is_space(b: u8) -> bool {
+    b == b' ' || b == b'\t' || b == b'\r'
 }
 
-/// Parse the data file: `patch <version>...` lines and `<major.minor> <target> <id> <hex>...`
-/// lines; `#` starts a comment.
-pub fn parse(text: &str) -> Data {
-    let mut d = Data { patches: Vec::new(), accepted: Default::default() };
-    for line in text.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        let mut it = line.split_whitespace();
-        match it.next() {
-            None => {}
-            Some("patch") => d.patches.extend(it.map(str::to_owned)),
-            Some(minor) => {
-                let Some(m) = minor.strip_prefix("3.").and_then(|m| m.parse::<u8>().ok()) else { continue };
-                let (Some(target), Some(id)) = (it.next(), it.next()) else { continue };
-                let hashes = it.filter_map(|h| u64::from_str_radix(h, 16).ok());
-                d.accepted.entry((target.to_owned(), id.to_owned(), m)).or_default().extend(hashes);
+/// Byte range of the next token of `t` in `[i, end)`, or `None`.
+const fn token(t: &[u8], mut i: usize, end: usize) -> Option<(usize, usize)> {
+    while i < end && is_space(t[i]) {
+        i += 1;
+    }
+    if i >= end {
+        return None;
+    }
+    let s = i;
+    while i < end && !is_space(t[i]) {
+        i += 1;
+    }
+    Some((s, i))
+}
+
+/// The end of the line starting at `i` (excluding a `#` comment) and the next line's start.
+const fn line(t: &[u8], i: usize) -> (usize, usize) {
+    let mut j = i;
+    while j < t.len() && t[j] != b'\n' {
+        j += 1;
+    }
+    let next = if j < t.len() { j + 1 } else { j };
+    let mut k = i;
+    while k < j && t[k] != b'#' {
+        k += 1;
+    }
+    (k, next)
+}
+
+const fn starts_with(t: &[u8], s: usize, e: usize, p: &[u8]) -> bool {
+    if e - s != p.len() {
+        return false;
+    }
+    let mut k = 0;
+    while k < p.len() {
+        if t[s + k] != p[k] {
+            return false;
+        }
+        k += 1;
+    }
+    true
+}
+
+/// `"3.15"` → 15.
+const fn minor_of(t: &[u8], s: usize, e: usize) -> u8 {
+    if e - s < 3 || t[s] != b'3' || t[s + 1] != b'.' {
+        panic!("fingerprints.txt: a line must start with `patch` or a minor version `3.N`");
+    }
+    let mut v: u32 = 0;
+    let mut k = s + 2;
+    while k < e {
+        v = v * 10 + (t[k] - b'0') as u32;
+        k += 1;
+    }
+    v as u8
+}
+
+/// Counts (entries, patch releases).
+const fn counts(t: &[u8]) -> (usize, usize) {
+    let (mut n, mut p, mut i) = (0, 0, 0);
+    while i < t.len() {
+        let (end, next) = line(t, i);
+        if let Some((s, e)) = token(t, i, end) {
+            if starts_with(t, s, e, b"patch") {
+                let mut j = e;
+                while let Some((_, e2)) = token(t, j, end) {
+                    p += 1;
+                    j = e2;
+                }
+            } else {
+                n += 1;
             }
         }
+        i = next;
     }
-    d
+    (n, p)
 }
 
-/// The accepted v3 hashes of `target`'s original `id` on the running minor, if recorded.
-pub fn accepted(target: &str, id: &str) -> Option<&'static [u64]> {
+const COUNTS: (usize, usize) = counts(TEXT.as_bytes());
+
+const fn cmp_bytes(t: &[u8], a: (usize, usize), b: (usize, usize)) -> i32 {
+    let (la, lb) = (a.1 - a.0, b.1 - b.0);
+    let mut k = 0;
+    while k < la && k < lb {
+        if t[a.0 + k] != t[b.0 + k] {
+            return if t[a.0 + k] < t[b.0 + k] { -1 } else { 1 };
+        }
+        k += 1;
+    }
+    if la < lb {
+        -1
+    } else if la > lb {
+        1
+    } else {
+        0
+    }
+}
+
+const fn index_entries<const N: usize>(t: &[u8]) -> [Entry; N] {
+    let mut out = [Entry { minor: 0, owner: (0, 0), id: (0, 0), hashes: (0, 0) }; N];
+    let (mut n, mut i) = (0, 0);
+    while i < t.len() {
+        let (end, next) = line(t, i);
+        if let Some((s, e)) = token(t, i, end)
+            && !starts_with(t, s, e, b"patch")
+        {
+            let minor = minor_of(t, s, e);
+            let Some(owner) = token(t, e, end) else { panic!("fingerprints.txt: owner missing") };
+            let Some(id) = token(t, owner.1, end) else { panic!("fingerprints.txt: id missing") };
+            let hs = match token(t, id.1, end) {
+                Some((h0, _)) => h0,
+                None => panic!("fingerprints.txt: hashes missing"),
+            };
+            let mut he = end;
+            while he > hs && is_space(t[he - 1]) {
+                he -= 1;
+            }
+            out[n] = Entry {
+                minor,
+                owner: (owner.0 as u32, owner.1 as u32),
+                id: (id.0 as u32, id.1 as u32),
+                hashes: (hs as u32, he as u32),
+            };
+            if n > 0 {
+                let p = out[n - 1];
+                let c = if p.minor != minor {
+                    if p.minor < minor { -1 } else { 1 }
+                } else {
+                    let co = cmp_bytes(t, (p.owner.0 as usize, p.owner.1 as usize), owner);
+                    if co != 0 { co } else { cmp_bytes(t, (p.id.0 as usize, p.id.1 as usize), id) }
+                };
+                if c >= 0 {
+                    panic!("fingerprints.txt: entries must be sorted by (minor, owner, id), without duplicates");
+                }
+            }
+            n += 1;
+        }
+        i = next;
+    }
+    out
+}
+
+const fn index_patches<const P: usize>(t: &[u8]) -> [(u32, u32); P] {
+    let mut out = [(0u32, 0u32); P];
+    let (mut n, mut i) = (0, 0);
+    while i < t.len() {
+        let (end, next) = line(t, i);
+        if let Some((s, e)) = token(t, i, end)
+            && starts_with(t, s, e, b"patch")
+        {
+            let mut j = e;
+            while let Some((s2, e2)) = token(t, j, end) {
+                out[n] = (s2 as u32, e2 as u32);
+                n += 1;
+                j = e2;
+            }
+        }
+        i = next;
+    }
+    out
+}
+
+static ENTRIES: [Entry; COUNTS.0] = index_entries::<{ COUNTS.0 }>(TEXT.as_bytes());
+static PATCHES: [(u32, u32); COUNTS.1] = index_patches::<{ COUNTS.1 }>(TEXT.as_bytes());
+
+fn slice(r: (u32, u32)) -> &'static str {
+    &TEXT[r.0 as usize..r.1 as usize]
+}
+
+/// The recorded (validated) patch releases (`"3.15.1"`, `"3.15.1t"`).
+pub fn patches() -> impl Iterator<Item = &'static str> {
+    PATCHES.iter().map(|r| slice(*r))
+}
+
+/// The accepted v3 hashes of one original (space-separated hex in the data).
+#[derive(Clone, Copy, Debug)]
+pub struct Accepted(&'static str);
+
+impl Accepted {
+    pub fn iter(self) -> impl Iterator<Item = u64> {
+        self.0.split_whitespace().filter_map(|h| u64::from_str_radix(h, 16).ok())
+    }
+    pub fn contains(self, v: u64) -> bool {
+        self.iter().any(|h| h == v)
+    }
+}
+
+/// The accepted v3 hashes of `owner`'s (target or group) original `id` on the running
+/// minor, if recorded (binary search: no allocation).
+pub fn accepted(owner: &str, id: &str) -> Option<Accepted> {
     let (_, minor) = super::version::running();
-    data().accepted.get(&(target.to_owned(), id.to_owned(), minor)).map(Vec::as_slice)
+    let key = (minor, owner, id);
+    ENTRIES
+        .binary_search_by(|e| (e.minor, slice(e.owner), slice(e.id)).cmp(&key))
+        .ok()
+        .map(|i| Accepted(slice(ENTRIES[i].hashes)))
 }
 
 /// For targets that check an original themselves (outside `Prepare`): is `obj` an original
@@ -574,7 +751,7 @@ pub fn accepted(target: &str, id: &str) -> Option<&'static [u64]> {
 pub fn check(target: &str, obj: &Bound<'_, PyAny>, expected: Fingerprints) -> bool {
     match any_v3(obj) {
         Ok((id, v3)) => match accepted(target, &id) {
-            Some(set) => set.contains(&v3),
+            Some(set) => set.contains(v3),
             None => {
                 let (major, minor) = super::version::running();
                 expected_for(expected, major, minor).is_some_and(|w| any(obj).is_ok_and(|f| f == w))

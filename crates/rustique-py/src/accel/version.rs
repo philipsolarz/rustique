@@ -283,8 +283,7 @@ pub fn patch_gate() -> Result<Validation, Refusal> {
 /// The patch-release decision for release `id` (`"3.15.1"`, `"3.15.1t"`), with or without
 /// the explicit opt-in.
 pub fn patch_decision(id: &str, opt_in: bool) -> Result<Validation, Refusal> {
-    let d = super::fingerprint::data();
-    if d.patches.iter().any(|p| p == id) {
+    if super::fingerprint::patches().any(|p| p == id) {
         return Ok(Validation::Recorded);
     }
     if opt_in {
@@ -294,12 +293,8 @@ pub fn patch_decision(id: &str, opt_in: bool) -> Result<Validation, Refusal> {
     let mut parts = id.trim_end_matches('t').split('.');
     let (major, minor) = (parts.next().unwrap_or("?"), parts.next().unwrap_or("?"));
     let prefix = format!("{major}.{minor}.");
-    let same: Vec<&str> = d
-        .patches
-        .iter()
-        .filter(|p| p.starts_with(&prefix) && p.ends_with('t') == free_threaded)
-        .map(String::as_str)
-        .collect();
+    let same: Vec<&str> =
+        super::fingerprint::patches().filter(|p| p.starts_with(&prefix) && p.ends_with('t') == free_threaded).collect();
     Err(Refusal::with(
         Category::UnvalidatedPatch,
         format!(

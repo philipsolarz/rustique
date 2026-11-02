@@ -256,14 +256,14 @@ impl<'py> Prepare<'py> {
             self.records.push(FingerprintRecord {
                 what: id,
                 observed: fingerprint::hex(v3),
-                expected: accepted.map(|a| a.iter().map(|h| fingerprint::hex(*h)).collect::<Vec<_>>().join(",")),
+                expected: accepted.map(|a| a.iter().map(fingerprint::hex).collect::<Vec<_>>().join(",")),
                 v2,
                 v2_expected: fingerprint::expected_for(expected, major, minor),
             });
             return Ok(());
         }
         match accepted {
-            Some(set) if set.contains(&v3) => Ok(()),
+            Some(set) if set.contains(v3) => Ok(()),
             Some(_) => {
                 let (major, minor) = version::running();
                 Err(Refusal::with(
