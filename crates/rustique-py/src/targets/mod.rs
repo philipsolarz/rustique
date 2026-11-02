@@ -17,6 +17,7 @@ pub mod r#enum;
 pub mod float;
 pub mod fnmatch;
 pub mod functools;
+pub mod gc;
 pub mod generated;
 pub mod interp;
 pub mod json;
@@ -55,6 +56,7 @@ pub static ALL: &[&[&TargetSpec]] = &[
     functools::TARGETS,
     interp::TARGETS,
     re::TARGETS,
+    gc::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,
@@ -73,5 +75,6 @@ pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {
     generated::register(accel)?;
     interp::register(accel)?;
     re::register(accel)?;
+    gc::register(accel)?;
     Ok(())
 }
