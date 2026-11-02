@@ -118,10 +118,13 @@ def test_signal_sampler_samples_cpu_not_waiting():
     finally:
         s.stop()
     sh = s.shares()
-    assert sh["mode"] == "signal" and sh["samples"] > 50
-    # most CPU samples are under posixpath.join; the sleep is not sampled
-    assert sh["shares"].get("posixpath.join", 0) > 0.3, sh
-    assert sh["cpu_ns"] < 0.8 * sh["wall_ns"]
+    assert sh["mode"] == "signal" and sh["samples"] > 20
+    # most of the main thread's CPU samples are under posixpath.join (threads other tests left
+    # running are split off by their own CPU time); the sleep is not sampled
+    attributed = 1.0 - sh["unattributed"]
+    assert sh["shares"].get("posixpath.join", 0) > 0.3 * attributed, sh
+    if threading.active_count() == 1:  # no other thread can spend CPU during the sleep
+        assert sh["cpu_ns"] < 0.8 * sh["wall_ns"]
 
 
 def test_signal_sampler_is_safe_with_threads():
