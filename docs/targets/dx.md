@@ -105,7 +105,10 @@ forked pid), `test_counter_file_longer_rows`, `test_merge_adds_counters`, and
 - **Suspensions** (Phase 1: sqlglot's `deepcopy` was suspended and restarted 49% of the
   time, invisibly): `suspended Nx` per target, `suspended now (fallback|deps|conflict)`, and
   the meaning of each.
-- **Refusals by category**, unexpected categories first, each with "what to do".
+- **Refusals by category**, unexpected categories first, each with "what to do". Long
+  lists of *expected* refusals are shortened. Free-threaded builds refuse many generated
+  targets as `build`. Unexpected categories are never shortened, and the pytest plugin
+  keeps the targets accepted with `--rustique-allow-refused` ahead of any cut.
   `unvalidated-patch` names `RUSTIQUE_UNVALIDATED_PATCH=1`. `armed` (validated at the first
   call) and `unvalidated` targets are marked.
 - **Tiers**: "opt-in tiers: gc on (1 of 1 targets active), interp off (…);
@@ -438,6 +441,13 @@ out-of-process; `pyinstrument`, `yappi`-style samplers are not) is exposed.
   - conformance: 26 CPython test modules, 0 differences;
   - report: the floor is met.
 
+  Again at 0d73921, with accel D and the interp crate:
+  - the build with `RUSTIQUE_INTERP_REQUIRE=1` compiled the handler sets;
+  - smoke: 15/15, including "interp tier installable";
+  - coverage: 90/95 (interp's targets are opt-in);
+  - tests: 1,878 passed;
+  - conformance: OK.
+
 actionlint could not be fetched in this environment (the download was not permitted). Run it
 before the first dispatch.
 
@@ -480,14 +490,15 @@ for when the lead asks, once the target workstreams are merged:
   signal sampler (CPU not waiting, threads, handler restored, steps aside for a program's
   own SIGPROF), the profiler (C children, thread clock), and the command.
 
-Full suite per build, at 8aadff7 (wave2 74eeb03 merged; dev box, `pytest -q tests`, M):
+Full suite per build, at 9012995 / 12ab2e5 (wave2 d1c0a78 merged, with accel D, core, text,
+datamodel and interp; dev box, `pytest -q tests`, M):
 
 | build | result |
 |---|---|
-| 3.15.1 | 2,234 passed, 6 skipped |
-| 3.15.1t | 2,234 passed, 6 skipped |
-| 3.14.9 | 2,236 passed, 4 skipped |
-| 3.14.9t | 2,236 passed, 4 skipped |
+| 3.15.1 | 2,466 passed, 36 skipped |
+| 3.15.1t | 2,481 passed, 21 skipped |
+| 3.14.9 | 2,450 passed, 52 skipped |
+| 3.14.9t | 2,465 passed, 37 skipped |
 
 Skips that are dx's:
 - the fork-pool counter test, until accel D;
