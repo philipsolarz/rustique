@@ -5,10 +5,11 @@
 set -uo pipefail
 OUT=${1:-/work/w2ws-re/results}; mkdir -p "$OUT"
 DV=/work/w2ws-re/venvs/devtools-3.15.1/bin/python
-rm -rf /work/w2ws-re/wheels
-maturin build --release -i "$DV" -o /work/w2ws-re/wheels > "$OUT/wheel.log" 2>&1
-python tools/repack_wheel.py /work/w2ws-re/wheels/*.whl >> "$OUT/wheel.log" 2>&1
-uv pip install -q --python "$DV" --force-reinstall --no-deps /work/w2ws-re/wheels/*.whl >> "$OUT/wheel.log" 2>&1
+WH=/work/w2ws-re/wheels-$(date +%s)
+mkdir -p "$WH"
+maturin build --release -i "$DV" -o "$WH" > "$OUT/wheel.log" 2>&1
+python tools/repack_wheel.py "$WH"/*.whl >> "$OUT/wheel.log" 2>&1
+uv pip install -q --python "$DV" --force-reinstall --no-deps "$WH"/*.whl >> "$OUT/wheel.log" 2>&1
 python benches/targets/re_workloads.py web/email_mime data/log_analytics data/text_corpus -r 3 \
     -o "$OUT/re-workloads-stdlib-3.15.1.json" > "$OUT/re-workloads-stdlib-3.15.1.log" 2>&1
 "$DV" benches/targets/re_workloads.py devtools/pycodestyle_stdlib devtools/sphinx_autodoc devtools/rich_render -r 3 \
