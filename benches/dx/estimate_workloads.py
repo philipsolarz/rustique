@@ -58,10 +58,14 @@ def side_plain(name: str, manifest_path: str | None = None) -> dict:
     state = mod.setup()
     mod.run(state)
     times = []
+    c0, w0, d0 = time.process_time_ns(), time.perf_counter_ns(), _estimate.run_delay_ns()
     for _ in range(3):
         t0 = time.perf_counter_ns()
         mod.run(state)
         times.append(time.perf_counter_ns() - t0)
+    timed = {"cpu_ns": time.process_time_ns() - c0, "wall_ns": time.perf_counter_ns() - w0}
+    d1 = _estimate.run_delay_ns()
+    timed["delay_ns"] = d1 - d0 if d0 is not None and d1 is not None else 0
     # as the CLI: the profiled run first (it finds the call sites of C-level targets), then
     # the sampled runs
     prof = _estimate.Profiler(manifest=manifest).start()
@@ -77,7 +81,9 @@ def side_plain(name: str, manifest_path: str | None = None) -> dict:
     res["replay"] = _estimate.replay(prof)
     res["replay_s"] = time.perf_counter() - t0
     res["plain_ns"] = statistics.median(times)
-    res["sampled"] = sampler.shares()
+    # CPU, wall and run-queue delay of the timed runs, the window `plain_ns` comes from (the
+    # shares are fractions of CPU time, the same in any window; the box's load is not)
+    res["sampled"] = dict(sampler.shares(), **timed)
     return res
 
 
