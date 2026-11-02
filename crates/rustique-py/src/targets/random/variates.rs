@@ -62,14 +62,8 @@ macro_rules! null {
     };
 }
 
-static V: Names = Names {
-    normalvariate: null!(),
-    gauss_next: null!(),
-    mu: null!(),
-    sigma: null!(),
-    lambd: null!(),
-    alpha: null!(),
-};
+static V: Names =
+    Names { normalvariate: null!(), gauss_next: null!(), mu: null!(), sigma: null!(), lambd: null!(), alpha: null!() };
 
 /// `random.NV_MAGICCONST` and `random.TWOPI` (pinned; their values, as bits).
 static NV_MAGICCONST: AtomicU64 = AtomicU64::new(0);
@@ -159,7 +153,8 @@ unsafe fn pow2(x: f64, y: f64) -> Option<f64> {
     unsafe {
         let a = ffi::PyFloat_FromDouble(x);
         let b = ffi::PyFloat_FromDouble(y);
-        let r = if a.is_null() || b.is_null() { std::ptr::null_mut() } else { ffi::PyNumber_Power(a, b, ffi::Py_None()) };
+        let r =
+            if a.is_null() || b.is_null() { std::ptr::null_mut() } else { ffi::PyNumber_Power(a, b, ffi::Py_None()) };
         ffi::Py_XDECREF(a);
         ffi::Py_XDECREF(b);
         if r.is_null() || !is_type(r, &raw mut ffi::PyFloat_Type) {
@@ -616,15 +611,7 @@ macro_rules! variate {
     };
 }
 
-variate!(
-    NORMALVARIATE,
-    prep_normal,
-    "random.normalvariate",
-    "normalvariate",
-    vc_normalvariate,
-    G_NORMAL,
-    FP_NORMAL
-);
+variate!(NORMALVARIATE, prep_normal, "random.normalvariate", "normalvariate", vc_normalvariate, G_NORMAL, FP_NORMAL);
 variate!(LOGNORMVARIATE, prep_lognorm, "random.lognormvariate", G_LOGNORM);
 variate!(
     EXPOVARIATE,
@@ -644,7 +631,15 @@ variate!(
     G_PARETO,
     &[(3, 14, "1a130384d6ccb719"), (3, 15, "dce41532531c3cd2")]
 );
-variate!(GAUSS, prep_gauss, "random.gauss", "gauss", vc_gauss, G_GAUSS, &[(3, 14, "faac491a958d3838"), (3, 15, "9bd699354dfa75aa")]);
+variate!(
+    GAUSS,
+    prep_gauss,
+    "random.gauss",
+    "gauss",
+    vc_gauss,
+    G_GAUSS,
+    &[(3, 14, "faac491a958d3838"), (3, 15, "9bd699354dfa75aa")]
+);
 
 /// The five variate targets.
 pub static TARGETS: &[&TargetSpec] = &[&NORMALVARIATE, &LOGNORMVARIATE, &EXPOVARIATE, &PARETOVARIATE, &GAUSS];

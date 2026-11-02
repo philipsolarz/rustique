@@ -41,9 +41,8 @@ use rustique_core::random::{Mt, N};
 
 use crate::accel::{self, Prepare, Reason, Refusal, TargetSpec};
 use crate::targets::utils_kit::{
-    _PyType_Lookup, Guard, INST, O, TypeCache, call_original, generic_getattro, get_s, int_value, interned,
-    is_type, keep, key, long_from_i128, module_dict_s, nargs, prepare_symbols, unshadowed, version_tag, with_cs,
-    with_cs2,
+    _PyType_Lookup, Guard, INST, O, TypeCache, call_original, generic_getattro, get_s, int_value, interned, is_type,
+    keep, key, long_from_i128, module_dict_s, nargs, prepare_symbols, unshadowed, version_tag, with_cs, with_cs2,
 };
 
 const R: Ordering = Ordering::Relaxed;

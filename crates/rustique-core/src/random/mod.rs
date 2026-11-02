@@ -259,7 +259,11 @@ impl SmallSet {
     fn new(k: usize) -> Self {
         let size = (4 * k).next_power_of_two().max(16);
         debug_assert!(size <= SET_STACK);
-        let mut s = SmallSet { slots: [std::mem::MaybeUninit::uninit(); SET_STACK], mask: size - 1, shift: 64 - size.trailing_zeros() };
+        let mut s = SmallSet {
+            slots: [std::mem::MaybeUninit::uninit(); SET_STACK],
+            mask: size - 1,
+            shift: 64 - size.trailing_zeros(),
+        };
         for slot in &mut s.slots[..size] {
             slot.write(0);
         }
@@ -578,9 +582,26 @@ mod tests {
             }
             out
         }
-        let cases = [(1, 0), (1, 1), (6, 2), (21, 5), (22, 5), (40, 5), (40, 40), (100, 6), (300, 20),
-                     (512, 100), (513, 100), (600, 590), (10_000, 255), (10_000, 256), (10_000, 257),
-                     (1_000_000, 20), (1_000_000, 300), (5_000, 1_000)];
+        let cases = [
+            (1, 0),
+            (1, 1),
+            (6, 2),
+            (21, 5),
+            (22, 5),
+            (40, 5),
+            (40, 40),
+            (100, 6),
+            (300, 20),
+            (512, 100),
+            (513, 100),
+            (600, 590),
+            (10_000, 255),
+            (10_000, 256),
+            (10_000, 257),
+            (1_000_000, 20),
+            (1_000_000, 300),
+            (5_000, 1_000),
+        ];
         for (seed, &(n, k)) in cases.iter().enumerate() {
             let (mut a, mut ia) = seeded(seed as u32 + 100);
             let (mut b, mut ib) = seeded(seed as u32 + 100);
