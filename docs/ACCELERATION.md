@@ -163,6 +163,16 @@ discovered becomes a guard (the input falls back) or a bug.
    `dict.mp_subscript`/`mp_ass_subscript` (de-specializes every `d[k]`, M§4). A slot that
    the specializer bypasses for the exact type (`str ==`, `str +`, `s[i]`, `int +`,
    `k in d`, `str(s)`, `for c in s` on 3.15; M§3) brings nothing: don't patch it.
+   *Exception (wave 2, generated code; `docs/targets/generated.md` §4):* a target may set
+   the `tp_alloc` of a heap type it created or recognized at creation (today: a dataclass
+   whose generated `__init__` carries a kernel) to a function that returns exactly
+   `PyType_GenericAlloc(type, n)`, so that the specializer's `CALL_ALLOC_AND_ENTER_INIT`
+   (which inlines `__init__` and bypasses its vectorcall) does not apply and calls reach the
+   kernel through `type_call`. Conditions: set only before the class is returned to user
+   code, followed by `PyType_Modified`; the function gives any type whose `__init__` does not
+   carry the kernel, and any class while a tool listens, `PyType_GenericAlloc` back;
+   `on_disable` restores every routed class; cells for subclasses, polymorphic sites, tools
+   and disable/re-enable are part of the target's never-slower evidence.
 7. **Python functions**: `PyFunction_SetVectorcall` on the function object found in the
    module or class `__dict__`. Never replace module attributes, `__code__`, or class
    `__dict__` entries (M§0: captured references, pickling, introspection break).
