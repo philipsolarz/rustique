@@ -42,7 +42,7 @@ def outcomes(path):
     import xml.etree.ElementTree as ET
     out = {}
     for case in ET.parse(path).iter("testcase"):
-        tid = f"{case.get('classname')}.{case.get('name')}"
+        tid = re.sub(r" at 0x[0-9a-f]+", "", f"{case.get('classname')}.{case.get('name')}")
         st = "pass"
         for child in case:
             if child.tag in ("failure", "error", "skipped"):
