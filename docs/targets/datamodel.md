@@ -235,7 +235,7 @@ Other families (all/base; k=8 runs × 2 repeats, spread ≤ ±0.0033; json_api k
 | rich_render | 0.9759 | | fastapi_sqlalchemy | 0.9906 |
 | django_admin | 0.9972 | | pylint_stdlib | 0.9972 |
 | drf_api | 0.9992 | | flask_marshmallow | 0.9996 |
-| falcon_api | 1.0012 (±0.0018) | | | |
+| falcon_api | 1.0012 (±0.0018; no hit or fallback of any data-model target in its `run()`: noise) | | | |
 
 Frameworks geometric mean 0.990.
 
