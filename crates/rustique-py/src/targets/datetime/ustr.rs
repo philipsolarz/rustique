@@ -81,10 +81,8 @@ pub unsafe fn ascii<'a>(s: *mut ffi::PyObject) -> Option<&'a [u8]> {
     unsafe {
         let m = MASK.load(Ordering::Relaxed);
         let n = ffi::PyUnicode_GET_LENGTH(s) as usize;
-        if m != 0 {
-            if state_word(s) & m == m {
-                return Some(std::slice::from_raw_parts(s.cast::<ffi::PyASCIIObject>().add(1).cast::<u8>(), n));
-            }
+        if m != 0 && state_word(s) & m == m {
+            return Some(std::slice::from_raw_parts(s.cast::<ffi::PyASCIIObject>().add(1).cast::<u8>(), n));
         }
         slow(s, n)
     }
