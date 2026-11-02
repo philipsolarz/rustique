@@ -158,9 +158,12 @@ Each group counts executions of its overridden path and fast-path hits (attribut
 fills excluded) and decides twice: **early**, after the first 65,536 executions, when its hits
 are below a quarter of break-even (its cost is visible already); **final**, after 16 windows
 (~1M executions), at break-even, a horizon long enough to average out start-up phases for
-borderline groups. Break-even ratios: attribute family 5, `object.__setattr__` 64, keyword
-instantiation 64, `isinstance` 4 (a hit saves 27–490 Ir, a fallback through ABCs, hooks or
-unions costs +12–45 Ir). A
+borderline groups, with every cache fill debited 16 times (fills that keep coming — types
+created or modified per run, conflicting entries — are a cost, not a warm-up). Break-even
+ratios: attribute family 5, `object.__setattr__` 64, keyword instantiation 64, `isinstance` 4.
+`isinstance` counts only paths that save or cost: negative and metaclass answers are credited,
+the slow `__class__` lookup and fallbacks (ABCs, hooks, unions) debited; exact and plain
+positive answers are not counted (no counter on the cheapest paths). A
 suspension asks the registry (`Counters::request_suspend`), which restores the core's handlers
 for the process and reports the target `suspended`; a later `enable()` reinstalls it and the
 group counts afresh. The early decision fixed the T1 misses of the first measurement
@@ -282,6 +285,12 @@ without swapping anything (the harness's own footprint), `tier` also enables the
 | 3.15.2 | noop / tier | 47,274 | 65 / 65 | 2,998 / 3,000 | 23 / 23 | 3,813 / 3,817 | 0 file differences; per-test: `test_os` `test_closerange` ×2 skipped with the tier (it skips when no range of free file descriptors is available; on 3.15.2t it went the other way) |
 | 3.15.2t | noop / tier | 47,323 | 66 / 65 | 2,968 / 2,966 | 24 / 23 | 3,819 / 3,812 | 0 failing only with the tier; per-test: the same two `test_closerange` (skipped in noop) and `test_multiprocessing_fork` `test_put` (failed in noop) |
 | 3.15.1, `PYTHON_JIT=1` | 20 files (isinstance, descr, class, dataclasses, functools, inspect, opcache, monitoring, sys_settrace, generators, coroutines, typing, enum, abc, property, super, types, unittest, json, ast) | 5,551 | 49 | 71 | 3 | 123 | **0 differences** (5,510 outcomes) |
+
+Final build (`0d73921`, wave2 with this tier): 3.15.1t tier vs noop 0 differences (47,091
+outcomes, 3,803 processes); 3.15.1: 2 differences, `test_os` `TimerfdTests.test_timerfd_interval`
+and `test_timerfd_select` failed with the tier at load average ~60 on the shared box; both pass
+with the tier 3 times out of 3 when rerun (and with the harness alone): timer-interval tests
+under load, not the tier.
 
 The plain failures are environmental (python-build-standalone ships no `_testcapi`, no `Lib/test`
 of its own, no `idlelib.idle_test`; perf; `-I` subprocesses); the noop harness adds three
