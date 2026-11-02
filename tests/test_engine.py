@@ -29,11 +29,20 @@ REMOVED = ["List", "Dict", "Set", "Tuple", "FrozenSet", "ListType", "DictType", 
            "Expr", "X", "arange", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "native"]
 
 
-def py(code: str, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
+def py(code: str, *args: str, env: dict[str, str] | None = None, isolated_site: bool = False,
+       path_only: str | None = None):
+    """Run `code` in a fresh interpreter. `isolated_site`: without `site` (`-S`), with only the
+    `rustique` package's directory on sys.path, so that no installed `.pth` runs (a test
+    site directory is then the only place the startup line comes from). `path_only`: without
+    `site`, with only that directory on sys.path."""
+    e = {k: v for k, v in os.environ.items() if not k.startswith(("RUSTIQUE", "PYTHONPATH"))}
+    flags = []
+    if isolated_site or path_only:
+        flags = ["-S"]
+        e["PYTHONPATH"] = path_only or os.path.dirname(os.path.dirname(rustique.__file__))
     e.update(env or {})
-    return subprocess.run([sys.executable, "-c", textwrap.dedent(code), *args], capture_output=True, text=True,
-                          env=e, timeout=120)
+    return subprocess.run([sys.executable, *flags, "-c", textwrap.dedent(code), *args], capture_output=True,
+                          text=True, env=e, timeout=120)
 
 
 # --- the API after 0.3 ------------------------------------------------------------------------
@@ -155,7 +164,7 @@ def _site(tmp_path, layout: str) -> str:
 def test_startup_in_each_wheel_layout(tmp_path, layout, name, file):
     import json
 
-    r = py(PROBE, _site(tmp_path, layout), env={"RUSTIQUE": "1"})
+    r = py(PROBE, _site(tmp_path, layout), env={"RUSTIQUE": "1"}, isolated_site=True)
     assert r.returncode == 0 and r.stderr == "", r.stderr
     out = json.loads(r.stdout)
     assert out["loaded"] == ["_rustique", "rustique._rustique"]  # not the package
@@ -168,7 +177,7 @@ def test_startup_in_each_wheel_layout(tmp_path, layout, name, file):
 def test_off_values_leave_nothing_loaded_in_each_layout(tmp_path, layout, value):
     import json
 
-    r = py(PROBE, _site(tmp_path, layout), env={"RUSTIQUE": value})
+    r = py(PROBE, _site(tmp_path, layout), env={"RUSTIQUE": value}, isolated_site=True)
     assert r.returncode == 0 and r.stderr == "", r.stderr
     out = json.loads(r.stdout)
     assert out["loaded"] == [] and out["package_reuses"] is False  # `import rustique` loads it afresh
@@ -178,8 +187,26 @@ def test_shim_without_an_extension_raises_importerror(tmp_path):
     d = tmp_path / "site"
     (d / "rustique").mkdir(parents=True)
     shutil.copy(os.path.join(PYSRC, "_rustique.py"), d)
-    r = py("import sys; sys.path.insert(0, sys.argv[1]); import _rustique", str(d))
+    r = py("import sys; sys.path.insert(0, sys.argv[1]); import _rustique", str(d), isolated_site=True)
     assert r.returncode == 1 and "ImportError: rustique: no extension module in" in r.stderr
+
+
+def test_import_errors_of_the_extension_are_not_masked(tmp_path):
+    # A refusal (subinterpreters) or a broken build raises ImportError from `import
+    # _rustique`: `import rustique` reports that error, not a fallback's.
+    (tmp_path / "_rustique.py").write_text("raise ImportError('boom: the extension refused')\n")
+    r = py("import sys; sys.path.insert(0, sys.argv[1]); import rustique", str(tmp_path), isolated_site=True)
+    assert r.returncode == 1 and r.stderr.rstrip().endswith("ImportError: boom: the extension refused"), r.stderr
+
+
+def test_package_relative_fallback_when_no_top_level_module(tmp_path):
+    # A tree with the package but neither the shim nor a top-level extension.
+    pkg = tmp_path / "rustique"
+    shutil.copytree(os.path.dirname(rustique.__file__), pkg, ignore=shutil.ignore_patterns("__pycache__", "_rustique*"))
+    os.symlink(EXT, pkg / f"_rustique{SUFFIX}")
+    r = py("import sys, rustique; print(rustique._rustique.__name__, rustique._rustique is sys.modules['_rustique'])",
+           path_only=str(tmp_path))
+    assert r.returncode == 0 and r.stdout.split() == ["rustique._rustique", "True"], r.stderr
 
 
 # --- the wheel repack (tools/repack_wheel.py) ------------------------------------------------
