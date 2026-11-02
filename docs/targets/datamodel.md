@@ -182,7 +182,7 @@ differs by those frames (as for every wave-1 vectorcall target).
 | fallback: `Color(99)` miss → ValueError | 12,937 | 13,266 | 1.025 |
 | fallback: `Bits.A \| 2` (IntFlag \| int) | 8,795 | 7,169 | 0.815 |
 | fallback: user `enum.property` | 1,097 | 1,129 | 1.029 |
-| fallback: value map with a user-typed key (`Bad(1)`) | 2,348 | 2,511 | 1.069 (see below) |
+| fallback: value map with a user-typed key (`Bad(1)`) | 2,348 | 2,425 | 1.033 |
 | `NT(1, 2, 3)` / keywords / `typing.NamedTuple` | 2,209 / 3,514 / 2,065 | 1,604 / 2,750 / 1,500 | 0.726 / 0.783 / 0.726 |
 | `NT._make(tuple)` / `(list)` / subclass | 1,988 / 2,160 / 2,013 | 1,395 / 1,588 / 1,420 | 0.702 / 0.735 / 0.706 |
 | `nt._replace(b=5)` | 5,355 | 1,420 | 0.265 |
@@ -196,14 +196,15 @@ differs by those frames (as for every wave-1 vectorcall target).
 | `h.handle(1)` / `h.handle` (singledispatchmethod) | 9,672 / 3,417 | 8,405 / 2,796 | 0.869 / 0.818 |
 | fallbacks: metaclass with `__eq__`, classmethod implementation | 4,454 / 10,501 | 4,436 / 10,293 | 0.996 / 0.980 |
 | decorate: `contextmanager(f)` / `singledispatch(f)` | 12,904 / 34,743 | 13,200 / 35,138 | 1.023 / 1.011 |
-| create `namedtuple` + 1 call / frozen dataclass + 1 call / enum (5 members) | 312,831 / 2,816,580 / 420,352 | 314,126 / 2,842,462 / 422,583 | 1.004 / 1.009 / 1.005 |
+| create `namedtuple` + 1 call / frozen dataclass + 1 call / enum (5 members), steady state | 310,468 / 2,383,445 / 415,913 | 312,245 / 2,409,341 / 418,328 | 1.006 / 1.011 / 1.006 |
+| first use in a process, incl. first-call validation (accel D): namedtuple / dataclass / enum | 312,825 / 2,815,981 / 296,917 | 434,947 / 2,999,206 / 397,854 | +122k / +183k (2 targets) / +101k (3 targets) Ir, once |
 
-`Bad(1)` (1.069) is an enum whose `_value2member_map_` holds a key of a user class (only
-possible by writing to the private map): every lookup falls back after the class facts
-said "unsafe keys"; the +163 Ir are `tp_call` kernel + `slot_tp_call` + the vectorcall
-kernel's early exit. Not a realistic program state; listed as the one cell above 1.05.
-Creation cells measured after merging accel's fix of the monitoring-version tax its layout
-probe caused (wave2 a000743; before it: 1.012 / 1.023 / 1.033, ~930 Ir per new code object).
+`Bad(1)` is an enum whose private `_value2member_map_` was given a key of a user type: the
+class facts (recomputed when the watched map changes) rule the lookup out, and the `tp_call`
+kernel checks that cached verdict first, so such a class costs a few loads (1.069 before
+this check). First-call validation (accel D) moves each target's validation to its first
+call: one-time costs within the install budget (T9: ≤ max(5% of the module's import, 0.1M);
+`import collections` 3.46M, `import dataclasses` 6.40M Ir).
 
 ### 3.2 Workloads (instructions per `run()`, `perf stat`, dev box, 3.15.1, digests identical; `benches/datamodel/wl_instr.py`)
 
@@ -224,8 +225,10 @@ this workstream's effect. Custom family (k=3, r=2, spread ≤ ±0.0034):
 | mini_interp | 0.9994 | 1.0019 |
 | **geometric mean** | **0.929** | **0.944** |
 
-mini_interp re-measured with 6 runs × 3 repeats: all/base 1.0001 (±0.0005; 1,984 namedtuple
-hits per run, no fallback: noise).
+Near-1.0 workloads re-measured after the last merge with 8 runs × 3 repeats (all/plain,
+all/base): mini_interp 0.9992 / 0.9995, task_planner 0.9989 / 0.9960, fulfilment_sim 0.9750
+/ 1.0003 (no data-model kernel runs there; ±0.0001). mini_interp's 1.005 in the k=3 tier
+table above is the same noise (1,984 namedtuple hits per run, no fallback).
 
 Other families (all/base; k=8 runs × 2 repeats, spread ≤ ±0.0033; json_api k=3):
 
@@ -245,6 +248,46 @@ Frameworks geometric mean 0.990.
 test_typing, test_contextlib, test_contextlib_async, test_functools, test_copy,
 test_inspect, test_weakref, test_pickle plain and enabled (all four groups enabled before
 the module is imported) and compares every test id's outcome.
+
+## 4.1 With the opt-in `interp` tier (`RUSTIQUE_TIERS=interp`)
+
+The tier's `interp.kwinit` (keyword instantiation pushed inline) and `interp.setattr`
+(`object.__setattr__` fast path) run CPython's own generated frozen `__init__` faster than
+the dataclass kernel, and a kernel would also keep `interp.kwinit` from taking the class
+(its vectorcall is not CPython's) and the positional routing would keep the inline
+`CALL_ALLOC_AND_ENTER_INIT`. So while both overrides are live, the dataclass hook leaves
+new classes to the tier; every other data-model kernel is unaffected (different entry
+points). `tests/targets/test_dm_interp_compose.py`: plain, data-model only, tier only and
+both give identical logs (values, errors and tracebacks, `__post_init__`/`__setattr__`
+side effects) and the data-model counters are identical with and without the tier (the
+dataclass ones are 0 with it). Cells (`benches/targets/datamodel_interp_cells.py`,
+callgrind, 3.15.1):
+
+| cell | tier only | data-model only | both |
+|---|---:|---:|---:|
+| `F(x=1, y=2)` frozen keywords | 0.456 | 0.636 | 0.456 |
+| `F(1, 2)` frozen positional | 0.603 | 0.643 | 0.603 |
+| `E(a=1, b='t')` slots kw_only | 0.449 | 0.640 | 0.449 |
+| `Post(x=1)` (`__post_init__`, no kernel) | 0.531 | 1.004 | 0.531 |
+| `Plain(1, b=2)` plain class | 0.523 | 1.000 | 0.523 |
+
+Custom family with the tier (instructions per `run()` vs plain, 3.15.1 PBS, k=3 × 2,
+digests identical; "all" = every default group, "tier" = all + `interp`, "tier w/o
+data-model" = the tier and every group except this workstream's):
+
+| workload | all | tier | tier w/o data-model |
+|---|---:|---:|---:|
+| rules_engine | 0.798 | 0.804 | 0.892 |
+| report_engine | 0.838 | 0.828 | 0.828 |
+| event_ledger | 0.864 | 0.862 | 0.945 |
+| order_domain | 0.959 | 0.842 | 0.864 |
+| orm_mapper | 0.947 | 0.894 | 0.923 |
+| di_plugins | 0.957 | 0.941 | 0.967 |
+| ecs_arena | 0.955 | 0.951 | 0.951 |
+| fulfilment_sim | 0.975 | 0.955 | 0.955 |
+| task_planner | 1.000 | 0.998 | 1.001 |
+| mini_interp | 1.005 (k=3 noise; 0.999 at k=8 × 3) | 0.998 | 0.997 |
+| **geometric mean** | **0.927** | **0.905** | **0.931** |
 
 ## 5. Free-threading
 

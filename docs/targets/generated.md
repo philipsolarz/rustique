@@ -106,6 +106,14 @@ compare-and-swap. This wave the target is not validated on free-threaded builds:
 depends on the dataclass `__init__` kernel, a dynamic site, and dynamic sites refuse there
 (every `PyFunction_SetVectorcall` stops the world; `docs/targets/datamodel.md` §5).
 
+### 3.4 With the `interp` tier
+
+On PBS builds with the opt-in `interp` tier, CPython's generated `__init__` runs faster
+than the kernel (keyword calls pushed inline by `interp.kwinit`, positional calls inline by
+CPython, `object.__setattr__` fast-pathed by `interp.setattr`: `F(1, 2)` 0.603 vs 0.643
+routed): while both overrides are live the dataclass hook neither installs the kernel nor
+routes (`docs/targets/datamodel.md` §4.1). The routing is for the default tier.
+
 ## 4. Proposed amendment to ACCELERATION §3.6 (for DECISIONS)
 
 > 6. **Slots**: only slots no specializer compares by pointer. [...] *Exception (wave 2,
