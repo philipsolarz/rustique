@@ -497,6 +497,13 @@ unsafe extern "C" fn k_enumtype_call(cls: P, args: P, kw: P) -> P {
             C_CALL.fallback(Reason::Args);
             return ORIG_TP_CALL.get()(cls, args, kw);
         }
+        // A class whose facts rule the lookup out (a value map with a key of a user type, no
+        // members yet, another `__new__`) takes CPython's path at once: the cached verdict
+        // costs a few loads; the dict watcher recomputes it when either map changes.
+        if class_bits(cls.cast()) & B_LOOKUP == 0 {
+            C_CALL.fallback(Reason::Args);
+            return ORIG_TP_CALL.get()(cls, args, kw);
+        }
         if !DEPS.ok() || !lookup_quiet() || !meta_ok(meta) {
             C_CALL.fallback(Reason::Tools);
             return ORIG_TP_CALL.get()(cls, args, kw);

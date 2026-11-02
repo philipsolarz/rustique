@@ -182,7 +182,7 @@ differs by those frames (as for every wave-1 vectorcall target).
 | fallback: `Color(99)` miss → ValueError | 12,937 | 13,266 | 1.025 |
 | fallback: `Bits.A \| 2` (IntFlag \| int) | 8,795 | 7,169 | 0.815 |
 | fallback: user `enum.property` | 1,097 | 1,129 | 1.029 |
-| fallback: value map with a user-typed key (`Bad(1)`) | 2,348 | 2,511 | 1.069 (see below) |
+| fallback: value map with a user-typed key (`Bad(1)`) | 2,348 | 2,425 | 1.033 |
 | `NT(1, 2, 3)` / keywords / `typing.NamedTuple` | 2,209 / 3,514 / 2,065 | 1,604 / 2,750 / 1,500 | 0.726 / 0.783 / 0.726 |
 | `NT._make(tuple)` / `(list)` / subclass | 1,988 / 2,160 / 2,013 | 1,395 / 1,588 / 1,420 | 0.702 / 0.735 / 0.706 |
 | `nt._replace(b=5)` | 5,355 | 1,420 | 0.265 |
@@ -196,14 +196,15 @@ differs by those frames (as for every wave-1 vectorcall target).
 | `h.handle(1)` / `h.handle` (singledispatchmethod) | 9,672 / 3,417 | 8,405 / 2,796 | 0.869 / 0.818 |
 | fallbacks: metaclass with `__eq__`, classmethod implementation | 4,454 / 10,501 | 4,436 / 10,293 | 0.996 / 0.980 |
 | decorate: `contextmanager(f)` / `singledispatch(f)` | 12,904 / 34,743 | 13,200 / 35,138 | 1.023 / 1.011 |
-| create `namedtuple` + 1 call / frozen dataclass + 1 call / enum (5 members) | 312,831 / 2,816,580 / 420,352 | 314,126 / 2,842,462 / 422,583 | 1.004 / 1.009 / 1.005 |
+| create `namedtuple` + 1 call / frozen dataclass + 1 call / enum (5 members), steady state | 310,468 / 2,383,445 / 415,913 | 312,245 / 2,409,341 / 418,328 | 1.006 / 1.011 / 1.006 |
+| first use in a process, incl. first-call validation (accel D): namedtuple / dataclass / enum | 312,825 / 2,815,981 / 296,917 | 434,947 / 2,999,206 / 397,854 | +122k / +183k (2 targets) / +101k (3 targets) Ir, once |
 
-`Bad(1)` (1.069) is an enum whose `_value2member_map_` holds a key of a user class (only
-possible by writing to the private map): every lookup falls back after the class facts
-said "unsafe keys"; the +163 Ir are `tp_call` kernel + `slot_tp_call` + the vectorcall
-kernel's early exit. Not a realistic program state; listed as the one cell above 1.05.
-Creation cells measured after merging accel's fix of the monitoring-version tax its layout
-probe caused (wave2 a000743; before it: 1.012 / 1.023 / 1.033, ~930 Ir per new code object).
+`Bad(1)` is an enum whose private `_value2member_map_` was given a key of a user type: the
+class facts (recomputed when the watched map changes) rule the lookup out, and the `tp_call`
+kernel checks that cached verdict first, so such a class costs a few loads (1.069 before
+this check). First-call validation (accel D) moves each target's validation to its first
+call: one-time costs within the install budget (T9: ≤ max(5% of the module's import, 0.1M);
+`import collections` 3.46M, `import dataclasses` 6.40M Ir).
 
 ### 3.2 Workloads (instructions per `run()`, `perf stat`, dev box, 3.15.1, digests identical; `benches/datamodel/wl_instr.py`)
 

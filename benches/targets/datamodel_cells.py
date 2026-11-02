@@ -212,13 +212,28 @@ CELLS: dict[str, tuple[str, str]] = {
     "sd singledispatch(f) (decorate)": (SD, "functools.singledispatch(H)"),
 }
 
+# Class creation in steady state: one class of each kind is created and called in the setup,
+# so first-call validation (accel D: targets are validated at their first call) is not in
+# the region; the "first use" regions measure that one-time validation.
+_WARM = (
+    "import collections, dataclasses, enum\n"
+    "collections.namedtuple('W', 'a')(1)\n"
+    "@dataclasses.dataclass(frozen=True)\nclass W:\n    x: int\nW(x=1)\n"
+    "class WE(enum.Enum):\n    A = 1\nWE(1); WE.A.value; hash(WE.A)\n"
+)
 REGIONS: dict[str, tuple[str, str]] = {
-    "create namedtuple + 1 call": ("import collections", "P = collections.namedtuple('P', 'a b c'); P(1, 2, 3)"),
+    "create namedtuple + 1 call": (_WARM, "P = collections.namedtuple('P', 'a b c'); P(1, 2, 3)"),
     "create frozen dataclass + 1 call": (
+        _WARM,
+        "@dataclasses.dataclass(frozen=True)\nclass F:\n    x: int\n    y: int = 0\nF(x=1)",
+    ),
+    "create enum (5 members)": (_WARM, "class E(enum.Enum):\n    A=1\n    B=2\n    C=3\n    D=4\n    E=5\nE(3)"),
+    "first use incl. validation: namedtuple": ("import collections", "P = collections.namedtuple('P', 'a b c'); P(1, 2, 3)"),
+    "first use incl. validation: dataclass": (
         "import dataclasses",
         "@dataclasses.dataclass(frozen=True)\nclass F:\n    x: int\n    y: int = 0\nF(x=1)",
     ),
-    "create enum (5 members)": ("import enum", "class E(enum.Enum):\n    A=1\n    B=2\n    C=3\n    D=4\n    E=5\nE(3)"),
+    "first use incl. validation: enum": ("import enum", "class E(enum.Enum):\n    A=1\n    B=2\nE(2); E.A.value; hash(E.A)"),
 }
 
 
