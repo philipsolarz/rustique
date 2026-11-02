@@ -590,12 +590,12 @@ def test_first_template_sub_runs_the_original():
     first template `sub` of the process: that one runs the original (subprocess: fresh `_sre`)."""
     import subprocess
     code = (
-        "import builtins, re, rustique\n"
+        "import builtins, re, sys, rustique\n"
         "rustique.enable(only=['re']); rustique.stats(True)\n"
         "seen = []\n"
         "real = builtins.__import__\n"
         "def imp(name, *a, **k):\n"
-        "    seen.append((name, __import__('sys')._getframe(1).f_code.co_name))\n"
+        "    seen.append((name, sys._getframe(1).f_code.co_name))\n"
         "    return real(name, *a, **k)\n"
         "re.compile('(a)')\n"
         "builtins.__import__ = imp\n"
@@ -606,7 +606,46 @@ def test_first_template_sub_runs_the_original():
         "r2 = re.sub('(a)', r'<\\1>', 'xa')\n"
         "print(r1, r2, seen, rustique.stats()['re.sub']['hits'])\n"
     )
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.split()
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    out = r.stdout.split()
     assert out[0] == out[1] == "x<a>"
     assert "('re'," in " ".join(out) and "'sub')" in " ".join(out)  # imported under re.sub's frame
     assert out[-1] == "1"  # the second one was accelerated
+
+
+def test_threads_with_enable_disable_cycles():
+    """Workers compile, match and substitute while the main thread disables and re-enables the
+    group: every result is CPython's."""
+    names = [t["name"] for t in rt.status()["targets"] if t["group"] == "re"]
+    stop = threading.Event()
+    errors = []
+
+    def work(k):
+        try:
+            j = 0
+            while not stop.is_set():
+                j += 1
+                p = r"(?P<a>\d+)-(%d)|(?i:x{%d})" % (j % 17, 1 + j % 5)
+                if j % 97 == 0:
+                    re.purge()
+                s = "a %d-%d xxxx" % (j, j % 17)
+                assert re.sub(p, r"<\g<a>>", s) == REF["sub"](p, r"<\g<a>>", s), p
+                c = _compiler.compile(p, 0)
+                assert (c.pattern, c.groups, dict(c.groupindex)) == (p, 2, {"a": 1})
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    ts = [threading.Thread(target=work, args=(k,)) for k in range(6)]
+    for t in ts:
+        t.start()
+    try:
+        for _ in range(15):
+            A.disable(names)
+            rt.enable(only="re")
+    finally:
+        stop.set()
+        for t in ts:
+            t.join()
+    assert not errors, errors[:3]
+    assert all(t["state"] == "installed" for t in rt.status()["targets"] if t["group"] == "re")

@@ -1,6 +1,6 @@
 """Whole-process instructions of real programs' startup with and without the `re` group
 (docs/targets/re.md): callgrind `--instr-atstart=yes`, PYTHONHASHSEED=0, one fresh process
-per (program, variant):
+per (program, variant), after an unmeasured warm-up run of each (bytecode caches written):
 
     plain   RUSTIQUE unset
     no-re   RUSTIQUE=1 RUSTIQUE_EXCLUDE=re      (every other group)
@@ -88,6 +88,10 @@ def main() -> None:
         "rq": dict(base, RUSTIQUE="1"),
     }
     cwd = os.path.join(a.workdir, "empty")
+    # warm up: every variant once, so that no measured run writes .pyc files
+    for name, argv in progs.items():
+        for v in variants.values():
+            subprocess.run([a.python, *argv], cwd=cwd, env=v, capture_output=True, check=False)
     jobs = [(name, v) for name in progs for v in variants]
     with ThreadPoolExecutor(a.j) as ex:
         irs = dict(zip(jobs, ex.map(lambda j: callgrind(a.python, progs[j[0]], cwd, variants[j[1]]), jobs)))
