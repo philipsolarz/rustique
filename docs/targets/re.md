@@ -216,12 +216,15 @@ fat LTO, PYTHONHASHSEED=0); M = measured.
 
 ### Install (M, `benches/targets/re_install.py`)
 
-`import re` costs 21.6M Ir; the lazy install of the group at its end costs **0.69M Ir (3.2%)**
-(T9 budget: 5%; eager install with `re` already imported: 0.70M). The fingerprints (59
-functions) and the table checks run on the first kernel call instead (ACCELERATION §5.7: a
-failure degrades the targets), once per process: ~0.55M for the compiler, ~0.15M for the module
-functions; with them at install the group cost 1.58M (7.3%). Pins: snapshot pins of three
-module namespaces, the builtins' own entries, key pins of the `re` globals.
+`import re` costs 21.6M Ir. With accel's first-call validation (the default on GIL builds) the
+group is *armed* at its end: **52k Ir (0.2%)**, sites holding first-call stubs (87k when `re` was
+already imported at `enable()`). Each target validates at its first call: the group's full
+`prepare` (identities, `_sre` limits, version tags, pins: ~0.65M for the compiler, ~0.15M for the
+module functions) and then, on the kernel's first call, the group's own deferred checks
+(fingerprints of 59 functions and the table checks, ~0.55M; ACCELERATION §5.7: a failure
+degrades the targets). Free-threaded builds (and `RUSTIQUE_VALIDATE=eager`) run the full
+`prepare` at install: 0.69M Ir (3.2% of `import re`; T9 budget 5%); with the fingerprints at
+install it was 1.58M (7.3%).
 
 ### Cells (M, `benches/targets/re_cells.py`: instructions per call, plain vs group installed)
 
