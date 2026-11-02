@@ -75,6 +75,14 @@ pub struct TargetSpec {
     /// credit 2, debit 1). Defaults 4 / 1 (20%).
     pub hit_credit: u8,
     pub fallback_debit: u8,
+    /// Credits v2 (docs/atlas/w2-floors.md §3): the extra debit of a [`Reason::Abandon`]
+    /// fallback (a restart after kernel work, which is wasted), on top of `fallback_debit`;
+    /// set it from the work an abandoned call wastes relative to the fallback penalty
+    /// (`continue` and root `deopt` restarts waste nothing). The decision window
+    /// ([`stats::WINDOW`](super::stats::WINDOW)) applies to every target. Default 1.
+    ///
+    /// [`Reason::Abandon`]: super::stats::Reason::Abandon
+    pub abandon_debit: u8,
     /// Called once at interpreter exit (the registry's atexit hook; once per distinct
     /// function when several targets share one), after every site was restored, every pin
     /// dropped and every dependency flag cleared: drop the target's own static references
@@ -85,10 +93,13 @@ pub struct TargetSpec {
     /// stay valid or be checked for null. Default `None`.
     pub release: Option<fn(Python<'_>)>,
     /// Called each time the target is restored after having been installed (`disable()`,
-    /// the exit hook, a refusal after install), after its sites were restored and its pins
-    /// dropped, on an attached thread, outside the pin tables lock: restore state the
-    /// target changed that is not a site (calibrated internal state, dynamic sites, caches).
-    /// Must tolerate running more than once. Default `None`.
+    /// the exit hook, a refusal after install) and when it is suspended, after its sites
+    /// were restored (and, except for a suspension, its pins dropped), on an attached
+    /// thread, outside the pin tables lock: restore state the target changed that is not a
+    /// site (calibrated internal state, routed slots, caches). A suspension may be decided
+    /// inside a call (the falling-back kernel performs it): the hook must run no Python
+    /// code and release no reference that could. Must tolerate running more than once; a
+    /// resumed target gets `on_install` again. Default `None`.
     pub on_disable: Option<fn(Python<'_>)>,
     /// Called after the target was installed (at `enable()`, or after a lazy activation on
     /// the importing path), outside the registry lock and every watcher, on an attached
@@ -133,6 +144,7 @@ impl TargetSpec {
         shared: None,
         hit_credit: crate::accel::stats::HIT_CREDIT,
         fallback_debit: crate::accel::stats::FALLBACK_DEBIT,
+        abandon_debit: crate::accel::stats::FALLBACK_DEBIT,
         release: None,
         on_disable: None,
         on_install: None,
@@ -173,6 +185,10 @@ pub enum Category {
     Symbol,
     /// A dependency is missing or not the validated object.
     Deps,
+    /// The running CPython patch release was not recorded (validated) for this build of
+    /// Rustique (`RUSTIQUE_UNVALIDATED_PATCH=1` installs the targets whose fingerprints
+    /// match a recorded release, reported "unvalidated").
+    UnvalidatedPatch,
     /// Anything else (including errors raised while preparing).
     Other,
 }
@@ -190,6 +206,7 @@ impl Category {
             Category::Selftest => "selftest",
             Category::Symbol => "symbol",
             Category::Deps => "deps",
+            Category::UnvalidatedPatch => "unvalidated-patch",
             Category::Other => "other",
         }
     }

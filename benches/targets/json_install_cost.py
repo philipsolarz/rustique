@@ -55,7 +55,8 @@ def worker(name: str) -> None:
         import rustique
 
         st = {d["name"]: d["state"] for d in rustique.status()["targets"]}
-        assert st["json.dumps"] == st["json.loads"] == "installed", st
+        # Armed (validated at the first call, the default on GIL builds) or installed.
+        assert {st["json.dumps"], st["json.loads"]} <= {"installed", "armed"}, st
 
 
 def run(name: str) -> int:

@@ -49,6 +49,14 @@ impl Fast {
             self.word(u64::from_le_bytes(w));
         }
     }
+    fn finish_u64(&self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        x ^= x >> 33;
+        x
+    }
+
     fn finish(&self) -> String {
         let mut x = self.0;
         x ^= x >> 33;
@@ -254,11 +262,12 @@ fn cache_put(code: &Bound<'_, PyAny>, fp: &str) {
     }
 }
 
-/// Forget cached fingerprints (diagnostics only).
+/// Forget cached fingerprints (diagnostics only; the exit hook).
 pub(crate) fn clear_cache() {
-    if let Ok(mut c) = CACHE.lock() {
-        *c = None;
-    }
+    let old = CACHE.lock().ok().and_then(|mut c| c.take());
+    drop(old);
+    let old3 = CACHE3.lock().ok().and_then(|mut c| c.take());
+    drop(old3);
 }
 
 /// Canonical fingerprint of a pure-Python function's code.
@@ -306,7 +315,271 @@ pub fn any(obj: &Bound<'_, PyAny>) -> PyResult<String> {
     }
 }
 
-/// The expected fingerprint for the running `(major, minor)`, if recorded.
+/// The expected fingerprint for the running `(major, minor)`, if recorded (format v2,
+/// inline in a target's code; superseded by the v3 data, [`accepted`]).
 pub fn expected_for(expected: Fingerprints, major: u8, minor: u8) -> Option<&'static str> {
     expected.iter().find(|(a, b, _)| *a == major && *b == minor).map(|(_, _, h)| *h)
+}
+
+// ---------------------------------------------------------------------------------------
+// Format v3 (DECISIONS §10.5, docs/atlas/w2-floors.md §5.3)
+// ---------------------------------------------------------------------------------------
+//
+// v2 minus docstrings (`co_consts[0]` when `CO_HAS_DOCSTRING`; `ml_doc` of C originals), and
+// with the exception table canonicalized: the handler (target, depth, lasti) of each
+// instruction that can raise a *synchronous* exception (opcode metadata `HAS_ERROR` /
+// `HAS_ERROR_NO_POP`), instead of the table's byte encoding. Two code objects with equal v3
+// send every synchronous exception to the same handler; asynchronous ones (signals,
+// `PyThreadState_SetAsyncExc` at `JUMP_BACKWARD`'s eval breaker) are outside the contract
+// (ACCELERATION §5.8). The accepted v3 hashes of every original live in `fingerprints.txt`
+// (per target, original and minor; a set: a patch release whose code changed in a way the
+// kernel still covers adds its hash after review), with the list of recorded patch releases
+// (`benches/accel/record_patch.py` runs the conformance suites first).
+
+const CO_HAS_DOCSTRING: i32 = 0x0400_0000;
+
+/// Raising opcodes, cache sizes and `EXTENDED_ARG` of the running minor.
+fn opcode_tables() -> Option<(&'static [u64; 4], &'static [u8; 256])> {
+    use super::opcodes::*;
+    match super::version::running() {
+        (3, 14) => Some((&RAISES_3_14, &CACHES_3_14)),
+        (3, 15) => Some((&RAISES_3_15, &CACHES_3_15)),
+        _ => None,
+    }
+}
+
+/// One exception-table varint (6 bits per byte, bit 6: more).
+fn varint(t: &[u8], i: &mut usize) -> Option<u32> {
+    let mut b = *t.get(*i)?;
+    *i += 1;
+    let mut v = u32::from(b & 63);
+    while b & 64 != 0 {
+        b = *t.get(*i)?;
+        *i += 1;
+        v = (v << 6) | u32::from(b & 63);
+    }
+    Some(v)
+}
+
+/// The canonical exception table: for each raising instruction (code-unit index), its
+/// handler or none.
+fn canonical_exceptions(h: &mut Fast, code: &[u8], table: &[u8]) -> PyResult<()> {
+    let (raises, caches) =
+        opcode_tables().ok_or_else(|| PyTypeError::new_err("no opcode tables for this CPython minor"))?;
+    let mut entries: Vec<(u32, u32, u32, u32)> = Vec::new();
+    let mut i = 0;
+    while i < table.len() {
+        let parsed = (|| {
+            Some((varint(table, &mut i)?, varint(table, &mut i)?, varint(table, &mut i)?, varint(table, &mut i)?))
+        })();
+        let Some((start, len, target, dl)) = parsed else {
+            return Err(PyTypeError::new_err("malformed exception table"));
+        };
+        entries.push((start, start + len, target, dl));
+    }
+    let units = code.len() / 2;
+    let mut n = 0u64;
+    let mut u = 0usize;
+    while u < units {
+        let op = code[2 * u];
+        if raises[usize::from(op) / 64] >> (op % 64) & 1 != 0 {
+            let at = u as u32;
+            match entries.iter().find(|e| e.0 <= at && at < e.1) {
+                Some(&(_, _, target, dl)) => {
+                    h.word(u64::from(at) | 1 << 32);
+                    h.word(u64::from(target) | u64::from(dl) << 32);
+                }
+                None => h.word(u64::from(at)),
+            }
+            n += 1;
+        }
+        u += 1 + usize::from(caches[usize::from(op)]);
+    }
+    h.word(n);
+    Ok(())
+}
+
+/// # Safety
+/// Attached thread; `code` a live code object; `RawCode` layout calibrated.
+unsafe fn code3(h: &mut Fast, code: *mut ffi::PyObject, depth: u32) -> PyResult<()> {
+    // SAFETY: per the caller.
+    unsafe {
+        let raw = &*code.cast::<super::version::RawCode>();
+        let co = Bound::from_owned_ptr_or_err(Python::assume_attached(), PyCode_GetCode(code))?;
+        let bytecode = bytes_of(co.as_ptr());
+        h.bytes(bytecode);
+        h.word(raw.co_argcount as u32 as u64 | (raw.co_posonlyargcount as u32 as u64) << 32);
+        h.word(raw.co_kwonlyargcount as u32 as u64 | (raw.co_flags as u32 as u64) << 32);
+        str_tuple(h, raw.co_names)?;
+        str_tuple(h, raw.co_localsplusnames)?;
+        h.bytes(bytes_of(raw.co_localspluskinds));
+        let consts = raw.co_consts;
+        let n = ffi::PyTuple_GET_SIZE(consts);
+        h.word(n as u64);
+        let skip_doc = raw.co_flags & CO_HAS_DOCSTRING != 0;
+        for i in 0..n {
+            if i == 0 && skip_doc {
+                h.word(15); // a docstring: its text is not part of the behaviour
+                continue;
+            }
+            let c = ffi::PyTuple_GET_ITEM(consts, i);
+            if ffi::Py_TYPE(c) == &raw mut ffi::PyCode_Type {
+                h.word(13);
+                code3(h, c, depth + 1)?;
+            } else {
+                const2(h, c, depth)?;
+            }
+        }
+        canonical_exceptions(h, bytecode, bytes_of(raw.co_exceptiontable))?;
+    }
+    Ok(())
+}
+
+/// Canonical fingerprint of a code object, format v3 (cached per code object).
+pub fn code_v3(code: &Bound<'_, PyAny>) -> PyResult<u64> {
+    if code.cast::<PyCode>().is_err() {
+        return Err(PyTypeError::new_err("not a code object"));
+    }
+    if !super::version::code_layout_cached(code)? {
+        return Err(PyTypeError::new_err("PyCodeObject layout differs"));
+    }
+    if let Some(hit) = cache3_get(code.as_ptr() as usize) {
+        return Ok(hit);
+    }
+    let mut h = Fast(0x3c0d_e3c0_de3c_0de3);
+    // SAFETY: attached thread; a live code object; layout calibrated just above.
+    unsafe { code3(&mut h, code.as_ptr(), 0)? };
+    let out = h.finish_u64();
+    cache3_put(code, out);
+    Ok(out)
+}
+
+/// Format v3 of a C original: `ml_name` and `ml_flags` (no `ml_doc`).
+///
+/// # Safety
+/// `def` is a live method table entry.
+pub unsafe fn method_def_v3(def: *const ffi::PyMethodDef) -> u64 {
+    let mut h = Fast(0x3c0f_f3e5_c3ff_3e53);
+    // SAFETY: per the caller; NUL-terminated strings or NULL.
+    unsafe {
+        let name = if (*def).ml_name.is_null() { &[][..] } else { CStr::from_ptr((*def).ml_name).to_bytes() };
+        h.bytes(name);
+        h.word((*def).ml_flags as u32 as u64);
+    }
+    h.finish_u64()
+}
+
+/// v3 of any original (function, code object, C function or method descriptor) and its
+/// stable id (`module.qualname` of a function, `qualname` of a code object, `Type.name` /
+/// `module.name` of a C original).
+pub fn any_v3(obj: &Bound<'_, PyAny>) -> PyResult<(String, u64)> {
+    let py = obj.py();
+    if obj.cast_exact::<PyFunction>().is_ok() {
+        // SAFETY: an exact function object: live code and module fields.
+        let (code, module) = unsafe {
+            let f = obj.as_ptr().cast::<ffi::PyFunctionObject>();
+            (Bound::from_borrowed_ptr(py, (*f).func_code), (*f).func_module)
+        };
+        let q: String = code.getattr(pyo3::intern!(py, "co_qualname"))?.extract()?;
+        let m = if module.is_null() {
+            None
+        } else {
+            // SAFETY: a live object (the function's module name).
+            unsafe { Bound::from_borrowed_ptr(py, module) }.extract::<String>().ok()
+        };
+        let id = match m {
+            Some(m) => format!("{m}.{q}"),
+            None => q,
+        };
+        return Ok((id, code_v3(&code)?));
+    }
+    if obj.cast::<PyCode>().is_ok() {
+        let q: String = obj.getattr(pyo3::intern!(py, "co_qualname"))?.extract()?;
+        return Ok((q, code_v3(obj)?));
+    }
+    // SAFETY: attached thread.
+    let def = unsafe { super::site::method_def(obj.as_ptr()) }
+        .ok_or_else(|| PyTypeError::new_err("not a function, code object or C function"))?;
+    // SAFETY: a live method def.
+    Ok((super::prepare::c_name_of(obj, def), unsafe { method_def_v3(def) }))
+}
+
+/// 16 lowercase hex digits.
+pub fn hex(x: u64) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digits: Vec<u8> = (0..16).rev().map(|i| HEX[((x >> (4 * i)) & 15) as usize]).collect();
+    String::from_utf8(digits).expect("ASCII hex digits")
+}
+
+#[allow(clippy::type_complexity)]
+static CACHE3: std::sync::Mutex<
+    Option<std::collections::HashMap<usize, (Py<PyAny>, u64), foldhash::fast::FixedState>>,
+> = std::sync::Mutex::new(None);
+
+fn cache3_get(code: usize) -> Option<u64> {
+    CACHE3.lock().ok()?.as_ref()?.get(&code).map(|(_, f)| *f)
+}
+
+fn cache3_put(code: &Bound<'_, PyAny>, fp: u64) {
+    let old = CACHE3.lock().ok().and_then(|mut c| {
+        c.get_or_insert_with(Default::default).insert(code.as_ptr() as usize, (code.clone().unbind(), fp))
+    });
+    drop(old);
+}
+
+/// The recorded fingerprint data (`fingerprints.txt`).
+pub struct Data {
+    /// Recorded patch releases (`"3.15.1"`, `"3.15.1t"`).
+    pub patches: Vec<String>,
+    /// `(target, original id, minor)` → accepted v3 hashes.
+    pub accepted: std::collections::HashMap<(String, String, u8), Vec<u64>, foldhash::fast::FixedState>,
+}
+
+/// The recorded data, parsed once from the file compiled into the extension.
+pub fn data() -> &'static Data {
+    static DATA: std::sync::OnceLock<Data> = std::sync::OnceLock::new();
+    DATA.get_or_init(|| parse(include_str!("fingerprints.txt")))
+}
+
+/// Parse the data file: `patch <version>...` lines and `<major.minor> <target> <id> <hex>...`
+/// lines; `#` starts a comment.
+pub fn parse(text: &str) -> Data {
+    let mut d = Data { patches: Vec::new(), accepted: Default::default() };
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        let mut it = line.split_whitespace();
+        match it.next() {
+            None => {}
+            Some("patch") => d.patches.extend(it.map(str::to_owned)),
+            Some(minor) => {
+                let Some(m) = minor.strip_prefix("3.").and_then(|m| m.parse::<u8>().ok()) else { continue };
+                let (Some(target), Some(id)) = (it.next(), it.next()) else { continue };
+                let hashes = it.filter_map(|h| u64::from_str_radix(h, 16).ok());
+                d.accepted.entry((target.to_owned(), id.to_owned(), m)).or_default().extend(hashes);
+            }
+        }
+    }
+    d
+}
+
+/// The accepted v3 hashes of `target`'s original `id` on the running minor, if recorded.
+pub fn accepted(target: &str, id: &str) -> Option<&'static [u64]> {
+    let (_, minor) = super::version::running();
+    data().accepted.get(&(target.to_owned(), id.to_owned(), minor)).map(Vec::as_slice)
+}
+
+/// For targets that check an original themselves (outside `Prepare`): is `obj` an original
+/// recorded for `target` (v3 data), or, when the data has no entry for it, does its v2
+/// fingerprint equal the inline `expected` one?
+pub fn check(target: &str, obj: &Bound<'_, PyAny>, expected: Fingerprints) -> bool {
+    match any_v3(obj) {
+        Ok((id, v3)) => match accepted(target, &id) {
+            Some(set) => set.contains(&v3),
+            None => {
+                let (major, minor) = super::version::running();
+                expected_for(expected, major, minor).is_some_and(|w| any(obj).is_ok_and(|f| f == w))
+            }
+        },
+        Err(_) => false,
+    }
 }

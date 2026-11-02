@@ -1,0 +1,5 @@
+# Recorded fingerprints of originals, format v3 (accel/fingerprint.rs; DECISIONS §10.5).
+# Written by benches/accel/record_patch.py, which runs the conformance suites before it
+# records a patch release. Lines:
+#   patch <major.minor.micro[t]> ...            patch releases recorded (validated)
+#   <major.minor> <target> <original id> <v3 hex> [<v3 hex> ...]   accepted fingerprints

@@ -590,6 +590,11 @@ fn suspend(spec: &TargetSpec, rt: &mut Rt, why: Suspended) -> bool {
         s.uninstall(true);
     }
     rt.suspended = Some(why);
+    if let Some(f) = spec.on_disable {
+        // Possibly inside a call (a falling-back kernel suspends): the hook runs no Python
+        // code (see `TargetSpec::on_disable`).
+        let _ = std::panic::catch_unwind(f_with_py(f));
+    }
     rt.sites.iter().any(|s| s.kind == Kind::MlMeth)
 }
 
@@ -608,6 +613,9 @@ fn resume(reg: &mut Registry, i: usize) -> bool {
     rt.suspended = None;
     all_specs()[i].counters.rearm();
     all_specs()[i].counters.set_live(failed.is_none());
+    if failed.is_none() {
+        queue_hook(i); // `on_install` again: re-adopt what `on_disable` gave back
+    }
     if let Some(f) = failed {
         ml |= deactivate(reg, i);
         let rt = &mut reg.rt[i];
@@ -632,7 +640,7 @@ fn resync(_py: Python<'_>, reg: &mut Registry, from_kernel: bool) -> (bool, bool
         }
         let fallback = spec.counters.suspend_requested.swap(false, Ordering::AcqRel);
         if fallback && rt.suspended.is_none() {
-            spec.counters.suspensions.fetch_add(1, Ordering::Relaxed);
+            spec.counters.suspended();
             ml |= suspend(spec, rt, Suspended::Fallback);
             continue;
         }
@@ -769,7 +777,7 @@ fn ensure_group(
         return Err(r.clone());
     }
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut cx = Prepare::new(py, spec, module, false);
+        let mut cx = Prepare::for_group(py, spec, g, module, false);
         let r = match (g.prepare)(py, &mut cx) {
             Ok(()) if cx.sites.is_empty() => guard::activate(py, std::mem::take(&mut cx.pins))
                 .map_err(|e| Refusal::with(Category::Deps, format!("shared {}: pins: {}", g.name, e.value(py)))),
@@ -948,7 +956,7 @@ fn activate_inner(
     rt.refusal = None;
     rt.suspended = None;
     rt.suspensions = 0;
-    spec.counters.arm(spec.hit_credit, spec.fallback_debit);
+    spec.counters.arm(spec.hit_credit, spec.fallback_debit, spec.abandon_debit);
     spec.counters.set_live(true);
     queue_hook(i);
     // Deopt while unpinned: GIL builds only (see "Suspensions").
@@ -1305,7 +1313,7 @@ fn arm_group(
     {
         return Err(r.clone());
     }
-    let mut cx = Prepare::new(py, spec, module, false);
+    let mut cx = Prepare::for_group(py, spec, g, module, false);
     cx.arming = true;
     let r = (g.prepare)(py, &mut cx);
     release_sites(cx.sites.drain(..).map(|d| d.site));
@@ -1614,8 +1622,10 @@ pub fn enable_tiers(
     }
     after_unlock(py);
     run_hooks(py);
-    // Release everything before finalization (registered once, outside the lock).
+    // Release everything before finalization (registered once, outside the lock); fork
+    // hooks for the counters.
     super::exit::ensure_hook(py);
+    super::counters_file::ensure_hooks(py);
     Ok(())
 }
 
@@ -1882,6 +1892,11 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         {
             d.set_item(intern!(py, "refusal"), c.as_str())?;
         }
+        if matches!(rt.state, State::Installed | State::Armed)
+            && let Ok(v) = version::patch_gate()
+        {
+            d.set_item(intern!(py, "validation"), v.as_str())?;
+        }
         if rt.site_labels.is_none() {
             rt.site_labels = Some(PyList::new(py, rt.site_names.iter().map(|(n, k)| site_label(n, *k)))?.unbind());
         }
@@ -1935,14 +1950,20 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     process.set_item("build", if version::FREE_THREADED { "free-threaded" } else { "default" })?;
     process.set_item("jit", jit_enabled(py))?;
     process.set_item("rustique", env!("CARGO_PKG_VERSION"))?;
-    process.set_item("interpreter", version::process_gate().err().map(|r| r.reason().to_owned()))?;
+    process.set_item("pid", std::process::id())?;
+    process.set_item("ppid", super::counters_file::forked_from())?;
+    let refusal = version::process_refusal();
+    process.set_item("interpreter", refusal.as_ref().map(|r| r.reason().to_owned()))?;
+    process.set_item("interpreter_refusal", refusal.as_ref().map(|r| r.category().as_str()))?;
+    process.set_item("patch", version::patch_release())?;
+    process.set_item("platform", version::platform())?;
     process.set_item("enabled", enabled)?;
     process.set_item("stats", stats::enabled())?;
     process.set_item("check", stats::check_mode().map(|r| if r { "raise" } else { "warn" }))?;
     process.set_item("only", reg.only.clone())?;
     process.set_item("exclude", reg.exclude.clone())?;
     process.set_item("tiers", reg.tiers.clone())?;
-    process.set_item("validation", if eager() { "eager" } else { "first-call" })?;
+    process.set_item("validate", if eager() { "eager" } else { "first-call" })?;
     let out = PyDict::new(py);
     out.set_item("targets", targets)?;
     out.set_item("process", process)?;
@@ -1972,7 +1993,7 @@ pub fn stats(py: Python<'_>, enabled: Option<bool>, reset: bool) -> PyResult<Bou
             f.set_item(k, v)?;
         }
         d.set_item("fallback", f)?;
-        d.set_item("suspensions", spec.counters.suspensions.load(Ordering::Relaxed))?;
+        d.set_item("suspensions", spec.counters.suspension_count())?;
         out.set_item(spec.name, d)?;
     }
     if reset {
@@ -1990,10 +2011,24 @@ pub type FingerprintRow = (String, String, String, Option<String>);
 /// return every fingerprint they check: `[(target, what, observed, expected|None)]`.
 /// Module targets need their module imported (the dev tool imports them).
 pub fn fingerprint_report(py: Python<'_>, only: Option<Vec<String>>) -> PyResult<Vec<FingerprintRow>> {
+    Ok(fingerprint_records(py, only)?.into_iter().map(|(t, r)| (t, r.what, r.observed, r.expected)).collect())
+}
+
+/// Record mode over the selected targets and their shared groups (each group once, under
+/// its own name): every fingerprint they check, v3 and v2. Module targets need their
+/// module imported (the dev tools import them). Never panics out.
+pub fn fingerprint_records(py: Python<'_>, only: Option<Vec<String>>) -> PyResult<Vec<(String, FingerprintRecord)>> {
     let sys_modules = prepare::sys_modules(py).map_err(|r| PyRuntimeError::new_err(r.reason().to_owned()))?;
     version::calibrate_monitoring(py);
     let _g = REG.lock(py)?;
-    let mut out = Vec::new();
+    let mut out: Vec<(String, FingerprintRecord)> = Vec::new();
+    let note = |out: &mut Vec<(String, FingerprintRecord)>, who: &str, what: String| {
+        out.push((
+            who.to_owned(),
+            FingerprintRecord { what, observed: String::new(), expected: None, v2: String::new(), v2_expected: None },
+        ));
+    };
+    let mut groups_done: Vec<&'static str> = Vec::new();
     for spec in all_specs() {
         let sel = match &only {
             Some(o) => matches(spec, o),
@@ -2007,21 +2042,37 @@ pub fn fingerprint_report(py: Python<'_>, only: Option<Vec<String>>) -> PyResult
             Some(m) => match sys_modules.get_item(m)?.and_then(|m| m.cast_into::<PyModule>().ok()) {
                 Some(m) => Some(m),
                 None => {
-                    out.push((spec.name.to_owned(), format!("module {m} not imported"), String::new(), None));
+                    note(&mut out, spec.name, format!("module {m} not imported"));
                     continue;
                 }
             },
         };
+        if let Some(g) = spec.shared {
+            let first = !groups_done.contains(&g.name);
+            let mut cx = Prepare::for_group(py, spec, g, module.clone(), true);
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (g.prepare)(py, &mut cx)));
+            let recs = std::mem::take(&mut cx.records);
+            release_sites(cx.sites.drain(..).map(|d| d.site));
+            match r {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => note(&mut out, g.name, format!("prepare refused: {e}")),
+                Err(p) => note(&mut out, g.name, format!("prepare panicked: {}", panic_message(&*p))),
+            }
+            if first {
+                groups_done.push(g.name);
+                out.extend(recs.into_iter().map(|r| (g.name.to_owned(), r)));
+            }
+        }
         let mut cx = Prepare::new(py, spec, module, true);
-        let r = (spec.prepare)(py, &mut cx);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.prepare)(py, &mut cx)));
         let recs: Vec<FingerprintRecord> = std::mem::take(&mut cx.records);
-        release_sites(cx.sites.into_iter().map(|d| d.site));
-        if let Err(e) = r {
-            out.push((spec.name.to_owned(), format!("prepare refused: {e}"), String::new(), None));
+        release_sites(cx.sites.drain(..).map(|d| d.site));
+        match r {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => note(&mut out, spec.name, format!("prepare refused: {e}")),
+            Err(p) => note(&mut out, spec.name, format!("prepare panicked: {}", panic_message(&*p))),
         }
-        for rec in recs {
-            out.push((spec.name.to_owned(), rec.what, rec.observed, rec.expected.map(str::to_owned)));
-        }
+        out.extend(recs.into_iter().map(|r| (spec.name.to_owned(), r)));
     }
     Ok(out)
 }
