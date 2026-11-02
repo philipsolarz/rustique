@@ -12,18 +12,20 @@ test's outcome), reporting any difference and the timing.
 import os
 import sys
 
-COMMANDS = ("run", "status", "report", "diff")
+COMMANDS = ("run", "status", "report", "diff", "estimate")
 USAGE = """\
 usage: python -m rustique [run] [--only G,..] [--exclude G,..] [--report] [--check|--check-raise] [--native PATTERN]...
                           [--no-builtins] (script.py | -m module | -c command) [args...]
        python -m rustique status [--json]
        python -m rustique report [--json] [-o FILE] [--limit N] [--check] -- <command...>
        python -m rustique diff [--repeat N] [--ignore REGEX]... [--no-normalize] [--keep DIR] [--check] -- <command...>
+       python -m rustique estimate [--json] -- <command...>
 
   run      run a Python program with Rustique enabled (RUSTIQUE=0 still turns it off)
   status   what Rustique accelerates on this interpreter, and why anything is refused
   report   run a command with RUSTIQUE=1 and counters on; print the per-target report
   diff     run a command plain and with RUSTIQUE=1; compare exit code, output, test outcomes
+  estimate predict what Rustique would do for a command's run time, from the command itself (prototype)
 
 Environment: RUSTIQUE=1|0, RUSTIQUE_ONLY, RUSTIQUE_EXCLUDE, RUSTIQUE_STATS, RUSTIQUE_REPORT, RUSTIQUE_CHECK
 (docs/USAGE.md).
@@ -49,6 +51,10 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(status_cmd(argv))
     elif cmd == "report":
         raise SystemExit(report_cmd(argv))
+    elif cmd == "estimate":
+        from rustique import _estimate
+
+        raise SystemExit(_estimate.main(argv))
     else:
         from rustique import _diff
 
@@ -109,6 +115,14 @@ def run(argv: list[str]) -> None:
     if (opts.check or opts.check_raise) and not rustique._killed():
         rustique.check("raise" if opts.check_raise else "warn")
     rustique._enable(opts.only, opts.exclude, opts.native or None, not opts.no_builtins, source="python -m rustique")
+    if not rustique._killed() and "RUSTIQUE" not in os.environ:
+        # child interpreters (multiprocessing spawn/forkserver, subprocess) start through the
+        # startup switch, like under RUSTIQUE=1; the selection goes with them (env narrows)
+        os.environ["RUSTIQUE"] = "1"
+        if opts.only and "RUSTIQUE_ONLY" not in os.environ:
+            os.environ["RUSTIQUE_ONLY"] = opts.only
+        if opts.exclude:
+            os.environ["RUSTIQUE_EXCLUDE"] = ",".join(filter(None, [os.environ.get("RUSTIQUE_EXCLUDE"), opts.exclude]))
     native_main = (bool(opts.native) or opts.native_main) and not rustique._killed()
     if native_main:
         from rustique._takeover import _rewrite
@@ -125,7 +139,8 @@ def run(argv: list[str]) -> None:
             from rustique._takeover import _hook
 
             _hook.install((opts.module,))
-        runpy.run_module(opts.module, run_name="__main__", alter_sys=True, init_globals=helpers or None)
+        _as_main(lambda: runpy.run_module(opts.module, run_name="__main__", alter_sys=True,
+                                          init_globals=helpers or None), skip_runpy=True)
         return
     if opts.command is not None:
         sys.argv = ["-c", *rest]
@@ -136,11 +151,11 @@ def run(argv: list[str]) -> None:
             code = compile(opts.command, "<string>", "exec")
         mod = _fresh_main(None)
         mod.__dict__.update(helpers)
-        exec(code, mod.__dict__)
+        _as_main(lambda: exec(code, mod.__dict__))
         return
-    path = opts.script
-    sys.argv = [path, *rest]
-    sys.path.insert(0, os.path.dirname(os.path.abspath(path)))
+    sys.argv = [opts.script, *rest]
+    path = os.path.abspath(opts.script)  # like `python script.py`: __file__ and code paths are absolute
+    sys.path.insert(0, os.path.dirname(path))
     with open(path, "rb") as f:
         source = f.read()
     if native_main:
@@ -149,7 +164,36 @@ def run(argv: list[str]) -> None:
         code = compile(source, path, "exec", dont_inherit=True)
     mod = _fresh_main(path)
     mod.__dict__.update(helpers)
-    exec(code, mod.__dict__)
+    _as_main(lambda: exec(code, mod.__dict__))
+
+
+def _as_main(body, skip_runpy: bool = False) -> None:
+    """Run the program like the interpreter runs ``__main__``: an uncaught exception prints
+    a traceback that starts at the program's own frame (not at this runner's), exit status 1;
+    ``KeyboardInterrupt`` ends the process by SIGINT, as CPython does."""
+    try:
+        body()
+    except SystemExit:
+        raise
+    except BaseException as exc:  # noqa: BLE001
+        tb = exc.__traceback__.tb_next  # drop this function's frame
+        if tb is not None:
+            tb = tb.tb_next  # and the lambda's
+        here = os.path.dirname(os.path.abspath(__file__))
+        while skip_runpy and tb is not None and (tb.tb_frame.f_code.co_filename.startswith(here)
+                                                 or tb.tb_frame.f_code.co_filename == "<frozen runpy>"):
+            tb = tb.tb_next
+        if tb is not None:
+            exc.__traceback__ = tb  # the default hook prints the exception's own traceback
+        sys.excepthook(type(exc), exc, exc.__traceback__)
+        if isinstance(exc, KeyboardInterrupt):
+            import signal
+
+            sys.stdout.flush()
+            sys.stderr.flush()
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            os.kill(os.getpid(), signal.SIGINT)
+        raise SystemExit(1) from None
 
 
 # --- status ------------------------------------------------------------------------------------

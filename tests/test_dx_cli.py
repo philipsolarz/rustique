@@ -53,6 +53,33 @@ def test_run_respects_kill_switch():
     assert r.stdout.split() == ["None", "True"], r.stderr
 
 
+def test_run_is_like_python_script(tmp_path):
+    # same traceback, exit status and __file__ as `python script.py`
+    script = tmp_path / "boom.py"
+    script.write_text("import os\nprint(os.path.isabs(__file__))\ndef f():\n    return 1 / 0\nf()\n")
+    plain = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, env=clean_env(), cwd=tmp_path)
+    r = rq("boom.py", cwd=tmp_path)
+    assert (r.returncode, r.stdout, r.stderr) == (plain.returncode, plain.stdout, plain.stderr)
+
+
+def test_run_reaches_spawned_children(tmp_path):
+    script = tmp_path / "mp.py"
+    script.write_text(textwrap.dedent("""
+        import multiprocessing as mp, sys
+        def probe(_):
+            m = sys.modules.get("rustique._rustique")
+            return bool(m) and m._accel.status()["process"]["switch"]["source"]
+        if __name__ == "__main__":
+            with mp.get_context("spawn").Pool(1) as pool:
+                print(pool.map(probe, [0]))
+    """))
+    r = rq(str(script), cwd=tmp_path)
+    # dev installs have no startup file: the child then enables nothing, but it is asked to
+    assert r.returncode == 0, r.stderr
+    r = rq("-c", "import os; print(os.environ.get('RUSTIQUE'))")
+    assert r.stdout.strip() == "1"
+
+
 def test_run_report_flag():
     r = rq("--report", "-c", "sorted([2, 1])")
     assert "enabled by python -m rustique" in r.stderr
@@ -114,6 +141,20 @@ def test_report_refuses_under_kill_switch():
     assert r.returncode == 2 and "kill switch" in r.stderr
 
 
+# --- estimate (prototype) --------------------------------------------------------------------
+
+
+def test_estimate_names_the_targets(tmp_path):
+    prog = tmp_path / "prog.py"
+    prog.write_text("import json\nfor i in range(30000):\n    json.dumps({'a': [i, i + 1], 'b': 'x' * 20})\n")
+    r = rq("estimate", "--json", "--", sys.executable, str(prog), cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    pred = json.loads(r.stdout)["prediction"]
+    row = next(x for x in pred["rows"] if x["target"] == "json.dumps")
+    assert row["calls"] == 30000 and row["source"].startswith("replayed")
+    assert 0 < row["ratio"] < 1 and 0 < pred["ratio"] < 1
+
+
 # --- diff ----------------------------------------------------------------------------------
 
 # Programs enable Rustique themselves here (dev installs have no startup file); the plain run
@@ -145,8 +186,30 @@ def test_diff_normalizes_addresses_and_ignore():
     code = ENABLE + "import time; print(object()); print('t', time.time())"
     r = rq("diff", "--ignore", r"t \d+\.\d+", "--", sys.executable, "-c", code)
     assert r.returncode == 0, r.stdout
-    r = rq("diff", "--no-normalize", "--", sys.executable, "-c", code)
+    r = rq("diff", "--no-normalize", "--strict-output", "--", sys.executable, "-c", code)
     assert r.returncode == 1
+    # without --strict-output, output that also differs between two plain runs is volatile
+    r = rq("diff", "--no-normalize", "--", sys.executable, "-c", code)
+    assert r.returncode == 0 and "volatile" in r.stdout
+
+
+def test_diff_volatile_output_is_not_a_difference():
+    # output that differs between two plain runs (a random value) is reported as volatile
+    code = ENABLE + "import random; print('ok'); print(random.random())"
+    r = rq("diff", "--", sys.executable, "-c", code)
+    assert r.returncode == 0, r.stdout
+    assert "identical" in r.stdout and "also differs between two plain runs" in r.stdout
+    r = rq("diff", "--strict-output", "--", sys.executable, "-c", code)
+    assert r.returncode == 1 and "DIFFERENT" in r.stdout
+
+
+def test_diff_masks_log_stamps_and_local_ports():
+    code = ENABLE + ("import datetime, random\n"
+                     "print(datetime.datetime.now().isoformat(' '), '127.0.0.1:%d' % random.randint(20000, 60000))\n"
+                     "print(datetime.datetime.now().strftime('[%d/%b/%Y %H:%M:%S]'), 'GET /')\n"
+                     "print(datetime.date(2026, 11, 2).isoformat(), datetime.time(12, 30).isoformat())")
+    r = rq("diff", "--strict-output", "--", sys.executable, "-c", code)
+    assert r.returncode == 0, r.stdout
 
 
 def test_diff_without_rustique_in_the_command():
@@ -199,6 +262,36 @@ def test_diff_pytest_outcome_change(suite):
     assert r.returncode == 1
     assert "test outcomes differ (1 changed" in r.stdout
     assert "test_a::test_differs: plain failed, rustique passed" in r.stdout
+
+
+def test_diff_pytest_verbose_junit_path(suite):
+    # pytest prints the --junitxml path diff adds at default verbosity: it must be the same file
+    r = rq("diff", "--strict-output", "--", sys.executable, "-m", "pytest", "-p", "no:randomly", str(suite), cwd=suite)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "7 test outcomes" in r.stdout
+
+
+def test_diff_pytest_volatile_ids_and_progress(tmp_path):
+    # a parametrization embedding a volatile value, and a thread writing between progress dots
+    (tmp_path / "test_v.py").write_text(textwrap.dedent("""
+        import random, threading, time
+        import pytest
+        import rustique
+        rustique.enable()
+
+        @pytest.mark.parametrize("v", [random.random()])
+        def test_id(v):
+            assert v < 1
+
+        @pytest.mark.parametrize("i", range(30))
+        def test_many(i):
+            if i == 10:
+                threading.Thread(target=lambda: (time.sleep(random.random() / 100), print("server says hi"))).start()
+            time.sleep(0.001)
+    """))
+    r = rq("diff", "--", sys.executable, "-m", "pytest", "-q", "-s", "-p", "no:randomly", str(tmp_path), cwd=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "31 test outcomes" in r.stdout
 
 
 def test_diff_refuses_plugin_flag(suite):

@@ -12,7 +12,11 @@ the same ``PYTHONHASHSEED`` (0 unless set), and compares:
   JUnit XML file added to the command line (``-p no:cacheprovider`` is added too, so the
   first run cannot steer the second through ``.pytest_cache``).
 
-Prints the differences (unified diff, first lines) or ``identical``, the timing of each
+Output that varies between two *plain* runs of the same command (a test server's access
+log, ephemeral ports, threads interleaving their output) proves nothing about Rustique: when
+only stdout/stderr differ, ``diff`` runs the plain side once more and reports a stream that
+also differs plain-to-plain as *volatile* instead of failing (``--strict-output`` turns this
+off). Prints the differences (unified diff, first lines) or ``identical``, the timing of each
 side, and the per-target report of the enabled run (which proves that something was
 accelerated: an "identical" with no accelerated call proves nothing, and says so).
 Exit status: 0 identical, 1 different, 2 usage error or Rustique inactive in the command.
@@ -27,12 +31,22 @@ import time
 
 NORMALIZE = (
     (r"0x[0-9a-fA-F]{6,16}", "0x<addr>"),
+    # wall-clock stamps in logs: ISO 8601 date-times and the common log format (a date alone
+    # or a time alone is left alone: those are usually results)
+    (r"\b\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d(?:[.,]\d+)?(?:Z|[+-]\d\d:?\d\d)?", "<datetime>"),
+    (r"\b\d\d/[A-Z][a-z]{2}/\d{4}[: ]\d\d:\d\d:\d\d(?: [+-]\d{4})?", "<datetime>"),
+    # ephemeral ports of local test servers
+    (r"\b(127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\]):\d{4,5}\b", r"\1:<port>"),
     # pytest: "in 1.23s", "in 61.20s (0:01:01)", --durations lines, tmp_path directories
     (r"\bin \d+(\.\d+)?s( \(\d+:\d\d:\d\d\))?", "in <time>"),
     (r"^(\s*)\d+\.\d+s (call|setup|teardown) ", r"\1<time> \2 "),
     (r"pytest-of-[^/\\\s]+([/\\])pytest-\d+", r"pytest-of-<user>\1pytest-<n>"),
     (r"--randomly-seed=\d+", "--randomly-seed=<seed>"),
 )
+# pytest's progress characters (one per test) carry nothing the per-test outcomes do not, and
+# threads (a test server's log) interleave with them differently from run to run: for pytest
+# commands they are dropped before stdout is compared.
+PYTEST_PROGRESS = ((r"^[.sFEXx]{3,}(?:\s*\[\s*\d+%\])?", ""), (r"\[\s*\d+%\]\s*$", ""))
 PYTEST_CACHE_FLAGS = ("--lf", "--last-failed", "--ff", "--failed-first", "--nf", "--new-first", "--sw", "--stepwise",
                       "--sw-skip", "--stepwise-skip", "--cache-show", "--cache-clear")
 
@@ -105,12 +119,15 @@ def unified(a: str, b: str, name: str, max_lines: int) -> list[str]:
     return lines
 
 
-def compare(plain: dict, fast: dict, patterns, max_lines: int) -> list[str]:
-    """Human-readable differences between two runs (empty: identical)."""
+def compare(plain: dict, fast: dict, patterns, max_lines: int, skip=()) -> list[str]:
+    """Human-readable differences between two runs (empty: identical); ``skip``: streams
+    not compared."""
     diffs = []
     if plain["rc"] != fast["rc"]:
         diffs.append(f"exit code: plain {plain['rc']}, rustique {fast['rc']}")
     for stream in ("stdout", "stderr"):
+        if stream in skip:
+            continue
         a, b = normalize(plain[stream], patterns), normalize(fast[stream], patterns)
         if a != b:
             diffs.append(f"{stream} differs:")
@@ -119,6 +136,14 @@ def compare(plain: dict, fast: dict, patterns, max_lines: int) -> list[str]:
         ta, tb = plain["tests"], fast["tests"]
         changed = sorted(k for k in ta.keys() & tb.keys() if ta[k] != tb[k])
         only_a, only_b = sorted(ta.keys() - tb.keys()), sorted(tb.keys() - ta.keys())
+        if only_a and len(only_a) == len(only_b):
+            # ids that differ only in digits (a parametrization with now() or a random value):
+            # the same tests if, digits masked, ids and outcomes pair up one to one
+            mask = lambda k: re.sub(r"\d+", "#", k)  # noqa: E731
+            pa = sorted((mask(k), ta[k]) for k in only_a)
+            pb = sorted((mask(k), tb[k]) for k in only_b)
+            if pa == pb:
+                only_a, only_b = [], []
         if changed or only_a or only_b:
             diffs.append(f"test outcomes differ ({len(changed)} changed, {len(only_a)} only plain, "
                          f"{len(only_b)} only rustique):")
@@ -147,6 +172,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--ignore", action="append", default=[], metavar="REGEX",
                    help="mask matches of REGEX in stdout/stderr before comparing (repeatable)")
     p.add_argument("--no-normalize", action="store_true", help="compare outputs byte for byte")
+    p.add_argument("--strict-output", action="store_true",
+                   help="fail on any stdout/stderr difference, even in a stream that varies between plain runs")
     p.add_argument("--max-lines", type=int, default=40, help="diff lines to show per stream")
     p.add_argument("--timeout", type=float, default=None, help="seconds per run")
     p.add_argument("--keep", metavar="DIR", help="save every run's stdout/stderr/report in DIR")
@@ -167,6 +194,8 @@ def main(argv: list[str]) -> int:
     patterns = [] if opts.no_normalize else list(NORMALIZE)
     patterns += [(rx, "<ignored>") for rx in opts.ignore]
     pytest = is_pytest(cmd)
+    if pytest and not opts.no_normalize:
+        patterns += list(PYTEST_PROGRESS)
     base = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
     base.setdefault("PYTHONHASHSEED", "0")
     for k in ("RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE"):  # the selection applies to the enabled side
@@ -184,7 +213,11 @@ def main(argv: list[str]) -> int:
                     env.update(RUSTIQUE="1", RUSTIQUE_STATS="1", RUSTIQUE_REPORT=report.format(i))
                     if opts.check:
                         env["RUSTIQUE_CHECK"] = "1"
-                xml = os.path.join(tmp, f"{side}-{i}.xml")
+                # one path for every run: pytest prints it ("generated xml file: ...") at
+                # some verbosities, so a per-side name would differ by construction
+                xml = os.path.join(tmp, "junit.xml")
+                if os.path.exists(xml):
+                    os.remove(xml)
                 full = pytest_args(cmd, xml) if pytest else cmd
                 try:
                     r = run_once(full, env, opts.timeout)
@@ -205,10 +238,30 @@ def main(argv: list[str]) -> int:
 
             shutil.copy(report.format(0), os.path.join(opts.keep, "report.json"))
     diffs: list[str] = []
-    for i in range(opts.repeat):
-        d = compare(runs["plain"][i], runs["rustique"][i], patterns, opts.max_lines)
+    volatile: list[str] = []
+    pairs = [(runs["plain"][i], runs["rustique"][i]) for i in range(opts.repeat)]
+    output_only = all(a["rc"] == b["rc"] and a.get("tests") == b.get("tests") for a, b in pairs)
+    unstable = set()
+    if output_only and not opts.strict_output and any(compare(a, b, patterns, 0) for a, b in pairs):
+        # Only stdout/stderr differ: is that the program, or Rustique? Compare plain with plain
+        # (the runs of --repeat, else one more plain run).
+        plains = list(runs["plain"])
+        if len(plains) < 2:
+            env = dict(base, RUSTIQUE="0")
+            xml = os.path.join(tempfile.mkdtemp(prefix="rustique-diff-"), "junit.xml")
+            plains.append(run_once(pytest_args(cmd, xml) if pytest else cmd, env, opts.timeout))
+        for stream in ("stdout", "stderr"):
+            texts = {normalize(r[stream], patterns) for r in plains}
+            if len(texts) > 1:
+                unstable.add(stream)
+    for i, (a, b) in enumerate(pairs):
+        d = compare(a, b, patterns, opts.max_lines, skip=unstable)
         if d:
             diffs += ([f"pair {i + 1}:"] if opts.repeat > 1 else []) + d
+    for stream in sorted(unstable):
+        if any(normalize(a[stream], patterns) != normalize(b[stream], patterns) for a, b in pairs):
+            volatile.append(f"{stream} differs, but it also differs between two plain runs (volatile output: "
+                            f"not compared; --strict-output to compare, --ignore REGEX to mask)")
     tp = statistics.median(r["seconds"] for r in runs["plain"])
     tr = statistics.median(r["seconds"] for r in runs["rustique"])
     first = runs["plain"][0]
@@ -222,6 +275,7 @@ def main(argv: list[str]) -> int:
         out += ["  " + d for d in diffs]
     else:
         out.append(f"  identical: {what}")
+    out += ["  note: " + v for v in volatile]
     out.append(f"  time: plain {tp:.3f} s, rustique {tr:.3f} s, ratio {tr / tp if tp else float('nan'):.3f}"
                f"{f' (median of {opts.repeat})' if opts.repeat > 1 else ''}")
     rc = 1 if diffs else 0
