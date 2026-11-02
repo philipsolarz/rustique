@@ -7,6 +7,16 @@ is **M** (measured; tool named) or **I** (inferred; source named).
 
 # The `interp` tier: opcode-handler overrides
 
+**Status at the end of wave 2 (lead's decision, DECISIONS §10):** the tier ships **opt-in** as
+it is. Every measured cell is ≤ 1.05, and every whole run is ≤ 1.0043, inside the round's T1
+bar (no workload > 1.02). Its own **default-eligibility gate (every whole run ≤ 1.00) is not
+met**: pycodestyle_stdlib 1.0043 is genuine copy cost (its attribute group pays by the rule,
+so our copies of the specialized `LOAD_ATTR` forms stay), and four workloads keep unattributed
+residuals of 0.07–0.25% (task_planner, pandas_etl, tz_events, billing_engine; §4.2). First items
+for the next wave: (1) never swap the specialized family members on programs without
+polymorphic sites; (2) a multi-run measurement protocol for whole-run instruction counts
+(single runs move by 0.07–0.3% with Rustique merely imported or with the harness).
+
 An opt-in tier (`TargetSpec.opt_in = Some("interp")`, group `interp`): turned on with
 `RUSTIQUE_TIERS=interp` (with `RUSTIQUE=1` or `rustique.enable()`) or
 `_accel.enable(tiers=["interp"])`; never on by default. Sites are accel's opcode-handler kind
@@ -170,8 +180,8 @@ group counts afresh. The early decision fixed the T1 misses of the first measure
 (task_planner 1.0008, email_mime 1.0023, billing_engine 1.0013, pandas_etl 1.0016 with the
 tier alone): groups that never hit there (no frozen dataclasses, few keyword
 instantiations) kept their handler copies until ~1M executions. `_accel._t_interp.info()["groups"]` shows executions, hits, fills and
-`suspended`; the registry records the suspension in `status()` once accel's merge B handles
-every site kind. `rustique.stats()` shows no per-call counts for these targets (the handlers
+`suspended`; the registry records the suspension in `status()` (`"suspended": "fallback"`).
+`rustique.stats()` shows no per-call counts for these targets (the handlers
 count in C, always on, for the suspension rule): reporting tools read
 `_accel._t_interp.info()`.
 
@@ -278,7 +288,8 @@ Best: falcon_api 0.817 (default + tier), report_engine 0.830, order_domain 0.864
 (tier alone), pytest_networkx 0.914, rules_engine 0.893. The other 47 workloads, tier alone:
 0.97–1.00 (rows in `/work/w2ws-interp/out/wlcg-rest2.txt` on the dev box).
 
-**T1 (whole run ≤ 1.00) is not met on 5 workloads**, tier alone vs plain, final build:
+**The default-eligibility gate (whole run ≤ 1.00) is not met on 5 workloads** (the round's
+T1 bar, no workload > 1.02, is met: worst 1.0043), tier alone vs plain, final build:
 task_planner 1.0007, pandas_etl 1.0007, tz_events 1.0022, billing_engine 1.0025 (identical in 3
 repeats), pycodestyle_stdlib 1.0043 (earlier build). Attribution (`_accel._t_interp.info()`,
 callgrind per function):
