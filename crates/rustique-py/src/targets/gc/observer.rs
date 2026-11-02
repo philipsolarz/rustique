@@ -40,6 +40,8 @@ static PROGRAM: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
 static PRIVATE: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
 static OBSERVER: AtomicPtr<ffi::PyObject> = AtomicPtr::new(std::ptr::null_mut());
 static SWAPPED: AtomicBool = AtomicBool::new(false);
+/// An explicit collection runs with the program's list in `gcstate->callbacks` ([`detach`]).
+static DETACHED: AtomicBool = AtomicBool::new(false);
 
 const FT: bool = cfg!(Py_GIL_DISABLED);
 
@@ -252,9 +254,13 @@ pub(super) fn install(py: Python<'_>, l: &Layout) -> Result<(), String> {
 
 /// Put the program's list back into `gcstate->callbacks`. Returns false when
 /// that is not possible now (a collection is running): the observer then keeps forwarding.
-pub(super) fn uninstall(_py: Python<'_>, l: &Layout) -> bool {
+pub(super) fn uninstall(py: Python<'_>, l: &Layout) -> bool {
     if !SWAPPED.load(Ordering::Acquire) {
         return true;
+    }
+    reattach(py, l);
+    if DETACHED.load(Ordering::Acquire) {
+        return false;
     }
     if !l.try_hold_collecting() {
         return false;
@@ -271,4 +277,89 @@ pub(super) fn uninstall(_py: Python<'_>, l: &Layout) -> bool {
     }
     l.release_collecting();
     done
+}
+
+/// Explicit `gc.collect()`: for the duration of the collection `gcstate->callbacks` is the
+/// program's own list, so CPython runs exactly its plain path (no `info` dict when the list is
+/// empty, the program's callbacks called by CPython itself); the policy does not need explicit
+/// collections. Returns whether the observer was detached (then [`reattach`] must follow).
+///
+/// Safety of the window: the swap holds the collector's `collecting` flag (no collection is in
+/// flight, so no callback loop iterates either list). Between releasing it and the explicit
+/// collection taking it back, GIL build: no Python code runs (no automatic collection can
+/// start); free-threaded build: another thread may start a collection there, and CPython then
+/// runs it with the program's list (exactly its plain behaviour; the policy misses that one
+/// collection), while this explicit `collect()` finds a collection running and returns 0, as
+/// it can without Rustique.
+#[inline]
+pub(super) fn detach(l: &Layout) -> bool {
+    if !SWAPPED.load(Ordering::Acquire) {
+        return false;
+    }
+    if !FT {
+        // GIL build: this thread holds the GIL and runs no Python code until the original
+        // starts its collection, so no collection can start in between; one is running only
+        // if this `collect()` comes from inside it (a GC callback or a finalizer).
+        if l.i32(l.off.collecting) != 0 {
+            return false;
+        }
+        if DETACHED.load(Ordering::Relaxed) {
+            return true;
+        }
+        if l.ptr(l.off.callbacks) != PRIVATE.load(Ordering::Relaxed) {
+            return false;
+        }
+        l.set_ptr(l.off.callbacks, PROGRAM.load(Ordering::Relaxed));
+        DETACHED.store(true, Ordering::Relaxed);
+        return true;
+    }
+    if !l.try_hold_collecting() {
+        // A collection is running (a `collect()` from a GC callback or a finalizer, or another
+        // thread's): CPython's `collect()` returns 0 without collecting; nothing to swap.
+        return false;
+    }
+    if !DETACHED.load(Ordering::Acquire) && l.ptr(l.off.callbacks) == PRIVATE.load(Ordering::Acquire) {
+        l.set_ptr(l.off.callbacks, PROGRAM.load(Ordering::Acquire));
+        DETACHED.store(true, Ordering::Release);
+    }
+    l.release_collecting();
+    // Detached now (also after an earlier `reattach` that had to give up): this call
+    // reattaches.
+    DETACHED.load(Ordering::Acquire)
+}
+
+/// Point `gcstate->callbacks` back at the private list after an explicit collection. On a
+/// free-threaded build another thread's collection may be running with the program's list:
+/// wait for it (up to 1 s); if it does not end, the observer stays detached (policy idle,
+/// CPython's plain behaviour) and the next explicit collection tries again.
+#[inline]
+pub(super) fn reattach(py: Python<'_>, l: &Layout) {
+    if !DETACHED.load(Ordering::Acquire) {
+        return;
+    }
+    if !FT {
+        // GIL build: the explicit collection is over and no other one can run (see `detach`).
+        if l.i32(l.off.collecting) == 0 {
+            l.set_ptr(l.off.callbacks, PRIVATE.load(Ordering::Relaxed));
+            DETACHED.store(false, Ordering::Relaxed);
+        }
+        return;
+    }
+    let mut tries = 1000;
+    while !l.try_hold_collecting() {
+        tries -= 1;
+        if tries == 0 {
+            return;
+        }
+        py.detach(|| std::thread::sleep(std::time::Duration::from_millis(1)));
+    }
+    if l.ptr(l.off.callbacks) == PROGRAM.load(Ordering::Acquire) {
+        l.set_ptr(l.off.callbacks, PRIVATE.load(Ordering::Acquire));
+    }
+    DETACHED.store(false, Ordering::Release);
+    l.release_collecting();
+}
+
+pub(super) fn detached() -> bool {
+    DETACHED.load(Ordering::Acquire)
 }

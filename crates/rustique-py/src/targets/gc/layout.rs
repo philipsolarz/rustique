@@ -103,9 +103,14 @@ pub(super) const E_SYMBOL: u8 = 0;
 pub(super) const E_LAYOUT: u8 = 1;
 
 /// The calibrated layout, if [`calibrate`] succeeded.
+/// The calibrated layout as a plain pointer (one load on the hooks' path).
+static READY: std::sync::atomic::AtomicPtr<Layout> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
 #[inline]
 pub(super) fn get() -> Option<&'static Layout> {
-    LAYOUT.get().and_then(|r| r.as_ref().ok())
+    let p = READY.load(Ordering::Acquire);
+    // SAFETY: set once from the `OnceLock`'s value, which lives for the process.
+    if p.is_null() { None } else { Some(unsafe { &*p }) }
 }
 
 #[cfg(unix)]
@@ -133,7 +138,11 @@ fn rd_u64(addr: usize) -> u64 {
 
 /// Locate and check the layout (once per process). `Err((category, reason))`.
 pub(super) fn calibrate(py: Python<'_>) -> Result<&'static Layout, (u8, String)> {
-    LAYOUT.get_or_init(|| locate(py)).as_ref().map_err(|e| e.clone())
+    let r = LAYOUT.get_or_init(|| locate(py)).as_ref().map_err(|e| e.clone());
+    if let Ok(l) = r {
+        READY.store((l as *const Layout).cast_mut(), Ordering::Release);
+    }
+    r
 }
 
 fn locate(_py: Python<'_>) -> Result<Layout, (u8, String)> {

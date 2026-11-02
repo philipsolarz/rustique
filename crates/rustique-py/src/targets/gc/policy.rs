@@ -166,6 +166,8 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static DIRTY: AtomicBool = AtomicBool::new(false);
 /// CPython's `long_lived_total` as of its last write (−1: unknown).
 static REAL: AtomicIsize = AtomicIsize::new(-1);
+/// The value the policy last wrote (meaningful while `DIRTY`).
+static LAST_WANT: AtomicIsize = AtomicIsize::new(-1);
 /// Research switch (`Params::step_aside`).
 static STEP_ASIDE: AtomicBool = AtomicBool::new(true);
 /// Why the policy stepped aside for good (0: it did not).
@@ -229,6 +231,7 @@ fn apply(l: &Layout, real: isize, want: isize) {
         restore(l);
         return;
     }
+    LAST_WANT.store(want, Ordering::SeqCst);
     l.set_isize(l.off.long_lived_total, want);
     DIRTY.store(true, Ordering::SeqCst);
     if !ACTIVE.load(Ordering::SeqCst) {
@@ -256,6 +259,29 @@ pub(super) fn disarm() {
     if let Some(l) = layout::get() {
         restore(l);
     }
+}
+
+/// After an explicit `gc.collect()` (run without the observer): if the collection was a full
+/// one, CPython has just written its own `long_lived_total`; re-apply the policy's value for
+/// it (the rule's state is unchanged: explicit collections do not feed it).
+#[inline]
+pub(super) fn after_explicit(l: &Layout) {
+    let cur = l.isize(l.off.long_lived_total);
+    let expected =
+        if DIRTY.load(Ordering::SeqCst) { LAST_WANT.load(Ordering::SeqCst) } else { REAL.load(Ordering::SeqCst) };
+    if cur == expected || !(ACTIVE.load(Ordering::SeqCst) && hooks_installed()) {
+        return;
+    }
+    let Ok(r) = RULE.try_lock() else { return };
+    DIRTY.store(false, Ordering::SeqCst);
+    REAL.store(cur, Ordering::SeqCst);
+    let want = if FT {
+        r.ft_field(cur, l.i32(l.off.thresholds[0]) as isize, None)
+    } else {
+        r.gil_field(cur, l.isize(l.off.heap_size))
+    };
+    drop(r);
+    apply(l, cur, want);
 }
 
 /// The program tuned the GC: step aside for the rest of the process.
@@ -476,6 +502,7 @@ pub(super) fn report<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
     d.set_item("real_total", REAL.load(Ordering::SeqCst))?;
     d.set_item("ft", FT)?;
     d.set_item("forwarding", super::observer::swapped())?;
+    d.set_item("detached", super::observer::detached())?;
     if let Ok(r) = RULE.try_lock() {
         d.set_item("k", r.k)?;
         d.set_item("max_full", r.max_full)?;

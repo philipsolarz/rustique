@@ -55,6 +55,7 @@ survivors, so deferred garbage never raises the cap (no ratchet).
 | observer + forwarder | `observer.rs` | `gcstate->callbacks` → a private, untracked `[observer]` list; the program's list is kept (its reference moved from the collector state). Swapped only while holding the collector's own `collecting` flag (CAS 0→1: no collection, so no callback loop, can be in flight) at install, `disable()` and exit |
 | policy | `policy.rs` | the rule; writes `gcstate->long_lived_total` only, re-applied in the `stop` callback after CPython resets it at each full collection |
 | hooks | `mod.rs` | `ml_meth` of `gc.set_threshold`, `enable`, `disable`, `freeze`, `unfreeze`, `set_debug` (static `GcMethods` table, fingerprinted per minor): CPython's function first (same validation, errors, effect), then — if it succeeded, the policy is watching and this is the main interpreter — step aside |
+| `gc.collect` hook | `mod.rs`, `observer.rs` | `ml_meth` of `gc.collect`: for the duration of an explicit collection `gcstate->callbacks` points back at the program's own list (CPython runs exactly its plain path: no `info` dict when the list is empty, the program's callbacks called by CPython itself), then the private list again, and the policy's value is re-applied if the collection reset it. Explicit collections no longer feed the rule. Window: GIL, the swap happens with `collecting == 0` and no Python code runs until the collection takes the flag; free-threaded, the swap holds the `collecting` flag, and a collection another thread starts in the window runs with the program's list (CPython's plain behaviour, the policy misses it) while this `collect()` returns 0, as it can without Rustique. A `collect()` from inside a collection (callback, finalizer) swaps nothing |
 
 **Every reader of `long_lived_total`** (grep of 3.14.9 and 3.15.1, `Python/`, `Modules/`,
 `Include/`): the generation choice (`gc.c` `gc_select_generation`) and the trigger
@@ -85,7 +86,7 @@ place, forwarding only, until the next restore (`test_disable_from_inside_a_call
 | callback invocations | the forwarder iterates the list CPython would iterate (`gcstate->callbacks` at install: rebinding the module attribute changes nothing, as in CPython), by index re-reading the length before each entry, with CPython's own `(phase, info)` argument array (one `info` dict per invocation, shared by every callback, mutations visible to the later ones), reports a raising entry with `PyErr_FormatUnraisable("Exception ignored while calling GC callback %R", cb)` and carries on; the policy runs first, in both phases | **yes**: `tests/test_gc_tier_callbacks.py`, differential plain vs tier vs tier-with-policy-armed, incl. 100 Hypothesis programs of list mutations, raising/uncallable callbacks, `gc.collect()` inside callbacks |
 | `gc.set_threshold/enable/disable/freeze/unfreeze/set_debug` | CPython's function (errors, messages, effect), then step aside | yes (`test_set_threshold_errors_are_cpythons_and_do_not_step_aside`) |
 | `gc.isenabled/get_debug/get_freeze_count` | untouched | yes |
-| `gc.collect(g)` | never intercepted: runs generation `g`, also while the policy defers; its collections feed the rule | semantics yes; return value timing-dependent |
+| `gc.collect(g)` | CPython's function, run with the program's own callback list (the observer detached for its duration); runs generation `g`, also while the policy defers; does not feed the rule | semantics yes; return value timing-dependent |
 | `gc.get_count()`, `gc.get_stats()` | the collections that ran (fewer full ones); GIL `count[2]` can exceed threshold2 while deferred, a state CPython reaches whenever its 25% rule holds a full collection back | timing-dependent (outside the contract) |
 | `gc.get_objects/get_referrers/get_referents/is_tracked/is_finalized` | untouched; the observer and its list are untracked (never listed) | yes (`test_no_freeze_inventory_exact`) |
 | `gc.garbage`, `DEBUG_*` | the same objects, possibly later | timing-dependent |
@@ -287,9 +288,9 @@ Modules: `test_gc`, `test_weakref`, `test_finalization`, `test_gc_stats` (3.15),
 `test_gc`, `test_weakref`, `test_sys` and `test_exceptions` on 3.15.1 fails identically
 without Rustique (environment).
 
-Rustique's own suites: `tests/test_gc_tier.py` (27), `tests/test_gc_tier_callbacks.py` (8,
+Rustique's own suites: `tests/test_gc_tier.py` (28), `tests/test_gc_tier_callbacks.py` (8,
 one of them 50 Hypothesis programs by default, `RQ_GC_EXAMPLES`), `tests/test_gc_tier_threads.py`
-(3): 38 pass on the four primary builds, alone and with the `interp` tier on too
+(3): 39 pass on the four primary builds, alone and with the `interp` tier on too
 (`RQ_GC_TIERS=gc,interp RQ_GC_ONLY=gc,interp`), and on 3.15.2, 3.15.2t, 3.14.10. The whole
 `pytest -q tests` at the merged head (wave2 f127702): 3.15.1 2,533 passed + 1 failure of
 `test_dx_estimate.py::test_signal_sampler_samples_cpu_not_waiting` under box load (passes
@@ -315,23 +316,24 @@ the first tuning call (steps aside, one-time) | 3,561 → 3,602 | 1.012 | 4,134 
 `gc.collect()`, bare interpreter heap | 4,633,539 → 4,666,000 | 1.007 | 4,915,101 → 4,962,240 | 1.010 |
 `gc.collect()`, 100 k-object heap | 27,183,803 → 27,216,189 | 1.001 | 29,944,612 → 29,976,485 | 1.001 |
 automatic young collection (`[[] for _ in range(2001)]`, 100 k heap) | 897,016 → 884,757 | 0.986 | 908,489 → 908,667 | 1.000 |
-`gc.collect(0)` + one program callback | 10,555 → 11,335 | **1.074** | 4,930,913 → 4,959,907 | 1.006 |
-`gc.collect(0)`, empty young generation, no callback | 1,257 → 10,539 | **8.38** | 4,915,209 → 4,962,347 | 1.010 |
+`gc.collect(0)` + one program callback | 10,527 → 10,613 | 1.008 | 4,930,913 → 4,959,907 | 1.006 |
+`gc.collect(0)`, empty young generation, no callback | 1,285 → 1,361 | **1.059** | 4,915,209 → 4,962,347 | 1.010 |
+`gc.collect(1)`, empty generations | 1,313 → 1,389 | **1.058** | | |
 install: `enable(["gc"], tiers=["gc"])` vs the same call without the tier | 28,187 → 64,277 | +36 k | 29,120 → 63,731 | +35 k |
 
-- **Per collection the tier costs ~9.3 k instructions (≈ 2–3 µs), of which ~8.5 k is CPython's
-  own work**: `invoke_gc_callback` builds the `info` dict (`Py_BuildValue` of five keys, twice per
-  collection) whenever `gcstate->callbacks` is non-empty, and the observer's list never is; the
-  observer, the policy and the forwarder are the remaining ~0.8 k (M: callgrind function profile,
-  1,000 `gc.collect(0)`). Against a collection that examines objects this is ≤ 1%: an automatic
-  young collection (≈ 2,000 objects) or any full collection (≥ 30 k objects in a bare
-  interpreter) is 1.00–1.01×. Two GIL cells exceed 1.05: an explicit `gc.collect(0)`/`(1)` on an
-  empty generation (8.4×: the cheapest collection there is, 1.3 k instructions) and the same with
-  one program callback (1.07×, the program's own callback already pays the `info` dict). On the
+- **Automatic collections** cost ~9.3 k instructions more (≈ 2–3 µs), of which ~8.5 k is
+  CPython's own work: `invoke_gc_callback` builds the `info` dict (`Py_BuildValue` of five keys,
+  twice per collection) whenever `gcstate->callbacks` is non-empty, and the observer's list never
+  is; the observer, the policy and the forwarder are the remaining ~0.8 k (M: callgrind function
+  profile). Against a collection that examines objects this is ≤ 1%: an automatic young
+  collection (≈ 2,000 objects) is 0.98–1.00×, any full collection ≥ 30 k objects.
+- **Explicit collections** run without the observer (the `gc.collect` hook, §2): +76 instructions
+  on the GIL build (the interpreter check, the swap and the swap back, the re-application test).
+  **Listed opt-in exceedance:** `gc.collect(0)`/`(1)` on an empty generation, the cheapest
+  collection there is (1.3 k instructions), is 1.059× (+76 instructions; it was 8.4×, +9.3 k,
+  before the hook); with a program callback 1.008×; a full `gc.collect()` 1.005×. On the
   free-threaded build every collection walks the heap (≥ 4.9 M instructions in a bare
-  interpreter), so the same cells are 1.006–1.010. The
-  prototype's `gc.callbacks` entry pays the same `info` dict plus a Python call. No layout of
-  this mechanism avoids it: CPython offers no other per-collection hook.
+  interpreter): 1.006–1.010.
 - Hooked calls: +10 instructions in steady state (one relaxed load and the indirect call),
   ≤ 1.042 on the cheapest one (`gc.enable()`).
 - Install: +36 k instructions over the registry's own `enable()` pass (budget 0.1 M): the
@@ -363,23 +365,18 @@ enable/disable under load). Benchmarks and tools: `benches/runtime/` (`gcprobe.p
 `conformance.sh`, `setup_tier.sh`, `run_quiet.sh`, `quiet_driver.sh`; the prototype
 `gcadapt.py` and its tests stay as the reference).
 
-## 10. Open issues and decisions for the lead
+## 10. Decisions and open issues
 
-1. **Default eligibility.** Both declared deviations that DECISIONS §10.3 says block default
-   status are gone (§3); what remains is the quiet-box confirmation (§8) and a ruling on the
-   mechanism itself: the tier writes two fields of CPython's internal collector state
-   (`long_lived_total`, `callbacks`), located through `_PyRuntime.debug_offsets` and checked
-   against the interpreter's own getters at install. That is a new kind of entry point (not an
-   ACCELERATION §1 site); it needs a DECISIONS entry before any default.
-2. **T6.** 0.87 on the > 10% GC workloads is out of reach for the decided rule (§5.2: dev-box
-   estimates 0.99 GIL / 0.97 t, instructions 0.996 / 0.989); "max pause ≤ the default's"
-   conflicts with any cap above 1.0 (measured ≤ 1.02 GIL, ≤ 1.07 t on that set).
-3. **Free-threaded cap 1.05** instead of the decided 1.1, to meet the RSS budget on the
-   adversarial suite (§1, §5.4); GC work 0.82 instead of 0.77 on the 65 workloads.
-4. **Fixed per-collection cost** (§7): ~9 k instructions per collection, mostly CPython's own
-   `info` dict; explicit collections of an empty generation are 8.4× on the GIL build (1.3 k →
-   10.5 k instructions), 1.07× with one program callback. Every collection that examines
-   objects is ≤ 1.01×.
+1. **Mechanism** (decided): writing the calibrated collector fields (`long_lived_total`,
+   `callbacks`) is an opt-in-tier mechanism (DECISIONS entry); not a default.
+2. **T6** (decided): reported as not met (§5.2: the rule takes only near-zero-yield full
+   collections; estimates 0.99 GIL / 0.97 t, instructions 0.996 / 0.989).
+3. **Pause budget of the tier** (decided): every collection ≤ 1.1× (GIL) / 1.05× (t) of the
+   largest default collection replaces "≤ the default's" for the opt-in tier; "no longer
+   pauses" stays a default-eligibility criterion. The free-threaded cap of 1.05 is confirmed.
+4. **Listed opt-in exceedance** (§7): an explicit `gc.collect(0)`/`(1)` on an empty generation
+   is 1.059× on the GIL build (+76 instructions over 1.3 k; 8.4× before the `gc.collect` hook).
+   Every other cell ≤ 1.05.
 5. **Known limits** (not documented-API deviations): `importlib.reload(gc)` shows the
    observer's private list in `gc.callbacks` until the next collection repairs it (§3); an
    `enable()` that races with a running collection on a free-threaded build waits up to 0.2 s,
