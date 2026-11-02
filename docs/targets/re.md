@@ -209,10 +209,12 @@ fat LTO, PYTHONHASHSEED=0); M = measured.
 
 ### Install (M, `benches/targets/re_install.py`)
 
-`import re` costs 21.6M Ir; the lazy install of the group at its end costs **0.82M Ir (3.8%)**
-(T9 budget: 5%). Fingerprints (59 functions, ~0.55M Ir) and the table checks run on the first
-kernel call instead (ACCELERATION §5.7: a failure degrades the targets), once per process; with
-them at install the group cost 1.58M (7.3%).
+`import re` costs 21.6M Ir; the lazy install of the group at its end costs **0.69M Ir (3.2%)**
+(T9 budget: 5%; eager install with `re` already imported: 0.70M). The fingerprints (59
+functions) and the table checks run on the first kernel call instead (ACCELERATION §5.7: a
+failure degrades the targets), once per process: ~0.55M for the compiler, ~0.15M for the module
+functions; with them at install the group cost 1.58M (7.3%). Pins: snapshot pins of three
+module namespaces, the builtins' own entries, key pins of the `re` globals.
 
 ### Cells (M, `benches/targets/re_cells.py`: instructions per call, plain vs group installed)
 
