@@ -196,15 +196,14 @@ differs by those frames (as for every wave-1 vectorcall target).
 | `h.handle(1)` / `h.handle` (singledispatchmethod) | 9,672 / 3,417 | 8,405 / 2,796 | 0.869 / 0.818 |
 | fallbacks: metaclass with `__eq__`, classmethod implementation | 4,454 / 10,501 | 4,436 / 10,293 | 0.996 / 0.980 |
 | decorate: `contextmanager(f)` / `singledispatch(f)` | 12,904 / 34,743 | 13,200 / 35,138 | 1.023 / 1.011 |
-| create `namedtuple` + 1 call / frozen dataclass + 1 call / enum (5 members) | 312,831 / 2,816,580 / 420,352 | 316,566 / 2,882,253 / 434,327 | 1.012 / 1.023 / 1.033 |
+| create `namedtuple` + 1 call / frozen dataclass + 1 call / enum (5 members) | 312,831 / 2,816,580 / 420,352 | 314,126 / 2,842,462 / 422,583 | 1.004 / 1.009 / 1.005 |
 
 `Bad(1)` (1.069) is an enum whose `_value2member_map_` holds a key of a user class (only
 possible by writing to the private map): every lookup falls back after the class facts
 said "unsafe keys"; the +163 Ir are `tp_call` kernel + `slot_tp_call` + the vectorcall
 kernel's early exit. Not a realistic program state; listed as the one cell above 1.05.
-Creation cells include ~930 Ir per new code object of the monitoring-version tax accel's
-probe caused (fixed on `ws2/accel` @ e0b0996, not yet merged); enum creation (1.033) has no
-hook: it is that tax plus per-class fact computations during `EnumType.__new__`.
+Creation cells measured after merging accel's fix of the monitoring-version tax its layout
+probe caused (wave2 a000743; before it: 1.012 / 1.023 / 1.033, ~930 Ir per new code object).
 
 ### 3.2 Workloads (instructions per `run()`, `perf stat`, dev box, 3.15.1, digests identical; `benches/datamodel/wl_instr.py`)
 

@@ -70,7 +70,7 @@ first allocation (its `__init__` is not the kernel's), the same allocator its ba
 | under `sys.monitoring` LINE events (tool: the class is given back `GenericAlloc`) | 4,510 | 4,510 | 1.000 |
 | under `sys.setprofile` | 6,979 | 7,068 | 1.013 |
 | frozen class with a user `default_factory` (no kernel at all since the fix: it would fall back on every defaulted call; before: 1.289) | 3,379 | 3,365 | 0.996 |
-| class creation `@dataclass(frozen=True)` + one call (hooks, capture, plan, routing) | 2,816,541 | 2,883,825 | 1.024 |
+| class creation `@dataclass(frozen=True)` + one call (hooks, capture, plan, routing) | 2,816,580 | 2,842,462 | 1.009 |
 
 Classes created before `enable()` are neither given the kernel nor routed (no adoption of
 dataclasses this wave): unchanged. Workloads: see the final report (custom, frameworks,
