@@ -227,6 +227,10 @@ outcomes compared; all 24 targets of the three groups asserted installed). CPyth
 | **differences plain vs enabled** | **0** | **0** | **0** | **0** |
 
 The `test_os` failures and error are the box's environment (identical without Rustique).
+**Wave 2** (ws2/text-paths on wave2 c9fb335, same command, the 24 targets installed): the same
+counts and **0 differences** on 3.15.1, 3.15.1t, 3.14.9 and 3.14.9t
+(`benches/targets/results/paths_w2_conformance_<build>.json`); full `pytest -q`: 2205 passed /
+5 skipped (3.15.1, 3.15.1t), 2207 / 3 (3.14.9, 3.14.9t).
 Plus `tests/targets/test_posixpath.py`, `test_fnmatch.py`, `test_pathlib.py` (differential
 Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `pytest -q` on
 the four builds.

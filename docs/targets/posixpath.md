@@ -205,7 +205,12 @@ is the same bench on bc2ce1a). The uniform +13 Ir on untouched kernels (`split`,
 | `commonpath([p, d])` | 23,109 | 23,061 | 23,085 | 0.999 |
 | `commonpath((pb, db)) bytes` | 24,734 | 24,686 | 24,737 | 1.000 |
 
-Every fallback and reject cell stays ≤ 1.000 in steady state (unchanged).
+Every fallback and reject cell stays ≤ 1.000 in steady state (unchanged). Under
+`PYTHON_JIT=1` (`paths_cg.py --jit`, changed kernels of the three groups,
+`benches/targets/results/paths_w2_cg_jit_3.15.1.json`): `relpath(p, root)` 0.091, bytes
+0.075, relative 0.132, `abspath(p)` 0.349, `fnmatch(f, '*.py')` 0.121, `filter(32)` 0.063,
+`relative_to` 0.046; worst fallback cell 1.018 (`fnmatch` with `os.fspath` patched, the
+group suspended; 0.997 at bc2ce1a under the same bench without JIT).
 
 **8-thread rule** (DECISIONS §10.9; `benches/targets/paths_scaling.py run [--enable] -t 1,8
 -r 3`, 3.15.1t, CPU time per call summed over threads): enabled ÷ plain CPU per call at 8
@@ -347,6 +352,10 @@ outcomes compared; all 24 targets of the three groups asserted installed). CPyth
 | **differences plain vs enabled** | **0** | **0** | **0** | **0** |
 
 The `test_os` failures and error are the box's environment (identical without Rustique).
+**Wave 2** (ws2/text-paths on wave2 c9fb335, same command, the 24 targets installed): the same
+counts and **0 differences** on 3.15.1, 3.15.1t, 3.14.9 and 3.14.9t
+(`benches/targets/results/paths_w2_conformance_<build>.json`); full `pytest -q`: 2205 passed /
+5 skipped (3.15.1, 3.15.1t), 2207 / 3 (3.14.9, 3.14.9t).
 Plus `tests/targets/test_posixpath.py`, `test_fnmatch.py`, `test_pathlib.py` (differential
 Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `pytest -q` on
 the four builds.
