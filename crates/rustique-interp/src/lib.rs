@@ -44,7 +44,12 @@ pub struct RqApi {
     group_arm: unsafe extern "C" fn(c_int, *const *mut c_void, *const *mut c_void, *const *mut c_void, c_int) -> c_int,
     group_stats: unsafe extern "C" fn(c_int, *mut u64),
     opname: unsafe extern "C" fn(c_int) -> *const c_char,
-    getattr_fast: unsafe extern "C" fn(*mut pyo3::ffi::PyObject, *mut pyo3::ffi::PyObject, c_int, *mut *mut pyo3::ffi::PyObject) -> c_int,
+    getattr_fast: unsafe extern "C" fn(
+        *mut pyo3::ffi::PyObject,
+        *mut pyo3::ffi::PyObject,
+        c_int,
+        *mut *mut pyo3::ffi::PyObject,
+    ) -> c_int,
 }
 
 const RQ_API_ABI: u32 = 1;
@@ -199,8 +204,12 @@ impl Located {
     /// the original), -1 error raised.
     pub fn getattr_fast(
         &self,
-    ) -> unsafe extern "C" fn(*mut pyo3::ffi::PyObject, *mut pyo3::ffi::PyObject, c_int, *mut *mut pyo3::ffi::PyObject) -> c_int
-    {
+    ) -> unsafe extern "C" fn(
+        *mut pyo3::ffi::PyObject,
+        *mut pyo3::ffi::PyObject,
+        c_int,
+        *mut *mut pyo3::ffi::PyObject,
+    ) -> c_int {
         self.api.getattr_fast
     }
 

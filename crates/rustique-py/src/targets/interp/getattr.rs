@@ -16,7 +16,8 @@ use pyo3::prelude::*;
 
 use crate::accel::{Category, Counters, Fingerprints, Original, Prepare, Reason, Refusal, TargetSpec};
 
-type GetattrFast = unsafe extern "C" fn(*mut ffi::PyObject, *mut ffi::PyObject, c_int, *mut *mut ffi::PyObject) -> c_int;
+type GetattrFast =
+    unsafe extern "C" fn(*mut ffi::PyObject, *mut ffi::PyObject, c_int, *mut *mut ffi::PyObject) -> c_int;
 
 /// The handler set's fast path, set by `prepare` before a kernel is reachable.
 static FAST: AtomicUsize = AtomicUsize::new(0);
@@ -35,7 +36,11 @@ fn fast() -> GetattrFast {
     unsafe { std::mem::transmute::<usize, GetattrFast>(FAST.load(Ordering::Relaxed)) }
 }
 
-unsafe extern "C" fn k_getattr(slf: *mut ffi::PyObject, args: *mut *mut ffi::PyObject, nargs: ffi::Py_ssize_t) -> *mut ffi::PyObject {
+unsafe extern "C" fn k_getattr(
+    slf: *mut ffi::PyObject,
+    args: *mut *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+) -> *mut ffi::PyObject {
     if nargs == 2 || nargs == 3 {
         let mut res = std::ptr::null_mut();
         // SAFETY: METH_FASTCALL: `nargs` valid argument pointers.
@@ -57,7 +62,11 @@ unsafe extern "C" fn k_getattr(slf: *mut ffi::PyObject, args: *mut *mut ffi::PyO
     unsafe { ORIG_GETATTR.get()(slf, args, nargs) }
 }
 
-unsafe extern "C" fn k_hasattr(slf: *mut ffi::PyObject, args: *mut *mut ffi::PyObject, nargs: ffi::Py_ssize_t) -> *mut ffi::PyObject {
+unsafe extern "C" fn k_hasattr(
+    slf: *mut ffi::PyObject,
+    args: *mut *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+) -> *mut ffi::PyObject {
     if nargs == 2 {
         let mut res = std::ptr::null_mut();
         // SAFETY: METH_FASTCALL: two valid argument pointers.
@@ -82,7 +91,13 @@ unsafe extern "C" fn k_hasattr(slf: *mut ffi::PyObject, args: *mut *mut ffi::PyO
     unsafe { ORIG_HASATTR.get()(slf, args, nargs) }
 }
 
-fn declare(cx: &mut Prepare<'_>, name: &str, fp: Fingerprints, kernel: ffi::PyCFunctionFast, orig: &'static Original<ffi::PyCFunctionFast>) -> Result<(), Refusal> {
+fn declare(
+    cx: &mut Prepare<'_>,
+    name: &str,
+    fp: Fingerprints,
+    kernel: ffi::PyCFunctionFast,
+    orig: &'static Original<ffi::PyCFunctionFast>,
+) -> Result<(), Refusal> {
     let loc = rustique_interp::locate().map_err(|r| super::refusal(&r))?;
     FAST.store(loc.getattr_fast() as usize, Ordering::Release);
     let builtins = cx.loaded_module("builtins")?;
