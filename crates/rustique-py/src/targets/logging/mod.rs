@@ -150,6 +150,16 @@ fn same<'py>(
 // ---------------------------------------------------------------------------------------
 
 fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    if !cfg!(unix) {
+        // The kernels reproduce `os.path` as `posixpath` (findCaller's `normcase`, the
+        // record's `basename`/`splitext`) and convert times with `localtime_r`; on Windows
+        // `os.path` is `ntpath` (normcase via `_winapi.LCMapStringEx`, drive-aware
+        // basename). An expected refusal there (`platform`), not a dependency surprise.
+        return Err(Refusal::with(
+            crate::accel::spec::Category::Platform,
+            "os.path is ntpath: logging kernels validated with posixpath only",
+        ));
+    }
     init_names();
     cx.symbol(c"_PyObject_GetMethod", &common::GET_METHOD)?;
     calibrate(cx)?;

@@ -68,14 +68,25 @@ fn load_capi(cx: &Prepare<'_>) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// What every datetime target needs.
-fn common_base(cx: &Prepare<'_>) -> Result<&'static env::TimeEnv, Refusal> {
+/// The targets whose output depends on the C library (`strftime`/`wcsftime` text, the
+/// `LC_TIME` probe behind `strptime`'s and `strftime`'s locale names): validated on
+/// Linux/glibc only. `isoformat` formats digits itself in `_datetime` and calls no libc
+/// function, so it does not need this gate (docs/atlas/w2-dx.md §2).
+fn libc_gate() -> Result<(), Refusal> {
     if !cfg!(all(target_os = "linux", target_env = "gnu")) {
         return Err(Refusal::with(
             crate::accel::spec::Category::Platform,
             "glibc strftime/locale behaviour only validated on Linux/glibc",
         ));
     }
+    if !env::lc_time_probe_ok() {
+        return Err(Refusal::new("LC_TIME probe (glibc _nl_C_name) unavailable"));
+    }
+    Ok(())
+}
+
+/// What every datetime target needs.
+fn common_base(cx: &Prepare<'_>) -> Result<&'static env::TimeEnv, Refusal> {
     let t = env::capture_time(cx)?;
     ustr::calibrate(cx.py());
     Ok(t)
@@ -143,6 +154,7 @@ fn api_type<'py>(py: Python<'py>, t: *mut ffi::PyTypeObject) -> Bound<'py, PyTyp
 // ---------------------------------------------------------------------------------------
 
 fn prepare_classmethod_strptime(cx: &mut Prepare<'_>, kind: parse::Kind) -> Result<(), Refusal> {
+    libc_gate()?;
     let py = cx.py();
     let api = capi();
     // SAFETY: C API loaded by `common`.
@@ -188,6 +200,7 @@ fn prepare_time_strptime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Re
 }
 
 fn prepare_time_fn_strptime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    libc_gate()?;
     let e = env::env().ok_or_else(|| Refusal::new("environment not captured"))?;
     let py = cx.py();
     // SAFETY: captured module.
@@ -214,6 +227,7 @@ fn cx_version_15() -> bool {
 }
 
 fn prepare_strftime_method(cx: &mut Prepare<'_>, time_method: bool) -> Result<(), Refusal> {
+    libc_gate()?;
     let py = cx.py();
     let api = capi();
     // SAFETY: C API loaded by `common`.
@@ -245,7 +259,8 @@ fn prepare_time_strftime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Re
 }
 
 fn prepare_time_fn_strftime(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    let t = common_base(cx)?;
+    let t = common_base(cx)?; // captures the LC_TIME probe that `libc_gate` reads
+    libc_gate()?;
     let py = cx.py();
     // SAFETY: captured module.
     let time = unsafe { env::obj(py, t.time_mod) }.cast_into::<pyo3::types::PyModule>().map_err(PyErr::from)?;
