@@ -44,7 +44,7 @@ use crate::targets::utils_kit::{
     _PyType_Lookup, Guard, INST, O, call_original, generic_getattro, get_s, interned, is_type, keep, key,
     module_dict_s, nargs, prepare_symbols, with_cs,
 };
-use rustique_core::random::{NORMAL_Z_BOUND, libm};
+use rustique_core::random::{NORMAL_Z_BOUND, libm, variates as cv};
 
 /// Interned names of the variates (process lifetime).
 struct Names {
@@ -267,6 +267,22 @@ unsafe fn native(slf: O) -> bool {
 // Kernels
 // ---------------------------------------------------------------------------------------
 
+/// `normalvariate`'s loop: each round draws its two `random()` values under the
+/// generator's critical section (CPython takes it once per `random()` call, so another
+/// thread may draw between rounds there too) and tests acceptance outside it.
+#[inline]
+unsafe fn normal_z(slf: O, nv: f64) -> f64 {
+    // SAFETY: attached thread; `slf` checked by `random_native`.
+    unsafe {
+        loop {
+            let (u1, r) = with_cs(slf, || mt(slf).random2());
+            if let Some(z) = cv::normal_try(nv, u1, r) {
+                return z;
+            }
+        }
+    }
+}
+
 /// `Random.expovariate(self, lambd=1.0)`: `-_log(1.0 - self.random()) / lambd`.
 unsafe extern "C" fn vc_expovariate(func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments.
@@ -281,9 +297,11 @@ unsafe extern "C" fn vc_expovariate(func: O, args: *const O, nargsf: usize, kw: 
                 return call_original(func, args, nargsf, kw);
             }
             if native(slf) {
-                let x = with_cs(slf, || mt(slf).expo());
+                // The draw under the generator's lock; the arithmetic outside it (shorter
+                // critical sections when threads share a generator).
+                let r = with_cs(slf, || mt(slf).random());
                 g.counters.hit_streak();
-                return float(x / lv);
+                return float(cv::expo(r) / lv);
             }
         }
         g.counters.fallback_streak(Reason::Args);
@@ -307,9 +325,9 @@ unsafe extern "C" fn vc_paretovariate(func: O, args: *const O, nargsf: usize, kw
             }
             if native(slf) {
                 let e = -1.0 / av;
-                let x = with_cs(slf, || mt(slf).pareto(e));
+                let r = with_cs(slf, || mt(slf).random());
                 g.counters.hit_streak();
-                return float(x);
+                return float(cv::pareto(r, e));
             }
         }
         g.counters.fallback_streak(Reason::Args);
@@ -333,7 +351,7 @@ unsafe extern "C" fn vc_normalvariate(func: O, args: *const O, nargsf: usize, kw
             }
             if native(slf) {
                 let nv = f64::from_bits(NV_MAGICCONST.load(R));
-                let z = with_cs(slf, || mt(slf).normal_z(nv));
+                let z = normal_z(slf, nv);
                 g.counters.hit_streak();
                 return float(m + z * s);
             }
@@ -380,7 +398,7 @@ unsafe extern "C" fn vc_lognormvariate(func: O, args: *const O, nargsf: usize, k
             }
             if native(slf) && normal_is_ours(slf) {
                 let nv = f64::from_bits(NV_MAGICCONST.load(R));
-                let z = with_cs(slf, || mt(slf).normal_z(nv));
+                let z = normal_z(slf, nv);
                 g.counters.hit_streak();
                 return float(libm::exp(m + z * s));
             }
@@ -508,7 +526,8 @@ unsafe fn gauss(slf: O, m: f64, s: f64) -> Option<O> {
             Some(v) => v,
             None => {
                 let twopi = f64::from_bits(TWOPI.load(R));
-                let (z, next) = with_cs(slf, || mt(slf).gauss_pair(twopi));
+                let (a, b) = with_cs(slf, || mt(slf).random2());
+                let (z, next) = cv::gauss_pair(a, b, twopi);
                 let nf = float(next);
                 if nf.is_null() {
                     return Some(nf);

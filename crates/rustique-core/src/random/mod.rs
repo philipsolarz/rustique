@@ -135,40 +135,37 @@ impl Mt<'_> {
     #[inline]
     pub fn normal_z(&mut self, nv_magicconst: f64) -> f64 {
         loop {
-            let u1 = self.random();
-            let u2 = 1.0 - self.random();
-            let z = nv_magicconst * (u1 - 0.5) / u2;
-            let zz = z * z / 4.0;
-            if zz <= -libm::log(u2) {
+            let (u1, r) = self.random2();
+            if let Some(z) = variates::normal_try(nv_magicconst, u1, r) {
                 return z;
             }
         }
     }
 
+    /// Two `random()` values, in order.
+    #[inline]
+    pub fn random2(&mut self) -> (f64, f64) {
+        let a = self.random();
+        (a, self.random())
+    }
+
     /// `-_log(1.0 - self.random())`: `Random.expovariate` before the division by `lambd`.
     #[inline]
     pub fn expo(&mut self) -> f64 {
-        -libm::log(1.0 - self.random())
+        variates::expo(self.random())
     }
 
-    /// `Random.paretovariate(alpha)` for `1/16 <= |alpha|` (finite), given
-    /// `e = -1.0 / alpha`: `u = 1.0 - random(); u ** e` as `float_pow` computes it
-    /// (`1.0 ** e` is 1.0, else libm `pow`). With `u` in `[2**-53, 1]` and
-    /// `|e| <= 16` the result lies in `[2**-848, 2**848]`: never a range error.
+    /// `Random.paretovariate(alpha)` given `e = -1.0 / alpha` (see [`variates::pareto`]).
     #[inline]
     pub fn pareto(&mut self, e: f64) -> f64 {
-        let u = 1.0 - self.random();
-        if u == 1.0 { 1.0 } else { libm::pow(u, e) }
+        variates::pareto(self.random(), e)
     }
 
-    /// `Random.gauss`'s new pair when `gauss_next` is `None`: `(z, next)` with
-    /// `x2pi = random() * TWOPI`, `g2rad = _sqrt(-2.0 * _log(1.0 - random()))`,
-    /// `z = _cos(x2pi) * g2rad`, `next = _sin(x2pi) * g2rad`.
+    /// `Random.gauss`'s new pair when `gauss_next` is `None` (see [`variates::gauss_pair`]).
     #[inline]
     pub fn gauss_pair(&mut self, twopi: f64) -> (f64, f64) {
-        let x2pi = self.random() * twopi;
-        let g2rad = libm::sqrt(-2.0 * libm::log(1.0 - self.random()));
-        (libm::cos(x2pi) * g2rad, libm::sin(x2pi) * g2rad)
+        let (a, b) = self.random2();
+        variates::gauss_pair(a, b, twopi)
     }
 
     /// The swaps of `Random.shuffle(x)` for `len(x) == n`, in order: `(i, j)` means
@@ -285,6 +282,49 @@ impl Mt<'_> {
 const POOL_STACK: usize = 512;
 /// Slots of the stack table of selected indices (4 KiB); used for `k <= SET_STACK / 4`.
 const SET_STACK: usize = 512;
+
+/// The arithmetic of the continuous distributions on given `random()` values (`r`), so
+/// that callers can draw under the generator's lock and compute outside it. Same IEEE
+/// operations in the same order as `Lib/random.py` (Rust never contracts into FMA), and
+/// [`libm`] for the C library calls.
+pub mod variates {
+    use super::libm;
+
+    /// One round of `normalvariate`'s loop with `u1 = random()`, `u2 = 1.0 - r`:
+    /// `z = NV_MAGICCONST * (u1 - 0.5) / u2`, accepted when `z * z / 4.0 <= -_log(u2)`.
+    #[inline]
+    pub fn normal_try(nv_magicconst: f64, u1: f64, r: f64) -> Option<f64> {
+        let u2 = 1.0 - r;
+        let z = nv_magicconst * (u1 - 0.5) / u2;
+        let zz = z * z / 4.0;
+        (zz <= -libm::log(u2)).then_some(z)
+    }
+
+    /// `-_log(1.0 - r)`.
+    #[inline]
+    pub fn expo(r: f64) -> f64 {
+        -libm::log(1.0 - r)
+    }
+
+    /// `(1.0 - r) ** e` as `float_pow` computes it (`1.0 ** e` is 1.0, else libm `pow`),
+    /// for `e = -1.0 / alpha` with `1/16 <= |alpha|` finite: `1.0 - r` lies in
+    /// `[2**-53, 1]` and `|e| <= 16`, so the result lies in `[2**-848, 2**848]` (never a
+    /// range error).
+    #[inline]
+    pub fn pareto(r: f64, e: f64) -> f64 {
+        let u = 1.0 - r;
+        if u == 1.0 { 1.0 } else { libm::pow(u, e) }
+    }
+
+    /// `x2pi = a * TWOPI`, `g2rad = _sqrt(-2.0 * _log(1.0 - b))`:
+    /// `(z, next) = (_cos(x2pi) * g2rad, _sin(x2pi) * g2rad)`.
+    #[inline]
+    pub fn gauss_pair(a: f64, b: f64, twopi: f64) -> (f64, f64) {
+        let x2pi = a * twopi;
+        let g2rad = libm::sqrt(-2.0 * libm::log(1.0 - b));
+        (libm::cos(x2pi) * g2rad, libm::sin(x2pi) * g2rad)
+    }
+}
 
 /// Upper bound of `|z|` for an accepted [`Mt::normal_z`]: `zz <= -log(u2)` with
 /// `u2 >= 2**-53` gives `|z| <= 2 * sqrt(53 * ln 2) = 12.12...`; rounded up.
