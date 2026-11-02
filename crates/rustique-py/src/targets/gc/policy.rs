@@ -316,6 +316,36 @@ unsafe fn info_get(info: *mut ffi::PyObject, key: &Bound<'_, pyo3::types::PyStri
     }
 }
 
+/// `info["generation"]`: CPython builds the dict with `Py_BuildValue("{si...")`, so it is
+/// the first entry; read it there (one `PyDict_Next`, ~40 instructions instead of a lookup
+/// that compares strings, ~160), else look it up.
+///
+/// # Safety
+/// Attached thread; `info` is the callback's own fresh dict or NULL.
+unsafe fn info_generation(py: Python<'_>, info: *mut ffi::PyObject) -> Option<isize> {
+    // SAFETY: per the caller; type and layout checks before every read.
+    unsafe {
+        if info.is_null() || ffi::PyDict_CheckExact(info) == 0 {
+            return None;
+        }
+        let (mut pos, mut k, mut v) = (0, std::ptr::null_mut(), std::ptr::null_mut());
+        if ffi::PyDict_Next(info, &mut pos, &mut k, &mut v) != 0
+            && ffi::PyUnicode_CheckExact(k) != 0
+            && ffi::PyUnicode_GetLength(k) == 10
+            && ffi::PyUnicode_KIND(k) == ffi::PyUnicode_1BYTE_KIND
+            && std::slice::from_raw_parts(ffi::PyUnicode_DATA(k).cast::<u8>(), 10) == b"generation"
+            && ffi::PyLong_CheckExact(v) != 0
+        {
+            let n = ffi::PyLong_AsSsize_t(v);
+            if !(n == -1 && !ffi::PyErr_Occurred().is_null()) {
+                return Some(n);
+            }
+            ffi::PyErr_Clear();
+        }
+        info_get(info, pyo3::intern!(py, "generation"))
+    }
+}
+
 /// One phase of one collection (called by the observer before the program's callbacks).
 ///
 /// # Safety
@@ -331,7 +361,7 @@ pub(super) unsafe fn on_phase(py: Python<'_>, phase: *mut ffi::PyObject, info: *
     // SAFETY: CPython's phase string.
     let start = unsafe { ffi::PyUnicode_GetLength(phase) } == 5;
     // SAFETY: per the caller.
-    let generation = unsafe { info_get(info, pyo3::intern!(py, "generation")) }.unwrap_or(-1);
+    let generation = unsafe { info_generation(py, info) }.unwrap_or(-1);
     if !FT && generation == 0 {
         // Young collections: nothing to do (the common case, kept cheap).
         return;

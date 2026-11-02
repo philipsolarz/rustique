@@ -134,7 +134,38 @@ PENDING-ADV
 
 ## 6. Conformance
 
-PENDING-CONF
+CPython's own test modules, plain vs with the tier enabled before `test` is imported, every
+test id's outcome compared (M, dev box, `benches/runtime/conformance.sh`: 3 parallel groups
+per build, `CPYTHON_SRC` of the running patch release):
+
+- **standard** (`tests/conformance/run_target_suites.py --targets gc`, `RUSTIQUE_TIERS=gc`):
+  the modules that tune the GC (`test_gc`, `test_weakref`, `test_finalization` disable it in
+  setUp, `test_generators` sets a threshold) make the policy step aside; the forwarder serves
+  every callback test;
+- **armed** (`benches/runtime/policy_suites.py --policy tier:step_aside=0`): the policy is kept
+  acting through the modules' own GC tuning (research switch), so deferral, re-inflation and
+  the forwarder all run under `test_gc` (incl. `GCCallbackTests`), `test_weakref`,
+  `test_finalization`, ... (e.g. 127 full collections seen by the policy during `test_gc`).
+
+build | modules | tests | standard: differences | armed: differences
+---|---|---|---|---
+3.15.1 | 22 | 3,185 | **0** | **0**
+3.15.1t | 23 (+ `test_free_threading.test_gc`) | 3,192 | **0** | **0**
+3.14.9 | 21 (no `test_gc_stats`) | 3,086 | **0** | **0**
+3.14.9t | 22 | 3,093 | **0** | **0**
+
+Modules: `test_gc`, `test_weakref`, `test_finalization`, `test_gc_stats` (3.15), `test_sys`,
+`test_copy`, `test_deque`, `test_descr`, `test_dict`, `test_list`, `test_set`,
+`test_generators`, `test_coroutines`, `test_class`, `test_ordered_dict`, `test_functools`,
+`test_exceptions`, `test_contextlib`, `test_scope`, `test_json`, `test_dataclasses`,
+`test_tracemalloc` (+ `test_free_threading.test_gc` on t builds). The one failure of
+`test_gc`, `test_weakref`, `test_sys` and `test_exceptions` on 3.15.1 fails identically
+without Rustique (environment).
+
+Rustique's own suites: `tests/test_gc_tier.py` (26), `tests/test_gc_tier_callbacks.py` (8,
+one of them 50 Hypothesis programs by default, `RQ_GC_EXAMPLES`), `tests/test_gc_tier_threads.py`
+(3) pass on the four primary builds; the whole `pytest -q tests` is green on all four
+(PENDING-PYTEST).
 
 ## 7. Cost of the mechanism (callgrind)
 

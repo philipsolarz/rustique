@@ -223,8 +223,16 @@ pub(super) fn install(py: Python<'_>, l: &Layout) -> Result<(), String> {
         return Ok(());
     }
     let private = ensure_private(py)?;
-    if !l.try_hold_collecting() {
-        return Err("a garbage collection is running".into());
+    // On a free-threaded build another thread may be collecting: wait for it (up to 0.2 s).
+    // On the GIL build a held flag means `enable()` runs inside a GC callback: refuse now.
+    let mut tries = if FT { 200 } else { 1 };
+    while !l.try_hold_collecting() {
+        tries -= 1;
+        if tries == 0 {
+            return Err("a garbage collection is running".into());
+        }
+        // Detach while waiting so the collecting thread can finish.
+        py.detach(|| std::thread::sleep(std::time::Duration::from_millis(1)));
     }
     let cur = l.ptr(l.off.callbacks);
     // SAFETY: attached thread; type check of the live list the collector holds.

@@ -268,7 +268,7 @@ def program(behaviours: list[str], steps: list[tuple[str, int]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-@settings(max_examples=int(os.environ.get("RQ_GC_EXAMPLES", "20")), deadline=None)
+@settings(max_examples=int(os.environ.get("RQ_GC_EXAMPLES", "50")), deadline=None)
 @given(behaviours=st.lists(st.sampled_from(BEHAVIOURS), min_size=1, max_size=5), steps=ops)
 def test_differential_random_programs(behaviours, steps):
     src = program(behaviours, steps)
