@@ -67,5 +67,7 @@ pip install "rustique @ git+https://github.com/philipsolarz/rustique@legacy-nati
 - `RUSTIQUE=off`/`false`/`no`/empty still leave nothing loaded at startup, as `0` does; the
   extension is now imported and immediately unregistered in those (rare) spellings, instead
   of never imported. `RUSTIQUE=0` or unset costs what it did.
-- `rustique.status()["process"]` keeps its `native` field for now (always empty); it goes
-  with the next framework release.
+- `rustique.status()["process"]` may still carry a `native` field (always empty) until the
+  framework drops it.
+- Startup: `RUSTIQUE=1` costs 2.8% instructions over an installed-but-off start instead of
+  4.5–6.3%, and the extension is 2.3 MB instead of 6.8 MB (docs/targets/engine.md).
