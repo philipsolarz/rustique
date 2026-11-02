@@ -43,10 +43,11 @@ reproduces CPython's object model where results depend on it:
   bit order) and BIGCHARSET chunk tables (`_bytes_to_codes`: native-endian words) as CPython.
 - Case folding comes from the running interpreter: `_PyUnicode_ToLowercase` /
   `_PyUnicode_ToUppercase` (what `_sre.unicode_tolower` / `_sre.unicode_iscased` call) and
-  `re._casefix._EXTRA_CASES` read at install (content hash recorded per minor version). The
-  result therefore follows the running CPython's Unicode database, whatever its version.
-- `MAXREPEAT`, `MAXGROUPS`, `CODESIZE` and `MAGIC` are read from `_sre` and checked; every
-  opcode, position, category and flag value is checked against `re._constants` at install.
+  `re._casefix._EXTRA_CASES` read on the first call (content hash recorded per minor version).
+  The result therefore follows the running CPython's Unicode database, whatever its version.
+- `MAXREPEAT`, `MAXGROUPS`, `CODESIZE` and `MAGIC` are read from `_sre` and checked at install;
+  every opcode, position, category and flag value is checked against `re._constants` on the
+  first call (with the fingerprints: see Install).
 
 **Fallback before anything observable.** The Rust compile has no side effects, so the kernel
 falls back (calls the original with the unchanged arguments) whenever:
@@ -64,10 +65,11 @@ falls back (calls the original with the unchanged arguments) whenever:
 - `_sre.compile` rejects the arguments (never observed; nothing observable happened: the
   original runs and decides).
 
-A fallback costs the caller its inlined frame push (+~250 Ir), under 2% of the cheapest compile,
-so the compiler target never debits the net-benefit score (§5.6): its fallbacks are always worth
-keeping it installed (a run of declined patterns, e.g. `test_re`'s error tests, must not suspend
-it for the rest of the process).
+A decline costs the caller its inlined frame push plus the port's attempt (+0.3–2.7k Ir, at most
+~6% of the cheapest compile, an error pattern). The net-benefit score (§5.6) credits 255 per hit
+and debits 1 per decline: only a stream of declined patterns suspends the target (64 in a row
+from a fresh state, ~320 after any hit), so a few error patterns early in a process (`test_re`)
+do not cost it the acceleration of every later compile.
 
 Check mode (`RUSTIQUE_CHECK`): the original compiles too and the two `Pattern`s must be equal
 (`==` compares flags, code and pattern) with the same `groups`, `groupindex` items in order and
@@ -96,14 +98,20 @@ Exact subset (anything else runs the original):
 - `count`/`maxsplit`: `_zero_sentinel` or an exact `int` that fits `Py_ssize_t`;
 - `sub`/`subn` replacement: an exact `str`/`bytes` of the pattern's type that is either a literal
   (no backslash: `_sre` uses it as is) or a template that CPython's `parse_template` accepts for
-  this pattern (checked by the port in `template.rs`: escapes, `\g<name>` against
-  `Pattern.groupindex`, group numbers against `Pattern.groups`). `_sre` then calls CPython's own
-  `re._compile_template` exactly as under the original (its `lru_cache` sees the same calls).
-  Callable replacements (user code, ruling 15) fall back.
+  this pattern (checked by the port in `template.rs`, allocation-free: escapes, octal, group
+  numbers `\1`/`\g<1>` against `Pattern.groups`; templates naming groups, `\g<name>`, decline:
+  the lookup through `Pattern.groupindex` costs more than the kernel saves). `_sre` then calls
+  CPython's own `re._compile_template` exactly as under the original (its `lru_cache` sees the
+  same calls). `_sre` resolves that function on the *first* template `sub` of the process, by an
+  import through the calling frame's `__import__`: that first call always runs the original (so
+  the resolution happens under `re.sub`'s frame, as in CPython); later template subs are
+  accelerated. Callable replacements (user code, ruling 15) fall back.
 
 Dependencies: the `re` globals `_compile`, `_cache2`, `RegexFlag`, `_zero_sentinel`, `Pattern`,
-`_compile_template`, `_parser`, `_sre` (key pins); builtins `isinstance`, `type`; the `re._parser`
-and `_sre` namespaces (snapshot pins); version tags of `RegexFlag`, `EnumType` and
+`_compile_template`, `_parser`, `_sre` (key pins); builtins `isinstance`, `type`; what
+`parse_template` and `_compile_template` read (`re._parser`'s `parse_template`, `Tokenizer`,
+`MAXGROUPS`, `OCTDIGITS`, `DIGITS`, `ESCAPES`, `ASCIILETTERS`, the builtins it uses; `_sre`'s
+`template` and `compile`: key pins); version tags of `RegexFlag`, `EnumType` and
 `_ZeroSentinel` (a modified class falls back). Fingerprints: every module function, `_compile`,
 `_compile_template.__wrapped__`, `parse_template` and the `Tokenizer` methods it uses.
 
@@ -117,18 +125,21 @@ Fingerprints (per minor version, `fps.rs`): `_compiler.compile`, `isstring`, `_c
 `_bytes_to_codes`, `_simple`, `_generate_overlap_table`, `_get_iscased`, `_get_literal_prefix`,
 `_get_charset_prefix`, `_combine_flags`; `_parser.parse`, `fix_flags`, `_parse_sub`, `_parse`,
 `_parse_flags`, `_escape`, `_class_escape`, `_uniq`; every method (and property getter) of
-`Tokenizer`, `State`, `SubPattern` the success path calls. Pins: snapshot pins of the
-`re._compiler`, `re._parser` and `_sre` namespaces (rebinding `_sre.compile`, `_parser.parse`,
-... falls back until restored), the builtins the two modules use, and the version tags of
-`Tokenizer`, `State`, `SubPattern` and `_NamedIntConstant` (checked per call: one load each).
+`Tokenizer`, `State`, `SubPattern` the success path calls (checked on the first call). Pins:
+snapshot pins of the `re._compiler`, `re._parser` and `_sre` namespaces (rebinding
+`_sre.compile`, `_parser.parse`, ... or adding a global that shadows a builtin falls back until
+restored), the builtins' own entries the two modules use, and the version tags of `Tokenizer`,
+`State`, `SubPattern` and `_NamedIntConstant` (checked per call: one load each; a modified class
+falls back for the rest of the process).
 
 ## Private state, deviations
 
 - None skipped (CPython's caches and `_compile_template`'s `lru_cache` are used as they are).
-- Known edge, documented: if a program replaces the private `re._compile_template` *before the
-  first template `sub` of the process* and restores it afterwards, `_sre` keeps calling the
-  replacement (it caches the function on first use) and a template `re.sub` reaches it without
-  `re.sub`'s frame on the stack. Out of contract (private function).
+- Known edge, documented: `_sre` caches the `re._compile_template` it resolved on the first
+  template `sub` of the process. If a program had replaced that private function at that moment
+  and restored it before the group's first template `sub` (which runs the original), later
+  accelerated template subs reach the cached replacement without `re.sub`'s frame on the stack.
+  Out of contract (private function, replaced and restored around its first use).
 - Like every vectorcall kernel, an accelerated call does not push the Python frames of the
   original: a program within ~100 frames of the recursion limit can compile a pattern that
   CPython's (recursive) compiler would have refused with `RecursionError`. Nesting is capped so
