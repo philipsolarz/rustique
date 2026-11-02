@@ -337,3 +337,48 @@ def test_differential_reaches_the_fast_paths() -> None:
         g = info()["groups"]["interp.attr"]
     assert accelerated == plain
     assert g["hits"] > 100, g
+
+
+GETATTR_PROGRAM = PROGRAM + "".join(f'''
+def ga_{n}(objs):
+    out = []
+    for o in objs:
+        try:
+            out.append(canon(getattr(o, "{n}"), o))
+        except Exception as e:
+            out.append(exc(e))
+        try:
+            out.append(canon(getattr(o, "{n}", "dflt"), o))
+        except Exception as e:
+            out.append(exc(e))
+        try:
+            out.append(hasattr(o, "{n}"))
+        except Exception as e:
+            out.append(exc(e))
+    return out
+''' for n in NAMES)
+
+
+def run_getattr(spec: dict[str, Any]) -> tuple[list[Any], list[str]]:
+    objs, pool, log, mutate = build(spec)
+    ns: dict[str, Any] = {}
+    exec(compile(GETATTR_PROGRAM, "<program>", "exec"), ns)
+    out: list[Any] = []
+    muts = list(spec["mutations"])
+    for r in range(spec["rounds"]):
+        for _ in range(3):
+            for n in NAMES:
+                out.append(ns[f"ga_{n}"](objs))
+        if muts:
+            mutate(muts.pop(0))
+    return out, log
+
+
+@settings(max_examples=200)
+@given(spec_strategy)
+def test_getattr_hasattr(spec: dict[str, Any]) -> None:
+    plain = run_getattr(spec)
+    with tier():
+        accelerated = run_getattr(spec)
+    assert accelerated[0] == plain[0]
+    assert accelerated[1] == plain[1]

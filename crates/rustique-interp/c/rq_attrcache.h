@@ -331,22 +331,28 @@ rq_ac_descr_ref(PyTypeObject *tp, PyObject *name, const rq_ac_e *e, PyObject **r
 /* 1: hit (*res is a new reference; *is_meth set for a (descr, self) method load);
  * 0: not handled (run the generic code; nothing observable happened);
  * -1: error raised exactly where CPython raises it. */
+/* `optional`: the caller suppresses AttributeError (getattr with a default, hasattr): an
+ * attribute that is absent from the type's MRO and from the instance is then a hit with
+ * *res = NULL, as PyObject_GetOptionalAttr returns 0 for it without raising. `instr`: the
+ * LOAD_ATTR instruction (per-site hints), or NULL. `g`: the group that counts. */
 static inline __attribute__((always_inline)) int
-rq_attr_fast(PyThreadState *tstate, PyObject *obj, PyObject *name, int meth, PyObject **res,
-             int *is_meth, _Py_CODEUNIT *instr)
+rq_attr_resolve(PyThreadState *tstate, PyObject *obj, PyObject *name, int meth, int optional,
+                PyObject **res, int *is_meth, _Py_CODEUNIT *instr, int g)
 {
     if (tstate->interp != rq_main_interp) {
         return 0;
     }
     PyTypeObject *tp = Py_TYPE(obj);
-    RQ_TICK(RQ_G_ATTR);
-    if (rq_site_skip(instr, tp)) {
+    RQ_TICK(g);
+    if (instr != NULL && rq_site_skip(instr, tp)) {
         return 0;
     }
     rq_ac_e tmp;
     const rq_ac_e *e = rq_ac_get(tp, name, &tmp);
     if (e == NULL || e->kind == RQ_K_NONE) {
-        rq_site_mark(instr, tp);
+        if (instr != NULL) {
+            rq_site_mark(instr, tp);
+        }
         return 0;
     }
 #ifdef Py_GIL_DISABLED
@@ -374,7 +380,7 @@ rq_attr_fast(PyThreadState *tstate, PyObject *obj, PyObject *name, int meth, PyO
         }
         *res = v;
         *is_meth = 0;
-        RQ_HIT(RQ_G_ATTR);
+        RQ_HIT(g);
         return 1;
     }
     PyObject *dict = NULL;
@@ -399,7 +405,7 @@ rq_attr_fast(PyThreadState *tstate, PyObject *obj, PyObject *name, int meth, PyO
                     RQ_REF_CLOSE();
                     *res = value;
                     *is_meth = 0;
-                    RQ_HIT(RQ_G_ATTR);
+                    RQ_HIT(g);
                     return 1;
                 }
                 if (!FT_ATOMIC_LOAD_UINT8(values->valid)) {
@@ -411,7 +417,7 @@ rq_attr_fast(PyThreadState *tstate, PyObject *obj, PyObject *name, int meth, PyO
                 if (value != NULL) {
                     *res = Py_NewRef(value);
                     *is_meth = 0;
-                    RQ_HIT(RQ_G_ATTR);
+                    RQ_HIT(g);
                     return 1;
                 }
 #endif
@@ -453,9 +459,16 @@ rq_attr_fast(PyThreadState *tstate, PyObject *obj, PyObject *name, int meth, PyO
             RQ_REF_CLOSE();
             *res = inst;
             *is_meth = 0;
-            RQ_HIT(RQ_G_ATTR);
+            RQ_HIT(g);
             return 1;
         }
+    }
+    if (optional && e->kind == RQ_K_ABSENT) {
+        RQ_REF_CLOSE();
+        *res = NULL;
+        *is_meth = 0;
+        RQ_HIT(g);
+        return 1;
     }
     if (e->kind != RQ_K_PLAIN && e->kind != RQ_K_METHOD) {
         RQ_REF_CLOSE();
@@ -477,7 +490,7 @@ rq_attr_fast(PyThreadState *tstate, PyObject *obj, PyObject *name, int meth, PyO
         *res = Py_NewRef(descr);
 #endif
         *is_meth = e->kind == RQ_K_METHOD;
-        RQ_HIT(RQ_G_ATTR);
+        RQ_HIT(g);
         return 1;
     }
     /* RQ_K_METHOD, attribute load: bind it as CPython does (f(descr, obj, type(obj))). */
@@ -486,7 +499,7 @@ rq_attr_fast(PyThreadState *tstate, PyObject *obj, PyObject *name, int meth, PyO
         RQ_REF_CLOSE();
         return 0;
     }
-    RQ_HIT(RQ_G_ATTR);
+    RQ_HIT(g);
     *is_meth = 0;
     *res = f(descr, obj, (PyObject *)tp);
     RQ_REF_CLOSE();
@@ -500,8 +513,8 @@ rq_LoadAttr_StackRefSteal(PyThreadState *tstate, _PyStackRef owner, PyObject *na
 {
     PyObject *res;
     int is_meth = 0;
-    int r = rq_attr_fast(tstate, PyStackRef_AsPyObjectBorrow(owner), name, 1, &res, &is_meth,
-                         instr);
+    int r = rq_attr_resolve(tstate, PyStackRef_AsPyObjectBorrow(owner), name, 1, 0, &res, &is_meth,
+                            instr, RQ_G_ATTR);
     if (r == 0) {
         return _Py_LoadAttr_StackRefSteal(tstate, owner, name, self_or_null);
     }
@@ -526,7 +539,7 @@ rq_GetAttrStackRef(PyThreadState *tstate, PyObject *v, PyObject *name, _Py_CODEU
 {
     PyObject *res;
     int is_meth = 0;
-    int r = rq_attr_fast(tstate, v, name, 0, &res, &is_meth, instr);
+    int r = rq_attr_resolve(tstate, v, name, 0, 0, &res, &is_meth, instr, RQ_G_ATTR);
     if (r == 0) {
         return rq_GetAttrStackRef_core(v, name);
     }
@@ -534,6 +547,23 @@ rq_GetAttrStackRef(PyThreadState *tstate, PyObject *v, PyObject *name, _Py_CODEU
         return PyStackRef_NULL;
     }
     return PyStackRef_FromPyObjectSteal(res);
+}
+
+/* builtins.getattr / hasattr through the same cache (the interp.getattr and interp.hasattr
+ * targets: ml_meth kernels in Rust). builtin_getattr calls PyObject_GetAttr (2 arguments) or
+ * PyObject_GetOptionalAttr (with a default), hasattr PyObject_GetOptionalAttr; for a type with
+ * PyObject_GenericGetAttr both are _PyObject_GenericGetAttrWithDict (suppress 0 or 1), whose
+ * resolution a hit replays. 1: hit (*res a new reference, or NULL: absent and suppressed);
+ * 0: run the original; -1: error raised where CPython raises it. */
+static int
+rq_getattr_fast(PyObject *obj, PyObject *name, int optional, PyObject **res)
+{
+    if (!PyUnicode_CheckExact(name)) {
+        return 0;
+    }
+    int is_meth = 0;
+    return rq_attr_resolve(_PyThreadState_GET(), obj, name, 0, optional, res, &is_meth, NULL,
+                           RQ_G_GETATTR);
 }
 
 #endif

@@ -262,6 +262,7 @@ static const rq_api rq_api_desc = {
     .group_arm = rq_group_arm,
     .group_stats = rq_group_stats,
     .opname = rq_opname,
+    .getattr_fast = rq_getattr_fast,
 };
 
 #ifdef RQ_PGO_GEN

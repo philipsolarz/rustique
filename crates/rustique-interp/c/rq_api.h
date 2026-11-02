@@ -22,6 +22,7 @@ typedef struct {
     int (*group_arm)(int group, void **cells, void *const *orig, void *const *mine, int n);
     void (*group_stats)(int group, unsigned long long out[5]);
     const char *(*opname)(int opcode);          /* name of a swappable opcode, or NULL */
+    int (*getattr_fast)(PyObject *obj, PyObject *name, int optional, PyObject **res);
 } rq_api;
 
 #endif

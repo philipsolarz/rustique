@@ -44,6 +44,7 @@ pub struct RqApi {
     group_arm: unsafe extern "C" fn(c_int, *const *mut c_void, *const *mut c_void, *const *mut c_void, c_int) -> c_int,
     group_stats: unsafe extern "C" fn(c_int, *mut u64),
     opname: unsafe extern "C" fn(c_int) -> *const c_char,
+    getattr_fast: unsafe extern "C" fn(*mut pyo3::ffi::PyObject, *mut pyo3::ffi::PyObject, c_int, *mut *mut pyo3::ffi::PyObject) -> c_int,
 }
 
 const RQ_API_ABI: u32 = 1;
@@ -62,9 +63,11 @@ pub enum Group {
     KwInit = 2,
     /// CALL_ISINSTANCE.
     IsInstance = 3,
+    /// `builtins.getattr` / `hasattr` (`ml_meth` kernels sharing the attribute cache).
+    GetAttr = 4,
 }
 
-pub const GROUPS: [Group; 4] = [Group::Attr, Group::SetAttr, Group::KwInit, Group::IsInstance];
+pub const GROUPS: [Group; 5] = [Group::Attr, Group::SetAttr, Group::KwInit, Group::IsInstance, Group::GetAttr];
 
 /// Why the tier cannot run here (mapped to the registry's refusal categories by the caller).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -191,6 +194,16 @@ impl Located {
         }
     }
 
+    /// The set's `getattr`/`hasattr` fast path (`rq_getattr_fast`): 1 hit (`*res` a new
+    /// reference, or NULL when `optional` and the attribute is absent), 0 not handled (run
+    /// the original), -1 error raised.
+    pub fn getattr_fast(
+        &self,
+    ) -> unsafe extern "C" fn(*mut pyo3::ffi::PyObject, *mut pyo3::ffi::PyObject, c_int, *mut *mut pyo3::ffi::PyObject) -> c_int
+    {
+        self.api.getattr_fast
+    }
+
     pub fn stats(&self, group: Group) -> GroupStats {
         let mut out = [0u64; 5];
         // SAFETY: writes 5 integers.
@@ -200,7 +213,7 @@ impl Located {
 }
 
 /// Set by the handler set when a group restored the core's handlers (net benefit).
-pub static SUSPENDED: [AtomicBool; 4] = [const { AtomicBool::new(false) }; 4];
+pub static SUSPENDED: [AtomicBool; 5] = [const { AtomicBool::new(false) }; 5];
 static SUSPEND_HOOK: AtomicUsize = AtomicUsize::new(0);
 
 /// Called by a group (any attached thread) after it restored the core's handlers.

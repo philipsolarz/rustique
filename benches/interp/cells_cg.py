@@ -46,6 +46,16 @@ CELLS = [
     ("attr", "__getattr__ hook (fallback)", "o_g.anything"),
     ("attr", "AttributeError path (fallback)", "getattr(o_o, 'missing', None)"),
     ("attr", "AttributeError raised (fallback)", "try: o_o.missing\nexcept AttributeError: pass"),
+    ("getattr", "getattr(o, 'x') polymorphic (per 4)", "for o in poly: getattr(o, 'x')"),
+    ("getattr", "getattr(o_a, 'x')", "getattr(o_a, 'x')"),
+    ("getattr", "getattr(o_a, 'm') (bound method)", "getattr(o_a, 'm')"),
+    ("getattr", "getattr(o_o, 'missing', None) (absent)", "getattr(o_o, 'missing', None)"),
+    ("getattr", "hasattr(o_a, 'x')", "hasattr(o_a, 'x')"),
+    ("getattr", "hasattr(o_o, 'missing') (absent)", "hasattr(o_o, 'missing')"),
+    ("getattr", "getattr(wd, 'd') data descriptor (fallback)", "getattr(wd, 'd')"),
+    ("getattr", "getattr(o_g, 'zz') __getattr__ (fallback)", "getattr(o_g, 'zz')"),
+    ("getattr", "getattr(A, 'cls_attr') class owner (fallback)", "getattr(A, 'cls_attr')"),
+    ("getattr", "getattr(o_a, nm) non-interned name (fallback)", "getattr(o_a, nm)"),
     ("setattr", "frozen dataclass F(1, 'x', 2.0)", "Frozen(1, 'x', 2.0)"),
     ("setattr", "object.__setattr__(o, 'x', 1)", "object.__setattr__(o_a, 'x', 1)"),
     ("setattr", "object.__setattr__(type) (fallback, raises)", "try: object.__setattr__(Other, 'x', 1)\nexcept TypeError: pass"),
@@ -59,7 +69,7 @@ CELLS = [
     ("none", "len(l3)", "len(l3)"),
     ("none", "generator sum(100)", "sum(x for x in r100)"),
 ]
-EXTRA = "; d0 = {}; l3 = ['a', 'b', 'c']; r100 = range(100)\ndef ident(x): return x\ndef kwf(a, b=0): return a"
+EXTRA = "; d0 = {}; l3 = ['a', 'b', 'c']; r100 = range(100); nm = ''.join(['x'])\ndef ident(x): return x\ndef kwf(a, b=0): return a"
 
 
 def main() -> None:

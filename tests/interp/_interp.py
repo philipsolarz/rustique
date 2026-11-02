@@ -28,7 +28,8 @@ FREE_THREADED = getattr(sys, "_is_gil_enabled", lambda: True)() is False
 requires_tier = pytest.mark.skipif(not VERIFIED, reason=f"interp tier refused: {INFO.get('reason')}")
 
 GROUP = next(grp for name, grp, _ in acc.targets() if name.startswith("interp."))
-TARGETS = ("interp.isinstance", "interp.attr", "interp.setattr", "interp.kwinit")
+TARGETS = ("interp.isinstance", "interp.attr", "interp.setattr", "interp.kwinit", "interp.getattr",
+           "interp.hasattr")
 
 
 def states() -> dict[str, dict[str, Any]]:

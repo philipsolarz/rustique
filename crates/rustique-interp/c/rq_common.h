@@ -71,8 +71,10 @@ rq_lookup_ref(PyTypeObject *tp, PyObject *name, PyObject **descr, unsigned int *
  *   attr      ratio 5   our copies of the LOAD_ATTR family cost ~0.8% when nothing hits
  *   setattr   ratio 64  a hit saves ~570 Ir, a non-hit costs ~10
  *   kwinit    ratio 64  a hit saves ~1,100 Ir
- *   isinstance          never suspended: every path is at most the core's cost */
-enum { RQ_G_ATTR = 0, RQ_G_SETATTR = 1, RQ_G_KWINIT = 2, RQ_G_ISINSTANCE = 3, RQ_NGROUPS = 4 };
+ *   isinstance          never suspended: every path is at most the core's cost
+ *   getattr             builtins.getattr/hasattr (ml_meth kernels): counted, never suspended */
+enum { RQ_G_ATTR = 0, RQ_G_SETATTR = 1, RQ_G_KWINIT = 2, RQ_G_ISINSTANCE = 3, RQ_G_GETATTR = 4,
+       RQ_NGROUPS = 5 };
 #define RQ_WINDOW 65536u
 #define RQ_DECIDE 16
 #define RQ_MAXOPS 64
@@ -94,6 +96,7 @@ static rq_group_t rq_groups[RQ_NGROUPS] = {
     [RQ_G_SETATTR] = {.ratio = 64},
     [RQ_G_KWINIT] = {.ratio = 64},
     [RQ_G_ISINSTANCE] = {.ratio = 0},
+    [RQ_G_GETATTR] = {.ratio = 0},
 };
 
 /* Called (any thread, attached) after a group restored the core's handlers. */
@@ -102,14 +105,14 @@ static void (*rq_on_suspend)(int group);
 static Py_NO_INLINE void
 rq_window_end(rq_group_t *g)
 {
-    if (RQ_LD(g->suspended) || !RQ_LD(g->armed)) {
-        return;
-    }
     RQ_ST(g->total, RQ_LD(g->total) + RQ_LD(g->window));
     RQ_ST(g->window, 0u);
+    if (RQ_LD(g->suspended) || !RQ_LD(g->armed) || g->ratio == 0) {
+        return;
+    }
     int w = RQ_LD(g->windows) + 1;
     RQ_ST(g->windows, w);
-    if (w != RQ_DECIDE || g->ratio == 0) {
+    if (w != RQ_DECIDE) {
         return;
     }
     unsigned long long total = RQ_LD(g->total), fills = RQ_LD(g->fills);

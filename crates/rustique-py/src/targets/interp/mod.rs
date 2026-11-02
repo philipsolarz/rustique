@@ -14,9 +14,13 @@
 //! - `interp.attr`: the LOAD_ATTR family (megamorphic attribute cache in the generic handler;
 //!   the specialized forms are verbatim copies so their deopts reach it);
 //! - `interp.setattr`: CALL_NON_PY_GENERAL (`object.__setattr__` direct);
-//! - `interp.kwinit`: CALL_KW_NON_PY (keyword instantiation pushed inline; GIL builds only).
+//! - `interp.kwinit`: CALL_KW_NON_PY (keyword instantiation pushed inline; GIL builds only);
+//! - `interp.getattr`, `interp.hasattr`: `ml_meth` kernels on the builtins that resolve
+//!   through the same attribute cache (`getattr.rs`).
 
 use std::sync::atomic::Ordering;
+
+mod getattr;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -31,12 +35,13 @@ use crate::accel::{Category, Counters, Prepare, Refusal, TargetSpec};
 /// `opt_in: Some("interp")`, enabled by `RUSTIQUE_TIERS=interp` / `enable(tiers=["interp"])`.
 pub const GROUP: &str = "_interp";
 
-const VERSIONS: &[(u8, u8)] = &[(3, 15)];
+pub(crate) const VERSIONS: &[(u8, u8)] = &[(3, 15)];
 
 static C_ISINSTANCE: Counters = Counters::new();
 static C_ATTR: Counters = Counters::new();
 static C_SETATTR: Counters = Counters::new();
 static C_KWINIT: Counters = Counters::new();
+static C_GETATTR_GROUP: Counters = Counters::new();
 
 fn counters(g: Group) -> &'static Counters {
     match g {
@@ -44,6 +49,7 @@ fn counters(g: Group) -> &'static Counters {
         Group::Attr => &C_ATTR,
         Group::SetAttr => &C_SETATTR,
         Group::KwInit => &C_KWINIT,
+        Group::GetAttr => &C_GETATTR_GROUP,
     }
 }
 
@@ -53,10 +59,11 @@ fn group_name(g: Group) -> &'static str {
         Group::Attr => "interp.attr",
         Group::SetAttr => "interp.setattr",
         Group::KwInit => "interp.kwinit",
+        Group::GetAttr => "interp.getattr",
     }
 }
 
-fn refusal(r: &Refuse) -> Refusal {
+pub(crate) fn refusal(r: &Refuse) -> Refusal {
     let cat = match r {
         Refuse::Platform(_) => Category::Platform,
         Refuse::Version(_) => Category::Version,
@@ -179,7 +186,7 @@ pub static KWINIT: TargetSpec = TargetSpec {
     ..TargetSpec::DEFAULT
 };
 
-pub static TARGETS: &[&TargetSpec] = &[&ISINSTANCE, &ATTR, &SETATTR, &KWINIT];
+pub static TARGETS: &[&TargetSpec] = &[&ISINSTANCE, &ATTR, &SETATTR, &KWINIT, &getattr::GETATTR, &getattr::HASATTR];
 
 /// `_accel._t_interp.info()`: where the tier stands in this process (for tests, benches and
 /// status tooling).
