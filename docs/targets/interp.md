@@ -206,11 +206,94 @@ polymorphic site (lead's ruling, 2026-11-02).
 
 ## 4. Measurements
 
-RESULTS
+### 4.1 Cells (M, `benches/interp/cells_cg.py`, callgrind Ir per operation, fresh process per
+cell, 3.15.1, PGO build; "per 4": a loop over 4 objects of 3 types)
+
+| override | cell | plain | tier | ratio |
+|---|---|---:|---:|---:|
+| isinstance | exact type | 178 | 151 | 0.848 |
+| | subclass, positive | 271 | 266 | 0.981 |
+| | **negative, plain class** | 354 | 219 | **0.619** |
+| | negative, int instance | 358 | 221 | 0.618 |
+| | **metaclass, negative** | 727 | 236 | **0.325** |
+| | tuple `(Other, A)` | 630 | 495 | 0.786 |
+| | `__getattr__` class, negative (fallback) | 529 | 541 | 1.022 |
+| | ABCMeta negative (fallback) | 1665 | 1710 | 1.027 |
+| | union `int \| str` (fallback) | 3171 | 3217 | 1.014 |
+| attribute cache | **polymorphic `o.x`** (per 4) | 1068 | 888 | **0.831** |
+| | polymorphic `o.m()` (per 4) | 2316 | 2055 | 0.887 |
+| | **polymorphic inherited `__slots__`** (per 4) | 1114 | 839 | **0.754** |
+| | materialized `__dict__` attribute | 225 | 159 | 0.706 |
+| | `cached_property`, cached | 238 | 167 | 0.701 |
+| | specialized `a.x` (our family copy) | 82 | 79 | 0.963 |
+| | specialized `a.m()` | 310 | 306 | 0.987 |
+| | specialized class attribute | 78 | 78 | 1.000 |
+| | specialized module attribute `math.pi` | 93 | 89 | 0.957 |
+| | class attribute on a class `C.x` | 78 | 75 | 0.962 |
+| | Python data descriptor (fallback, negative hint) | 668 | 686 | 1.027 |
+| | `__getattr__` hook (fallback) | 737 | 754 | 1.023 |
+| | AttributeError raised (fallback) | 4246 | 4319 | 1.017 |
+| `object.__setattr__` | **frozen dataclass `F(1, 'x', 2.0)`** | 3826 | 2136 | **0.558** |
+| | `object.__setattr__(o, 'x', 1)` | 954 | 399 | 0.418 |
+| | `object.__setattr__(type, ...)` (fallback, raises) | 3786 | 3886 | 1.026 |
+| | `dict.__setitem__` (other wrapper, fallback) | 905 | 935 | 1.033 |
+| | `str.join` via descriptor (fallback) | 814 | 811 | 0.996 |
+| keyword instantiation | **`P(1, b=2)`** | 2413 | 1253 | **0.519** |
+| | `P(1)` (`CALL_ALLOC_AND_ENTER_INIT`, not ours) | 1068 | 1054 | 0.987 |
+| | `dict(a=1)` (builtin class, fallback) | 748 | 781 | 1.044 |
+| | `f(1, b=2)` (`CALL_KW_PY`, not ours) | 456 | 456 | 1.000 |
+| none | `ident(1)`, `len(l3)`, `sum(genexpr)` (unswapped opcodes) | 270 / 156 / 31603 | same | 1.000 |
+
+Every cell ≤ 1.05 (worst: `dict(a=1)` 1.044, a keyword call of a builtin class through the
+swapped `CALL_KW_NON_PY`). Two fallbacks exceeded 1.05 in the first product build (Python data
+descriptor 1.073, `dict.__setitem__` 1.056): the exported copies of `_PyObject_GetAttrStackRef`
+and `_Py_VectorCall_StackRefSteal` that a swapped handler calls are laid out as cold code in the
+PBS binary (the core inlines them); `c/rq_inline.h` fixed both.
+
+WHOLE
+
 
 ## 5. Conformance and gates
 
-GATES
+### 5.1 CPython's full regression suite (M, `benches/interp/regrtest/`, `-j8`)
+
+Every Python process of the run has the variant applied at startup through a `.pth` file (also
+under `-I`; only `-S` processes run plain); `noop` imports Rustique and verifies the binary
+without swapping anything (the harness's own footprint), `tier` also enables the tier.
+`cmp_regrtest.py` compares failed files and per-test outcomes (`--junit-xml`).
+
+| build | run | tests | failures | skipped | failed files | processes with the variant | tier vs noop |
+|---|---|---:|---:|---:|---:|---:|---|
+| 3.15.1 | plain | 47,182 | 60 | 3,000 | 20 | – | – |
+| 3.15.1 | noop | 47,182 | 64 | 3,000 | 23 | 3,806 | – |
+| 3.15.1 | tier | 47,182 | 64 | 3,000 | 23 | REG4GIL | **0 differences** (files and 47,041 per-test outcomes) |
+| 3.15.1t | noop | 47,230 | 64 | 2,968 | 23 | 3,804 | – |
+| 3.15.1t | tier | 47,230 | 64 | 2,968 | 23 | REG4T | **0 differences** (files and 47,091 per-test outcomes) |
+| 3.15.1, `PYTHON_JIT=1` | 20 files (isinstance, descr, class, dataclasses, functools, inspect, opcache, monitoring, sys_settrace, generators, coroutines, typing, enum, abc, property, super, types, unittest, json, ast) | 5,551 | 49 | 71 | 3 | 123 | **0 differences** (5,510 outcomes) |
+
+The plain failures are environmental (python-build-standalone ships no `_testcapi`, no `Lib/test`
+of its own, no `idlelib.idle_test`; perf; `-I` subprocesses); the noop harness adds three
+(startup-imported modules, the faulthandler module list, child stderr). The same suite also
+passed with `interp.getattr`/`interp.hasattr` registered (0 differences, both builds). The
+prototype's suite found three real bugs (nested-tuple recursion, a descriptor's type mutated
+after caching, subinterpreters reaching process-global handlers), all fixed there and covered
+here by the differential and mechanism tests.
+
+### 5.2 Rustique's tests
+
+- `tests/interp/` (20 tests; skip with the tier's own reason where it refuses): mechanics
+  (verification, install all-or-nothing, `disable()` restores every entry, refusal reasons,
+  opt-in only, tools see CPython's handlers for settrace / setprofile / sys.monitoring,
+  subinterpreters, a `PYTHON_JIT=1` process, net-benefit suspension), Hypothesis differential
+  suites (attribute resolution and isinstance over generated class hierarchies with descriptors
+  of every kind, `__slots__`, `__getattr__`, `__getattribute__`, metaclasses with and without
+  `__instancecheck__`, a `__class__` property, materialized / replaced / non-str-keyed
+  `__dict__`s, and class, descriptor-type and instance mutations between rounds, 300 examples;
+  `object.__setattr__` shapes; keyword instantiation shapes incl. errors, frames and
+  RecursionError), races (table writes while 4 threads run the swapped handlers; class mutation
+  racing the cache).
+- Passing on 3.15.1, 3.15.1t, 3.15.2, 3.15.2t (tier verified), 3.14.9, 3.14.9t (tier refused,
+  tests skipped). Full suite: PYTEST.
 
 ## 6. Reach per distribution
 
