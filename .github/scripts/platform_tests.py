@@ -185,6 +185,12 @@ def main() -> int:
     if not a.no_tests and have_pytest:
         tests = os.path.join(work, "tests")
         shutil.copytree(os.path.join(REPO, "tests"), tests, ignore=shutil.ignore_patterns("__pycache__"))
+        # the switch tests read the shipped startup files and pyproject.toml (not importable:
+        # `python/` is not on sys.path, so `import rustique` stays the installed wheel)
+        os.makedirs(os.path.join(work, "python"), exist_ok=True)
+        for f in ("_rustique_startup.pth", "_rustique_pytest.py"):
+            shutil.copy(os.path.join(REPO, "python", f), os.path.join(work, "python", f))
+        shutil.copy(os.path.join(REPO, "pyproject.toml"), os.path.join(work, "pyproject.toml"))
         files = sorted({f for g in full for f in glob.glob(os.path.join(tests, "targets", f"test_{g}*.py"))})
         if os.name != "nt":
             files += [os.path.join(tests, "test_dx.py"), os.path.join(tests, "test_dx_cli.py")]

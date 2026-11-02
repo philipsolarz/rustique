@@ -7,18 +7,22 @@ unless asked::
     pytest --rustique --rustique-only json,copy --rustique-exclude re
     pytest -p rustique.pytest_plugin --rustique   # when plugin autoloading is off
 
-With ``--rustique`` the plugin enables Rustique (and its counters) before collection, so
-the code under test is accelerated from its first import; at the end it prints the
-per-target report (hits, fallbacks by reason, refusals) and **fails the session if a
-selected target was refused unexpectedly**: refused for another reason than "this
-interpreter or platform is not one the target is validated for" (refusal category
-``version``, ``build``, ``jit``, ``platform`` or ``unvalidated-patch``), e.g. a fingerprint
-mismatch, a site patched by someone else, a failed self-test. ``--rustique-tiers interp,gc``
-turns opt-in tiers on too (like ``RUSTIQUE_TIERS``). ``--rustique-allow-refused NAMES`` accepts those too. ``--rustique-check``
-turns check mode on (every fast path of a checkable target is compared with CPython's
-original); any mismatch fails the session. Under ``pytest-xdist`` each worker enables Rustique and the controller adds up
-their counters. ``RUSTIQUE=0`` (kill switch) wins: the session runs plain and the summary
-says so.
+With ``--rustique`` the plugin enables Rustique (and its counters) before collection, so the
+code under test is accelerated from its first import. At the end it prints the per-target
+report (hits, fallbacks by reason, refusals) and **fails the session if a selected target
+was refused unexpectedly**: for another reason than "this interpreter or platform is not
+one the target is validated for" (refusal categories ``version``, ``build``, ``jit``,
+``platform``, ``unvalidated-patch``), e.g. a fingerprint mismatch, a site patched by
+someone else, a failed self-test. ``--rustique-allow-refused NAMES`` accepts those too.
+
+- ``--rustique-tiers interp,gc``: opt-in tiers too (like ``RUSTIQUE_TIERS``).
+- ``--rustique-check``: check mode (every fast path of a checkable target is compared with
+  CPython's original); any mismatch fails the session.
+- ``--rustique-outcomes PATH``: every test's outcome by node id, as JSON (``python -m
+  rustique diff`` uses it; works without ``--rustique`` and imports nothing).
+
+Under ``pytest-xdist`` each worker enables Rustique and the controller adds up their
+counters. ``RUSTIQUE=0`` (kill switch) wins: the session runs plain and the summary says so.
 
 A top-level module, not part of the ``rustique`` package: pytest imports every autoloaded
 plugin in every session, and importing anything inside the package runs
