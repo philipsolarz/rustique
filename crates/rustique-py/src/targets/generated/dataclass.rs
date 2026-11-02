@@ -45,7 +45,7 @@ use crate::accel::{self, Counters, DepFlag, Prepare, Reason, Refusal, TargetSpec
 pub(super) static COUNTERS: Counters = Counters::new();
 static DEPS: DepFlag = DepFlag::new();
 static TOOLS: Tools = Tools::new();
-pub(super) static DYN: Dynamic = Dynamic::new();
+pub(super) static DYN: Dynamic = Dynamic::new(&TARGET);
 
 /// Not on free-threaded builds this wave (lead's ruling): giving each generated function its
 /// kernel calls `PyFunction_SetVectorcall`, which stops the world on 3.14t/3.15t; with busy
@@ -876,7 +876,6 @@ fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     N_QUALNAME.name(py, "__qualname__");
     extra_index().ok_or_else(|| Refusal::new("no code-extra index available"))?;
     cx.vectorcall(&add, k_add_fns, &accel::FUNCTION_VECTORCALL)?;
-    DYN.set_hook(add.as_ptr(), k_add_fns);
     Ok(())
 }
 

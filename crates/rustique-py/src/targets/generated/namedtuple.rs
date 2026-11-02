@@ -44,7 +44,7 @@ use crate::accel::{self, Counters, DepFlag, Prepare, Reason, Refusal, TargetSpec
 pub(super) static COUNTERS: Counters = Counters::new();
 static DEPS: DepFlag = DepFlag::new();
 static TOOLS: Tools = Tools::new();
-pub(super) static DYN: Dynamic = Dynamic::new();
+pub(super) static DYN: Dynamic = Dynamic::new(&TARGET);
 
 /// Not on free-threaded builds this wave (lead's ruling): giving each generated function its
 /// kernel calls `PyFunction_SetVectorcall`, which stops the world on 3.14t/3.15t; with busy
@@ -59,6 +59,7 @@ pub static TARGET: TargetSpec = TargetSpec {
     counters: &COUNTERS,
     prepare,
     release: Some(release),
+    on_install: Some(on_install),
     ..TargetSpec::DEFAULT
 };
 
@@ -407,7 +408,7 @@ unsafe extern "C" fn k_namedtuple(f: P, args: *const P, nargsf: usize, kw: P) ->
     unsafe {
         let cls = orig(f, args, nargsf, kw);
         if !cls.is_null() && DEPS.ok() && func_code(f) == NT_CODE.get() {
-            adopt(cls, true, false);
+            adopt(cls, true);
         }
         cls
     }
@@ -442,17 +443,14 @@ unsafe fn own_wrapped(cls: P, name: P, wrapper: *mut ffi::PyTypeObject) -> P {
 
 /// Give a namedtuple class's methods their kernels. `fresh`: the class was just returned
 /// by the hooked `namedtuple()` (its `__new__` is known by construction); otherwise (a class
-/// found at install) only the shared-code `_make`/`_replace`. `force`: install although the
-/// hook is not swapped yet (adoption inside `prepare`).
-unsafe fn adopt(cls: P, fresh: bool, force: bool) {
+/// found at install) only the shared-code `_make`/`_replace`.
+unsafe fn adopt(cls: P, fresh: bool) {
     // SAFETY: attached thread, live class; errors are cleared (the class stays CPython's).
     unsafe {
         if ffi::PyType_Check(cls) == 0 || ffi::PyType_IsSubtype(cls.cast(), &raw mut ffi::PyTuple_Type) == 0 {
             return;
         }
-        let install = |func: P, k: ffi::vectorcallfunc| {
-            if force { DYN.install_forced(func, k) } else { DYN.install(func, k) }
-        };
+        let install = |func: P, k: ffi::vectorcallfunc| DYN.install(func, k);
         if fresh {
             let new = own_wrapped(cls, N_NEW.get(), &raw mut ffi::PyStaticMethod_Type);
             if !new.is_null() && new_plan(cls, new) {
@@ -651,15 +649,18 @@ fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     N_CLS.name(py, "_cls");
     extra_index().ok_or_else(|| Refusal::new("no code-extra index available"))?;
     cx.vectorcall(&nt, k_namedtuple, &accel::FUNCTION_VECTORCALL)?;
-    // SAFETY: a live function.
-    DYN.set_hook(nt.as_ptr(), k_namedtuple);
-    if !accel::version::FREE_THREADED {
-        adopt_existing(py, &tuple_t);
-    }
     Ok(())
 }
 
-/// Classes made by `namedtuple()` before install: their `_make`/`_replace` (shared code).
+/// `on_install`: classes made by `namedtuple()` before install get their
+/// `_make`/`_replace` kernels (shared code objects; `tuple.__subclasses__()`).
+fn on_install(py: Python<'_>) {
+    if !DYN.alive() {
+        return;
+    }
+    adopt_existing(py, &py.get_type::<PyTuple>());
+}
+
 fn adopt_existing(py: Python<'_>, tuple_t: &Bound<'_, PyType>) {
     let Ok(subs) = tuple_t.call_method0("__subclasses__") else {
         // SAFETY: attached thread.
@@ -669,7 +670,7 @@ fn adopt_existing(py: Python<'_>, tuple_t: &Bound<'_, PyType>) {
     let Ok(subs) = subs.cast_into_exact::<pyo3::types::PyList>() else { return };
     for c in subs.iter() {
         // SAFETY: live class objects.
-        unsafe { adopt(c.as_ptr(), false, true) };
+        unsafe { adopt(c.as_ptr(), false) };
     }
     let _ = py;
 }

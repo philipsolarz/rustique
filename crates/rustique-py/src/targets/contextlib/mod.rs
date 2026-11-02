@@ -34,7 +34,7 @@ use crate::targets::generated::common::*;
 static COUNTERS: Counters = Counters::new();
 static DEPS: DepFlag = DepFlag::new();
 static TOOLS: Tools = Tools::new();
-static DYN: Dynamic = Dynamic::new();
+static DYN: Dynamic = Dynamic::new(&TARGET);
 
 /// Not on free-threaded builds this wave (lead's ruling): giving each generated function its
 /// kernel calls `PyFunction_SetVectorcall`, which stops the world on 3.14t/3.15t; with busy
@@ -333,7 +333,6 @@ fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     GCM_TAG.store(0, Relaxed);
     META_TAG.store(0, Relaxed);
     cx.vectorcall(&cm, k_contextmanager, &accel::FUNCTION_VECTORCALL)?;
-    DYN.set_hook(cm.as_ptr(), k_contextmanager);
     Ok(())
 }
 
