@@ -19,6 +19,7 @@ pub mod logging;
 pub mod pathlib;
 pub mod posixpath;
 pub mod random;
+pub mod set;
 pub mod statistics;
 pub mod textwrap;
 pub mod urllib;
@@ -41,6 +42,7 @@ pub static ALL: &[&[&TargetSpec]] = &[
     datetime::TARGETS,
     copy::TARGETS,
     copy::dc::TARGETS,
+    set::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,

@@ -28,11 +28,14 @@ def _enabled():
     yield
     st = S.A.stats(False, True)
     S.disable()
-    assert st["copy.deepcopy"]["hits"] > 0, st["copy.deepcopy"]
+    # A selection that ran every call under a tool (`-k test_tool_attached...`) has no hit.
+    dc_ = st["copy.deepcopy"]
+    assert dc_["hits"] > 0 or dc_["fallback"].get("tools", 0) > 0, dc_
     for name in S.ALL_TARGETS:
-        # Explicit non-default arguments fall back; calls that reach user code restart.
+        # Explicit non-default arguments fall back; calls that reach user code restart;
+        # calls made while a hook's tracer is attached fall back for tools.
         fb = {k: v for k, v in st[name]["fallback"].items() if v}
-        assert set(fb) <= {"args", "deopt"}, (name, fb)
+        assert set(fb) <= {"args", "deopt", "tools"}, (name, fb)
 
 
 # ---------------------------------------------------------------------------------------
