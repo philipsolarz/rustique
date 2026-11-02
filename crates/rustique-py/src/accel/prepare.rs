@@ -266,15 +266,19 @@ impl<'py> Prepare<'py> {
     // -----------------------------------------------------------------------------------
 
     fn push_site<F: FnPtr>(&mut self, site: Site, original: &'static Original<F>) -> Result<(), Refusal> {
+        self.push_site_ref(&site, original)?;
+        self.sites.push(SiteDecl { site });
+        Ok(())
+    }
+
+    fn push_site_ref<F: FnPtr>(&mut self, site: &Site, original: &'static Original<F>) -> Result<(), Refusal> {
         if self.sites.iter().any(|d| d.site.addr == site.addr && d.site.kind == site.kind) {
             return Err(Refusal::from(format!("{}: site declared twice", site.name)));
         }
         if site.original == 0 {
             return Err(Refusal::from(format!("{}: empty entry point", site.name)));
         }
-        original.capture(site.original).map_err(|r| Refusal::with(r.category(), format!("{}: {r}", site.name)))?;
-        self.sites.push(SiteDecl { site });
-        Ok(())
+        original.capture(site.original).map_err(|r| Refusal::with(r.category(), format!("{}: {r}", site.name)))
     }
 
     /// Declare the `ml_meth` of the `PyMethodDef` behind `obj` (method descriptor,
@@ -333,6 +337,7 @@ impl<'py> Prepare<'py> {
             original: current,
             kernel: kernel.addr(),
             installed: false,
+            keep: 0,
         };
         self.push_site(site, original)
     }
@@ -384,9 +389,139 @@ impl<'py> Prepare<'py> {
                 ));
             }
         }
-        let site =
-            Site { name: what, kind: Kind::Slot, addr, original: current, kernel: kernel.addr(), installed: false };
+        let site = Site {
+            name: what,
+            kind: Kind::Slot,
+            addr,
+            original: current,
+            kernel: kernel.addr(),
+            installed: false,
+            keep: 0,
+        };
         self.push_site(site, original)
+    }
+
+    /// Declare a type slot of a *heap type defined in Python* (stdlib classes such as
+    /// `enum.property` (`tp_descr_get`) or `enum.EnumType` (`tp_call`)), whose slot holds
+    /// CPython's `slot_*` dispatcher because the class defines the dunder as a Python
+    /// function. Refuses unless: `ty` is a mutable heap type; its own `__dict__` defines the
+    /// slot's dunder as an exact Python function; the slot is set; and, when `same_as` is
+    /// given, the slot holds the same function as `same_as`'s (an independent class defining
+    /// the same dunder in Python: proof that the original is CPython's dispatcher). The type
+    /// is kept alive while the site exists.
+    ///
+    /// The kernel must send every receiver whose type is not exactly `ty` to the original:
+    /// a subclass created while the kernel is installed inherits the kernel pointer
+    /// (`inherit_slots`) and keeps it after `disable()` (the kernel stays callable and the
+    /// original dispatches correctly for any subclass). Assigning the dunder later (on `ty`
+    /// or a base) makes CPython rewrite the slot: the original behaviour runs from then on,
+    /// `status()` shows `"suspended": "conflict"`, and `disable()` leaves CPython's pointer
+    /// in place; the next `enable()` after a `disable()` validates afresh. Nothing in the
+    /// specializer compares these pointers (generic `LOAD_ATTR` reads `tp_descr_get` per
+    /// call for heap-type descriptors; calls of instances of non-`type` metaclasses go
+    /// through `tp_call`).
+    pub fn heap_slot<F: FnPtr>(
+        &mut self,
+        ty: &Bound<'_, PyType>,
+        slot: SlotName,
+        kernel: F,
+        original: &'static Original<F>,
+        same_as: Option<&Bound<'_, PyType>>,
+    ) -> Result<(), Refusal> {
+        let tp = ty.as_type_ptr();
+        let what = format!("{}.{}", ty.qualname().map(|q| q.to_string()).unwrap_or_default(), slot.c_name());
+        if slot.arity() != F::ARITY {
+            return Err(Refusal::with(
+                Category::Conflict,
+                format!("{what}: slot takes {} arguments, kernel takes {}", slot.arity(), F::ARITY),
+            ));
+        }
+        // SAFETY: a ready type object.
+        let flags = unsafe { ffi::PyType_GetFlags(tp) };
+        if flags & ffi::Py_TPFLAGS_HEAPTYPE == 0 || flags & ffi::Py_TPFLAGS_IMMUTABLETYPE != 0 {
+            return Err(Refusal::with(Category::Conflict, format!("{what}: not a mutable heap type")));
+        }
+        let dunder =
+            slot.dunder().ok_or_else(|| Refusal::with(Category::Conflict, format!("{what}: slot has no dunder")))?;
+        let defined = self.get_opt(&type_dict(ty)?, dunder)?;
+        // SAFETY: type check of a live object.
+        if !defined.is_some_and(|f| unsafe { ffi::Py_TYPE(f.as_ptr()) } == &raw mut ffi::PyFunction_Type) {
+            return Err(Refusal::with(Category::Conflict, format!("{what}: {dunder} is not a Python function")));
+        }
+        // SAFETY: a ready type.
+        let addr = unsafe { site::slot_addr(tp, slot) }
+            .ok_or_else(|| Refusal::with(Category::Layout, format!("{what}: slot is empty")))?;
+        // SAFETY: aligned pointer-sized field of a live type.
+        let current =
+            unsafe { (*(addr as *const std::sync::atomic::AtomicUsize)).load(std::sync::atomic::Ordering::Acquire) };
+        if let Some(r) = same_as {
+            // SAFETY: a ready type.
+            let ra = unsafe { site::slot_addr(r.as_type_ptr(), slot) };
+            // SAFETY: aligned pointer-sized field of a live type.
+            let rv = ra.map(|a| unsafe {
+                (*(a as *const std::sync::atomic::AtomicUsize)).load(std::sync::atomic::Ordering::Acquire)
+            });
+            if rv != Some(current) {
+                return Err(Refusal::with(
+                    Category::Conflict,
+                    format!("{what}: slot differs from the reference class's"),
+                ));
+            }
+        }
+        let site = Site {
+            name: what,
+            kind: Kind::Slot,
+            addr,
+            original: current,
+            kernel: kernel.addr(),
+            installed: false,
+            // SAFETY: an incref of a live type (released with the site).
+            keep: unsafe { ffi::Py_NewRef(ty.as_ptr()) } as usize,
+        };
+        if let Err(r) = self.push_site_ref(&site, original) {
+            site.release();
+            return Err(r);
+        }
+        self.sites.push(SiteDecl { site });
+        Ok(())
+    }
+
+    /// Declare an entry of the interpreter's opcode handler table (the `interp` tier): `cell`
+    /// is the address of the pointer-sized table entry, `expected` the handler the caller
+    /// verified it must hold (refuses with `conflict` when it holds anything else), `kernel`
+    /// the replacement. Installed and restored by compare-and-swap, like a slot; reported as
+    /// kind `"opcode-handler"`. The caller keeps its own record of `expected` (the kernel's
+    /// fallback) and is responsible for the handler ABI.
+    pub fn opcode_handler(&mut self, name: &str, cell: usize, expected: usize, kernel: usize) -> Result<(), Refusal> {
+        if cell == 0 || !cell.is_multiple_of(std::mem::align_of::<usize>()) {
+            return Err(Refusal::with(Category::Layout, format!("{name}: misaligned handler table entry")));
+        }
+        if !crate::patch::writable(cell, size_of::<usize>()) {
+            return Err(Refusal::with(Category::Layout, format!("{name}: handler table is read-only")));
+        }
+        if expected == 0 || kernel == 0 {
+            return Err(Refusal::from(format!("{name}: empty handler")));
+        }
+        // SAFETY: aligned, writable pointer-sized cell (checked above).
+        let current =
+            unsafe { (*(cell as *const std::sync::atomic::AtomicUsize)).load(std::sync::atomic::Ordering::Acquire) };
+        if current != expected {
+            return Err(Refusal::with(Category::Conflict, format!("{name}: handler differs from the verified one")));
+        }
+        if self.sites.iter().any(|d| d.site.addr == cell) {
+            return Err(Refusal::from(format!("{name}: site declared twice")));
+        }
+        let site = Site {
+            name: name.to_owned(),
+            kind: Kind::OpcodeHandler,
+            addr: cell,
+            original: current,
+            kernel,
+            installed: false,
+            keep: 0,
+        };
+        self.sites.push(SiteDecl { site });
+        Ok(())
     }
 
     /// Declare the vectorcall of an exact pure-Python function (found in a module or class

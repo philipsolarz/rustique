@@ -33,6 +33,26 @@ pub enum Kind {
     MlMeth,
     Slot,
     Vectorcall,
+    /// An entry of the interpreter's opcode handler table (the `interp` tier, DECISIONS
+    /// §10.2): a pointer-sized cell swapped by CAS like a slot.
+    OpcodeHandler,
+}
+
+impl Kind {
+    /// The kind's name in `status()["targets"][i]["sites"]`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::MlMeth => "ml_meth",
+            Kind::Slot => "slot",
+            Kind::Vectorcall => "vectorcall",
+            Kind::OpcodeHandler => "opcode-handler",
+        }
+    }
+
+    /// Swapped by a compare-and-swap of a pointer-sized cell (not `PyFunction_SetVectorcall`).
+    pub fn is_cell(self) -> bool {
+        !matches!(self, Kind::Vectorcall)
+    }
 }
 
 /// One patch site.
@@ -46,6 +66,9 @@ pub struct Site {
     pub original: usize,
     pub kernel: usize,
     pub installed: bool,
+    /// An object whose lifetime the site's memory depends on (the heap type of a heap-type
+    /// slot), kept alive by a strong reference while the site exists; 0 for none.
+    pub keep: usize,
 }
 
 // SAFETY: plain addresses; the referenced memory is process-global or kept alive.
@@ -274,7 +297,10 @@ impl Site {
         }
         // SAFETY: aligned pointer-sized field.
         let original = unsafe { (*(slot as *const AtomicUsize)).load(Ordering::Acquire) };
-        Ok((Site { name, kind: Kind::MlMeth, addr: slot, original, kernel, installed: false }, flags & CONV_MASK))
+        Ok((
+            Site { name, kind: Kind::MlMeth, addr: slot, original, kernel, installed: false, keep: 0 },
+            flags & CONV_MASK,
+        ))
     }
 
     /// A site on a type slot.
@@ -295,6 +321,7 @@ impl Site {
             original,
             kernel,
             installed: false,
+            keep: 0,
         })
     }
 
@@ -315,6 +342,7 @@ impl Site {
                 original,
                 kernel,
                 installed: false,
+                keep: 0,
             })
         }
     }
@@ -323,7 +351,9 @@ impl Site {
         // SAFETY: field addresses validated at construction; function kept alive.
         unsafe {
             match self.kind {
-                Kind::MlMeth | Kind::Slot => (*(self.addr as *const AtomicUsize)).load(Ordering::Acquire),
+                Kind::MlMeth | Kind::Slot | Kind::OpcodeHandler => {
+                    (*(self.addr as *const AtomicUsize)).load(Ordering::Acquire)
+                }
                 Kind::Vectorcall => (*(self.addr as *mut ffi::PyFunctionObject)).vectorcall.map_or(0, |f| f as usize),
             }
         }
@@ -335,7 +365,7 @@ impl Site {
             return Ok(());
         }
         match self.kind {
-            Kind::MlMeth | Kind::Slot => {
+            Kind::MlMeth | Kind::Slot | Kind::OpcodeHandler => {
                 // SAFETY: validated writable aligned field.
                 let cell = unsafe { &*(self.addr as *const AtomicUsize) };
                 cell.compare_exchange(self.original, self.kernel, Ordering::AcqRel, Ordering::Acquire).map_err(
@@ -366,7 +396,7 @@ impl Site {
             return;
         }
         match self.kind {
-            Kind::MlMeth | Kind::Slot => {
+            Kind::MlMeth | Kind::Slot | Kind::OpcodeHandler => {
                 // SAFETY: validated writable aligned field.
                 let cell = unsafe { &*(self.addr as *const AtomicUsize) };
                 let _ = cell.compare_exchange(self.kernel, self.original, Ordering::AcqRel, Ordering::Acquire);
@@ -395,6 +425,28 @@ impl Site {
             // SAFETY: the reference taken in `vectorcall`.
             unsafe { ffi::Py_DECREF(self.addr as *mut ffi::PyObject) };
         }
+        if self.keep != 0 {
+            // SAFETY: the reference taken when the site was declared.
+            unsafe { ffi::Py_DECREF(self.keep as *mut ffi::PyObject) };
+        }
+    }
+
+    /// Installed, but the entry point no longer holds the kernel (CPython rewrote a heap
+    /// type's slot after `__get__`/`__call__` was assigned, or someone else patched it): the
+    /// original behaviour runs; `disable()` leaves the cell alone.
+    pub fn displaced(&self) -> bool {
+        self.installed && self.kind.is_cell() && self.current() != self.kernel
+    }
+}
+
+/// `PyFunction_SetVectorcall` (stops the world on free-threaded builds).
+///
+/// # Safety
+/// Attached thread; a live function object; `vc` a vectorcall function.
+pub(crate) unsafe fn set_vectorcall(func: *mut ffi::PyObject, vc: usize) {
+    // SAFETY: per the caller.
+    unsafe {
+        PyFunction_SetVectorcall(func.cast(), std::mem::transmute::<usize, ffi::vectorcallfunc>(vc));
     }
 }
 

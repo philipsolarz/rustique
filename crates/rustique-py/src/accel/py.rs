@@ -27,21 +27,23 @@ fn names(v: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<String>>> {
 /// excludes the `builtins` group. Additive and idempotent; unknown names raise
 /// `ValueError` before anything changes. Returns None, or `status()` with `quiet=False`
 /// (building the status dict costs ~13k Ir per target: only on request). Reads no
-/// environment variable and imports nothing.
+/// environment variable and imports nothing. `tiers`: opt-in tiers to install too
+/// (`["interp", "gc"]`; added to those already requested; unknown tiers raise).
 #[pyfunction]
-#[pyo3(signature = (only=None, exclude=None, builtins=true, quiet=true))]
+#[pyo3(signature = (only=None, exclude=None, builtins=true, quiet=true, tiers=None))]
 fn enable<'py>(
     py: Python<'py>,
     only: Option<&Bound<'py, PyAny>>,
     exclude: Option<&Bound<'py, PyAny>>,
     builtins: bool,
     quiet: bool,
+    tiers: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Option<Bound<'py, PyDict>>> {
     let mut excl = names(exclude)?.unwrap_or_default();
     if !builtins {
         excl.push("builtins".to_owned());
     }
-    registry::enable(py, names(only)?, excl)?;
+    registry::enable_tiers(py, names(only)?, excl, names(tiers)?.unwrap_or_default())?;
     if quiet { Ok(None) } else { status(py).map(Some) }
 }
 
