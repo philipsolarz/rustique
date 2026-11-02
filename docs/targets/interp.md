@@ -268,9 +268,9 @@ without swapping anything (the harness's own footprint), `tier` also enables the
 |---|---|---:|---:|---:|---:|---:|---|
 | 3.15.1 | plain | 47,182 | 60 | 3,000 | 20 | – | – |
 | 3.15.1 | noop | 47,182 | 64 | 3,000 | 23 | 3,806 | – |
-| 3.15.1 | tier | 47,182 | 64 | 3,000 | 23 | REG4GIL | **0 differences** (files and 47,041 per-test outcomes) |
+| 3.15.1 | tier | 47,182 | 64 | 3,000 | 23 | 3,804 | **0 differences** (files and 47,041 per-test outcomes) |
 | 3.15.1t | noop | 47,230 | 64 | 2,968 | 23 | 3,804 | – |
-| 3.15.1t | tier | 47,230 | 64 | 2,968 | 23 | REG4T | **0 differences** (files and 47,091 per-test outcomes) |
+| 3.15.1t | tier | 47,230 | 64 | 2,968 | 23 | 3,812 | **0 differences** (files and 47,091 per-test outcomes) |
 | 3.15.1, `PYTHON_JIT=1` | 20 files (isinstance, descr, class, dataclasses, functools, inspect, opcache, monitoring, sys_settrace, generators, coroutines, typing, enum, abc, property, super, types, unittest, json, ast) | 5,551 | 49 | 71 | 3 | 123 | **0 differences** (5,510 outcomes) |
 
 The plain failures are environmental (python-build-standalone ships no `_testcapi`, no `Lib/test`
@@ -295,7 +295,8 @@ here by the differential and mechanism tests.
   RecursionError), races (table writes while 4 threads run the swapped handlers; class mutation
   racing the cache).
 - Passing on 3.15.1, 3.15.1t, 3.15.2, 3.15.2t (tier verified), 3.14.9, 3.14.9t (tier refused,
-  tests skipped). Full suite: PYTEST.
+  tests skipped). Full suite (`pytest -q tests`): 3.15.1 2199 passed / 5 skipped, 3.15.1t 2199 / 5,
+  3.14.9 2183 / 20, 3.14.9t 2183 / 21 (M, dev box).
 
 ## 6. Reach per distribution
 
