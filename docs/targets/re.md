@@ -178,6 +178,16 @@ falls back for the rest of the process).
 - **Threads**: 8 threads compiling, purging and matching against the clone; 6 threads while
   the main thread disables and re-enables the group 15 times (free-threaded builds included).
 
+## Conformance (ACCELERATION §7.1, `benches/targets/re_conformance.sh`)
+
+CPython's own test modules with the group installed before they import, against plain runs:
+`test_re`, `test_email`, `test_tokenize`, `test_configparser`, `test_fnmatch`, `test_textwrap`,
+`test_http_cookies`, `test_difflib`, `test_string`, `test_shlex`, `test_argparse`,
+`test_gettext`, `test_glob`, `test_csv`, `test_urllib`, `test_mailbox` (~5,500 tests): **0
+differences** on 3.15.1, 3.15.1t, 3.14.9 and 3.14.9t, every target installed. The whole
+Rustique suite (`pytest -q tests`): 3.15.1t 2,208 passed / 5 skipped, 3.14.9 and 3.14.9t 2,210
+passed / 3 skipped.
+
 ## Version coverage
 
 3.14 and 3.15 (GIL and free-threaded builds; same fingerprints on both). Other minors refuse
@@ -226,12 +236,13 @@ Compile (`re._compiler.compile(P, F)`, the kernel's site, no cache):
 The Unicode-IGNORECASE and big-set cells are bounded by `_sre.compile` itself and by the
 per-code-point case mapping over ranges (as CPython's compiler, but in Rust).
 
-Declined patterns (fall back to CPython's compiler; an all-decline stream suspends the target
-after 64 calls, ACCELERATION §5.6): `\N{...}` 1.000, bytes LOCALE 1.000, FutureWarning 0.999,
+Declined patterns (fall back to CPython's compiler). An all-decline stream suspends the target
+after 64 calls (ACCELERATION §5.6): `\N{...}` 1.000, bytes LOCALE 1.000, FutureWarning 0.998,
 error 0.997, `RegexFlag` flags (`_compiler.compile` called directly) 1.000, `int`-subclass flags
-1.000. Before suspension a decline costs the caller's inlined frame push plus the port's
-attempt: +2.7k Ir on an error pattern (1.056 of its 48.8k) measured before the attempt stopped
-allocating; see the `[fallback+hit]` cells for the current value.
+1.000. Unsuspended (each decline paired with a hit on `\d+`, which saves 69.9k): a decline
+costs **+1,752 Ir on an error pattern (1.036 of its 48.8k)**, +1,217 on a FutureWarning pattern
+(1.013), +1,395 on `\N{...}` (1.016): the caller's inlined frame push plus the port's attempt
+(no allocation for patterns up to 160 code units).
 
 Module functions (cache hits):
 
@@ -265,7 +276,8 @@ after 64 calls; the remaining 4.6% is the call site staying unspecialized after 
 suspension restores CPython's vectorcall — a property of every suspended vectorcall target).
 A template naming groups (`\g<name>`) measured 1.094 when checked (the lookup through
 `Pattern.groupindex`, a mapping proxy built per access, costs more than the kernel saves), so
-such templates decline: see the `[fallback]` value of that cell.
+such templates decline: 0.999 as a stream (suspended); unsuspended it costs the fallback plus
+the template scan up to the name (~+0.5k on 13.3k, I from the decline cells).
 
 ### Threads (M, `benches/targets/re_threads.py`, 3.15.1t, CPU time per call, median of 5–9)
 
