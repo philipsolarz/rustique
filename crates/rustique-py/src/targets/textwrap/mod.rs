@@ -16,12 +16,16 @@
 //! `checkable`.
 
 use std::ffi::c_int;
+
+pub mod pep393;
+
+use pep393::{StrWriter, Unit, with_units};
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString, PyType};
-use rustique_core::textwrap::{self as tw, Chunk, Classes, WrapError, WrapOpts};
+use rustique_core::textwrap::{self as tw, Chunk, Classes, Src, WrapError, WrapOpts, Wrapped};
 
 use crate::accel::{self, Original, Prepare, Reason, Refusal, TargetSpec};
 use crate::targets::utils_kit::{
@@ -80,35 +84,8 @@ impl Classes for Cls {
 }
 
 // ---------------------------------------------------------------------------------------
-// str <-> code points
+// str access (PEP 393 buffers in place) and per-thread scratch
 // ---------------------------------------------------------------------------------------
-
-/// The code points of an exact `str` (copied out of the PEP 393 buffer).
-unsafe fn ucs4(s: O) -> Option<Vec<u32>> {
-    // SAFETY: exact str.
-    unsafe {
-        let n = ffi::PyUnicode_GET_LENGTH(s) as usize;
-        let mut v = vec![0u32; n + 1];
-        if ffi::PyUnicode_AsUCS4(s, v.as_mut_ptr(), (n + 1) as ffi::Py_ssize_t, 1).is_null() {
-            ffi::PyErr_Clear();
-            return None;
-        }
-        v.truncate(n);
-        Some(v)
-    }
-}
-
-/// A new `str` from code points (canonical PEP 393 kind).
-unsafe fn new_str(v: &[u32]) -> O {
-    // SAFETY: valid buffer.
-    unsafe {
-        ffi::PyUnicode_FromKindAndData(
-            ffi::PyUnicode_4BYTE_KIND as c_int,
-            v.as_ptr().cast(),
-            v.len() as ffi::Py_ssize_t,
-        )
-    }
-}
 
 #[inline(always)]
 unsafe fn exact_str(o: O) -> bool {
@@ -133,6 +110,87 @@ unsafe fn truth(o: O) -> Option<bool> {
     }
 }
 
+/// Per-thread buffers of the textwrap kernels, reused from call to call (no allocation in
+/// the steady state; buffers grown past `pep393::KEEP` elements are released after use).
+struct Scratch {
+    /// munged text
+    munged: Vec<u32>,
+    /// `shorten`'s collapsed text
+    src: Vec<u32>,
+    chunks: Vec<Chunk>,
+    wrapped: Wrapped,
+    initial: Vec<u32>,
+    subsequent: Vec<u32>,
+    placeholder: Vec<u32>,
+    /// dedent / indent line ranges
+    ranges: Vec<(usize, usize)>,
+    ranges3: Vec<(usize, usize, bool)>,
+}
+
+impl Scratch {
+    const fn new() -> Scratch {
+        Scratch {
+            munged: Vec::new(),
+            src: Vec::new(),
+            chunks: Vec::new(),
+            wrapped: Wrapped::new(),
+            initial: Vec::new(),
+            subsequent: Vec::new(),
+            placeholder: Vec::new(),
+            ranges: Vec::new(),
+            ranges3: Vec::new(),
+        }
+    }
+    fn trim(&mut self) {
+        const K: usize = pep393::KEEP;
+        for v in [&mut self.munged, &mut self.src, &mut self.initial, &mut self.subsequent, &mut self.placeholder] {
+            v.clear();
+            if v.capacity() > K {
+                v.shrink_to(K);
+            }
+        }
+        self.chunks.clear();
+        if self.chunks.capacity() > K {
+            self.chunks.shrink_to(K);
+        }
+        self.ranges.clear();
+        if self.ranges.capacity() > K {
+            self.ranges.shrink_to(K);
+        }
+        self.ranges3.clear();
+        if self.ranges3.capacity() > K {
+            self.ranges3.shrink_to(K);
+        }
+        self.wrapped.trim(K);
+    }
+}
+
+thread_local! {
+    static SCRATCH: std::cell::RefCell<Scratch> = const { std::cell::RefCell::new(Scratch::new()) };
+}
+
+/// Run `f` with this thread's scratch (fresh buffers if it is in use: no kernel runs Python
+/// code while holding it, but a finalizer could re-enter).
+#[inline]
+fn with_scratch<R>(f: impl FnOnce(&mut Scratch) -> R) -> R {
+    let mut f = Some(f);
+    let r = SCRATCH.try_with(|s| match s.try_borrow_mut() {
+        Ok(mut g) => {
+            let r = (f.take().expect("once"))(&mut g);
+            g.trim();
+            Some(r)
+        }
+        Err(_) => None,
+    });
+    match r {
+        Ok(Some(r)) => r,
+        _ => (f.take().expect("once"))(&mut Scratch::new()),
+    }
+}
+
+/// `TextWrapper.__init__`'s default placeholder.
+const DEFAULT_PLACEHOLDER: [u32; 6] = [0x20, 0x5b, 0x2e, 0x2e, 0x2e, 0x5d];
+
 // ---------------------------------------------------------------------------------------
 // Options
 // ---------------------------------------------------------------------------------------
@@ -153,10 +211,12 @@ const OPT_NAMES: [&str; 12] = [
     "placeholder",
 ];
 
+/// The options of one call. The `str` options are borrowed objects (NULL: the default);
+/// `held` keeps the references read from a `TextWrapper` instance alive for the call.
 struct Opts {
     width: i64,
-    initial_indent: Vec<u32>,
-    subsequent_indent: Vec<u32>,
+    initial_indent: O,
+    subsequent_indent: O,
     expand_tabs: bool,
     replace_whitespace: bool,
     fix_sentence_endings: bool,
@@ -168,16 +228,27 @@ struct Opts {
     boh_truthy: bool,
     tabsize: i64,
     max_lines: Option<i64>,
-    placeholder: Vec<u32>,
+    placeholder: O,
+    held: [O; 3],
+}
+
+impl Drop for Opts {
+    fn drop(&mut self) {
+        for o in self.held {
+            // SAFETY: owned references (or NULL).
+            unsafe { ffi::Py_XDECREF(o) };
+        }
+    }
 }
 
 impl Opts {
     /// `TextWrapper.__init__`'s defaults (checked against the function at install).
     fn defaults() -> Opts {
+        let null = std::ptr::null_mut();
         Opts {
             width: 70,
-            initial_indent: Vec::new(),
-            subsequent_indent: Vec::new(),
+            initial_indent: null,
+            subsequent_indent: null,
             expand_tabs: true,
             replace_whitespace: true,
             fix_sentence_endings: false,
@@ -187,11 +258,13 @@ impl Opts {
             boh_truthy: true,
             tabsize: 8,
             max_lines: None,
-            placeholder: " [...]".chars().map(u32::from).collect(),
+            placeholder: null,
+            held: [null; 3],
         }
     }
 
     /// Set option `i` (index in [`OPT_NAMES`]) from a value; `None`: outside the subset.
+    /// The caller keeps `v` alive for the call.
     unsafe fn set(&mut self, i: usize, v: O) -> Option<()> {
         // SAFETY: live objects.
         unsafe {
@@ -216,6 +289,41 @@ impl Opts {
             Some(())
         }
     }
+
+    /// `max_lines` with an empty placeholder: a cut can build a fresh one-character
+    /// `''.join` (not the singleton), `prev_line + ''` and `indent + ''` objects; CPython
+    /// runs these (decided before any other work: the module functions reach the method).
+    fn cut_with_empty_placeholder(&self) -> bool {
+        // SAFETY: a live exact str (kept by the caller / `held`).
+        self.max_lines.is_some()
+            && !self.placeholder.is_null()
+            && unsafe { ffi::PyUnicode_GET_LENGTH(self.placeholder) } == 0
+    }
+
+    /// The placeholder object (the argument, or `TextWrapper.__init__`'s default).
+    fn placeholder_obj(&self) -> O {
+        if self.placeholder.is_null() { ld(&DEFAULT_PLACEHOLDER_OBJ) } else { self.placeholder }
+    }
+
+    /// Decode the `str` options into the scratch buffers.
+    unsafe fn decode(&self, sc: &mut Scratch) {
+        // SAFETY: live exact str objects (kept by the caller / `held`).
+        unsafe {
+            for (o, v) in [
+                (self.initial_indent, &mut sc.initial),
+                (self.subsequent_indent, &mut sc.subsequent),
+                (self.placeholder, &mut sc.placeholder),
+            ] {
+                v.clear();
+                if !o.is_null() {
+                    pep393::units(o).push_to(v);
+                }
+            }
+            if self.placeholder.is_null() {
+                sc.placeholder.extend_from_slice(&DEFAULT_PLACEHOLDER);
+            }
+        }
+    }
 }
 
 #[inline]
@@ -230,61 +338,125 @@ unsafe fn exact_int(o: O) -> Option<i64> {
 }
 
 #[inline]
-unsafe fn str_arg(o: O) -> Option<Vec<u32>> {
+unsafe fn str_arg(o: O) -> Option<O> {
     // SAFETY: live object.
-    unsafe { if exact_str(o) { ucs4(o) } else { None } }
+    unsafe { exact_str(o).then_some(o) }
 }
 
 // ---------------------------------------------------------------------------------------
 // The algorithm
 // ---------------------------------------------------------------------------------------
 
-/// The wrapped lines of `text` (code points), or `None` when CPython raises (the caller
-/// falls back). `whole` is set when the only line is the whole text, built from one chunk
-/// with an empty indent, from munged text that is the input object itself: CPython then
-/// returns the input `str` (`''.join([chunk])`, `'' + line`, `PyUnicode_Substring` of the
-/// whole string, `expandtabs` without tabs: all return their argument).
-fn wrap_lines(text: &[u32], o: &Opts, whole: &mut bool) -> Option<Vec<Vec<u32>>> {
+/// Wrap `text` into `sc.wrapped` (munged text in `sc.munged`, options decoded into the
+/// scratch). `Some(whole)`, or `None` when CPython raises (the caller falls back). `whole`
+/// is set when the only line is the whole text, built from one chunk with an empty indent,
+/// from munged text that is the input object itself: CPython then returns the input `str`
+/// (`''.join([chunk])`, `'' + line`, `PyUnicode_Substring` of the whole string,
+/// `expandtabs` without tabs: all return their argument).
+fn wrap_into<T: Unit>(text: &[T], o: &Opts, sc: &mut Scratch) -> Option<bool> {
     let cls = Cls;
-    let munged_is_input = !o.replace_whitespace && (!o.expand_tabs || !text.contains(&0x09));
-    let munged = tw::munge(text, o.expand_tabs, o.tabsize, o.replace_whitespace);
-    let mut chunks = if o.boh_is_true { tw::split_words(&munged, &cls) } else { tw::split_simple(&munged) };
-    if o.fix_sentence_endings {
-        tw::fix_sentence_endings(&munged, &mut chunks);
+    if o.cut_with_empty_placeholder() {
+        return None; // checked by the callers first; kept here for any other caller
     }
-    let one_chunk = chunks.len() == 1 && chunks[0] == Chunk::Text(0, munged.len());
+    let munged_is_input = !o.replace_whitespace && (!o.expand_tabs || !text.iter().any(|&c| c.into() == 0x09));
+    tw::munge_into(text, o.expand_tabs, o.tabsize, o.replace_whitespace, &mut sc.munged);
+    let munged = &sc.munged;
+    if o.boh_is_true {
+        tw::split_words_into(munged, &cls, &mut sc.chunks);
+    } else {
+        tw::split_simple_into(munged, &mut sc.chunks);
+    }
+    if o.fix_sentence_endings {
+        tw::fix_sentence_endings(munged, &mut sc.chunks);
+    }
+    let one_chunk = sc.chunks.len() == 1 && sc.chunks[0] == Chunk::Text(0, munged.len());
     let opts = WrapOpts {
         width: o.width,
-        initial_indent: &o.initial_indent,
-        subsequent_indent: &o.subsequent_indent,
+        initial_indent: &sc.initial,
+        subsequent_indent: &sc.subsequent,
         break_long_words: o.break_long_words,
         drop_whitespace: o.drop_whitespace,
         break_on_hyphens: o.boh_truthy,
         max_lines: o.max_lines,
-        placeholder: &o.placeholder,
+        placeholder: &sc.placeholder,
     };
-    let lines = match tw::wrap_chunks(&munged, chunks, &opts, &cls) {
-        Ok(l) => l,
+    match tw::wrap_chunks_into(munged, &sc.chunks, &opts, &cls, &mut sc.wrapped) {
+        Ok(()) => {}
         Err(WrapError::InvalidWidth | WrapError::PlaceholderTooLarge | WrapError::NoProgress) => return None,
-    };
-    *whole = munged_is_input
+    }
+    let w = &sc.wrapped;
+    let whole = munged_is_input
         && one_chunk
-        && o.initial_indent.is_empty()
-        && lines.len() == 1
-        && lines[0].as_slice() == munged.as_slice();
-    Some(lines)
+        && sc.initial.is_empty()
+        && w.len() == 1
+        && w.line(0).iter().map(|s| s.len()).sum::<usize>() == munged.len()
+        && w.line(0).iter().all(|s| s.is_empty() || (s.src == Src::Text && s.a == 0 && s.b == munged.len()));
+    Some(whole)
 }
 
-/// `list` of `str` lines (`whole`: `[text]`).
-unsafe fn lines_list(lines: &[Vec<u32>], text: O, whole: bool) -> O {
-    // SAFETY: new list filled completely.
+/// Largest code point any line can contain when every source is ASCII (then every line is
+/// ASCII and needs no scan), else `None`.
+fn ascii_bound(sc: &Scratch) -> Option<u32> {
+    let m = [&sc.munged, &sc.initial, &sc.subsequent, &sc.placeholder].iter().fold(0, |m, v| m.max(pep393::max_cp(v)));
+    (m < 128).then_some(127)
+}
+
+/// Length and largest code point (class-exact: `bound` when given) of line `i`.
+#[inline]
+fn line_shape(sc: &Scratch, opts: &WrapOpts<'_>, i: usize, bound: Option<u32>) -> (usize, u32) {
+    let mut len = 0;
+    let mut max = 0;
+    for s in sc.wrapped.line(i) {
+        let t = s.get(&sc.munged, opts);
+        len += t.len();
+        if bound.is_none() {
+            max = max.max(pep393::max_cp(t));
+        }
+    }
+    (len, bound.unwrap_or(max))
+}
+
+fn wrap_opts<'a>(sc: &'a Scratch, o: &Opts) -> WrapOpts<'a> {
+    WrapOpts {
+        width: o.width,
+        initial_indent: &sc.initial,
+        subsequent_indent: &sc.subsequent,
+        break_long_words: o.break_long_words,
+        drop_whitespace: o.drop_whitespace,
+        break_on_hyphens: o.boh_truthy,
+        max_lines: o.max_lines,
+        placeholder: &sc.placeholder,
+    }
+}
+
+/// `list` of `str` lines (`whole`: `[text]`), written straight into each line's `str`.
+unsafe fn lines_list(sc: &Scratch, o: &Opts, text: O, whole: bool) -> O {
+    // SAFETY: new list filled completely; each str written to its declared length.
     unsafe {
-        let out = ffi::PyList_New(lines.len() as ffi::Py_ssize_t);
+        let n = sc.wrapped.len();
+        let out = ffi::PyList_New(n as ffi::Py_ssize_t);
         if out.is_null() {
             return out;
         }
-        for (i, l) in lines.iter().enumerate() {
-            let s = if whole { ffi::Py_NewRef(text) } else { new_str(l) };
+        let opts = wrap_opts(sc, o);
+        let bound = if whole { None } else { ascii_bound(sc) };
+        for i in 0..n {
+            let s = if whole {
+                ffi::Py_NewRef(text)
+            } else if i + 1 == n && sc.wrapped.last_is_placeholder {
+                ffi::Py_NewRef(o.placeholder_obj())
+            } else {
+                let (len, max) = line_shape(sc, &opts, i, bound);
+                match StrWriter::new(len, max) {
+                    Some(mut w) => {
+                        for seg in sc.wrapped.line(i) {
+                            w.put(seg.get(&sc.munged, &opts));
+                        }
+                        w.finish()
+                    }
+                    None => ffi::PyUnicode_New(len as ffi::Py_ssize_t, max), // re-raise
+                }
+            };
             if s.is_null() {
                 ffi::Py_DECREF(out);
                 return s;
@@ -295,21 +467,37 @@ unsafe fn lines_list(lines: &[Vec<u32>], text: O, whole: bool) -> O {
     }
 }
 
-/// `"\n".join(lines)` (`whole`: `text`).
-unsafe fn lines_joined(lines: &[Vec<u32>], text: O, whole: bool) -> O {
-    // SAFETY: plain constructors.
+/// `"\n".join(lines)` (`whole`: `text`), written straight into the result.
+unsafe fn lines_joined(sc: &Scratch, o: &Opts, text: O, whole: bool) -> O {
+    // SAFETY: the str is written to its declared length.
     unsafe {
         if whole {
             return ffi::Py_NewRef(text);
         }
-        let mut buf: Vec<u32> = Vec::with_capacity(lines.iter().map(|l| l.len() + 1).sum());
-        for (i, l) in lines.iter().enumerate() {
-            if i > 0 {
-                buf.push(0x0a);
-            }
-            buf.extend_from_slice(l);
+        let n = sc.wrapped.len();
+        if n == 1 && sc.wrapped.last_is_placeholder {
+            return ffi::Py_NewRef(o.placeholder_obj()); // `"\n".join([placeholder])`
         }
-        new_str(&buf)
+        let opts = wrap_opts(sc, o);
+        let bound = ascii_bound(sc);
+        let (mut len, mut max) = (n.saturating_sub(1), if n > 1 { 0x0a } else { 0 });
+        for i in 0..n {
+            let (l, m) = line_shape(sc, &opts, i, bound);
+            len += l;
+            max = max.max(m);
+        }
+        let Some(mut w) = StrWriter::new(len, max) else {
+            return ffi::PyUnicode_New(len as ffi::Py_ssize_t, max); // re-raise
+        };
+        for i in 0..n {
+            if i > 0 {
+                w.put1(0x0a);
+            }
+            for seg in sc.wrapped.line(i) {
+                w.put(seg.get(&sc.munged, &opts));
+            }
+        }
+        w.finish()
     }
 }
 
@@ -320,6 +508,8 @@ unsafe fn lines_joined(lines: &[Vec<u32>], text: O, whole: bool) -> O {
 static TW_CLS: AtomicPtr<ffi::PyObject> = null!();
 static INIT_DEFAULTS: AtomicPtr<ffi::PyObject> = null!();
 static INIT_KWDEFAULTS: AtomicPtr<ffi::PyObject> = null!();
+/// `TextWrapper.__init__.__kwdefaults__['placeholder']` (validated as `' [...]'`).
+static DEFAULT_PLACEHOLDER_OBJ: AtomicPtr<ffi::PyObject> = null!();
 static INIT_FUNC: AtomicPtr<ffi::PyObject> = null!();
 static TRANS: AtomicPtr<ffi::PyObject> = null!();
 static FILL_FUNC: AtomicPtr<ffi::PyObject> = null!();
@@ -459,7 +649,10 @@ unsafe fn parse_module_call(args: *const O, nargsf: usize, kw: O, kind: Kind) ->
                     text = v;
                     continue;
                 }
-                let j = (0..12).find(|&j| k == ld(&S_OPTS[j]) || ffi::PyUnicode_Compare(k, ld(&S_OPTS[j])) == 0)?;
+                // Keyword names are interned at the call site: identity first, value second.
+                let j = (0..12)
+                    .find(|&j| k == ld(&S_OPTS[j]))
+                    .or_else(|| (0..12).find(|&j| ffi::PyUnicode_Compare(k, ld(&S_OPTS[j])) == 0))?;
                 if j == 0 {
                     if !width.is_null() {
                         return None;
@@ -489,47 +682,56 @@ unsafe fn parse_module_call(args: *const O, nargsf: usize, kw: O, kind: Kind) ->
     }
 }
 
-/// `' '.join(text.strip().split())` (`None`: it is `text` itself — no whitespace at all).
-fn collapse(text: &[u32]) -> Option<Vec<u32>> {
+/// `' '.join(text.strip().split())` into `out`: `false` when it is `text` itself (no
+/// whitespace at all) and `out` is unused.
+fn collapse_into<T: Unit>(text: &[T], out: &mut Vec<u32>) -> bool {
     let cls = Cls;
-    if !text.iter().any(|&c| cls.is_space(c)) {
-        return None;
+    out.clear();
+    if !text.iter().any(|&c| cls.is_space(c.into())) {
+        return false;
     }
-    let mut out = Vec::with_capacity(text.len());
-    for w in text.split(|&c| cls.is_space(c)).filter(|w| !w.is_empty()) {
+    out.reserve(text.len());
+    for w in text.split(|&c| cls.is_space(c.into())).filter(|w| !w.is_empty()) {
         if !out.is_empty() {
             out.push(0x20);
         }
-        out.extend_from_slice(w);
+        out.extend(w.iter().map(|&c| c.into()));
     }
-    Some(out)
+    true
 }
 
 unsafe fn module_kernel(g: &Guard, kind: Kind, func: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments.
     unsafe {
-        if let Some((text, o)) = parse_module_call(args, nargsf, kw, kind) {
+        if let Some((text, o)) = parse_module_call(args, nargsf, kw, kind)
+            && !o.cut_with_empty_placeholder()
+        {
             if !g.ready(func) {
                 return call_original(func, args, nargsf, kw);
             }
-            if module_class_ok()
-                && class_state_ok()
-                && let Some(t) = ucs4(text)
-            {
-                let (src, is_input) = match kind {
-                    Kind::Shorten => match collapse(&t) {
-                        Some(c) => (c, false),
-                        None => (t, true),
-                    },
-                    _ => (t, true),
-                };
-                let mut whole = false;
-                if let Some(lines) = wrap_lines(&src, &o, &mut whole) {
-                    let whole = whole && is_input;
-                    let r = match kind {
-                        Kind::Wrap => lines_list(&lines, text, whole),
-                        _ => lines_joined(&lines, text, whole),
-                    };
+            if module_class_ok() && class_state_ok() {
+                let r = with_scratch(|sc| {
+                    o.decode(sc);
+                    let u = pep393::units(text);
+                    let whole = if kind == Kind::Shorten {
+                        let collapsed = with_units!(u, t => collapse_into(t, &mut sc.src));
+                        if collapsed {
+                            let src = std::mem::take(&mut sc.src);
+                            let w = wrap_into(&src, &o, sc);
+                            sc.src = src;
+                            w.map(|_| false)
+                        } else {
+                            with_units!(u, t => wrap_into(t, &o, sc))
+                        }
+                    } else {
+                        with_units!(u, t => wrap_into(t, &o, sc))
+                    }?;
+                    Some(match kind {
+                        Kind::Wrap => lines_list(sc, &o, text, whole),
+                        _ => lines_joined(sc, &o, text, whole),
+                    })
+                });
+                if let Some(r) = r {
                     if g.counters.hit_check_streak() {
                         return verify(g, kind_spec(kind), r, func, args, nargsf, kw);
                     }
@@ -617,7 +819,8 @@ unsafe fn tw_class(tp: *mut ffi::PyTypeObject) -> Option<(usize, usize)> {
     }
 }
 
-/// The options of a `TextWrapper` instance (`None`: outside the subset).
+/// The options of a `TextWrapper` instance (`None`: outside the subset). The `str` options
+/// are held (owned references) for the call.
 unsafe fn instance_opts(slf: O) -> Option<Opts> {
     // SAFETY: attached thread; the class has no attribute of these names (checked), so
     // generic getattr reads the instance dict only.
@@ -648,14 +851,25 @@ unsafe fn instance_opts(slf: O) -> Option<Opts> {
             }
         }
         let mut o = Opts::defaults();
-        for (i, name) in S_OPTS.iter().enumerate() {
-            let v = ffi::PyObject_GenericGetAttr(slf, ld(name));
+        let mut h = 0;
+        // `max_lines` and `placeholder` first: a cut with an empty placeholder is CPython's,
+        // decided after two reads.
+        for (k, i) in [10, 11, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9].into_iter().enumerate() {
+            if k == 2 && o.cut_with_empty_placeholder() {
+                return None;
+            }
+            let v = ffi::PyObject_GenericGetAttr(slf, ld(&S_OPTS[i]));
             if v.is_null() {
                 ffi::PyErr_Clear();
                 return None;
             }
             let ok = o.set(i, v);
-            ffi::Py_DECREF(v);
+            if ok.is_some() && matches!(i, 1 | 2 | 11) {
+                o.held[h] = v; // the str stays alive for the call
+                h += 1;
+            } else {
+                ffi::Py_DECREF(v);
+            }
             ok?;
         }
         Some(o)
@@ -671,13 +885,16 @@ unsafe fn method_kernel(g: &Guard, fill: bool, func: O, args: *const O, nargsf: 
                 if !g.ready(func) {
                     return call_original(func, args, nargsf, kw);
                 }
-                if class_state_ok()
-                    && let Some(o) = instance_opts(slf)
-                    && let Some(t) = ucs4(text)
+                if let Some(o) = instance_opts(slf)
+                    && !o.cut_with_empty_placeholder()
+                    && class_state_ok()
                 {
-                    let mut whole = false;
-                    if let Some(lines) = wrap_lines(&t, &o, &mut whole) {
-                        let r = if fill { lines_joined(&lines, text, whole) } else { lines_list(&lines, text, whole) };
+                    let r = with_scratch(|sc| {
+                        o.decode(sc);
+                        let whole = with_units!(pep393::units(text), t => wrap_into(t, &o, sc))?;
+                        Some(if fill { lines_joined(sc, &o, text, whole) } else { lines_list(sc, &o, text, whole) })
+                    });
+                    if let Some(r) = r {
                         if g.counters.hit_check_streak() {
                             return verify(g, if fill { &TW_FILL } else { &TW_WRAP }, r, func, args, nargsf, kw);
                         }
@@ -723,16 +940,32 @@ unsafe extern "C" fn vc_dedent(func: O, args: *const O, nargsf: usize, kw: O) ->
             if !g.ready(func) {
                 return call_original(func, args, nargsf, kw);
             }
-            if let Some(t) = ucs4(text) {
-                let r = match tw::dedent(&t, &Cls) {
-                    None => ffi::Py_NewRef(text),
-                    Some(v) => new_str(&v),
-                };
-                if g.counters.hit_check_streak() {
-                    return verify(g, &DEDENT, r, func, args, nargsf, kw);
-                }
-                return r;
+            // `'\n'.join(lines)`: one line is that line's own slice (`l[margin:]`: the
+            // singleton for one character), several lines a new object. Written straight
+            // from the argument's buffer.
+            let r = with_scratch(|sc| {
+                with_units!(pep393::units(text), t => {
+                    if !tw::dedent_ranges(t, &Cls, &mut sc.ranges) {
+                        return ffi::Py_NewRef(text);
+                    }
+                    let r = &sc.ranges;
+                    let len = r.iter().map(|&(a, b)| b - a).sum::<usize>() + r.len() - 1;
+                    let max = r.iter().fold(if r.len() > 1 { 0x0a } else { 0 }, |m, &(a, b)| m.max(pep393::max_cp(&t[a..b])));
+                    let w = if r.len() > 1 { StrWriter::fresh(len, max) } else { StrWriter::new(len, max) };
+                    let Some(mut w) = w else { return ffi::PyUnicode_New(len as ffi::Py_ssize_t, max) };
+                    for (i, &(a, b)) in r.iter().enumerate() {
+                        if i > 0 {
+                            w.put1(0x0a);
+                        }
+                        w.put(&t[a..b]);
+                    }
+                    w.finish()
+                })
+            });
+            if g.counters.hit_check_streak() {
+                return verify(g, &DEDENT, r, func, args, nargsf, kw);
             }
+            return r;
         }
         g.counters.fallback_streak(Reason::Args);
         call_original(func, args, nargsf, kw)
@@ -754,16 +987,36 @@ unsafe extern "C" fn vc_indent(func: O, args: *const O, nargsf: usize, kw: O) ->
             if !g.ready(func) {
                 return call_original(func, args, nargsf, kw);
             }
-            if let (Some(t), Some(p)) = (ucs4(text), ucs4(prefix)) {
-                let r = match tw::indent(&t, &p, &Cls) {
-                    None => ffi::Py_NewRef(text),
-                    Some(v) => new_str(&v),
-                };
-                if g.counters.hit_check_streak() {
-                    return verify(g, &INDENT, r, func, args, nargsf, kw);
-                }
-                return r;
+            // `''.join(prefixed_lines)`: several parts (or none) unless CPython returns `text`:
+            // a new object, written straight from the arguments' buffers. Every character of
+            // `text` is kept, so its kind decides the class (Latin-1: one scan).
+            let r = with_scratch(|sc| {
+                let pu = pep393::units(prefix);
+                with_units!(pep393::units(text), t => {
+                    if !tw::indent_ranges(t, &Cls, &mut sc.ranges3) {
+                        return ffi::Py_NewRef(text);
+                    }
+                    let r = &sc.ranges3;
+                    let np = r.iter().filter(|x| x.2).count();
+                    let len = t.len() + np * pu.len();
+                    let pmax = if np > 0 { with_units!(pu, p => pep393::max_cp(p)) } else { 0 };
+                    let max = pep393::max_cp(t).max(pmax);
+                    let Some(mut w) = StrWriter::fresh(len, max) else {
+                        return ffi::PyUnicode_New(len as ffi::Py_ssize_t, max);
+                    };
+                    for &(a, b, p) in r {
+                        if p {
+                            with_units!(pu, ps => w.put(ps));
+                        }
+                        w.put(&t[a..b]);
+                    }
+                    w.finish()
+                })
+            });
+            if g.counters.hit_check_streak() {
+                return verify(g, &INDENT, r, func, args, nargsf, kw);
             }
+            return r;
         }
         g.counters.fallback_streak(Reason::Args);
         call_original(func, args, nargsf, kw)
@@ -832,6 +1085,8 @@ fn prepare_common<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<Bound<'
     keep(&NEW_OBJ, &get_s(cx, &crate::accel::prepare::type_dict(&object)?, &name_of(&S_NEW))?);
     keep(&INIT_DEFAULTS, &defaults);
     keep(&INIT_KWDEFAULTS, &kwdefaults);
+    let ph = kwdefaults.cast::<PyDict>().map_err(PyErr::from)?.get_item("placeholder")?;
+    keep(&DEFAULT_PLACEHOLDER_OBJ, &ph.ok_or_else(|| Refusal::new("TextWrapper placeholder default"))?);
     keep(&TRANS, &trans);
     // SAFETY: probe of the table installed above (no Python code runs).
     if unsafe { !class_state_ok() } {
