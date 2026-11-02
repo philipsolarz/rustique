@@ -224,7 +224,7 @@ def test_render_lists_called_targets_by_hits():
     assert [b[0] for b in body] == ["copy.deepcopy", "json.dumps"]  # copy.copy was not called
     assert body[0][2:4] == ["2,000", "100%"]
     assert body[1][2:] == ["10", "71%", "4", "(args", "3,", "deps", "1)"]
-    assert "(1 installed targets were not called)" in text
+    assert "(1 installed or armed targets were not called)" in text
     assert "1 targets wait for their module (logging): installed when it is imported" in text
     assert "    [version] 1: re.match" in text and "reason: CPython 3.14.9 is not validated (3.15)" in text
     assert "not selected: uuid" in text
@@ -271,7 +271,10 @@ def test_render_tiers_armed_and_unvalidated():
                "reason": "opt-in tier: RUSTIQUE_TIERS=interp"})
     ts.append({"name": "gc.policy", "group": "gc", "state": "installed", "tier": "gc", "reason": None})
     rec["status"]["process"]["switch"]["tiers"] = ["gc"]
+    rec["stats"]["copy.copy"] = {"hits": 0, "fallback": {}}
+    ts[2]["state"] = "armed"  # copy.copy: armed, never called
     text = _report.render(rec)
+    assert "2 called, 1 installed but not called, 1 armed but never called (validated at the first call)" in text
     assert "opt-in tiers: gc on (1 of 1 targets active), interp off (0 of 1 targets active); " \
         "RUSTIQUE_TIERS=interp turns it on" in text
     assert "1 installed as unvalidated (RUSTIQUE_UNVALIDATED_PATCH=1)" in text

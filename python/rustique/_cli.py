@@ -238,6 +238,9 @@ def status_cmd(argv: list[str]) -> int:
     from rustique import _report
 
     rustique._enable(source="python -m rustique status")
+    validate = getattr(rustique._accel, "validate", None)
+    if validate is not None:  # verdicts now: targets are otherwise validated at their first call
+        validate()
     st = rustique.status()
     hooks = startup_files()
     if opts.json:

@@ -383,12 +383,18 @@ def render(rec: dict, *, limit: int | None = None, title: bool = True, counters_
     live = by_state["installed"] + by_state["armed"]
     called = [t for t in live if (counters.get(t["name"]) or {}).get("hits") or _fallback_total(counters.get(t["name"]))]
     counts = []
+    idle = [t for t in live if t not in called]
+    idle_armed = sum(t["state"] == "armed" for t in idle)
     if have_counters and live:
         counts.append(f"{len(called)} called")
-        if len(live) > len(called):
-            counts.append(f"{len(live) - len(called)} installed but not called")
+        if len(idle) > idle_armed:
+            counts.append(f"{len(idle) - idle_armed} installed but not called")
+        if idle_armed:
+            counts.append(f"{idle_armed} armed but never called (validated at the first call)")
     elif live:
-        counts.append(f"{len(live)} installed")
+        armed = sum(t["state"] == "armed" for t in live)
+        counts.append(f"{len(live) - armed} installed" + (f", {armed} armed (validated at the first call)"
+                                                          if armed else ""))
     counts += [f"{len(by_state[s])} {label}" for s, label in (("pending-import", "waiting for their module"),
                                                                 ("refused", "refused"), ("disabled", "not selected"))
                if by_state.get(s)]
@@ -436,7 +442,7 @@ def render(rec: dict, *, limit: int | None = None, title: bool = True, counters_
         if len(shown) < len(rows):
             lines.append(f"  ... {len(rows) - len(shown)} more")
         if have_counters and not verbose and len(live) > len(called):
-            lines.append(f"  ({len(live) - len(called)} installed targets were not called)")
+            lines.append(f"  ({len(live) - len(called)} installed or armed targets were not called)")
     lines += advice_lines(counters, status)
     pending = by_state["pending-import"]
     if pending:

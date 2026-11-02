@@ -12,13 +12,14 @@ interp=$(uv python find "$req")
 mkdir -p "$out/dist-$py"
 rm -f "$out/dist-$py"/*.whl
 step() { echo; echo "=== $*"; }
-step "maturin build --release ($py)"
-(cd "$src" && maturin build --release -i "$interp" -o "$out/dist-$py") 2>&1 | tail -2
+step "maturin build --release ($py), interp handlers required"
+(cd "$src" && RUSTIQUE_INTERP_REQUIRE=1 maturin build --release -i "$interp" -o "$out/dist-$py") 2>&1 | grep -E "rustique-interp|Built wheel|error" | tail -5
 step "repack + layout"
 "$interp" "$src/tools/repack_wheel.py" "$out/dist-$py"/*.whl
 "$interp" "$src/.github/scripts/check_wheels.py" --layout top "$out/dist-$py"/*.whl; echo "layout exit $?"
 step "smoke"
-bash "$src/.github/scripts/smoke_all.sh" "$out/dist-$py" "$interp"; echo "smoke exit $?"
+# the box's interpreters are the python-build-standalone builds the interp tier was verified on
+SMOKE_INTERP=${SMOKE_INTERP:-installable} bash "$src/.github/scripts/smoke_all.sh" "$out/dist-$py" "$interp"; echo "smoke exit $?"
 step "platform job"
 args=(--dist "$out/dist-$py" --python "$interp" --out "$out/coverage" --name linux-x86_64)
 if [ -n "$cpy" ]; then args+=(--cpython-src "$cpy"); else args+=(--no-conformance); fi
