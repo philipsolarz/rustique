@@ -1,0 +1,130 @@
+"""GC policies for the w2-runtime experiments (public `gc` APIs only).
+
+Specs (combine with '+'):
+  default            nothing
+  off                gc.disable() (lower bound on GC time, upper bound on memory)
+  thr:T0[,T1[,T2]]   gc.set_threshold(...) at launch
+  freeze@setup       oracle: gc.freeze() after the workload's setup() (imports + inputs)
+  freeze@warmup      oracle: gc.freeze() after setup() and one warm-up run()
+  adaptive[:k=v,...] the prototype launch-time policy (gcadapt.AdaptivePolicy), no oracle
+
+"Oracle" policies use the probe's knowledge of where setup ends; they bound what a policy
+could get, a launch-time policy cannot know those points.
+"""
+
+from __future__ import annotations
+
+import gc
+
+
+class Policy:
+    name = "default"
+
+    def install(self):
+        pass
+
+    def after_setup(self):
+        pass
+
+    def after_warmup(self):
+        pass
+
+    def uninstall(self):
+        pass
+
+    def report(self):
+        return {}
+
+
+class Off(Policy):
+    def install(self):
+        gc.disable()
+
+    def uninstall(self):
+        gc.enable()
+
+
+class Threshold(Policy):
+    def __init__(self, arg):
+        self.t = tuple(int(x) for x in arg.split(","))
+
+    def install(self):
+        self._old = gc.get_threshold()
+        gc.set_threshold(*self.t)
+
+    def uninstall(self):
+        gc.set_threshold(*self._old)
+
+
+class Freeze(Policy):
+    def __init__(self, when):
+        self.when = when
+        self.frozen = 0
+
+    def _freeze(self):
+        gc.freeze()
+        self.frozen = gc.get_freeze_count()
+
+    def after_setup(self):
+        if self.when == "setup":
+            self._freeze()
+
+    def after_warmup(self):
+        if self.when == "warmup":
+            self._freeze()
+
+    def report(self):
+        return {"frozen": self.frozen}
+
+
+class Combo(Policy):
+    def __init__(self, parts):
+        self.parts = parts
+
+    def install(self):
+        for p in self.parts:
+            p.install()
+
+    def after_setup(self):
+        for p in self.parts:
+            p.after_setup()
+
+    def after_warmup(self):
+        for p in self.parts:
+            p.after_warmup()
+
+    def uninstall(self):
+        for p in reversed(self.parts):
+            p.uninstall()
+
+    def report(self):
+        out = {}
+        for p in self.parts:
+            out.update(p.report())
+        return out
+
+
+def _one(spec):
+    if spec in ("default", ""):
+        return Policy()
+    if spec == "off":
+        return Off()
+    if spec.startswith("thr:"):
+        return Threshold(spec[4:])
+    if spec.startswith("freeze@"):
+        return Freeze(spec[7:])
+    if spec.startswith("adaptive"):
+        import gcadapt
+
+        kw = {}
+        if ":" in spec:
+            for kv in spec.split(":", 1)[1].split(","):
+                k, _, v = kv.partition("=")
+                kw[k] = float(v) if "." in v else int(v)
+        return gcadapt.ProbePolicy(**kw)
+    raise SystemExit(f"unknown policy {spec!r}")
+
+
+def make(spec):
+    parts = [_one(s) for s in spec.split("+")]
+    return parts[0] if len(parts) == 1 else Combo(parts)
