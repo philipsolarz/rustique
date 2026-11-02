@@ -647,26 +647,6 @@ pub static VARIATES: accel::GroupSpec = accel::GroupSpec { name: "random.variate
 
 const FP_NORMAL: accel::Fingerprints = &[(3, 14, "2e516c78feca5f98"), (3, 15, "afd4735486dc11b3")];
 
-/// The `normalvariate` code object whose fingerprint this process checked (a strong
-/// reference: its address cannot be reused), so `lognormvariate` does not hash it again.
-static NORMAL_VERIFIED: AtomicPtr<ffi::PyObject> = null!();
-
-/// `normalvariate`'s own target; records its verified code for `prep_lognorm`.
-fn prep_normal<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
-    let k = key(py, "normalvariate");
-    prepare_target(py, cx, &k, FP_NORMAL, &G_NORMAL, vc_normalvariate)?;
-    // SAFETY: the class kept by the group's prepare (strong reference, attached thread).
-    let cls = unsafe { Bound::from_borrowed_ptr(py, ld(&RANDOM_CLS)) }.cast_into::<PyType>().map_err(PyErr::from)?;
-    if let Some(nf) = cx.get_opt_s(&crate::accel::prepare::type_dict(&cls)?, &k)?
-        && nf.cast_exact::<pyo3::types::PyFunction>().is_ok()
-    {
-        // SAFETY: an exact function object and its live code object.
-        let code = unsafe { (*nf.as_ptr().cast::<ffi::PyFunctionObject>()).func_code };
-        keep(&NORMAL_VERIFIED, &unsafe { Bound::from_borrowed_ptr(py, code) });
-    }
-    Ok(())
-}
-
 /// `lognormvariate` also stands in for `normalvariate`: its code is fingerprinted here and
 /// its identity kept (the kernel requires `self.normalvariate` to be that function).
 fn prep_lognorm<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
@@ -678,13 +658,9 @@ fn prep_lognorm<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refus
     if nf.cast_exact::<pyo3::types::PyFunction>().is_err() {
         return Err(Refusal::new("random.Random.normalvariate is not a function"));
     }
+    cx.fingerprint_code(&nf, FP_NORMAL)?; // the registry caches the hash per code object
     // SAFETY: an exact function object.
     let code = unsafe { (*nf.as_ptr().cast::<ffi::PyFunctionObject>()).func_code };
-    if code != ld(&NORMAL_VERIFIED) {
-        cx.fingerprint_code(&nf, FP_NORMAL)?; // not already checked by `prep_normal`
-        // SAFETY: the function's live code object.
-        keep(&NORMAL_VERIFIED, &unsafe { Bound::from_borrowed_ptr(py, code) });
-    }
     keep(&NORMAL_FN, &nf);
     NORMAL_CODE.store(code, R);
     prepare_target(
@@ -726,7 +702,16 @@ macro_rules! variate {
     };
 }
 
-variate!(NORMALVARIATE, prep_normal, "random.normalvariate", G_NORMAL, crate::accel::stats::HIT_CREDIT);
+variate!(
+    NORMALVARIATE,
+    prep_normal,
+    "random.normalvariate",
+    "normalvariate",
+    vc_normalvariate,
+    G_NORMAL,
+    FP_NORMAL,
+    crate::accel::stats::HIT_CREDIT
+);
 variate!(LOGNORMVARIATE, prep_lognorm, "random.lognormvariate", G_LOGNORM, crate::accel::stats::HIT_CREDIT);
 variate!(
     EXPOVARIATE,
