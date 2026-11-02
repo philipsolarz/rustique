@@ -239,8 +239,26 @@ critical section for lists of 4+ items: every item is read with `PyList_GetItemR
 strong reference, CPython's own protocol). Threads scanning one shared list no longer
 serialize on its mutex (it made `x in shared_list` 1.84× and `list.index` 2.10× slower than
 plain at 8 threads, `w2-threads.md` §3.1); immortal items (small ints, interned strings)
-cost no reference-count traffic, as in CPython. 8-thread CPU per call: see the workstream
-report (`benches/ft/kernel_scaling.py`).
+cost no reference-count traffic, as in CPython.
+
+CPU time per call at 8 threads, enabled ÷ plain (DECISIONS §10.9 rule: ≤ 1.05), 3.15.1t,
+dev box, `benches/ft/kernel_scaling.py -t 1,8 -r 3`, **measured** (wave 1 in parentheses,
+`w2-threads.md` §3.1):
+
+| cell | local | shared |
+|---|---:|---:|
+| `99 in list(range(100))` | 0.869 | **0.944** (1.836) |
+| `x.index(99)` | 0.813 | **0.873** (2.102) |
+| `'TRACE' in tuple(8)` | 0.430 | 0.428 |
+| `ast.Call in (5 node classes)` | 1.038 | 1.041 |
+| `(19, '19') in list(20 pairs)` | 0.726 | 0.559 |
+| `sorted(50 ints)` | 0.699 | 0.959 |
+| `y = x[:]; y.sort()` (50 str) | 0.585 | 0.590 |
+| `max(list 100 floats)` | 0.098 | 0.048 |
+
+(The class-needle cell costs the same CPU time as CPython's loop on 3.15.1t although it runs
+0.42× the instructions (callgrind, same build): ~58 ns per call either way, dominated by
+the loop around it; it is within the rule.)
 
 ### Native tier removed from `builtins.rs`
 

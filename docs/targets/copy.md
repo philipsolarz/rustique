@@ -349,3 +349,20 @@ Tests: `tests/targets/test_copy_uuid.py` (results, identity of shared copies, ca
 contents, counters, subclasses and `safe`/`unsafe` restarting with CPython's result, a
 patched `__getstate__` running CPython's code, tracers). Not covered: `copy.copy(UUID)`
 (shallow; not on a measured hot path), `PurePath` (isort 0.23%, `w2-floors.md` §2 gap #9).
+
+### 7.1 Free-threaded scaling and the "4.4× on 3.15.1t" signal
+
+- 8-thread CPU per call, enabled ÷ plain (3.15.1t, `benches/ft/kernel_scaling.py -t 1,8`,
+  local / shared inputs, **measured**): `deepcopy(dict)` 0.239 / 0.215, `deepcopy` of a
+  dict holding a UUID 0.213 / 0.174, `deepcopy` of a frozenset 0.020 / 0.023, `asdict`
+  0.358 / 0.445: within DECISIONS §10.9 (≤ 1.05); the extra reference-count traffic on
+  shared inputs costs part of the 1-thread gain, never more than the original.
+- w2-dx's replay of sqlglot's `deepcopy` calls (kernel/original 4.4 on 3.15.1t) **does not
+  reproduce as a slowdown**: replaying the 2,691 outermost calls of one `sqlglot_transpile`
+  run (`benches/ft/deepcopy_replay.py`, CPU time per call, same process, best of 3–7) gave
+  0.77, 0.91 and 1.08 in three runs on the loaded dev box (3.15.1: 0.84); callgrind on the
+  same replay counts about half the instructions enabled (see the workstream report for the
+  GC-free counts). The calls are root-blocked restarts (sqlglot's `Expression.__deepcopy__`,
+  67,950 of 289,692 calls) whose inner `deepcopy`s run natively; no lock, `sched_yield` or
+  park shows in the profile. The earlier 4.4 is consistent with CPU-time noise on a box at
+  load 40–60, not with a kernel effect.
