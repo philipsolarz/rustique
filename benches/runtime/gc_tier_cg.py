@@ -40,6 +40,7 @@ CELLS = [
     ("gc.collect(0)", "import gc"),
     ("gc.collect(1)", "import gc"),
     ("gc.collect(0)", "import gc\ncb = lambda p, i: None\ngc.callbacks.append(cb)"),
+    ("gc.collect()", "import gc"),
     ("gc.collect()", HEAP),
     # automatic young collections (one per execution, ~2000 allocations each)
     ("x = [[] for _ in range(2001)]", "import gc"),
@@ -54,7 +55,8 @@ def main() -> None:
     a = ap.parse_args()
     rows: dict[str, dict[str, float]] = {}
     for stmt, setup in CELLS:
-        label = stmt + ("  [heap 100k]" if setup == HEAP else "  [+1 callback]" if "callbacks" in setup else "")
+        label = stmt + ("  [heap 100k]" if setup == HEAP else "  [+1 callback]" if "callbacks" in setup else
+                        "  [bare heap]" if stmt == "gc.collect()" else "")
         n = 20 if "2001" in stmt or stmt == "gc.collect()" else a.n
         rows[label] = {
             "plain": per_call(stmt, setup, n=n),

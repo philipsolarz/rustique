@@ -11,6 +11,8 @@ Specs (combine with '+'):
                      enabled alone; k=v: y_low, y_high, kmax, cap, step_aside (research
                      parameters, `_t_gc.set_params`), all=1 (the rest of Rustique too)
   rustique           Rustique's default targets, no tier (the baseline of `tier:all=1`)
+  loaded             `import rustique`, nothing enabled (the baseline that isolates the tier
+                     from the cost of loading the extension: peak RSS)
 
 "Oracle" policies use the probe's knowledge of where setup ends; they bound what a policy
 could get, a launch-time policy cannot know those points.
@@ -176,6 +178,8 @@ def _one(spec):
         return Tier(_kw(spec))
     if spec == "rustique":
         return Tier({"all": 1}, tier=False)
+    if spec == "loaded":
+        return Tier({}, tier=False)
     if spec.startswith("adaptive"):
         import gcadapt
 

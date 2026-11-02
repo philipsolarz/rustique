@@ -236,9 +236,12 @@ fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// At exit (registry teardown): CPython's value back in `long_lived_total`, the program's
-/// list back in `gcstate->callbacks`.
-fn release(py: Python<'_>) {
+/// `disable()` and the exit hook (`on_disable`), and the exit hook again (`release`, also
+/// reached when the hooks were never installed): CPython's value back in
+/// `long_lived_total` at once, the program's list back in `gcstate->callbacks` (unless a
+/// collection is running right now, e.g. `disable()` called from a GC callback: the observer
+/// then stays and only forwards until the next restore).
+fn restore(py: Python<'_>) {
     policy::disarm();
     if let Some(l) = layout::get() {
         observer::uninstall(py, l);
@@ -254,7 +257,8 @@ pub static ADAPTIVE: TargetSpec = TargetSpec {
     free_threaded: true,
     counters: &COUNTERS,
     prepare,
-    release: Some(release),
+    on_disable: Some(restore),
+    release: Some(restore),
     ..TargetSpec::DEFAULT
 };
 

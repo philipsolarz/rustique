@@ -301,6 +301,10 @@ pub(super) unsafe fn on_phase(py: Python<'_>, phase: *mut ffi::PyObject, info: *
     let start = unsafe { ffi::PyUnicode_GetLength(phase) } == 5;
     // SAFETY: per the caller.
     let generation = unsafe { info_get(info, pyo3::intern!(py, "generation")) }.unwrap_or(-1);
+    if !FT && generation == 0 {
+        // Young collections: nothing to do (the common case, kept cheap).
+        return;
+    }
     let Ok(mut r) = RULE.try_lock() else { return };
     if FT {
         if start {

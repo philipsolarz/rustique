@@ -15,12 +15,16 @@ import sys
 root = sys.argv[1]
 print("scenario | build | policy | peak RSS MB max (median) | × default | garbage lifetime p50 / max ms | uncollected at run end (of sampled) | examined per run | largest collection | run ms")
 print("---|---|---|---|---|---|---|---|---|---")
+POLICIES = ("default", "loaded", "tier", "tier:cap=0", "adaptive", "adaptive:cap=1.0", "adaptive:cap=0",
+            "adaptive:y_high=0.25", "adaptive:kmax=5")
 for d in sorted(glob.glob(os.path.join(root, "adv-*"))):
+    if not os.path.isdir(d):
+        continue
     sc = d.split("adv-")[-1]
     for py in sorted(os.listdir(d)):
         base = None
         rows = []
-        for pol in ("default", "adaptive", "adaptive:cap=1.0", "adaptive:cap=0", "adaptive:y_high=0.25", "adaptive:kmax=5"):
+        for pol in POLICIES:
             fs = glob.glob(os.path.join(d, py, "*", f"{pol}.*.json"))
             if not fs:
                 continue

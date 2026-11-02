@@ -15,9 +15,11 @@
 //! contents and reference count.
 //!
 //! The swap is made with the collector's `collecting` flag held (no collection, and
-//! therefore no callback invocation, can be in flight), at install and at exit only: never
-//! while CPython iterates the private list. After `disable()` the observer stays in place
-//! and only forwards (policy passive) until the interpreter exits.
+//! therefore no callback invocation, can be in flight): at install, at `disable()` and at
+//! exit, never while CPython iterates the private list. When the flag cannot be taken (a
+//! `disable()` from inside a GC callback, or a concurrent collection on a free-threaded
+//! build) the observer stays in place and only forwards (policy passive) until the next
+//! restore.
 
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
@@ -137,6 +139,12 @@ unsafe fn repair_module_attribute(py: Python<'_>) {
     if private.is_null() || program.is_null() {
         return;
     }
+    // Only PRIVATE and the collector state hold the private list; a third reference is a
+    // module namespace that bound it (one load instead of three dict lookups per phase).
+    // SAFETY: a live object (PRIVATE's reference).
+    if unsafe { ffi::Py_REFCNT(private) } <= 2 {
+        return;
+    }
     // SAFETY: plain dict reads on the interpreter's modules dict and a module's dict (no
     // Python code: exact dicts, str keys).
     unsafe {
@@ -234,7 +242,7 @@ pub(super) fn install(py: Python<'_>, l: &Layout) -> Result<(), String> {
     if ok { Ok(()) } else { Err("gcstate->callbacks is not the expected list".into()) }
 }
 
-/// Put the program's list back into `gcstate->callbacks` (at exit). Returns false when
+/// Put the program's list back into `gcstate->callbacks`. Returns false when
 /// that is not possible now (a collection is running): the observer then keeps forwarding.
 pub(super) fn uninstall(_py: Python<'_>, l: &Layout) -> bool {
     if !SWAPPED.load(Ordering::Acquire) {

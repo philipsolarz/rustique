@@ -320,22 +320,24 @@ def test_disable_restores_and_reenable_rearms():
     run("""
         keep = steady()
         assert R()["dirty"], R()
+        cb = gc.callbacks
         rustique.disable()
-        rep = R()
+        rep = R()   # everything restored at once (on_disable)
         assert not rep["hooks"] and not rep["armed"], rep
+        assert not rep["dirty"] and rep["long_lived_total"] == rep["real_total"], rep
+        assert not rep["forwarding"] and rep["callbacks_ptr"] == id(cb), rep
         hits = []
         gc.callbacks.append(lambda p, i: hits.append(p))
-        gc.collect(0)   # the next collection gives CPython its value back
-        rep = R()
-        assert not rep["dirty"], rep
-        if not rep["ft"]:   # (a free-threaded collection then writes its own new value)
-            assert rep["long_lived_total"] == rep["real_total"], rep
-        assert hits == ["start", "stop"], hits   # the forwarder keeps forwarding
+        gc.collect(0)
+        assert hits == ["start", "stop"], hits
         gc.set_threshold(2000, 10, 10)           # plain CPython function again: no step-aside
         assert R()["stepped_aside"] is None
         rustique.enable(only=["gc"])
         rep = R()
-        assert rep["armed"] and rep["k"] == 0, rep
+        assert rep["armed"] and rep["k"] == 0 and rep["forwarding"], rep
+        assert rep["callbacks_ptr"] == rep["private_list"] and rep["program_list"] == id(cb), rep
+        gc.collect(0)
+        assert hits == ["start", "stop"] * 2, hits
     """)
 
 
@@ -385,4 +387,24 @@ def test_reload_gc_keeps_the_program_list():
         assert gc.callbacks is cb, "program list not restored after reload"
         gc.collect()
         assert hits == [("a", "start"), ("b", "start"), ("a", "stop"), ("b", "stop")] * 2, hits
+    """)
+
+
+def test_disable_from_inside_a_callback():
+    run("""
+        order = []
+        def a(p, i):
+            order.append(("a", p))
+            if p == "start" and R()["armed"]:
+                rustique.disable()   # a collection is running: the swap back waits
+        def b(p, i): order.append(("b", p))
+        gc.callbacks.extend([a, b])
+        gc.collect(0); gc.collect(0)
+        assert order == [("a", "start"), ("b", "start"), ("a", "stop"), ("b", "stop")] * 2, order
+        rep = R()
+        assert not rep["armed"] and not rep["dirty"] and rep["forwarding"], rep
+        rustique.enable(only=["gc"])
+        rustique.disable()
+        rep = R()
+        assert not rep["forwarding"] and rep["callbacks_ptr"] == id(gc.callbacks), rep
     """)
