@@ -79,6 +79,12 @@ pub struct TargetSpec {
     /// must fall back (its flags are false); a static it reads without a flag check must
     /// stay valid or be checked for null. Default `None`.
     pub release: Option<fn(Python<'_>)>,
+    /// Called each time the target is restored after having been installed (`disable()`,
+    /// the exit hook, a refusal after install), after its sites were restored and its pins
+    /// dropped, on an attached thread, outside the pin tables lock: restore state the
+    /// target changed that is not a site (calibrated internal state, dynamic sites, caches).
+    /// Must tolerate running more than once. Default `None`.
+    pub on_disable: Option<fn(Python<'_>)>,
 }
 
 /// Declarations shared by several targets: dependency pins (with the group's own
@@ -116,6 +122,7 @@ impl TargetSpec {
         hit_credit: crate::accel::stats::HIT_CREDIT,
         fallback_debit: crate::accel::stats::FALLBACK_DEBIT,
         release: None,
+        on_disable: None,
     };
 
     /// Hidden targets (group starting with `_`): only selected when named explicitly.
