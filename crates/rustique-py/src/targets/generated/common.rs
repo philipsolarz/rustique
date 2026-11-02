@@ -57,7 +57,7 @@ pub fn nargs(nargsf: usize) -> usize {
 
 /// `_PyFunction_Vectorcall` (the original of every vectorcall site of these groups).
 #[inline(always)]
-pub unsafe fn orig(f: P, args: *const P, nargsf: usize, kw: P) -> P {
+pub(crate) unsafe fn orig(f: P, args: *const P, nargsf: usize, kw: P) -> P {
     // SAFETY: per the caller (a live function object and a valid vectorcall).
     unsafe { crate::accel::FUNCTION_VECTORCALL.get()(f, args, nargsf, kw) }
 }
@@ -65,13 +65,13 @@ pub unsafe fn orig(f: P, args: *const P, nargsf: usize, kw: P) -> P {
 /// The type's version tag (relaxed atomic read: CPython writes it atomically on
 /// free-threaded builds). 0 = no valid tag.
 #[inline(always)]
-pub unsafe fn tag_of(t: Tp) -> u32 {
+pub(crate) unsafe fn tag_of(t: Tp) -> u32 {
     // SAFETY: aligned u32 field of a live type.
     unsafe { (*(&raw const (*t).tp_version_tag).cast::<AtomicU32>()).load(Relaxed) }
 }
 
 /// Assign a version tag if the type has none; returns the tag (0 if exhausted).
-pub unsafe fn ensure_tag(t: Tp) -> u32 {
+pub(crate) unsafe fn ensure_tag(t: Tp) -> u32 {
     // SAFETY: attached thread, live type.
     unsafe {
         if PyUnstable_Type_AssignVersionTag(t) == 0 {
@@ -87,14 +87,14 @@ pub unsafe fn ensure_tag(t: Tp) -> u32 {
 /// `ty.__mro__` lookup of `name` (raw class attribute, descriptors not run): a new
 /// reference or NULL (no error set).
 #[inline(always)]
-pub unsafe fn lookup(t: Tp, name: P) -> P {
+pub(crate) unsafe fn lookup(t: Tp, name: P) -> P {
     // SAFETY: attached thread; `_PyType_LookupRef` runs no Python code.
     unsafe { _PyType_LookupRef(t, name) }
 }
 
 /// `name` resolves (MRO) to exactly `expected` (NULL: absent).
 #[inline(always)]
-pub unsafe fn resolves_to(t: Tp, name: P, expected: P) -> bool {
+pub(crate) unsafe fn resolves_to(t: Tp, name: P, expected: P) -> bool {
     // SAFETY: per `lookup`.
     unsafe {
         let r = lookup(t, name);
@@ -108,7 +108,7 @@ pub unsafe fn resolves_to(t: Tp, name: P, expected: P) -> bool {
 /// The class attribute `name` is absent or a plain value: `obj.name` through the generic
 /// protocol reads the instance attribute (or that value) without running code.
 #[inline]
-pub unsafe fn plain_attr(t: Tp, name: P) -> bool {
+pub(crate) unsafe fn plain_attr(t: Tp, name: P) -> bool {
     // SAFETY: per `lookup`.
     unsafe {
         let r = lookup(t, name);
@@ -125,7 +125,7 @@ pub unsafe fn plain_attr(t: Tp, name: P) -> bool {
 /// Instances use the generic attribute protocol (`object.__getattribute__`, no
 /// `__getattr__`).
 #[inline(always)]
-pub unsafe fn generic_getattr(t: Tp) -> bool {
+pub(crate) unsafe fn generic_getattr(t: Tp) -> bool {
     // SAFETY: field read of a live type.
     unsafe { addr!((*t).tp_getattro) == ffi::PyObject_GenericGetAttr as *const () as usize }
 }
@@ -133,7 +133,7 @@ pub unsafe fn generic_getattr(t: Tp) -> bool {
 /// `obj.name` through `PyObject_GenericGetAttr` (validated types only: generic protocol, no
 /// descriptor for `name`), or NULL with no error set.
 #[inline(always)]
-pub unsafe fn get_plain(obj: P, name: P) -> P {
+pub(crate) unsafe fn get_plain(obj: P, name: P) -> P {
     // SAFETY: per the caller.
     unsafe {
         let r = ffi::PyObject_GenericGetAttr(obj, name);
@@ -146,21 +146,21 @@ pub unsafe fn get_plain(obj: P, name: P) -> P {
 
 /// The function's code object (borrowed).
 #[inline(always)]
-pub unsafe fn func_code(f: P) -> P {
+pub(crate) unsafe fn func_code(f: P) -> P {
     // SAFETY: a live function object.
     unsafe { (*f.cast::<ffi::PyFunctionObject>()).func_code }
 }
 
 /// Is `o` an exact pure-Python function?
 #[inline(always)]
-pub unsafe fn is_function(o: P) -> bool {
+pub(crate) unsafe fn is_function(o: P) -> bool {
     // SAFETY: live object.
     unsafe { ffi::Py_TYPE(o) == &raw mut ffi::PyFunction_Type }
 }
 
 /// The current vectorcall of a function object.
 #[inline(always)]
-pub unsafe fn vectorcall_of(f: P) -> usize {
+pub(crate) unsafe fn vectorcall_of(f: P) -> usize {
     // SAFETY: a live function object.
     unsafe { (*f.cast::<ffi::PyFunctionObject>()).vectorcall.map_or(0, |v| v as usize) }
 }
@@ -168,7 +168,7 @@ pub unsafe fn vectorcall_of(f: P) -> usize {
 /// Content of closure cell `i` of `func` (new reference) or NULL (empty cell, no closure,
 /// out of range; no error set).
 #[inline(always)]
-pub unsafe fn cell(func: P, i: usize) -> P {
+pub(crate) unsafe fn cell(func: P, i: usize) -> P {
     // SAFETY: a live function object; `PyCell_Get` locks the cell on free-threaded builds.
     unsafe {
         let cl = (*func.cast::<ffi::PyFunctionObject>()).func_closure;
@@ -189,7 +189,7 @@ pub unsafe fn cell(func: P, i: usize) -> P {
 
 /// Cell `i` of `func` holds exactly `expected`.
 #[inline(always)]
-pub unsafe fn cell_is(func: P, i: usize, expected: P) -> bool {
+pub(crate) unsafe fn cell_is(func: P, i: usize, expected: P) -> bool {
     // SAFETY: per `cell`.
     unsafe {
         let v = cell(func, i);
@@ -203,7 +203,7 @@ pub unsafe fn cell_is(func: P, i: usize, expected: P) -> bool {
 
 /// A new strong reference.
 #[inline(always)]
-pub unsafe fn incref(o: P) -> P {
+pub(crate) unsafe fn incref(o: P) -> P {
     // SAFETY: live object.
     unsafe {
         ffi::Py_INCREF(o);
@@ -301,7 +301,7 @@ pub const MAX_PARAMS: usize = 32;
 /// or non-identical keyword, a missing argument without default: the original then binds,
 /// and raises if it must.
 #[inline]
-pub unsafe fn bind(sig: &Sig, func: P, args: *const P, n: usize, kw: P, out: &mut [P; MAX_PARAMS]) -> bool {
+pub(crate) unsafe fn bind(sig: &Sig, func: P, args: *const P, n: usize, kw: P, out: &mut [P; MAX_PARAMS]) -> bool {
     // SAFETY: a live function; `args` holds `n` positional values then one per keyword.
     unsafe {
         let np = sig.names.len();
@@ -332,15 +332,15 @@ pub unsafe fn bind(sig: &Sig, func: P, args: *const P, n: usize, kw: P, out: &mu
         let nd = if defs.is_null() { 0 } else { ffi::PyTuple_GET_SIZE(defs) as usize };
         let kd = (*fo).func_kwdefaults;
         // Every slot is either an argument or a default: decide before taking references.
-        for i in 0..np {
-            if !out[i].is_null() {
+        for (i, o) in out.iter_mut().enumerate().take(np) {
+            if !o.is_null() {
                 continue;
             }
             if i < sig.npos {
                 if i + nd < sig.npos {
                     return false;
                 }
-                out[i] = ffi::PyTuple_GET_ITEM(defs, (i + nd - sig.npos) as ffi::Py_ssize_t);
+                *o = ffi::PyTuple_GET_ITEM(defs, (i + nd - sig.npos) as ffi::Py_ssize_t);
             } else {
                 if kd.is_null() || ffi::PyDict_CheckExact(kd) == 0 {
                     return false;
@@ -351,7 +351,7 @@ pub unsafe fn bind(sig: &Sig, func: P, args: *const P, n: usize, kw: P, out: &mu
                     ffi::PyErr_Clear();
                     return false;
                 }
-                out[i] = v;
+                *o = v;
             }
         }
         for o in out.iter_mut().take(np) {
@@ -363,7 +363,7 @@ pub unsafe fn bind(sig: &Sig, func: P, args: *const P, n: usize, kw: P, out: &mu
 
 /// Release the references [`bind`] took.
 #[inline]
-pub unsafe fn unbind(out: &[P; MAX_PARAMS], np: usize) {
+pub(crate) unsafe fn unbind(out: &[P; MAX_PARAMS], np: usize) {
     // SAFETY: references taken by `bind`.
     unsafe {
         for &o in out.iter().take(np) {
@@ -415,7 +415,7 @@ pub fn extra_index() -> Option<ffi::Py_ssize_t> {
 
 /// The plan on `code` (NULL if none or another kind).
 #[inline(always)]
-pub unsafe fn plan_of(code: P, tag: u32) -> *const PlanHeader {
+pub(crate) unsafe fn plan_of(code: P, tag: u32) -> *const PlanHeader {
     let i = EXTRA_INDEX.load(Relaxed);
     if i < 0 {
         return std::ptr::null();
@@ -438,7 +438,7 @@ pub unsafe fn plan_of(code: P, tag: u32) -> *const PlanHeader {
 /// Hang `plan` on `code`, once: a code object that already carries a plan of ours keeps it
 /// (a plan is never freed while a kernel might read it; CPython frees it with the code
 /// object). False when not set (the plan is freed).
-pub unsafe fn set_plan(code: P, plan: *mut PlanHeader) -> bool {
+pub(crate) unsafe fn set_plan(code: P, plan: *mut PlanHeader) -> bool {
     let Some(i) = extra_index() else {
         // SAFETY: a plan we own.
         unsafe { ((*plan).free)(plan) };

@@ -96,7 +96,7 @@ enum Value {
     /// `__dataclass_dflt_N__()` (`init=False` with a factory).
     Factory,
     /// `__dataclass_dflt_N__` (`init=False` with a default, slots classes).
-    CellValue,
+    FromCell,
 }
 
 #[derive(Debug)]
@@ -176,7 +176,7 @@ fn parse(text: &str) -> Option<Parsed> {
         } else if !is_param && v == format!("{dflt}()") {
             Value::Factory
         } else if !is_param && v == dflt {
-            Value::CellValue
+            Value::FromCell
         } else {
             return None;
         };
@@ -494,7 +494,7 @@ unsafe fn run_steps(plan: &DcPlan, f: P, this: P, vals: &[P; MAX_PARAMS]) -> Opt
                         out[i] = vals[s.param];
                     }
                 }
-                Value::CellValue => {
+                Value::FromCell => {
                     let v = cell(f, s.cell);
                     if v.is_null() {
                         ok = false;

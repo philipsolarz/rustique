@@ -46,7 +46,7 @@ impl<const N: usize> ClassCache<N> {
 
     /// The payload cached for `tp` at its current tag.
     #[inline(always)]
-    pub unsafe fn get(&self, tp: Tp) -> Option<u32> {
+    pub(crate) unsafe fn get(&self, tp: Tp) -> Option<u32> {
         // SAFETY: live type.
         let tag = unsafe { tag_of(tp) };
         if tag == 0 {
@@ -62,7 +62,7 @@ impl<const N: usize> ClassCache<N> {
     }
 
     /// Start computing a verdict: the type's tag (assigned if missing) and the epoch.
-    pub unsafe fn begin(&self, tp: Tp) -> (u32, u64) {
+    pub(crate) unsafe fn begin(&self, tp: Tp) -> (u32, u64) {
         let e = self.epoch.load(Acquire);
         // SAFETY: attached thread, live type.
         (unsafe { ensure_tag(tp) }, e)
@@ -70,7 +70,7 @@ impl<const N: usize> ClassCache<N> {
 
     /// Cache `payload` for `tp` if its tag is still `tag` and no invalidation happened since
     /// [`Self::begin`].
-    pub unsafe fn put(&self, tp: Tp, tag: u32, payload: u32, epoch_seen: u64) {
+    pub(crate) unsafe fn put(&self, tp: Tp, tag: u32, payload: u32, epoch_seen: u64) {
         // SAFETY: live type.
         if tag == 0 || unsafe { tag_of(tp) } != tag {
             return;
@@ -185,7 +185,7 @@ unsafe extern "C" fn on_dict_event(event: c_int, dict: P, _key: P, _new: P) -> c
 
 /// Any change to `dict` (or its deallocation) clears `cache`'s verdict for `tp`. Call it
 /// while computing the verdict (between `begin` and `put`).
-pub unsafe fn watch_dict_invalidates(dict: P, cache: &'static dyn Invalidate, tp: Tp) -> bool {
+pub(crate) unsafe fn watch_dict_invalidates(dict: P, cache: &'static dyn Invalidate, tp: Tp) -> bool {
     let mut id = WATCHER.load(Acquire);
     if id < 0 {
         // SAFETY: attached thread.
@@ -243,7 +243,7 @@ impl Dynamic {
     }
 
     /// Record the hook site (from `prepare`; the registry swaps it right after).
-    pub fn set_hook(&self, hook: P, kernel: ffi::vectorcallfunc) {
+    pub(crate) fn set_hook(&self, hook: P, kernel: ffi::vectorcallfunc) {
         // SAFETY: a live function: keep it alive for `alive()` reads.
         let new = unsafe { incref(hook) } as usize;
         let old = self.hook.swap(new, AcqRel);
@@ -264,14 +264,14 @@ impl Dynamic {
 
     /// Give `func` `kernel` as vectorcall (it must still have CPython's). False if the
     /// target is not installed or the function is not an exact, unpatched function.
-    pub unsafe fn install(&self, func: P, kernel: ffi::vectorcallfunc) -> bool {
+    pub(crate) unsafe fn install(&self, func: P, kernel: ffi::vectorcallfunc) -> bool {
         // SAFETY: per `install_forced`.
         self.alive() && unsafe { self.install_forced(func, kernel) }
     }
 
     /// [`Self::install`] from the target's `prepare` (the hook is swapped right after it
     /// returns; if the swap fails, the kernels find the target dead and retire).
-    pub unsafe fn install_forced(&self, func: P, kernel: ffi::vectorcallfunc) -> bool {
+    pub(crate) unsafe fn install_forced(&self, func: P, kernel: ffi::vectorcallfunc) -> bool {
         // SAFETY: attached thread, live object.
         unsafe {
             if !is_function(func) || vectorcall_of(func) != function_vectorcall() {
@@ -286,7 +286,7 @@ impl Dynamic {
     /// A kernel found its target not installed: give `func` its CPython vectorcall (and
     /// specializer version) back, then the kernel falls back.
     #[cold]
-    pub unsafe fn retire(&self, func: P, kernel: ffi::vectorcallfunc) {
+    pub(crate) unsafe fn retire(&self, func: P, kernel: ffi::vectorcallfunc) {
         // SAFETY: attached thread, live function.
         unsafe { restore_one(func, kernel as usize) }
     }
