@@ -12,8 +12,9 @@
 //!   function pinned), `dispatch_cache` an exact `WeakKeyDictionary` (class unchanged, its
 //!   `__getitem__` the fingerprinted function, `weakref.ref` unchanged), `cls` a class whose
 //!   metaclass hashes and compares like `type`, and every key of the cache's `data` dict a
-//!   weak reference to a dead object or to a class with `type`'s comparison (checked when the
-//!   dict changes: then the lookup compares in C only). A miss (`_find_impl`, cache refill,
+//!   weak reference to a dead object or one whose cached hash is its referent's pointer
+//!   hash (checked when the dict changes): then the lookup compares only with `cls`'s own
+//!   entry, in C. A miss (`_find_impl`, cache refill,
 //!   token change) runs CPython's closure.
 //! - `functools.singledispatchmethod.__get__` (vectorcall, reached from
 //!   `slot_tp_descr_get`): for an exact `singledispatchmethod` whose `dispatcher` is a
@@ -32,6 +33,10 @@ use pyo3::types::{PyCode, PyTuple, PyType};
 use crate::accel::{self, Counters, DepFlag, Prepare, Reason, Refusal, TargetSpec, Tools};
 use crate::targets::generated::adapter::{ClassCache, Dynamic, watch_dict_invalidates};
 use crate::targets::generated::common::*;
+
+python_extern! {
+    fn Py_HashPointer(ptr: *const std::ffi::c_void) -> ffi::Py_hash_t;
+}
 
 static C_DISPATCH: Counters = Counters::new();
 static C_GET: Counters = Counters::new();
@@ -222,8 +227,11 @@ unsafe fn type_like(t: Tp) -> bool {
     unsafe { addr!((*t).tp_hash) == addr!((*tt).tp_hash) && addr!((*t).tp_richcompare) == addr!((*tt).tp_richcompare) }
 }
 
-/// Every key of `data` is a weak reference to a dead object or to a class whose metaclass
-/// compares like `type`: a lookup runs no Python code. Cached per dict (watched).
+/// No key of `data` can compare equal-by-hash with a live class other than itself: every
+/// key is an exact weak reference whose referent is dead (compared by identity) or whose
+/// cached hash is the referent's pointer hash (distinct live objects never share one). A
+/// lookup then compares only with the looked-up class's own entry, in C (its metaclass is
+/// checked per call). Cached per dict (watched: any change clears the verdict).
 #[inline]
 unsafe fn data_safe(data: P) -> bool {
     // SAFETY: attached thread; the dict is iterated under its critical section.
@@ -252,9 +260,12 @@ unsafe fn data_safe(data: P) -> bool {
                     return false;
                 }
                 if rc == 1 {
-                    let ok = ffi::PyType_Check(o) != 0 && type_like(ffi::Py_TYPE(o));
+                    // The weak reference's cached hash (a dict key always has one).
+                    let h = ffi::PyObject_Hash(k);
+                    let ok = h != -1 && h == Py_HashPointer(o.cast());
                     ffi::Py_DECREF(o);
                     if !ok {
+                        ffi::PyErr_Clear();
                         return false;
                     }
                 }
