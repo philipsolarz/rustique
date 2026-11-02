@@ -139,6 +139,8 @@ def main():
     ap.add_argument("--pbs-t", required=True)
     ap.add_argument("--cc", default="clang-20")
     ap.add_argument("--update-lock", action="store_true")
+    ap.add_argument("--base", help="an older release dir under gen/ (v3_15_1): headers identical "
+                    "to its copies are not vendored again (build.rs searches it second)")
     a = ap.parse_args()
     src = os.path.abspath(a.src)
     ver = re.search(r'#define PY_VERSION\s+"([^"]+)"', open(os.path.join(src, "Include", "patchlevel.h")).read()).group(1)
@@ -192,6 +194,10 @@ def main():
                 if p.startswith(src + os.sep):
                     deps.add(os.path.relpath(p, src))
     vendored = []
+    shared = 0
+    base = os.path.join(CRATE, "gen", a.base) if a.base else None
+    if base:
+        open(os.path.join(out, "base.txt"), "w").write(a.base + "\n")
     for rel in sorted(deps):
         top, rest = rel.split(os.sep, 1)
         if top == "Include":
@@ -200,12 +206,24 @@ def main():
             dst = os.path.join(out, "python", rest)
         else:
             raise SystemExit(f"unexpected header {rel}")
+        if base:
+            twin = os.path.join(base, os.path.relpath(dst, out))
+            if os.path.exists(twin) and open(twin, "rb").read() == open(os.path.join(src, rel), "rb").read():
+                shared += 1
+                continue
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy(os.path.join(src, rel), dst)
         vendored.append((os.path.relpath(dst, out), rel))
-    inc = ["-I", os.path.join(out, "python"), "-I", os.path.join(out, "include"),
-           "-I", os.path.join(out, "include", "internal"),
-           "-I", os.path.join(out, "include", "internal", "mimalloc")]
+    # Headers as a compile sees them: the base release's tree with this release's files over
+    # it (one directory tree, so quoted includes resolve next to the including file).
+    hdr = tempfile.mkdtemp(prefix="rqhdr-")
+    for r in ([base] if base else []) + [out]:
+        for top in ("python", "include"):
+            if os.path.isdir(os.path.join(r, top)):
+                shutil.copytree(os.path.join(r, top), os.path.join(hdr, top), dirs_exist_ok=True)
+    inc = ["-I", os.path.join(hdr, "python"), "-I", os.path.join(hdr, "include"),
+           "-I", os.path.join(hdr, "include", "internal"),
+           "-I", os.path.join(hdr, "include", "internal", "mimalloc")]
 
     # 4. weak references: every Py*/_Py* symbol any handler of the file references
     weak = set()
@@ -244,9 +262,13 @@ def main():
         for cfg, pbs in (("gil", a.pbs_gil), ("t", a.pbs_t)):
             f.write(f"- `config-{cfg}/pyconfig.h`, `defs-{cfg}.txt`: from the python-build-standalone "
                     f"build `{os.path.basename(os.path.normpath(pbs))}` (`{' '.join(cfgs[cfg])}`).\n")
+        if base:
+            f.write(f"\n{shared} more headers are byte-identical to `../{a.base}/` (`base.txt`: "
+                    f"build.rs lays this directory's files over that tree).\n")
         f.write(f"\nVendored from CPython v{ver} ({len(vendored)} files, unmodified):\n\n")
         for dst, rel in vendored:
             f.write(f"- `{dst}` ← `{rel}`\n")
+    shutil.rmtree(hdr, ignore_errors=True)
     print(f"generated {out}: {len(vendored)} headers, {len(weak)} weak symbols, {len(rows)} swappable handlers")
 
 

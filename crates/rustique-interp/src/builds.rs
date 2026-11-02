@@ -91,5 +91,65 @@ pub static VERIFIED: &[VerifiedBuild] = &[
             (25, 0x18018d2), // NOP
         ],
     },
+    VerifiedBuild {
+        release: "3.15.2",
+        hexversion: 0x030f02f0,
+        free_threaded: false,
+        build_id: "d6d079626c440c7967e34959881b88b96d0fdabb",
+        source: "python-build-standalone cpython-3.15.2-linux-x86_64-gnu (uv)",
+        handler_table: 0x14d21d0,
+        tracing_table: 0x14d29e0,
+        type_lookup_ref: 0x18b0cc0,
+        handlers: &[
+            (79, 0x180e64a), // LOAD_ATTR
+            (186, 0x1801310), // LOAD_ATTR_INSTANCE_VALUE
+            (190, 0x1804b90), // LOAD_ATTR_MODULE
+            (195, 0x180e554), // LOAD_ATTR_WITH_HINT
+            (194, 0x180168c), // LOAD_ATTR_SLOT
+            (183, 0x180e240), // LOAD_ATTR_CLASS
+            (184, 0x180e340), // LOAD_ATTR_CLASS_WITH_METACLASS_CHECK
+            (193, 0x182b880), // LOAD_ATTR_PROPERTY
+            (185, 0x1318040), // LOAD_ATTR_GETATTRIBUTE_OVERRIDDEN
+            (189, 0x1800f86), // LOAD_ATTR_METHOD_WITH_VALUES
+            (188, 0x1801080), // LOAD_ATTR_METHOD_NO_DICT
+            (187, 0x1809340), // LOAD_ATTR_METHOD_LAZY_DICT
+            (192, 0x1804cc0), // LOAD_ATTR_NONDESCRIPTOR_WITH_VALUES
+            (191, 0x191185e), // LOAD_ATTR_NONDESCRIPTOR_NO_DICT
+            (163, 0x1807046), // CALL_NON_PY_GENERAL
+            (155, 0x181e9c4), // CALL_KW_NON_PY
+            (153, 0x18078da), // CALL_ISINSTANCE
+            (25, 0x1800d00), // NOP
+        ],
+    },
+    VerifiedBuild {
+        release: "3.15.2",
+        hexversion: 0x030f02f0,
+        free_threaded: true,
+        build_id: "56f51dd9c5d24b26889bb5465fa6b9713350079e",
+        source: "python-build-standalone cpython-3.15.2+freethreaded-linux-x86_64-gnu (uv)",
+        handler_table: 0x149b500,
+        tracing_table: 0x0,
+        type_lookup_ref: 0x185e00e,
+        handlers: &[
+            (79, 0x18339cc), // LOAD_ATTR
+            (186, 0x1802080), // LOAD_ATTR_INSTANCE_VALUE
+            (190, 0x1807900), // LOAD_ATTR_MODULE
+            (195, 0x18337de), // LOAD_ATTR_WITH_HINT
+            (194, 0x1804d1a), // LOAD_ATTR_SLOT
+            (183, 0x18102d8), // LOAD_ATTR_CLASS
+            (184, 0x186bdd4), // LOAD_ATTR_CLASS_WITH_METACLASS_CHECK
+            (193, 0x183d580), // LOAD_ATTR_PROPERTY
+            (185, 0x130dc10), // LOAD_ATTR_GETATTRIBUTE_OVERRIDDEN
+            (189, 0x1801c8c), // LOAD_ATTR_METHOD_WITH_VALUES
+            (188, 0x1801d90), // LOAD_ATTR_METHOD_NO_DICT
+            (187, 0x18034d0), // LOAD_ATTR_METHOD_LAZY_DICT
+            (192, 0x1833904), // LOAD_ATTR_NONDESCRIPTOR_WITH_VALUES
+            (191, 0x19499c0), // LOAD_ATTR_NONDESCRIPTOR_NO_DICT
+            (163, 0x180afc4), // CALL_NON_PY_GENERAL
+            (155, 0x1837700), // CALL_KW_NON_PY
+            (153, 0x1809700), // CALL_ISINSTANCE
+            (25, 0x18023cc), // NOP
+        ],
+    },
     // END VERIFIED BUILDS
 ];

@@ -400,7 +400,7 @@ unsafe extern "C" fn visit(info: *mut DlPhdrInfo, _size: usize, data: *mut c_voi
 }
 
 fn interpreter_object() -> Option<ObjInfo> {
-    let mut s = Search { anchor: pyo3::ffi::PyEval_EvalCode as usize, found: None };
+    let mut s = Search { anchor: pyo3::ffi::PyEval_EvalCode as *const () as usize, found: None };
     // SAFETY: the callback only reads loader-provided program headers and notes.
     unsafe { dl_iterate_phdr(visit, (&raw mut s).cast()) };
     s.found

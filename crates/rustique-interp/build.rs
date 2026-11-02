@@ -7,8 +7,7 @@
 //! crate builds no sets and the tier refuses with "built without handlers".
 //! `RUSTIQUE_INTERP_REQUIRE=1` (CI) turns a missing compiler or PGO tool into a build error.
 //! `RUSTIQUE_INTERP_CC` names the compiler. `RUSTIQUE_INTERP_PGO=gen` builds instrumented
-//! sets for training (tools/pgo.sh); otherwise gen/<release>/pgo-<cfg>.proftext is used when
-//! present.
+//! sets for training (tools/pgo.sh); otherwise gen/pgo-<cfg>.proftext is used when present.
 
 use std::env;
 use std::fmt::Write as _;
@@ -97,25 +96,25 @@ fn main() {
                     None => b.define(d, None),
                 };
             }
-            // Headers: the release's own, then (for files identical to an older release's)
-            // the base release named in base.txt.
-            b.include(rel.join(format!("config-{tag}"))).include(&rel).include("c");
-            let mut bases = vec![rel.clone()];
+            // Headers: one tree per set (the base release's, named in base.txt, with this
+            // release's files laid over it), so quoted includes resolve next to the file.
+            let hdr = out.join(format!("{set}-headers"));
+            let _ = fs::remove_dir_all(&hdr);
             if let Ok(base) = fs::read_to_string(rel.join("base.txt")) {
-                bases.push(gen_dir.join(base.trim()));
+                copy_tree(&gen_dir.join(base.trim()), &hdr);
             }
-            for r in &bases {
-                b.include(r.join("python"));
-            }
+            copy_tree(&rel, &hdr);
+            b.include(rel.join(format!("config-{tag}"))).include(&rel).include("c");
+            b.include(hdr.join("python"));
             for sub in ["", "internal", "internal/mimalloc"] {
-                for r in &bases {
-                    b.include(r.join("include").join(sub));
-                }
+                b.include(hdr.join("include").join(sub));
             }
             if pgo_gen {
                 b.flag("-fprofile-instr-generate");
             } else {
-                let prof = rel.join(format!("pgo-{tag}.proftext"));
+                // One profile per configuration serves every release: functions are matched
+                // by name and CFG hash, so code a later release changed just gets none.
+                let prof = gen_dir.join(format!("pgo-{tag}.proftext"));
                 if prof.exists() {
                     match merge_profile(&suffix, &prof, &out.join(format!("{set}.profdata"))) {
                         Some(p) => {
@@ -180,6 +179,27 @@ fn find_clang() -> Option<(String, String)> {
         }
     }
     None
+}
+
+/// Copy `src/{python,include}` into `dst/` (overwriting).
+fn copy_tree(src: &Path, dst: &Path) {
+    fn walk(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for e in fs::read_dir(from).unwrap().flatten() {
+            let p = e.path();
+            let t = to.join(e.file_name());
+            if p.is_dir() {
+                walk(&p, &t);
+            } else {
+                fs::copy(&p, &t).unwrap();
+            }
+        }
+    }
+    for top in ["python", "include"] {
+        if src.join(top).is_dir() {
+            walk(&src.join(top), &dst.join(top));
+        }
+    }
 }
 
 fn merge_profile(suffix: &str, text: &Path, dst: &Path) -> Option<PathBuf> {
