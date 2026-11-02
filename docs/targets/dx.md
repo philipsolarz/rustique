@@ -52,8 +52,9 @@ Decisions:
 - **Tiers are opt-in, and the environment can still turn them off.** `RUSTIQUE_TIERS=interp,gc`
   is added to the code's `tiers=` (the union). `none`/`0`/empty turns every tier off, even
   one the code asked for. `RUSTIQUE_EXCLUDE=interp` removes one, and `RUSTIQUE=0` kills all.
-  Unknown tier names warn like unknown groups. Agreed with accel through the lead, who
-  implements it in `accel/switch.rs`. The CLI and the plugin pass `--tiers` as the
+  Unknown tier names warn like unknown groups. Agreed with accel through the lead;
+  implemented in `accel/switch.rs` (wave2 a000743), with `rustique.enable(tiers=)` (74eeb03).
+  The CLI and the plugin pass `--tiers` as the
   environment variable (`_cli.add_tiers`). So spawned children get the same tiers, and an
   operator's `RUSTIQUE_TIERS=none` wins over the flag, with a warning.
 - **`--native` is gone** (DECISIONS §10.1). `python -m rustique --native …` exits 2 with one
@@ -470,7 +471,22 @@ for when the lead asks, once the target workstreams are merged:
   signal sampler (CPU not waiting, threads, handler restored, steps aside for a program's
   own SIGPROF), the profiler (C children, thread clock), and the command.
 
-Full suite per build: ⟨SUITES⟩.
+Full suite per build, at 8aadff7 (wave2 74eeb03 merged; dev box, `pytest -q tests`, M):
+
+| build | result |
+|---|---|
+| 3.15.1 | 2,234 passed, 6 skipped |
+| 3.15.1t | 2,234 passed, 6 skipped |
+| 3.14.9 | 2,236 passed, 4 skipped |
+| 3.14.9t | 2,236 passed, 4 skipped |
+
+Skips that are dx's:
+- the fork-pool counter test, until accel D;
+- the xdist test, where `pytest-xdist` is not installed.
+
+dx changes no Rust and no target, so there is no conformance or callgrind cell of its own.
+The CI cell above ran CPython's test modules for all 84 targets against the release wheel:
+0 differences.
 
 ## 9. Open issues and decisions for the lead
 
@@ -478,13 +494,13 @@ Full suite per build: ⟨SUITES⟩.
    on the loaded box. Two references disagree between two measurement rounds by 0.08 and
    0.22. Please re-measure the 31 new workloads' ratios on the quiet box in Phase 3 and run
    `benches/dx/est_validate.sh` (STEPS=est) there: it prints the table of §5.2.
-2. **Accel B** (counters): `test_report_counts_fork_pool_workers_once` skips until
+2. **Accel D** (counters): `test_report_counts_fork_pool_workers_once` skips until
    `status()["process"]["ppid"]` exists. The reader and renderer already handle the
    agreed `.cnt` layout v1/v2 (tested with synthetic files). Windows gets the exit-hook JSON
    only this wave, so a killed Windows worker is not counted (documented).
-3. **Tiers**: the CLI and plugin pass tiers through `RUSTIQUE_TIERS`. They need accel's
-   switch (B) to take effect. `rustique.enable(tiers=)` is engine's and accel's API;
-   USAGE.md documents it as agreed.
+3. **Tiers**: done end to end (accel's switch, `enable(tiers=)`, the CLI and plugin through
+   `RUSTIQUE_TIERS`, status and report). Until `interp`/`gc` merge there is no tier target,
+   so `--tiers gc` warns "no tier named 'gc'".
 4. **wheels.yml has never run on GitHub** (no push from here). The first tag or dispatch is
    the proof for: the repack on Windows (`.pyd`), the interp-tier clang install in
    manylinux_2_28 (needs `crates/rustique-interp` merged; until then the Linux x86_64
