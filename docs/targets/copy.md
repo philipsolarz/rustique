@@ -360,9 +360,9 @@ patched `__getstate__` running CPython's code, tracers). Not covered: `copy.copy
 - w2-dx's replay of sqlglot's `deepcopy` calls (kernel/original 4.4 on 3.15.1t) **does not
   reproduce as a slowdown**: replaying the 2,691 outermost calls of one `sqlglot_transpile`
   run (`benches/ft/deepcopy_replay.py`, CPU time per call, same process, best of 3–7) gave
-  0.77, 0.91 and 1.08 in three runs on the loaded dev box (3.15.1: 0.84); callgrind on the
-  same replay counts about half the instructions enabled (see the workstream report for the
-  GC-free counts). The calls are root-blocked restarts (sqlglot's `Expression.__deepcopy__`,
+  0.77, 0.91 and 1.08 in three runs on the loaded dev box (3.15.1: 0.84), with the cyclic
+  GC running; with the GC off (`--nogc`) it is stable: **0.851, 0.863, 0.862**, and callgrind
+  on 600 of the calls counts 351.4M → 267.1M instructions (**0.760**). The calls are root-blocked restarts (sqlglot's `Expression.__deepcopy__`,
   67,950 of 289,692 calls) whose inner `deepcopy`s run natively; no lock, `sched_yield` or
-  park shows in the profile. The earlier 4.4 is consistent with CPU-time noise on a box at
-  load 40–60, not with a kernel effect.
+  park shows in the profile. The earlier 4.4 is consistent with GC timing and CPU-time noise
+  on a box at load 40–60, not with a kernel effect.
