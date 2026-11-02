@@ -12,54 +12,51 @@ use super::state::{self, O};
 use super::{COMPILE_COUNTERS, COMPILE_TOOLS, DEPS_COMPILE, TARGET_COMPILE};
 use crate::accel::{self, Reason};
 
-/// The code units of an exact `str` (PEP 393 buffer read directly, never the UTF-8 cache).
-///
-/// # Safety
-/// `s` a live exact str.
-pub(crate) unsafe fn str_units(s: O) -> Vec<u32> {
-    // SAFETY: per the caller.
-    unsafe {
-        let n = ffi::PyUnicode_GET_LENGTH(s) as usize;
-        let data = ffi::PyUnicode_DATA(s);
-        match ffi::PyUnicode_KIND(s) {
-            ffi::PyUnicode_1BYTE_KIND => {
-                std::slice::from_raw_parts(data.cast::<u8>(), n).iter().map(|&c| c as u32).collect()
-            }
-            ffi::PyUnicode_2BYTE_KIND => {
-                std::slice::from_raw_parts(data.cast::<u16>(), n).iter().map(|&c| c as u32).collect()
-            }
-            _ => std::slice::from_raw_parts(data.cast::<u32>(), n).to_vec(),
-        }
-    }
-}
-
-/// The bytes of an exact `bytes`, as code units (the parser's latin-1 decoding).
-///
-/// # Safety
-/// `b` a live exact bytes object.
-pub(crate) unsafe fn bytes_units(b: O) -> Vec<u32> {
-    // SAFETY: per the caller.
-    unsafe {
-        let n = ffi::Py_SIZE(b) as usize;
-        std::slice::from_raw_parts(ffi::PyBytes_AS_STRING(b).cast::<u8>(), n).iter().map(|&c| c as u32).collect()
-    }
-}
-
-/// The pattern's code units and type, for an exact `str` or `bytes`.
+/// Run `f` on the pattern's code units and type (`true`: str) for an exact `str` or `bytes`
+/// (short patterns are converted on the stack: a declined pattern costs no allocation here).
 ///
 /// # Safety
 /// Attached thread; `p` live.
-pub(crate) unsafe fn pattern_units(p: O) -> Option<(Vec<u32>, bool)> {
+pub(crate) unsafe fn with_units<R>(p: O, f: impl FnOnce(&[u32], bool) -> R) -> Option<R> {
+    const STACK: usize = 160;
     // SAFETY: exact type checks before the buffer reads.
     unsafe {
         let t = ffi::Py_TYPE(p);
-        if t == &raw mut ffi::PyUnicode_Type {
-            Some((str_units(p), true))
+        let mut buf = [0u32; STACK];
+        let fill = |buf: &mut [u32; STACK], it: &mut dyn ExactSizeIterator<Item = u32>| -> Option<Vec<u32>> {
+            if it.len() <= STACK {
+                for (d, c) in buf.iter_mut().zip(it) {
+                    *d = c;
+                }
+                None
+            } else {
+                Some(it.collect())
+            }
+        };
+        let (n, heap, istext) = if t == &raw mut ffi::PyUnicode_Type {
+            let n = ffi::PyUnicode_GET_LENGTH(p) as usize;
+            let data = ffi::PyUnicode_DATA(p);
+            let heap = match ffi::PyUnicode_KIND(p) {
+                ffi::PyUnicode_1BYTE_KIND => {
+                    fill(&mut buf, &mut std::slice::from_raw_parts(data.cast::<u8>(), n).iter().map(|&c| c as u32))
+                }
+                ffi::PyUnicode_2BYTE_KIND => {
+                    fill(&mut buf, &mut std::slice::from_raw_parts(data.cast::<u16>(), n).iter().map(|&c| c as u32))
+                }
+                _ => fill(&mut buf, &mut std::slice::from_raw_parts(data.cast::<u32>(), n).iter().copied()),
+            };
+            (n, heap, true)
         } else if t == &raw mut ffi::PyBytes_Type {
-            Some((bytes_units(p), false))
+            let n = ffi::Py_SIZE(p) as usize;
+            let b = std::slice::from_raw_parts(ffi::PyBytes_AS_STRING(p).cast::<u8>(), n);
+            (n, fill(&mut buf, &mut b.iter().map(|&c| c as u32)), false)
         } else {
-            None
-        }
+            return None;
+        };
+        Some(match &heap {
+            Some(v) => f(v, istext),
+            None => f(&buf[..n], istext),
+        })
     }
 }
 
@@ -175,8 +172,8 @@ pub(crate) unsafe fn port(st: &state::Compile, pattern: O, flags: O) -> Option<C
     // SAFETY: per the caller.
     unsafe {
         let fl = flags_of(flags)?;
-        let (units, istext) = pattern_units(pattern)?;
-        core::compile(&units, istext, fl, &st.env()?).ok()
+        let env = st.env()?;
+        with_units(pattern, |units, istext| core::compile(units, istext, fl, &env).ok())?
     }
 }
 
@@ -186,10 +183,9 @@ pub(crate) unsafe extern "C" fn k_compile(f: O, args: *const O, nargsf: usize, k
     unsafe {
         let n = ffi::PyVectorcall_NARGS(nargsf);
         let fallback = |why: Reason| {
-            // The fallback penalty (+~250 Ir) is <2% of the cheapest CPython compile: no debit
-            // (the net-benefit suspension is for targets whose fallbacks cost a share of a
-            // cheap call; see docs/targets/re.md).
-            COMPILE_COUNTERS.fallback(why);
+            // Debits 1 against a credit of 255 per hit: only a stream of declined patterns
+            // (64 in a row from the start, ~320 after a hit) suspends the target.
+            COMPILE_COUNTERS.fallback_streak(why);
             accel::FUNCTION_VECTORCALL.get()(f, args, nargsf, kw)
         };
         if !DEPS_COMPILE.ok() {
@@ -228,7 +224,7 @@ pub(crate) unsafe extern "C" fn k_compile(f: O, args: *const O, nargsf: usize, k
         if r.is_null() {
             return fallback(Reason::Error);
         }
-        if COMPILE_COUNTERS.hit_check() {
+        if COMPILE_COUNTERS.hit_check_streak() {
             return check(r, f, args, nargsf, kw);
         }
         r

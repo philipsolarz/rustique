@@ -723,6 +723,13 @@ impl<'a, 'e> Parser<'a, 'e> {
             }
         }
         // unpack non-capturing groups
+        let unpack = self.tree.subs[sp as usize]
+            .data
+            .iter()
+            .any(|n| matches!(n, Node::Subpattern { group: None, add: 0, del: 0, .. }));
+        if !unpack {
+            return Ok(sp);
+        }
         let data = std::mem::take(&mut self.tree.subs[sp as usize].data);
         let mut out = Vec::with_capacity(data.len());
         for node in data {
@@ -1233,11 +1240,16 @@ pub(crate) fn parse(pattern: &[u32], istext: bool, flags: u32, env: &Env<'_>) ->
     let state = State {
         flags,
         groupdict: Vec::new(),
-        groupwidths: vec![None],
+        groupwidths: {
+            let mut w = Vec::with_capacity(4);
+            w.push(None);
+            w
+        },
         lookbehindgroups: None,
         grouprefpos: Vec::new(),
     };
-    let mut p = Parser { src, tree: Tree { subs: Vec::new(), state, root: 0, maxrepeat: env.maxrepeat }, env };
+    let mut p =
+        Parser { src, tree: Tree { subs: Vec::with_capacity(16), state, root: 0, maxrepeat: env.maxrepeat }, env };
     let root = p.parse_sub(flags & SRE_FLAG_VERBOSE != 0, 0)?;
     p.tree.root = root;
     p.tree.state.flags = fix_flags(istext, p.tree.state.flags)?;

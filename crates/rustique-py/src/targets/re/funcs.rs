@@ -9,7 +9,7 @@ use pyo3::ffi;
 
 use rustique_core::re::template;
 
-use super::compile::{bytes_units, str_units};
+use super::compile::with_units;
 use super::state::{self, O};
 use super::{DEPS_FUNCS, FuncRt};
 use crate::accel::{self, Reason, TargetSpec};
@@ -94,8 +94,7 @@ unsafe fn kwdefault(f: O, name: O) -> Option<O> {
 }
 
 /// The flags value `_compile` keys its cache with: an exact `int` or `_zero_sentinel` as is,
-/// a `RegexFlag` member's `_value_` (exact `int`, from the instance dict: `flags.value`).
-/// Borrowed.
+/// a `RegexFlag` member's `_value_` (exact `int`: `flags.value`). A new reference.
 ///
 /// # Safety
 /// Attached thread; `fl` live.
@@ -105,25 +104,21 @@ unsafe fn key_flags(st: &state::Funcs, fl: O) -> Option<O> {
     unsafe {
         let t = ffi::Py_TYPE(fl);
         if t == &raw mut ffi::PyLong_Type || fl == st.zero {
-            return Some(fl);
+            return Some(ffi::Py_NewRef(fl));
         }
         if t == st.regexflag_t {
-            let d = ffi::PyObject_GenericGetDict(fl, std::ptr::null_mut());
-            if d.is_null() {
-                ffi::PyErr_Clear();
-                return None;
-            }
-            let v = ffi::PyDict_GetItemWithError(d, st.n_value_);
-            ffi::Py_DECREF(d);
+            // `flags.value` is `self._value_` (no class in the MRO defines `_value_`: checked at
+            // install, guarded by the version tag): the instance attribute, read by generic
+            // lookup (inline values are not materialized into a dict).
+            let v = ffi::PyObject_GetAttr(fl, st.n_value_);
             if v.is_null() {
                 ffi::PyErr_Clear();
                 return None;
             }
-            // The member keeps its `_value_` alive (members are immortal-ish: held by the
-            // class's member maps).
             if ffi::Py_TYPE(v) == &raw mut ffi::PyLong_Type {
                 return Some(v);
             }
+            ffi::Py_DECREF(v);
         }
         None
     }
@@ -191,6 +186,7 @@ unsafe fn cached(st: &state::Funcs, pattern: O, flags: O) -> Option<(O, bool)> {
             // `_compile` returns a compiled pattern as is when `flags` is falsy (an empty
             // `_cache2` lookup and `_cache.pop` miss first: no observable effect).
             let falsy = fl == st.zero || (ffi::Py_TYPE(fl) == &raw mut ffi::PyLong_Type && long_is_zero(fl));
+            ffi::Py_DECREF(fl);
             if !falsy {
                 return None;
             }
@@ -210,16 +206,18 @@ unsafe fn cached(st: &state::Funcs, pattern: O, flags: O) -> Option<(O, bool)> {
             };
             return Some((ffi::Py_NewRef(pattern), istext));
         } else {
+            ffi::Py_DECREF(fl);
             return None;
         };
         let key = ffi::PyTuple_New(3);
         if key.is_null() {
+            ffi::Py_DECREF(fl);
             ffi::PyErr_Clear();
             return None;
         }
         ffi::PyTuple_SET_ITEM(key, 0, ffi::Py_NewRef(pt.cast()));
         ffi::PyTuple_SET_ITEM(key, 1, ffi::Py_NewRef(pattern));
-        ffi::PyTuple_SET_ITEM(key, 2, ffi::Py_NewRef(fl));
+        ffi::PyTuple_SET_ITEM(key, 2, fl);
         let mut p: O = std::ptr::null_mut();
         let rc = ffi::PyDict_GetItemRef(st.cache2, key, &mut p);
         ffi::Py_DECREF(key);
@@ -246,29 +244,52 @@ unsafe fn long_is_zero(v: O) -> bool {
     unsafe { ffi::PyObject_IsTrue(v) == 0 }
 }
 
-/// Is `repl` a replacement `Pattern.sub` handles without user code or errors: an exact
-/// str/bytes of the pattern's type that is a literal (no backslash) or a template CPython's
-/// `parse_template` accepts for this pattern (validated by the port)?
+/// What `Pattern.sub` makes of a replacement.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Repl {
+    /// Not in the exact subset (callable, other type, a template CPython would reject).
+    No,
+    /// No backslash: used as is.
+    Literal,
+    /// A template `parse_template` accepts: `_sre` calls `re._compile_template`.
+    Template,
+}
+
+/// `_sre` resolves `re._compile_template` on the first template `sub` of the process (an
+/// import through the *calling frame's* `__import__`) and caches it. Template `sub`s are
+/// accelerated only after one went through the original with the dependencies intact (so
+/// the cached function is CPython's, resolved under `re.sub`'s frame).
+static TEMPLATE_PRIMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Classify `repl` for pattern `p`: an exact str/bytes of the pattern's type that is a
+/// literal or a template CPython's `parse_template` accepts for this pattern (validated by
+/// the port).
 ///
 /// # Safety
 /// Attached thread; `p` an exact Pattern; `repl` live.
-unsafe fn repl_ok(st: &state::Funcs, p: O, repl: O, istext: bool) -> bool {
+unsafe fn repl_kind(st: &state::Funcs, p: O, repl: O, istext: bool) -> Repl {
     // SAFETY: exact type checks before buffer reads.
     unsafe {
         let t = ffi::Py_TYPE(repl);
         let literal = if istext {
             if t != &raw mut ffi::PyUnicode_Type {
-                return false;
+                return Repl::No;
             }
             ffi::PyUnicode_FindChar(repl, '\\' as u32, 0, ffi::PyUnicode_GET_LENGTH(repl), 1) == -1
         } else {
             if t != &raw mut ffi::PyBytes_Type {
-                return false;
+                return Repl::No;
             }
             let b = std::slice::from_raw_parts(ffi::PyBytes_AS_STRING(repl).cast::<u8>(), ffi::Py_SIZE(repl) as usize);
             !b.contains(&b'\\')
         };
-        literal || template_checked(st, p, repl, istext)
+        if literal {
+            Repl::Literal
+        } else if template_checked(st, p, repl, istext) {
+            Repl::Template
+        } else {
+            Repl::No
+        }
     }
 }
 
@@ -276,8 +297,8 @@ unsafe fn repl_ok(st: &state::Funcs, p: O, repl: O, istext: bool) -> bool {
 ///
 /// # Safety
 /// Attached thread; `p` an exact Pattern; `repl` an exact str or bytes.
-unsafe fn template_checked(st: &state::Funcs, p: O, repl: O, istext: bool) -> bool {
-    // SAFETY: C getters of an exact Pattern (member/getset descriptors).
+unsafe fn template_checked(st: &state::Funcs, p: O, repl: O, _istext: bool) -> bool {
+    // SAFETY: C getters of an exact Pattern (member/getset descriptors); dict reads.
     unsafe {
         let g = ffi::PyObject_GetAttr(p, st.n_groups);
         if g.is_null() {
@@ -290,18 +311,27 @@ unsafe fn template_checked(st: &state::Funcs, p: O, repl: O, istext: bool) -> bo
             ffi::PyErr_Clear();
             return false;
         }
-        let units = if istext { str_units(repl) } else { bytes_units(repl) };
         let maxgroups = state::compile_state().map_or(i32::MAX as u32 / 2, |c| c.maxgroups);
-        let index = |name: &str| -> Option<u32> {
-            let gi = ffi::PyObject_GetAttr(p, st.n_groupindex);
+        let mut gi: O = std::ptr::null_mut();
+        let mut index = |name: &[u32]| -> Option<u32> {
             if gi.is_null() {
-                ffi::PyErr_Clear();
+                gi = ffi::PyObject_GetAttr(p, st.n_groupindex);
+                if gi.is_null() {
+                    ffi::PyErr_Clear();
+                    return None;
+                }
+            }
+            // an ASCII identifier: its code units as UCS1
+            let mut buf = [0u8; 64];
+            if name.len() > buf.len() {
                 return None;
             }
-            let k = ffi::PyUnicode_FromStringAndSize(name.as_ptr().cast(), name.len() as ffi::Py_ssize_t);
+            for (d, &c) in buf.iter_mut().zip(name) {
+                *d = c as u8;
+            }
+            let k = ffi::PyUnicode_FromStringAndSize(buf.as_ptr().cast(), name.len() as ffi::Py_ssize_t);
             let v = if k.is_null() { std::ptr::null_mut() } else { ffi::PyObject_GetItem(gi, k) };
             ffi::Py_XDECREF(k);
-            ffi::Py_DECREF(gi);
             if v.is_null() {
                 ffi::PyErr_Clear();
                 return None;
@@ -314,7 +344,10 @@ unsafe fn template_checked(st: &state::Funcs, p: O, repl: O, istext: bool) -> bo
             }
             Some(x as u32)
         };
-        template::check(&units, groups as u32, maxgroups, &index).is_ok()
+        let ok = with_units(repl, |units, _| template::check(units, groups as u32, maxgroups, &mut index).is_ok())
+            .unwrap_or(false);
+        ffi::Py_XDECREF(gi);
+        ok
     }
 }
 
@@ -454,13 +487,30 @@ pub(crate) unsafe fn kernel(
         let string = *args.add(npos - 1);
         let ok = string_ok(string, istext)
             && match m.shape() {
-                Shape::Sub => ssize_ok(st, aux.expect("bound above")) && repl_ok(st, p, *args.add(1), istext),
-                Shape::Split => ssize_ok(st, aux.expect("bound above")),
+                Shape::Sub | Shape::Split => ssize_ok(st, aux.expect("bound above")),
                 _ => true,
             };
         if !ok {
             ffi::Py_DECREF(p);
             return fallback(Reason::Args);
+        }
+        if m.shape() == Shape::Sub {
+            match repl_kind(st, p, *args.add(1), istext) {
+                Repl::No => {
+                    ffi::Py_DECREF(p);
+                    return fallback(Reason::Args);
+                }
+                Repl::Template if !TEMPLATE_PRIMED.load(std::sync::atomic::Ordering::Acquire) => {
+                    ffi::Py_DECREF(p);
+                    rt.counters.fallback(Reason::Args);
+                    let r = accel::FUNCTION_VECTORCALL.get()(f, args, nargsf, kw);
+                    if !r.is_null() && DEPS_FUNCS.ok() {
+                        TEMPLATE_PRIMED.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                    return r;
+                }
+                _ => {}
+            }
         }
         let check = rt.counters.hit_check_streak() && rt.checkable;
         let meth = st.methods[m as usize];

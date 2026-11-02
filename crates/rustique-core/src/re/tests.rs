@@ -171,13 +171,14 @@ fn declines() {
 
 #[test]
 fn templates() {
-    let idx = |n: &str| if n == "name" { Some(1) } else { None };
-    let ok = |t: &str, groups: u32| template::check(&units(t), groups, 1 << 30, &idx);
+    let mut idx = |n: &[u32]| if n == units("name").as_slice() { Some(1) } else { None };
+    let mut ok = |t: &str, groups: u32| template::check(&units(t), groups, 1 << 30, &mut idx);
     assert!(ok("\\1", 1).is_ok());
     assert!(ok("\\2", 1).is_err());
     assert!(ok("\\g<name>-\\g<0>", 1).is_ok());
     assert!(ok("\\g<other>", 1).is_err());
     assert!(ok("\\g<1", 1).is_err());
+    assert!(ok("\\g<na\\>me>", 1).is_err());
     assert!(ok("\\n\\t\\\\x", 0).is_ok());
     assert!(ok("\\q", 0).is_err());
     assert!(ok("\\-", 0).is_ok());

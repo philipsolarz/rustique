@@ -66,10 +66,14 @@ pub static TARGET_COMPILE: TargetSpec = TargetSpec {
     free_threaded: true,
     counters: &COMPILE_COUNTERS,
     prepare: prep_compile,
-    // A fallback costs <2% of the cheapest compile, also under the JIT.
+    // A fallback costs <6% of the cheapest compile (an error pattern), also under the JIT.
     jit_safe: true,
     checkable: true,
     shared: Some(&SHARED_COMPILE),
+    // A hit saves 25k-1M Ir, a fallback costs ~0.3-2.7k: suspend only on a stream of
+    // declined patterns.
+    hit_credit: 255,
+    fallback_debit: 1,
     release: Some(release),
     ..TargetSpec::DEFAULT
 };

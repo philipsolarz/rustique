@@ -430,6 +430,7 @@ def test_functions_hit():
     re.purge()
     rearm()
     re.compile(r"(\d+)")
+    re.sub(r"(\d+)", r"<\1>", "a12")  # the first template sub of a process runs the original
     before = {n: hits(n) for n in ("re.match", "re.search", "re.sub", "re.findall", "re.split", "re.compile")}
     assert re.match(r"(\d+)", "12a").group(1) == "12"
     assert re.search(r"(\d+)", "a12").span() == (1, 3)
@@ -582,3 +583,30 @@ def test_flag_operations_keep_regexflag_unmodified():
     before = hits("re.search")
     assert re.search("x", "X", re.I | re.M)
     assert hits("re.search") == before + 1
+
+
+def test_first_template_sub_runs_the_original():
+    """`_sre` resolves `re._compile_template` (through the calling frame's `__import__`) on the
+    first template `sub` of the process: that one runs the original (subprocess: fresh `_sre`)."""
+    import subprocess
+    code = (
+        "import builtins, re, rustique\n"
+        "rustique.enable(only=['re']); rustique.stats(True)\n"
+        "seen = []\n"
+        "real = builtins.__import__\n"
+        "def imp(name, *a, **k):\n"
+        "    seen.append((name, __import__('sys')._getframe(1).f_code.co_name))\n"
+        "    return real(name, *a, **k)\n"
+        "re.compile('(a)')\n"
+        "builtins.__import__ = imp\n"
+        "try:\n"
+        "    r1 = re.sub('(a)', r'<\\1>', 'xa')\n"
+        "finally:\n"
+        "    builtins.__import__ = real\n"
+        "r2 = re.sub('(a)', r'<\\1>', 'xa')\n"
+        "print(r1, r2, seen, rustique.stats()['re.sub']['hits'])\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.split()
+    assert out[0] == out[1] == "x<a>"
+    assert "('re'," in " ".join(out) and "'sub')" in " ".join(out)  # imported under re.sub's frame
+    assert out[-1] == "1"  # the second one was accelerated

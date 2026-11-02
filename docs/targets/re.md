@@ -142,4 +142,22 @@ objects (asserts) and refuses.
 
 ## Measured results
 
-TODO
+All instruction counts are callgrind on the dev box (c7a.8xlarge, 3.15.1, release build with
+fat LTO, PYTHONHASHSEED=0); M = measured.
+
+### Coverage: how much the port compiles itself (M, `benches/targets/re_coverage.py`)
+
+| corpus | compiles | port | fallback: CPython raises | warns | outside the port |
+|---|---:|---:|---:|---:|---:|
+| PyPI corpus (8,522 distinct patterns of popular packages, own flags) | 8,522 | **8,498 (99.7%; 100% of those CPython compiles silently)** | 24 | 0 | 0 |
+| standard-library literal patterns | 1,121 | 1,065 (98.8% of the silent ones) | 29 | 14 | 13 |
+| patterns 12 real programs compile at import (`upper_bounds.py` capture) | 515 | **515 (100%)** | 0 | 0 | 0 |
+
+### Install (M, `benches/targets/re_install.py`)
+
+`import re` costs 21.6M Ir; the lazy install of the group at its end costs **0.82M Ir (3.8%)**
+(T9 budget: 5%). Fingerprints (59 functions, ~0.55M Ir) and the table checks run on the first
+kernel call instead (ACCELERATION §5.7: a failure degrades the targets), once per process; with
+them at install the group cost 1.58M (7.3%).
+
+TODO: cells, imports, workloads, conformance.
