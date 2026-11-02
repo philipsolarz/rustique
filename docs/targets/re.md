@@ -185,7 +185,7 @@ CPython's own test modules with the group installed before they import, against 
 `test_http_cookies`, `test_difflib`, `test_string`, `test_shlex`, `test_argparse`,
 `test_gettext`, `test_glob`, `test_csv`, `test_urllib`, `test_mailbox` (~5,500 tests): **0
 differences** on 3.15.1, 3.15.1t, 3.14.9 and 3.14.9t, every target installed (validated
-eagerly), on the final branch (wave2 d1c0a78 merged). One transient difference earlier (a
+eagerly), on the final branch (wave2 d1c0a78 merged); also on 3.15.2, 3.15.2t and 3.14.10. One transient difference earlier (a
 `test_mailbox` temp directory removed under the *plain* run by a concurrent sync of the source
 tree) led to running the suites outside the synced tree. The whole Rustique suite
 (`pytest -q tests`): 3.15.1 2,494 passed / 36 skipped, 3.14.9 2,478 / 52; 3.15.1t and 3.14.9t
@@ -196,8 +196,9 @@ which fails the same way with the `re` group excluded (wave2's report truncates 
 
 ## Version coverage
 
-3.14 and 3.15 (GIL and free-threaded builds; same fingerprints on both; 3.14.9/3.15.1 and the
-recorded 3.15.2 give the same `re` sources). Other minors refuse (`version`). The fingerprints
+3.14 and 3.15 (GIL and free-threaded builds; same fingerprints on both). Recorded patch
+releases 3.15.2, 3.15.2t and 3.14.10: same `re` sources, `tests/targets/test_re.py` passes and
+the 16 conformance modules show 0 differences. Other minors refuse (`version`). The fingerprints
 are checked on the first kernel call: a patch release that changed one degrades the group
 (kernels fall back, then suspend). `python -O` strips the compiler's asserts (other code
 objects): the group degrades there. The module functions declare `jit_safe: false` (their
