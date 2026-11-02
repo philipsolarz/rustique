@@ -54,7 +54,11 @@ impl Fast {
         x ^= x >> 33;
         x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
         x ^= x >> 33;
-        format!("{x:016x}")
+        // 16 lowercase hex digits without `core::fmt` (~10x cheaper; installs compute a
+        // few dozen of these at startup).
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let digits: Vec<u8> = (0..16).rev().map(|i| HEX[((x >> (4 * i)) & 15) as usize]).collect();
+        String::from_utf8(digits).expect("ASCII hex digits")
     }
 }
 
