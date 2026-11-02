@@ -67,6 +67,10 @@ collection's `stop` callback (`tests/test_gc_tier.py::test_reinflated_after_ever
 API; its one test, FT `test_gc.test_tuple_untrack_counts`, passes with the policy armed, §6).
 Nothing else reads it.
 
+**Validated at install**, never armed for first-call validation (ACCELERATION §3.2): the
+policy acts from `enable()` on, without any call of its sites (in arming mode its `prepare`
+declares no site, so the registry validates it at once).
+
 **`disable()`** (`TargetSpec.on_disable`) and the exit hook restore at once: CPython's value in
 `long_lived_total`, the program's list in `gcstate->callbacks`. When `disable()` is called from
 inside a GC callback (a collection is running, the flag cannot be taken) the observer stays in
