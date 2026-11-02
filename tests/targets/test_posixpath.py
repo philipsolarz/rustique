@@ -195,6 +195,41 @@ def test_relpath(p, s, kind):
         check("relpath", p, s)
 
 
+COMPS = ["a", "bc", ".a", "...", "..a", "a.", "x.py", "\xe9", "\u4f60", "\U0001f600", "\udc80", " ", "~"]
+comp = st.lists(st.sampled_from(COMPS), min_size=1, max_size=3).map("".join)
+# Absolute normalized paths: `abspath`/`relpath` read these in place (no normpath pass).
+norm_abs = st.lists(comp, max_size=8).map(lambda cs: "/" + "/".join(cs))
+# Near-normalized variants: one defect each (double slash, '.', '..', trailing slash).
+DEFECTS = ["", "", "/", "/.", "/..", "/./", "//"]
+near_abs = st.tuples(norm_abs, st.sampled_from(DEFECTS), norm_abs).map(lambda t: t[0] + t[1] + t[2])
+
+
+def enc(x):
+    return x.encode("utf-8", "surrogateescape")
+
+
+@settings(max_examples=400)
+@given(p=st.one_of(norm_abs, near_abs), s=st.one_of(st.none(), norm_abs, near_abs, comp), as_bytes=st.booleans())
+def test_relpath_normalized_inputs(p, s, as_bytes):
+    if as_bytes:
+        check("relpath", enc(p), None if s is None else enc(s))
+        check("abspath", enc(p))
+    else:
+        check("relpath", p, s)
+        check("abspath", p)
+
+
+def test_relpath_long_paths():
+    """Paths longer than the stack scratch buffer (512 units) take one heap buffer."""
+    deep = "/" + "/".join(f"dir{i:03d}" for i in range(120))
+    for p, s in [(deep, "/"), (deep + "/x.py", deep), (deep + "/./a//b/../c", deep[:300]), ("rel/" * 150, None),
+                 (deep.replace("dir0", "d\u4f600"), deep)]:
+        check("relpath", p, s)
+        check("relpath", enc(p), None if s is None else enc(s))
+        check("abspath", p)
+        check("abspath", enc(p))
+
+
 def test_edge_cases():
     for args in [("",), ("", ""), ("a/", ""), ("/", ""), ("a", ""), ("", "b"), ("a", "/b", ""), ("//", "a")]:
         check("join", *args)
