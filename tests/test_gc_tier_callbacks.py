@@ -203,9 +203,7 @@ def test_callbacks_identity_length_and_refcount():
         def a(p, i): pass
         cb.append(a)
         log(len(gc.callbacks), gc.callbacks is cb, gc.callbacks[0] is a)
-        # the observer and its private list are untracked: no list the collector knows holds it
-        log(any(getattr(x, "__name__", None) == "_rustique_gc_observer"
-                for o in gc.get_objects() if type(o) is list for x in o))
+        log(sum(1 for o in gc.get_objects() if type(o) is list and len(o) == 1 and type(o[0]).__name__ == "builtin_function_or_method"))
     """)
 
 
