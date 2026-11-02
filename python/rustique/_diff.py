@@ -43,6 +43,10 @@ NORMALIZE = (
     (r"pytest-of-[^/\\\s]+([/\\])pytest-\d+", r"pytest-of-<user>\1pytest-<n>"),
     (r"--randomly-seed=\d+", "--randomly-seed=<seed>"),
 )
+# pytest's progress characters (one per test) carry nothing the per-test outcomes do not, and
+# threads (a test server's log) interleave with them differently from run to run: for pytest
+# commands they are dropped before stdout is compared.
+PYTEST_PROGRESS = ((r"^[.sFEXx]{3,}(?:\s*\[\s*\d+%\])?", ""), (r"\[\s*\d+%\]\s*$", ""))
 PYTEST_CACHE_FLAGS = ("--lf", "--last-failed", "--ff", "--failed-first", "--nf", "--new-first", "--sw", "--stepwise",
                       "--sw-skip", "--stepwise-skip", "--cache-show", "--cache-clear")
 
@@ -132,6 +136,14 @@ def compare(plain: dict, fast: dict, patterns, max_lines: int, skip=()) -> list[
         ta, tb = plain["tests"], fast["tests"]
         changed = sorted(k for k in ta.keys() & tb.keys() if ta[k] != tb[k])
         only_a, only_b = sorted(ta.keys() - tb.keys()), sorted(tb.keys() - ta.keys())
+        if only_a and len(only_a) == len(only_b):
+            # ids that differ only in digits (a parametrization with now() or a random value):
+            # the same tests if, digits masked, ids and outcomes pair up one to one
+            mask = lambda k: re.sub(r"\d+", "#", k)  # noqa: E731
+            pa = sorted((mask(k), ta[k]) for k in only_a)
+            pb = sorted((mask(k), tb[k]) for k in only_b)
+            if pa == pb:
+                only_a, only_b = [], []
         if changed or only_a or only_b:
             diffs.append(f"test outcomes differ ({len(changed)} changed, {len(only_a)} only plain, "
                          f"{len(only_b)} only rustique):")
@@ -182,6 +194,8 @@ def main(argv: list[str]) -> int:
     patterns = [] if opts.no_normalize else list(NORMALIZE)
     patterns += [(rx, "<ignored>") for rx in opts.ignore]
     pytest = is_pytest(cmd)
+    if pytest and not opts.no_normalize:
+        patterns += list(PYTEST_PROGRESS)
     base = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
     base.setdefault("PYTHONHASHSEED", "0")
     for k in ("RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE"):  # the selection applies to the enabled side

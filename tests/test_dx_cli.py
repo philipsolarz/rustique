@@ -257,6 +257,29 @@ def test_diff_pytest_verbose_junit_path(suite):
     assert "7 test outcomes" in r.stdout
 
 
+def test_diff_pytest_volatile_ids_and_progress(tmp_path):
+    # a parametrization embedding a volatile value, and a thread writing between progress dots
+    (tmp_path / "test_v.py").write_text(textwrap.dedent("""
+        import random, threading, time
+        import pytest
+        import rustique
+        rustique.enable()
+
+        @pytest.mark.parametrize("v", [random.random()])
+        def test_id(v):
+            assert v < 1
+
+        @pytest.mark.parametrize("i", range(30))
+        def test_many(i):
+            if i == 10:
+                threading.Thread(target=lambda: (time.sleep(random.random() / 100), print("server says hi"))).start()
+            time.sleep(0.001)
+    """))
+    r = rq("diff", "--", sys.executable, "-m", "pytest", "-q", "-s", "-p", "no:randomly", str(tmp_path), cwd=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "31 test outcomes" in r.stdout
+
+
 def test_diff_refuses_plugin_flag(suite):
     r = rq("diff", "--", sys.executable, "-m", "pytest", "--rustique", str(suite))
     assert r.returncode == 2 and "drop --rustique" in r.stderr
