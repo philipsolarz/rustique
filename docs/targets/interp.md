@@ -263,7 +263,18 @@ descriptor 1.073, `dict.__setitem__` 1.056): the exported copies of `_PyObject_G
 and `_Py_VectorCall_StackRefSteal` that a swapped handler calls are laid out as cold code in the
 PBS binary (the core inlines them); `c/rq_inline.h` fixed both.
 
-WHOLE
+### 4.2 Whole runs
+
+WHOLERUNS
+
+**Digests.** Every workload gives the same digest plain and with the tier in normal runs.
+Under valgrind, sphinx_autodoc's digest differs between plain and tier runs, and from normal
+runs: Sphinx strips memory addresses from default-value reprs only when they have 8–16 hex
+digits (`sphinx.util.inspect`), and valgrind's heap addresses have 7 (`<function
+IS_CHARACTER_JUNK at 0x5a24670>` in `difflib.html`, `re.Pattern ... at 0x5126f60` in
+`json.html`), so the rendered address, which differs with any change in allocation, enters
+the pages (M, `valgrind --tool=none` dumps diffed; the same pages are identical plain vs tier
+outside valgrind, 2 runs each).
 
 
 ## 5. Conformance and gates
