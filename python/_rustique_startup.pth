@@ -1,1 +1,1 @@
-import os; os.environ.get('RUSTIQUE', '0') != '0' and exec("import sys,_imp;p=sitedir+'/rustique/_rustique'+_imp.extension_suffixes()[0];os.environ['RUSTIQUE'].strip().lower() in ('', 'off', 'false', 'no') or sys.flags.ignore_environment or (sys.modules['_frozen_importlib']._load(sys.modules['_frozen_importlib_external'].spec_from_file_location('rustique._rustique',p)) if os.path.isfile(p) else __import__('rustique._rustique')._rustique)._accel.startup()")
+import os; os.environ.get('RUSTIQUE', '0') != '0' and __import__('_rustique').startup()
