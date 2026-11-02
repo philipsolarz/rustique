@@ -221,7 +221,30 @@ rounds averaged where both exist). The prediction ran on the loaded box (M).
 
 ### 5.3 Limits
 
-⟨LIMITS⟩
+- **Threaded programs** (`threads/*`, `services/job_worker`) are the weakest family.
+  - On GIL builds, other threads are sampled where they handed the GIL over: system calls,
+    the flush of a log handler.
+  - The profiler's thread-CPU clock costs a system call per reading; its calibration is
+    noisy under load (1.6–7.5 µs per event measured on the box) and is subtracted from small
+    calls.
+  - The result under-predicts: `job_worker` is predicted 0.88 and measured 0.63. That is the
+    safe direction, but it is wrong.
+  - Fix: per-thread CPU-time sampling (a per-thread timer, `timer_create` with
+    `SIGEV_THREAD_ID`), which needs native code. On free-threaded builds other threads are
+    not sampled at all (§5.4).
+- **One huge call** (`state_snapshot`: one `deepcopy` of a big graph is most of the run):
+  the replay runs the call repeatedly with warm caches and allocator, so it flatters the
+  kernel (−0.03).
+- **C-level targets cannot be replayed**: `CALL` events carry no arguments. The per-call
+  ratio is a table (`C_RATIO`, from `benches/dx/c_ratios.py`) × the hit rate.
+  - `strftime` formats vary (`tz_events` −0.05).
+  - `sort`/`sorted` is set to 1.0 (presorted input was slower; now fixed by `core`).
+- **A C-level target that calls back Python** (`any(genexpr)`, `min(key=...)`) is credited
+  only with samples taken inside it, not inside the callback. The kernel cannot make the
+  callback faster (`pip_resolve`: −0.07 → −0.01 with this rule).
+- **Opt-in tiers** have no entry points: counted, not predicted.
+- **Cost**: three runs. The profiled one is 1–5× slower than plain, and the replay adds
+  0–3 s.
 
 ### 5.4 Free-threaded builds, and an upstream item
 
@@ -328,4 +351,30 @@ Full suite per build: ⟨SUITES⟩.
 
 ## 9. Open issues and decisions for the lead
 
-⟨OPEN⟩
+1. **T13** (§5.2): the remaining misses are threaded programs (§5.3) and references measured
+   on the loaded box. Two references disagree between two measurement rounds by 0.08 and
+   0.22. Please re-measure the 31 new workloads' ratios on the quiet box in Phase 3 and run
+   `benches/dx/est_validate.sh` (STEPS=est) there: it prints the table of §5.2.
+2. **Accel B** (counters): `test_report_counts_fork_pool_workers_once` skips until
+   `status()["process"]["ppid"]` exists. The reader and renderer already handle the
+   agreed `.cnt` layout v1/v2 (tested with synthetic files). Windows gets the exit-hook JSON
+   only this wave, so a killed Windows worker is not counted (documented).
+3. **Tiers**: the CLI and plugin pass tiers through `RUSTIQUE_TIERS`. They need accel's
+   switch (B) to take effect. `rustique.enable(tiers=)` is engine's and accel's API;
+   USAGE.md documents it as agreed.
+4. **wheels.yml has never run on GitHub** (no push from here). The first tag or dispatch is
+   the proof for: the repack on Windows (`.pyd`), the interp-tier clang install in
+   manylinux_2_28 (needs `crates/rustique-interp` merged; until then the Linux x86_64
+   "installable" assertion fails, so drop `interp: True` if interp does not land this wave),
+   `--fetch-cpython` on every runner, and the platform job's run time (estimated 10–40 min
+   per cell, I). Please run actionlint first.
+5. **Platform floors** are wave 1's counts. Raise `.github/platform-floors.json` to T10
+   (Windows 48, macOS/musl 77) when accel's and text's platform changes are merged. The
+   Windows row of USAGE.md's platform table names the groups expected after accel's
+   `GetProcAddress` change: check it against the first platform-coverage artifact.
+6. **Upstream** (to file): `sys._current_frames()` frames must not be walked on
+   free-threaded builds (§5.4). The earlier items stand: the `.pth` `utf-8-sig` decode, and
+   `.start` entry points importing `pkgutil` (w2-startup §6).
+7. Not done, ranked: `diff --from-ci plain.xml` (compare with the JUnit file the normal CI
+   job already produced, halving the cost); a fixed `pytest-randomly` seed in `diff` (today
+   the recipe passes `-p no:randomly`); per-thread CPU sampling for `estimate` (native).
