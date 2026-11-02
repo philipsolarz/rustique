@@ -256,4 +256,21 @@ A template naming groups (`\g<name>`) measured 1.094 when checked (the lookup th
 `Pattern.groupindex`, a mapping proxy built per access, costs more than the kernel saves), so
 such templates decline: see the `[fallback]` value of that cell.
 
+### Threads (M, `benches/targets/re_threads.py`, 3.15.1t, CPU time per call, median of 5–9)
+
+| cell | 1 thread | 8 threads |
+|---|---:|---:|
+| `re.match` hit | 0.650 | **0.579** |
+| `re.sub` template hit | 0.939 | 0.847 |
+| `re.compile` hit | 0.635 | 0.398 |
+| `_compiler.compile` (no cache) | 0.118 | 0.078 |
+| `re.sub` callable (all fallbacks, suspended) | 0.999 / 1.005 | 1.101 / 0.864 (two runs) |
+| `re.sub` callable + literal (1:1) | 1.026 | 0.991 |
+| control: plain vs plain with `rustique` imported | 0.996 | 1.066 |
+
+The kernels hold no lock and write no shared state on a hit (the net-benefit score stays at
+its ceiling: loads only). On the shared dev box (load 60–80) 8-thread CPU times vary by
+±7–10% between identical runs (control row); the all-fallback cell is within that noise and
+needs the quiet box to settle.
+
 TODO: imports, workloads, conformance (final).
