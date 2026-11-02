@@ -25,6 +25,7 @@ fn datamodel_dynamic_sites(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::Py
     d.set_item(namedtuple::TARGET.name, namedtuple::dynamic_sites())?;
     d.set_item(dataclass::TARGET.name, dataclass::dynamic_sites())?;
     d.set_item(crate::targets::contextlib::TARGET.name, crate::targets::contextlib::dynamic_sites())?;
+    d.set_item(crate::targets::functools::DISPATCH.name, crate::targets::functools::dynamic_sites())?;
     Ok(d)
 }
 

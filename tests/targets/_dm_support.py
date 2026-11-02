@@ -19,7 +19,7 @@ from rustique import _rustique
 from rustique import _takeover as rt
 
 A = _rustique._accel
-GROUPS = ["enum", "generated", "contextlib"]
+GROUPS = ["enum", "generated", "contextlib", "functools"]
 
 
 def group_targets(group: str) -> dict[str, dict[str, Any]]:

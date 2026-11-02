@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, os.path.dirname(__file__))
 from _callgrind import per_call, region  # noqa: E402
 
-GROUPS = ["enum", "generated", "contextlib"]
+GROUPS = ["enum", "generated", "contextlib", "functools"]
 
 ENUM = """
 import enum
@@ -123,6 +123,35 @@ def gen():
     yield 1
 """
 
+SD = """
+import functools
+@functools.singledispatch
+def fmt(x):
+    return 0
+@fmt.register(int)
+def _(x):
+    return 1
+class Meta(type):
+    def __eq__(cls, o): return type.__eq__(cls, o)
+    __hash__ = type.__hash__
+class WM(metaclass=Meta):
+    pass
+wm = WM()
+class H:
+    @functools.singledispatchmethod
+    def handle(self, x):
+        return 0
+    @handle.register
+    def _(self, x: int):
+        return 1
+    @functools.singledispatchmethod
+    @classmethod
+    def cm(cls, x):
+        return 2
+h = H()
+fmt(1); fmt("s"); fmt(wm); h.handle(1)
+"""
+
 CELLS: dict[str, tuple[str, str]] = {
     # enum: fast paths
     "enum m.value": (ENUM, "m.value"),
@@ -173,6 +202,14 @@ CELLS: dict[str, tuple[str, str]] = {
     "ctx cm2(1, k=2)": (CTX, "cm2(1, k=2)"),
     "ctx notgen() (fallback)": (CTX, "notgen()"),
     "ctx contextmanager(gen) (decorate)": (CTX, "contextlib.contextmanager(gen)"),
+    # singledispatch
+    "sd fmt(1)": (SD, "fmt(1)"),
+    "sd fmt.dispatch(int)": (SD, "fmt.dispatch(int)"),
+    "sd fmt(wm) metaclass __eq__ (fallback)": (SD, "fmt(wm)"),
+    "sd h.handle(1)": (SD, "h.handle(1)"),
+    "sd h.handle (get)": (SD, "h.handle"),
+    "sd H.cm(1) classmethod func (fallback)": (SD, "H.cm(1)"),
+    "sd singledispatch(f) (decorate)": (SD, "functools.singledispatch(H)"),
 }
 
 REGIONS: dict[str, tuple[str, str]] = {

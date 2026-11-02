@@ -16,6 +16,7 @@ pub mod datetime;
 pub mod r#enum;
 pub mod float;
 pub mod fnmatch;
+pub mod functools;
 pub mod generated;
 pub mod json;
 pub mod logging;
@@ -47,6 +48,7 @@ pub static ALL: &[&[&TargetSpec]] = &[
     r#enum::TARGETS,
     generated::TARGETS,
     contextlib::TARGETS,
+    functools::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,

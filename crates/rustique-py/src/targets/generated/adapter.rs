@@ -91,6 +91,30 @@ impl<const N: usize> ClassCache<N> {
         }
     }
 
+    /// The current epoch (start of a verdict keyed by an address).
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(Acquire)
+    }
+
+    /// Is the object at `key` (a non-type object, e.g. a watched dict) marked good?
+    #[inline(always)]
+    pub fn get_addr(&self, key: usize) -> bool {
+        let i = self.set(key);
+        let k = key as u64;
+        k != 0 && (self.slots[i].load(Relaxed) == k || self.slots[i + 1].load(Relaxed) == k)
+    }
+
+    /// Mark the object at `key` good unless an invalidation happened since `epoch_seen`.
+    pub fn put_addr(&self, key: usize, epoch_seen: u64) {
+        let i = self.set(key);
+        let way = if self.slots[i].load(Relaxed) == 0 { i } else { i + 1 };
+        let k = key as u64;
+        self.slots[way].store(k, Release);
+        if self.epoch.load(Acquire) != epoch_seen {
+            let _ = self.slots[way].compare_exchange(k, 0, AcqRel, Relaxed);
+        }
+    }
+
     /// Forget `tp`'s verdict (an invalidation event).
     pub fn clear(&self, tp: usize) {
         self.epoch.fetch_add(1, AcqRel);
