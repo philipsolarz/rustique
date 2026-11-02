@@ -27,7 +27,7 @@ A = _rustique._accel
 def logging_targets():
     A.disable(["logging"])
     rt.enable(only=["logging"])
-    assert len(A.installed(["logging"])) == 5
+    assert len(A.installed(["logging"])) == 6
     A.stats(True, True)
     yield
     A.stats(False, True)

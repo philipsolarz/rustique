@@ -1116,6 +1116,8 @@ names! {
     asyncio = "asyncio", main_process = "MainProcess", level_fmt = "Level %s", modules = "modules",
     dunder_init = "__init__", find_caller = "findCaller", msec_default = "%s,%03d",
     get_running_loop = "_get_running_loop", current_process_g = "_current_process",
+    filter = "filter", emit = "emit", flush = "flush", filters = "filters", lock = "lock",
+    formatter = "formatter", stream = "stream", terminator = "terminator",
 }
 
 impl Default for Names {

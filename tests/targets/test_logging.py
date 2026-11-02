@@ -31,6 +31,7 @@ TARGETS = [
     "logging.LogRecord.__init__",
     "logging.Formatter.formatTime",
     "logging.Formatter.format",
+    "logging.Handler.handle",
 ]
 
 
@@ -1000,3 +1001,132 @@ def test_level_target_steps_aside_when_enabled_calls_dominate():
     assert len(h.records) == 200 and h.records[-1][1] == "busy 199"
     assert st["logging.Logger.level"].get("suspended") == "fallback"
     assert stats("logging.Logger.level")["fallback"]["deopt"] < 200
+
+
+# ---------------------------------------------------------------------------------------
+# Handler.handle (StreamHandler -> io.StringIO)
+# ---------------------------------------------------------------------------------------
+
+
+def handler_scenario(configure, n=5):
+    """Log through a fresh StreamHandler(StringIO) configured by `configure(h, stream)`;
+    returns (output, stderr captured from handleError, lock state)."""
+    sio = io.StringIO()
+    lg = logging.getLogger("t.handle")
+    lg.handlers.clear()
+    lg.propagate = False
+    lg.setLevel(logging.DEBUG)
+    h = logging.StreamHandler(sio)
+    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s", "%H:%M"))
+    configure(h, sio)
+    lg.addHandler(h)
+    err = io.StringIO()
+    with mock.patch.object(sys, "stderr", err):
+        for i in range(n):
+            lg.info("req %s n=%d", "a", i)
+            lg.warning("dec %s", decimal.Decimal("1.5"))
+        lg.info("%d", "bad")  # formatting error -> handleError (CPython's frames)
+        try:
+            1 / 0
+        except ZeroDivisionError:
+            lg.exception("boom")
+    lines = [ln.split(" ", 1)[1] if ln[:2].isdigit() else ln for ln in sio.getvalue().splitlines()] \
+        if not sio.closed else None
+    norm = "\n".join(ln for ln in err.getvalue().splitlines() if "line " not in ln)
+    return lines, norm, h.lock._is_owned()
+
+
+HANDLER_CONFIGS = {
+    "plain": lambda h, s: None,
+    "default formatter": lambda h, s: h.setFormatter(None),
+    "terminator": lambda h, s: setattr(h, "terminator", "|\n"),
+    "level": lambda h, s: h.setLevel(logging.WARNING),
+    "filter (user code: fallback)": lambda h, s: h.addFilter(lambda r: r.levelno > 20),
+    "formatter subclass": lambda h, s: h.setFormatter(type("F", (logging.Formatter,), {})("%(message)s")),
+    "formatter overriding format (fallback)": lambda h, s: h.setFormatter(
+        type("F", (logging.Formatter,), {"format": lambda self, r: "X" + r.getMessage()})()),
+    "{-style (fallback)": lambda h, s: h.setFormatter(logging.Formatter("{levelname} {message}", style="{")),
+    "emit overridden on the instance (fallback)": lambda h, s: setattr(h, "emit", lambda r: s.write("E\n")),
+    "stream attribute set (fallback)": lambda h, s: setattr(s, "tag", 1),
+    "closed stream (handleError)": lambda h, s: s.close(),
+    "lock replaced by the Python RLock (fallback)": lambda h, s: setattr(h, "lock", threading._PyRLock()),
+}
+
+
+@pytest.mark.parametrize("config", list(HANDLER_CONFIGS), ids=list(HANDLER_CONFIGS))
+def test_handler_path_identical(config):
+    a, b = both(lambda: handler_scenario(HANDLER_CONFIGS[config]))
+    assert a == b
+    assert a[2] is False  # the lock is released
+
+
+def test_handler_path_hits_and_return_value():
+    A.stats(True, True)
+    sio = io.StringIO()
+    h = logging.StreamHandler(sio)
+    r = logging.LogRecord("n", 20, "/p.py", 1, "m %s", (5,), None)
+    rv = h.handle(r)
+    assert rv is r
+    assert sio.getvalue() == "m 5\n"
+    assert hits("logging.Handler.handle") == 1
+    # a file stream stays CPython's
+    import tempfile
+    with tempfile.TemporaryFile("w+") as f:
+        h2 = logging.StreamHandler(f)
+        assert h2.handle(r) is r
+        f.seek(0)
+        assert f.read() == "m 5\n"
+    assert stats("logging.Handler.handle")["fallback"]["args"] == 1
+
+
+def test_handler_lock_held_by_another_thread_waits_in_cpython():
+    sio = io.StringIO()
+    h = logging.StreamHandler(sio)
+    r = logging.LogRecord("n", 20, "/p.py", 1, "m", (), None)
+    h.acquire()
+    done = threading.Event()
+
+    def worker():
+        h.handle(r)
+        done.set()
+
+    t = threading.Thread(target=worker)
+    t.start()
+    assert not done.wait(0.2)  # blocked on the lock (CPython's own acquire)
+    h.release()
+    t.join(5)
+    assert done.is_set() and sio.getvalue() == "m\n"
+
+
+def test_handler_reentrant_from_same_thread():
+    sio = io.StringIO()
+    h = logging.StreamHandler(sio)
+    r = logging.LogRecord("n", 20, "/p.py", 1, "m", (), None)
+    with h.lock:
+        h.handle(r)
+        assert h.lock._recursion_count() == 1
+    assert sio.getvalue() == "m\n"
+
+
+def test_handler_concurrent_records_complete():
+    sio = io.StringIO()
+    lg = logging.getLogger("t.handle.mt")
+    lg.handlers.clear()
+    lg.propagate = False
+    lg.setLevel(logging.INFO)
+    h = logging.StreamHandler(sio)
+    h.setFormatter(logging.Formatter("%(threadName)s %(message)s"))
+    lg.addHandler(h)
+
+    def worker(k):
+        for i in range(300):
+            lg.info("w%d %d", k, i)
+
+    ts = [threading.Thread(target=worker, args=(k,), name=f"T{k}") for k in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    lines = sio.getvalue().splitlines()
+    assert len(lines) == 2400
+    assert sorted(lines) == sorted(f"T{k} w{k} {i}" for k in range(8) for i in range(300))

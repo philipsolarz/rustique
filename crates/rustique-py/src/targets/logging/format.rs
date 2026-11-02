@@ -704,7 +704,7 @@ unsafe fn parse_fmt_miss(fmt: O) -> Option<Plan> {
 /// `record.msg` is plain and `record.args` empty / a tuple of plain values / a dict of plain
 /// values: the message can be computed without running Python code.
 #[inline(always)]
-unsafe fn plain_message(re: usize, record: O) -> bool {
+pub(super) unsafe fn plain_message(re: usize, record: O) -> bool {
     // SAFETY: attached thread; record of a validated type.
     unsafe {
         let msg = FMT_RECORDS.read(re, record, R_MSG);
@@ -803,7 +803,7 @@ unsafe fn message(msg: O, args: O) -> Option<O> {
     }
 }
 
-enum Fmt {
+pub(super) enum Fmt {
     Done(O),
     /// Nothing observable happened, or only stores the original repeats.
     Fallback(Reason),
@@ -823,7 +823,7 @@ unsafe fn dget(d: O, key: O) -> Option<O> {
     }
 }
 
-unsafe fn format(fe: usize, me: O, re: usize, record: O) -> Fmt {
+pub(super) unsafe fn format(fe: usize, me: O, re: usize, record: O) -> Fmt {
     // SAFETY: attached thread; `me`, `record` of validated types.
     unsafe {
         let n = n();
