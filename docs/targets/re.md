@@ -331,32 +331,33 @@ The `re` group's effect is the third over the second; `re` compiles counted in a
 
 | program | `re` compiles | all-but-re Ir (M) | all Ir (M) | **re effect** | all vs plain |
 |---|---:|---:|---:|---:|---:|
-| imp:yaml | 10 | 140.3 | 85.3 | 0.608 | 0.613 |
-| imp:requests | 84 | 452.4 | 391.3 | 0.865 | 0.870 |
-| imp:email | 23 | 109.4 | 105.3 | 0.962 | 0.975 |
-| imp:pip | 9 | 122.1 | 117.2 | 0.959 | 0.971 |
-| imp:docutils | 55 | 197.9 | 167.7 | 0.847 | 0.856 |
-| imp:pygments | 9 | 103.1 | 99.5 | 0.965 | 0.979 |
-| django_setup | 95 | 749.3 | 712.0 | 0.950 | 0.954 |
-| flask_app | 82 | 516.7 | 476.0 | 0.921 | 0.927 |
-| fastapi_app | 78 | 1,130.5 | 1,091.6 | 0.966 | 0.965 |
-| sqlalchemy_orm | 53 | 1,002.7 | 982.0 | 0.979 | 0.976 |
-| pydantic_model | 11 | 496.1 | 487.5 | 0.983 | 0.981 |
-| requests | 84 | 452.4 | 391.3 | 0.865 | 0.870 |
-| pytest_co | 51 | 1,089.9 | 1,072.2 | 0.984 | 0.969 |
-| pip_version | 86 | 563.3 | 501.3 | 0.890 | 0.894 |
-| black_version | 33 | 679.9 | 651.0 | 0.958 | 0.958 |
-| json_tool | 13 | 189.6 | 187.1 | 0.987 | 1.001 |
-| typer_help | 97 | 525.4 | 480.4 | 0.914 | 0.916 |
-| rich_print | 14 | 267.1 | 256.8 | 0.961 | 0.976 |
-| import_startup workload (21 processes) | 828 | 9,069.7 | 8,586.7 | 0.947 | 0.950 |
+| imp:yaml | 10 | 140.9 | 85.9 | 0.610 | 0.618 |
+| imp:requests | 84 | 452.5 | 391.5 | 0.865 | 0.870 |
+| imp:email | 23 | 109.8 | 105.7 | 0.963 | 0.979 |
+| imp:pip | 9 | 122.3 | 117.3 | 0.959 | 0.972 |
+| imp:docutils | 55 | 198.1 | 168.1 | 0.848 | 0.858 |
+| imp:pygments | 9 | 103.4 | 100.0 | 0.967 | 0.984 |
+| django_setup | 95 | 749.9 | 712.8 | 0.951 | 0.955 |
+| flask_app | 82 | 516.2 | 475.6 | 0.921 | 0.926 |
+| fastapi_app | 78 | 1,127.0 | 1,088.5 | 0.966 | 0.962 |
+| sqlalchemy_orm | 53 | 998.2 | 977.4 | 0.979 | 0.971 |
+| pydantic_model | 11 | 496.9 | 488.5 | 0.983 | 0.983 |
+| requests | 84 | 452.5 | 391.5 | 0.865 | 0.870 |
+| pytest_co | 51 | 1,093.2 | 1,075.6 | 0.984 | 0.971 |
+| pip_version | 86 | 563.2 | 501.3 | 0.890 | 0.894 |
+| black_version | 33 | 680.0 | 651.2 | 0.958 | 0.958 |
+| json_tool | 13 | 190.5 | 188.1 | 0.987 | 1.006 |
+| typer_help | 97 | 524.7 | 479.9 | 0.915 | 0.915 |
+| rich_print | 14 | 267.6 | 257.3 | 0.962 | 0.977 |
+| import_startup workload (21 processes) | 763 | 9,062.7 | 8,580.2 | 0.947 | 0.949 |
 
 geometric mean of the 12 programs: 0.946; worst: is:click 1.007, is:attrs 1.001, bare 1.000, is:<bare> 1.000
 
-- `import yaml` **0.608**, `import requests` 0.865, `import docutils` 0.847, `pip --version`
-  0.890, typer `--help` 0.914, flask app 0.921 (atlas upper bounds, compile at zero cost: 41.9%,
-  15.2%, —, 12.0%, 10.3%, 8.9% saved; measured 39.2%, 13.5%, 15.3%, 11.0%, 8.6%, 7.9%).
-- A program that compiles one pattern pays the install (0.69M) and the compiler's first-call
-  validation (~0.55M) for little gain: `import click` 1.007, `import attrs` 1.001 (≤ 1.05;
-  T1's 1.02 holds). Programs that compile none (`python -c pass`, `import rich.console`) pay
-  nothing measurable (1.000, 0.995).
+- Measured after merging wave2 d1c0a78 (first-call validation). `import yaml` **0.610**,
+  `import requests` 0.865, `import docutils` 0.848, `pip --version` 0.890, typer `--help` 0.915,
+  flask app 0.921 (atlas upper bounds, compile at zero cost: 41.9%, 15.2%, —, 12.0%, 10.3%,
+  8.9% saved; measured 39.0%, 13.5%, 15.2%, 11.0%, 8.5%, 7.9%).
+- A program that compiles exactly one pattern pays the compiler's first-call validation (full
+  `prepare` with pins, then the fingerprints: ~1.2M) for one compile's saving: `import click`
+  1.007, `import attrs` 1.001 (≤ 1.05; T1's 1.02 holds). Programs that compile none
+  (`python -c pass`, `import rich.console` 0.995) pay only the arming (52k).
