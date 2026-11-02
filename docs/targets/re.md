@@ -193,9 +193,13 @@ skipped; `cargo test -p rustique-core` 62 passed; clippy `-D warnings` and `carg
 
 ## Version coverage
 
-3.14 and 3.15 (GIL and free-threaded builds; same fingerprints on both). Other minors refuse
-(`version`); a changed function refuses (`fingerprint`); `python -O` changes the compiler's code
-objects (asserts) and refuses.
+3.14 and 3.15 (GIL and free-threaded builds; same fingerprints on both; 3.14.9/3.15.1 and the
+recorded 3.15.2 give the same `re` sources). Other minors refuse (`version`). The fingerprints
+are checked on the first kernel call: a patch release that changed one degrades the group
+(kernels fall back, then suspend). `python -O` strips the compiler's asserts (other code
+objects): the group degrades there. The module functions declare `jit_safe: false` (their
+fallbacks were not measured under the JIT) and refuse when `PYTHON_JIT=1`; the compiler target
+is JIT-safe (a fallback is a small share of any compile).
 
 ## Measured results
 
