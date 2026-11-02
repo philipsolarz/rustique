@@ -61,8 +61,8 @@ pub static TARGET: TargetSpec = TargetSpec {
 
 mod fp {
     use crate::accel::Fingerprints;
-    pub const ADD_FNS_TO_CLASS: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
-    pub const SET_NEW_ATTRIBUTE: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
+    pub const ADD_FNS_TO_CLASS: Fingerprints = &[(3, 14, "d8c9cfa386895a5d"), (3, 15, "efedeab6fd7c3f3d")];
+    pub const SET_NEW_ATTRIBUTE: Fingerprints = &[(3, 14, "cd74a820d7aeba4f"), (3, 15, "1fd0ba6b39d0b48c")];
 }
 
 const DC_TAG: u32 = 0x4443_0001;
@@ -559,7 +559,7 @@ unsafe fn capture(builder: P, cls: P) -> Option<Captured> {
         }
         let meta = ffi::Py_TYPE(cls);
         let tt = &raw mut ffi::PyType_Type;
-        if (*meta).tp_setattro != (*tt).tp_setattro || (*meta).tp_getattro != (*tt).tp_getattro {
+        if addr!((*meta).tp_setattro) != addr!((*tt).tp_setattro) || addr!((*meta).tp_getattro) != addr!((*tt).tp_getattro) {
             return None;
         }
         // `__qualname__` read by add_fns_to_class: `type`'s own descriptor.

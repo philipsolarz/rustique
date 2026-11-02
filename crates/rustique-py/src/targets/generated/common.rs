@@ -18,13 +18,35 @@ pub type Tp = *mut ffi::PyTypeObject;
 
 python_extern! {
     pub fn _PyType_LookupRef(t: Tp, name: P) -> P;
-    pub fn _PyFunction_Vectorcall(f: P, args: *const P, nargsf: usize, kwnames: P) -> P;
     pub fn PyFunction_SetVectorcall(f: *mut ffi::PyFunctionObject, vc: ffi::vectorcallfunc);
     pub fn PyUnstable_Code_GetExtra(code: P, index: ffi::Py_ssize_t, extra: *mut *mut c_void) -> c_int;
     pub fn PyUnstable_Code_SetExtra(code: P, index: ffi::Py_ssize_t, extra: *mut c_void) -> c_int;
     pub fn PyUnstable_Eval_RequestCodeExtraIndex(f: ffi::freefunc) -> ffi::Py_ssize_t;
     pub fn PyUnstable_Type_AssignVersionTag(t: Tp) -> c_int;
     pub fn PyWeakref_GetRef(r: P, out: *mut P) -> c_int;
+}
+
+/// A slot or function pointer as an address (0 for an empty slot), for comparisons.
+#[macro_export]
+macro_rules! dm_addr {
+    ($e:expr) => {
+        $e.map_or(0usize, |f| f as usize)
+    };
+}
+pub use dm_addr as addr;
+
+/// `_PyFunction_Vectorcall`'s address (not an exported symbol on 3.14: read from a live
+/// function object once).
+#[inline(always)]
+pub fn function_vectorcall() -> usize {
+    crate::accel::prepare::function_vectorcall()
+}
+
+/// `_PyFunction_Vectorcall` itself.
+#[inline(always)]
+pub fn func_vectorcall() -> ffi::vectorcallfunc {
+    // SAFETY: the address of CPython's `_PyFunction_Vectorcall` (never 0 once read).
+    unsafe { std::mem::transmute::<usize, ffi::vectorcallfunc>(function_vectorcall()) }
 }
 
 /// Positional argument count of a vectorcall.
@@ -37,7 +59,7 @@ pub fn nargs(nargsf: usize) -> usize {
 #[inline(always)]
 pub unsafe fn orig(f: P, args: *const P, nargsf: usize, kw: P) -> P {
     // SAFETY: per the caller (a live function object and a valid vectorcall).
-    unsafe { _PyFunction_Vectorcall(f, args, nargsf, kw) }
+    unsafe { crate::accel::FUNCTION_VECTORCALL.get()(f, args, nargsf, kw) }
 }
 
 /// The type's version tag (relaxed atomic read: CPython writes it atomically on
@@ -105,7 +127,7 @@ pub unsafe fn plain_attr(t: Tp, name: P) -> bool {
 #[inline(always)]
 pub unsafe fn generic_getattr(t: Tp) -> bool {
     // SAFETY: field read of a live type.
-    unsafe { (*t).tp_getattro == Some(ffi::PyObject_GenericGetAttr) }
+    unsafe { addr!((*t).tp_getattro) == ffi::PyObject_GenericGetAttr as *const () as usize }
 }
 
 /// `obj.name` through `PyObject_GenericGetAttr` (validated types only: generic protocol, no

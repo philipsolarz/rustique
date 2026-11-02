@@ -230,7 +230,7 @@ impl Dynamic {
     pub unsafe fn install_forced(&self, func: P, kernel: ffi::vectorcallfunc) -> bool {
         // SAFETY: attached thread, live object.
         unsafe {
-            if !is_function(func) || vectorcall_of(func) != _PyFunction_Vectorcall as usize {
+            if !is_function(func) || vectorcall_of(func) != function_vectorcall() {
                 return false;
             }
             let wr = ffi::PyWeakref_NewRef(func, std::ptr::null_mut());
@@ -312,7 +312,7 @@ unsafe fn restore_one(f: P, kernel: usize) {
     // SAFETY: attached thread, live function.
     unsafe {
         if is_function(f) && vectorcall_of(f) == kernel {
-            PyFunction_SetVectorcall(f.cast(), _PyFunction_Vectorcall);
+            PyFunction_SetVectorcall(f.cast(), func_vectorcall());
             crate::accel::site::restore_func_version(f.cast());
         }
     }

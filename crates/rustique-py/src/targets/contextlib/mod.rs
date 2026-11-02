@@ -52,8 +52,8 @@ pub static TARGETS: &[&TargetSpec] = &[&TARGET];
 
 mod fp {
     use crate::accel::Fingerprints;
-    pub const CONTEXTMANAGER: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
-    pub const INIT: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
+    pub const CONTEXTMANAGER: Fingerprints = &[(3, 14, "e4c751871a4a69f6"), (3, 15, "f68ebc56c587d927")];
+    pub const INIT: Fingerprints = &[(3, 14, "9a0c1fe778252123"), (3, 15, "39e83af693ad44ad")];
 }
 
 static CM_CODE: Slot = Slot::new();
@@ -106,12 +106,12 @@ unsafe fn validate_gcm(gcm: Tp) -> bool {
         let (t, m) = (ensure_tag(gcm), ensure_tag(meta));
         let tt = &raw mut ffi::PyType_Type;
         let ob = &raw mut ffi::PyBaseObject_Type;
-        let mut ok = (*meta).tp_call == (*tt).tp_call
-            && (*meta).tp_getattro == (*tt).tp_getattro
-            && (*gcm).tp_new == (*ob).tp_new
-            && (*gcm).tp_init != (*ob).tp_init
-            && (*gcm).tp_setattro == Some(ffi::PyObject_GenericSetAttr)
-            && (*gcm).tp_alloc == Some(ffi::PyType_GenericAlloc)
+        let mut ok = addr!((*meta).tp_call) == addr!((*tt).tp_call)
+            && addr!((*meta).tp_getattro) == addr!((*tt).tp_getattro)
+            && addr!((*gcm).tp_new) == addr!((*ob).tp_new)
+            && addr!((*gcm).tp_init) != addr!((*ob).tp_init)
+            && addr!((*gcm).tp_setattro) == ffi::PyObject_GenericSetAttr as *const () as usize
+            && addr!((*gcm).tp_alloc) == ffi::PyType_GenericAlloc as *const () as usize
             && ffi::PyType_GetFlags(gcm) & (ffi::Py_TPFLAGS_MANAGED_DICT | ffi::Py_TPFLAGS_IS_ABSTRACT)
                 == ffi::Py_TPFLAGS_MANAGED_DICT
             && resolves_to(gcm, N_INIT.get(), INIT_FN.get());
@@ -189,7 +189,7 @@ unsafe extern "C" fn k_helper(f: P, args: *const P, nargsf: usize, kw: P) -> P {
 unsafe fn construct(g: P, args: *const P, n: usize, kw: P) -> Option<P> {
     // SAFETY: per `k_helper`.
     unsafe {
-        if !is_function(g) || vectorcall_of(g) != _PyFunction_Vectorcall as usize {
+        if !is_function(g) || vectorcall_of(g) != function_vectorcall() {
             return None;
         }
         let gcode = func_code(g);
@@ -205,7 +205,7 @@ unsafe fn construct(g: P, args: *const P, n: usize, kw: P) -> Option<P> {
             return None;
         }
         // The generator first: binding errors fall back (nothing observable yet).
-        let genr = _PyFunction_Vectorcall(g, args, n, kw);
+        let genr = func_vectorcall()(g, args, n, kw);
         if genr.is_null() {
             ffi::PyErr_Clear();
             return None;

@@ -106,18 +106,18 @@ static SHARED: GroupSpec = GroupSpec { name: "enum", prepare: prepare_shared };
 
 mod fp {
     use crate::accel::Fingerprints;
-    pub const PROP_GET: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
-    pub const CALL: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
-    pub const NEW: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
-    pub const HASH: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
-    pub const NAME_FGET: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
-    pub const VALUE_FGET: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
-    pub const GET_VALUE: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
-    pub const OR: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
-    pub const AND: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
-    pub const XOR: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
-    pub const INVERT: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
-    pub const CONTAINS: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
+    pub const PROP_GET: Fingerprints = &[(3, 14, "b8022a6ef56c1c54"), (3, 15, "a56138c619b4395a")];
+    pub const CALL: Fingerprints = &[(3, 14, "99e5dbdb50e26c1f"), (3, 15, "bf18ecf593f41ac4")];
+    pub const NEW: Fingerprints = &[(3, 14, "247b8a5900c0f274"), (3, 15, "c4c501d955bce208")];
+    pub const HASH: Fingerprints = &[(3, 14, "83c3d1bbeb05254d"), (3, 15, "551fd435be3635f1")];
+    pub const NAME_FGET: Fingerprints = &[(3, 14, "fd32aad208ad95bf"), (3, 15, "8c6af6e312a3b8a3")];
+    pub const VALUE_FGET: Fingerprints = &[(3, 14, "5294087bd3fcc47d"), (3, 15, "7cf6b6942e27f9bf")];
+    pub const GET_VALUE: Fingerprints = &[(3, 14, "53b606a7c667d30a"), (3, 15, "ae8103dde2fe78fb")];
+    pub const OR: Fingerprints = &[(3, 14, "b4b08247147ecc53"), (3, 15, "8c310e1246fb7939")];
+    pub const AND: Fingerprints = &[(3, 14, "6e003f25d26cd45f"), (3, 15, "dd5978d74a6e9283")];
+    pub const XOR: Fingerprints = &[(3, 14, "404c23e61bcbaad3"), (3, 15, "8d4da5ba04013e16")];
+    pub const INVERT: Fingerprints = &[(3, 14, "f771e6d7837db565"), (3, 15, "6140431e67f9c95c")];
+    pub const CONTAINS: Fingerprints = &[(3, 14, "44c9688f0360ce51"), (3, 15, "3714e7461858e130")];
 }
 
 // ---------------------------------------------------------------------------------------
@@ -344,7 +344,7 @@ unsafe fn meta_facts(meta: Tp) -> bool {
     // SAFETY: attached thread; live type; MRO lookups only.
     unsafe {
         let tt = &raw mut ffi::PyType_Type;
-        if (*meta).tp_getattro != (*tt).tp_getattro || ffi::PyType_IsSubtype(meta, ENUM_TYPE.get().cast()) == 0 {
+        if addr!((*meta).tp_getattro) != addr!((*tt).tp_getattro) || ffi::PyType_IsSubtype(meta, ENUM_TYPE.get().cast()) == 0 {
             return false;
         }
         if !resolves_to(meta, N_MEMBER_MAP.get(), null_mut())
@@ -467,7 +467,7 @@ unsafe extern "C" fn k_enumtype_call(cls: P, args: P, kw: P) -> P {
         let meta = ffi::Py_TYPE(cls);
         if meta.cast::<ffi::PyObject>() != ENUM_TYPE.get()
             || ffi::PyTuple_GET_SIZE(args) != 1
-            || (!kw.is_null() && ffi::PyDict_GET_SIZE(kw) != 0)
+            || (!kw.is_null() && ffi::PyDict_Size(kw) != 0)
         {
             C_CALL.fallback(Reason::Args);
             return ORIG_TP_CALL.get()(cls, args, kw);
@@ -777,15 +777,16 @@ fn exact_fn(o: &Bound<'_, PyAny>, what: &str) -> Result<(), Refusal> {
     }
 }
 
-fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn module_type<'py>(cx: &mut Prepare<'py>, n: &str) -> Result<Bound<'py, PyType>, Refusal> {
+    Ok(cx.module_attr(n)?.cast_into::<PyType>().map_err(PyErr::from)?)
+}
+
+fn prepare_shared<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
     let g = cx.module()?.dict();
-    let ty = |cx: &mut Prepare<'_>, n: &str| -> Result<Bound<'_, PyType>, Refusal> {
-        cx.module_attr(n)?.cast_into::<PyType>().map_err(|e| PyErr::from(e).into())
-    };
-    let prop_t = ty(cx, "property")?;
-    let enum_type = ty(cx, "EnumType")?;
-    let enum_cls = ty(cx, "Enum")?;
-    let flag_cls = ty(cx, "Flag")?;
+    let prop_t = module_type(cx, "property")?;
+    let enum_type = module_type(cx, "EnumType")?;
+    let enum_cls = module_type(cx, "Enum")?;
+    let flag_cls = module_type(cx, "Flag")?;
     let pg = function(cx, &prop_t, "__get__")?;
     exact_fn(&pg, "enum.property.__get__")?;
     cx.fingerprint_code(&pg, fp::PROP_GET)?;
@@ -799,7 +800,7 @@ fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let hash = function(cx, &enum_cls, "__hash__")?;
     exact_fn(&hash, "Enum.__hash__")?;
     cx.fingerprint_code(&hash, fp::HASH)?;
-    let fget_of = |cx: &mut Prepare<'_>, owner: &Bound<'_, PyType>, n: &str| -> Result<Bound<'_, PyAny>, Refusal> {
+    let fget_of = |cx: &mut Prepare<'py>, owner: &Bound<'py, PyType>, n: &str| -> Result<Bound<'py, PyAny>, Refusal> {
         let p = cx.type_attr(owner, n)?;
         if !p.get_type().is(&prop_t) {
             return Err(Refusal::new(format!("Enum.{n} is not an enum.property")));
@@ -876,30 +877,38 @@ fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     Ok(())
 }
 
-fn prepare_prop(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    let t = cx.module_attr("property")?.cast_into::<PyType>().map_err(PyErr::from)?;
-    if t.as_ptr() != PROP_TYPE.get() {
-        return Err(Refusal::new("enum group state missing"));
+/// The group's state was built from this very module (the registry ran the shared prepare;
+/// the fingerprint report runs only target prepares: then run it here).
+fn group_state<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
+    let t = cx.module_attr("property")?;
+    if t.as_ptr() != PROP_TYPE.get() || CALL_FN.func.get().is_null() {
+        prepare_shared(py, cx)?;
     }
+    Ok(())
+}
+
+fn prepare_prop<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
+    group_state(py, cx)?;
+    let t = cx.module_attr("property")?.cast_into::<PyType>().map_err(PyErr::from)?;
     cx.slot(&t, SlotName::TpDescrGet, k_prop_descr_get as ffi::descrgetfunc, &ORIG_DESCR_GET)
 }
 
-fn prepare_call(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn prepare_call<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
+    group_state(py, cx)?;
     let t = cx.module_attr("EnumType")?.cast_into::<PyType>().map_err(PyErr::from)?;
-    if t.as_ptr() != ENUM_TYPE.get() {
-        return Err(Refusal::new("enum group state missing"));
-    }
     cx.slot(&t, SlotName::TpCall, k_enumtype_call as ffi::ternaryfunc, &ORIG_TP_CALL)?;
     let call = CALL_FN.func.get_bound(cx.py());
     cx.vectorcall(&call, k_enum_call_vc, &accel::FUNCTION_VECTORCALL)
 }
 
-fn prepare_hash(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn prepare_hash<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
+    group_state(py, cx)?;
     let f = HASH_FN.func.get_bound(cx.py());
     cx.vectorcall(&f, k_hash, &accel::FUNCTION_VECTORCALL)
 }
 
-fn prepare_flag(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn prepare_flag<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
+    group_state(py, cx)?;
     let ks: [(&Fn, ffi::vectorcallfunc); 5] = [
         (&OR_FN, k_flag_or),
         (&AND_FN, k_flag_and),

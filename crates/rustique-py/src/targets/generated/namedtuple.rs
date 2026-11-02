@@ -60,7 +60,7 @@ pub static TARGET: TargetSpec = TargetSpec {
 
 mod fp {
     use crate::accel::Fingerprints;
-    pub const NAMEDTUPLE: Fingerprints = &[(3, 14, "?"), (3, 15, "?")];
+    pub const NAMEDTUPLE: Fingerprints = &[(3, 14, "9f9ab068d143d8e0"), (3, 15, "4a93df023ec11540")];
 }
 
 const NT_TAG: u32 = 0x4E54_0001;
@@ -128,7 +128,7 @@ unsafe fn construct(cls: P, items: &[P]) -> Option<P> {
         while !sb.is_null() && (*sb).tp_new.map_or(0, |f| f as usize) == slot_new {
             sb = (*sb).tp_base;
         }
-        if !sb.is_null() && (*sb).tp_new != (*tuple_t).tp_new {
+        if !sb.is_null() && addr!((*sb).tp_new) != addr!((*tuple_t).tp_new) {
             return None;
         }
         let alloc = (*ct).tp_alloc?;
@@ -309,7 +309,7 @@ unsafe extern "C" fn k_nt_replace(f: P, args: *const P, nargsf: usize, kw: P) ->
         let tuple_t = &raw mut ffi::PyTuple_Type;
         // `self` iterates as a tuple, has no instance dict (so `self._make` is the class's).
         if ffi::PyTuple_Check(this) == 0
-            || (*tp).tp_iter != (*tuple_t).tp_iter
+            || addr!((*tp).tp_iter) != addr!((*tuple_t).tp_iter)
             || !generic_getattr(tp)
             || (*tp).tp_dictoffset != 0
             || ffi::PyType_GetFlags(tp) & ffi::Py_TPFLAGS_MANAGED_DICT != 0
