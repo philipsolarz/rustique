@@ -362,6 +362,23 @@ def test_counter_file_longer_rows(tmp_path):
     assert _report.read_counter_file(p)["stats"]["a.b"]["hits"] == 5
 
 
+def test_render_names_refusals_that_matter():
+    rec = record()
+    ts = rec["status"]["targets"]
+    for i in range(12):  # a long list of expected refusals (e.g. a free-threaded build)
+        ts.append({"name": f"gen.t{i:02d}", "group": "gen", "state": "refused", "reason": "free-threaded builds",
+                   "refusal": "build"})
+    ts.append({"name": "zz.accepted", "group": "zz", "state": "refused", "reason": "free-threaded builds",
+               "refusal": "build"})
+    for i in range(9):  # unexpected refusals are never shortened
+        ts.append({"name": f"fp.t{i}", "group": "fp", "state": "refused", "reason": "x", "refusal": "fingerprint"})
+    text = _report.render(rec, keep_refused=["zz.accepted"])
+    line = next(ln for ln in text.splitlines() if ln.startswith("    [build] 13:"))
+    assert "zz.accepted" in line and "... 8 more" in line
+    line = next(ln for ln in text.splitlines() if ln.startswith("    [fingerprint] 9:"))
+    assert all(f"fp.t{i}" in line for i in range(9)) and "more" not in line
+
+
 def test_render_status_groups():
     text = _report.render_status(record()["status"])
     assert text.startswith("6 targets in 5 groups: 4 available here (3 active now, 1 activate when their module is "

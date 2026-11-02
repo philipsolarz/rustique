@@ -495,7 +495,11 @@ def test_plugin_unexpected_refusal_fails_the_session(plain_suite, refusal, args,
     r = pytest_run(plain_suite, "--rustique", *args)
     assert (r.returncode == 1) == fails, r.stdout
     assert ("refused unexpectedly" in r.stdout) == fails
-    assert "fake.target" in r.stdout
+    # refusals that matter to the session (unexpected, or accepted by name) are always named;
+    # an expected one may be one of a long, shortened list (free-threaded builds refuse many)
+    if fails or args:
+        assert "fake.target" in r.stdout
+    assert f"[{refusal}]" in r.stdout
 
 
 def test_plugin_tiers_option(plain_suite):

@@ -72,12 +72,21 @@ class _Session:
         self.config = config
         self.workers: list[dict] = []
 
+    def allow(self) -> set[str]:
+        return {n.strip() for n in self.config.getoption("rustique_allow_refused").split(",") if n.strip()}
+
     def unexpected(self, st: dict) -> list[dict]:
-        allow = {n.strip() for n in self.config.getoption("rustique_allow_refused").split(",") if n.strip()}
+        allow = self.allow()
         if "all" in allow:
             return []
         return [t for t in st.get("targets", []) if t["state"] == "refused" and not expected_refusal(t)
                 and t["name"] not in allow and t["group"] not in allow]
+
+    def accepted(self, st: dict) -> list[str]:
+        """Refused targets the session was told to accept (``--rustique-allow-refused``)."""
+        allow = self.allow()
+        return [t["name"] for t in st.get("targets", []) if t["state"] == "refused"
+                and ("all" in allow or t["name"] in allow or t["group"] in allow)]
 
 
 class _Outcomes:
@@ -187,7 +196,9 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
         rec["processes"] = len(state.workers)
     tr = terminalreporter
     tr.write_sep("=", "rustique")
-    for line in _report.render(rec, limit=config.getoption("rustique_report_limit")).rstrip().splitlines():
+    keep = [t["name"] for t in state.unexpected(rec["status"])] + state.accepted(rec["status"])
+    for line in _report.render(rec, limit=config.getoption("rustique_report_limit"),
+                               keep_refused=keep).rstrip().splitlines():
         tr.write_line(line)
     bad = state.unexpected(rec["status"])
     if bad:
