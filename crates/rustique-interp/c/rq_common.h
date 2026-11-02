@@ -77,7 +77,8 @@ rq_lookup_ref(PyTypeObject *tp, PyObject *name, PyObject **descr, unsigned int *
  *   attr      ratio 5   our copies of the LOAD_ATTR family cost ~0.8% when nothing hits
  *   setattr   ratio 64  a hit saves ~570 Ir, a non-hit costs ~10
  *   kwinit    ratio 64  a hit saves ~1,100 Ir
- *   isinstance          never suspended: every path is at most the core's cost */
+ *   isinstance ratio 4  a hit saves 27-490 Ir, a fallback (ABCs, hooks, unions) costs +12-45 Ir:
+ *                       ABC-heavy code gives the core's handler back (task_planner) */
 enum { RQ_G_ATTR = 0, RQ_G_SETATTR = 1, RQ_G_KWINIT = 2, RQ_G_ISINSTANCE = 3, RQ_G_GETATTR = 4,
        RQ_NGROUPS = 5 };
 #define RQ_WINDOW 65536u
@@ -101,7 +102,7 @@ static rq_group_t rq_groups[RQ_NGROUPS] = {
     [RQ_G_ATTR] = {.ratio = 5},
     [RQ_G_SETATTR] = {.ratio = 64},
     [RQ_G_KWINIT] = {.ratio = 64},
-    [RQ_G_ISINSTANCE] = {.ratio = 0},
+    [RQ_G_ISINSTANCE] = {.ratio = 4},
     [RQ_G_GETATTR] = {.ratio = 0},
 };
 

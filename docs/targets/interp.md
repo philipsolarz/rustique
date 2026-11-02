@@ -159,7 +159,8 @@ fills excluded) and decides twice: **early**, after the first 65,536 executions,
 are below a quarter of break-even (its cost is visible already); **final**, after 16 windows
 (~1M executions), at break-even, a horizon long enough to average out start-up phases for
 borderline groups. Break-even ratios: attribute family 5, `object.__setattr__` 64, keyword
-instantiation 64; `isinstance` never suspends (every path is at most the core's cost). A
+instantiation 64, `isinstance` 4 (a hit saves 27–490 Ir, a fallback through ABCs, hooks or
+unions costs +12–45 Ir). A
 suspension asks the registry (`Counters::request_suspend`), which restores the core's handlers
 for the process and reports the target `suspended`; a later `enable()` reinstalls it and the
 group counts afresh. The early decision fixed the T1 misses of the first measurement
