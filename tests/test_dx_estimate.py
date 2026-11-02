@@ -200,7 +200,10 @@ def test_profiler_times_targets_and_c_children():
         p.stop()
     r = p.result()["targets"]
     assert r["json.dumps"]["calls"] == 200 and r["builtins.sorted"]["calls"] == 200
-    assert r["json.dumps"]["c_child_ns"] > 0  # samples would see sorted's time under dumps
+    # samples would see sorted's time under dumps: the profiler keeps it apart (raw time: the
+    # calibrated per-call cost subtracted from it is noisy on a loaded machine)
+    assert p.c_child_calls["json.dumps"] == 200 and p.c_child["json.dumps"] > 0
+    assert any(s[4] == "builtins.sorted" for s in p.result()["c_call_sites"])
     assert not p.result()["thread_clock"]
 
 
