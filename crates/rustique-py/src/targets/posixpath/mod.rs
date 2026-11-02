@@ -121,14 +121,12 @@ fn init_layouts(cx: &Prepare<'_>) -> Result<(), Refusal> {
 }
 
 /// The group's shared declarations: validations (fingerprints of the helpers the kernels
-/// reproduce or call, identities, constants) and the pins of everything any posixpath
-/// original reads at call time, once for the eight targets.
-fn shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    if !cfg!(unix) {
-        // POSIX path semantics only: on Windows `os.path` is `ntpath`, `fnmatch` normalises
-        // with `ntpath.normcase` and `pathlib.Path` is `WindowsPath`.
-        return Err(Refusal::with(crate::accel::spec::Category::Platform, "validated on POSIX systems only"));
-    }
+/// reproduce or call, identities) and the pins of everything the six string-only originals
+/// (`join split splitext basename dirname isabs`) read at call time, once for the group.
+/// These six are platform-independent code (`posixpath` is importable everywhere:
+/// `zipfile._path`, `mimetypes`, `http.server` use it explicitly on Windows), so this part
+/// does not depend on the OS; `abspath`/`relpath` add [`cwd_deps`].
+fn shared(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     init_layouts(cx)?;
     let g = cx.module()?.dict();
     let osm = cx.loaded_module("os")?;
@@ -138,7 +136,43 @@ fn shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     }
     rt::check_c(cx, FPS, "os.fspath", &cx.get(&osd, "fspath")?)?;
     rt::check_fp(cx, FPS, "posixpath._get_sep", &cx.get(&g, "_get_sep")?)?;
-    // abspath / relpath: os.getcwd(b) (C), join, the C normpath, abspath itself.
+    // splitext → genericpath._splitext
+    let gp = cx.loaded_module("genericpath")?;
+    let gd = gp.dict();
+    if !cx.get(&g, "genericpath")?.is(&gp) {
+        return Err(refuse!("posixpath.genericpath is not the genericpath module"));
+    }
+    rt::check_fp(cx, FPS, "genericpath._splitext", &cx.get(&gd, "_splitext")?)?;
+    // Pins: posixpath globals, os.fspath, the builtins posixpath and genericpath code
+    // resolves (`pin_global` also pins "not shadowed by a module global").
+    for key in ["os", "_get_sep", "genericpath"] {
+        cx.pin(&g, key, &DEPS)?;
+    }
+    cx.pin(&osd, "fspath", &DEPS)?;
+    cx.pin(&gd, "_splitext", &DEPS)?;
+    for name in ["isinstance", "bytes", "len"] {
+        cx.pin_global(&g, name, &DEPS)?;
+    }
+    for name in ["isinstance", "list", "tuple", "min", "max", "enumerate"] {
+        cx.pin_global(&gd, name, &DEPS)?;
+    }
+    Ok(())
+}
+
+/// What `abspath` and `relpath` add (POSIX only: they read the current directory and
+/// normalize with C `posix._path_normpath`, which Windows builds of `posixpath` replace with
+/// a Python `normpath` over `nt.getcwd()` results): `os.getcwd(b)` (C), `join`, the C
+/// normpath, `abspath` itself, `(_)commonprefix`, `relpath`'s constants, all pinned on the
+/// group's flag. Idempotent per process (the cells keep their first values).
+fn cwd_deps(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    if !cfg!(unix) {
+        return Err(Refusal::with(
+            crate::accel::spec::Category::Platform,
+            "abspath/relpath: POSIX getcwd and C normpath only",
+        ));
+    }
+    let g = cx.module()?.dict();
+    let osd = cx.loaded_module("os")?.dict();
     for (key, cell) in [("getcwd", &GETCWD), ("getcwdb", &GETCWDB)] {
         let f = cx.get(&osd, key)?;
         rt::check_c(cx, FPS, &format!("os.{key}"), &f)?;
@@ -149,14 +183,9 @@ fn shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     func(cx, &g, "join")?;
     func(cx, &g, "abspath")?;
     check_normpath(cx, &g)?;
-    // splitext → genericpath._splitext; relpath → `_commonprefix` (3.15:
-    // `genericpath._commonprefix`; 3.14: the module-level `commonprefix`).
-    let gp = cx.loaded_module("genericpath")?;
-    let gd = gp.dict();
-    if !cx.get(&g, "genericpath")?.is(&gp) {
-        return Err(refuse!("posixpath.genericpath is not the genericpath module"));
-    }
-    rt::check_fp(cx, FPS, "genericpath._splitext", &cx.get(&gd, "_splitext")?)?;
+    // relpath → `_commonprefix` (3.15: `genericpath._commonprefix`; 3.14: the module-level
+    // `commonprefix`).
+    let gd = cx.loaded_module("genericpath")?.dict();
     if cx.version() >= (3, 15) {
         rt::check_fp(cx, FPS, "genericpath._commonprefix", &cx.get(&gd, "_commonprefix")?)?;
         cx.pin(&gd, "_commonprefix", &DEPS)?;
@@ -183,20 +212,11 @@ fn shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if KW_START.load(Relaxed) == 0 {
         KW_START.store(rt::leak(PyString::intern(py, "start").as_any()), Relaxed);
     }
-    // Pins: posixpath globals, os functions, the builtins posixpath and genericpath code
-    // resolves (`pin_global` also pins "not shadowed by a module global").
-    for key in ["os", "_get_sep", "join", "normpath", "abspath", "genericpath"] {
+    for key in ["join", "normpath", "abspath"] {
         cx.pin(&g, key, &DEPS)?;
     }
-    for key in ["fspath", "getcwd", "getcwdb"] {
+    for key in ["getcwd", "getcwdb"] {
         cx.pin(&osd, key, &DEPS)?;
-    }
-    cx.pin(&gd, "_splitext", &DEPS)?;
-    for name in ["isinstance", "bytes", "len"] {
-        cx.pin_global(&g, name, &DEPS)?;
-    }
-    for name in ["isinstance", "list", "tuple", "min", "max", "enumerate"] {
-        cx.pin_global(&gd, name, &DEPS)?;
     }
     Ok(())
 }
@@ -226,10 +246,12 @@ fn prep_isabs(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 fn prep_splitext(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     prep_fn(cx, "splitext", k_splitext)
 }
-fn prep_abspath(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn prep_abspath(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    cwd_deps(py, cx)?;
     prep_fn(cx, "abspath", k_abspath)
 }
-fn prep_relpath(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn prep_relpath(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    cwd_deps(py, cx)?;
     prep_fn(cx, "relpath", k_relpath)
 }
 

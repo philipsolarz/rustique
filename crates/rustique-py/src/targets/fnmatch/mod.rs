@@ -82,14 +82,9 @@ pub static TARGETS: &[&TargetSpec] = &[&FNMATCH, &FNMATCHCASE, &FILTER];
 /// The group's shared declarations: everything `fnmatchcase(name, pat)` reaches on a
 /// cache miss (the whole `fnmatch` namespace by snapshot, the builtins it uses,
 /// `re.compile`, `re._compile`, the parts of `re._parser` whose set semantics the port
-/// reproduces) and `os.path.normcase` as `fnmatch`/`filter` reach it (`fnmatch.os` →
-/// `os.path` → `posixpath.normcase` → `os.fspath`): validated and pinned once.
+/// reproduces): validated and pinned once. Platform-independent (`fnmatchcase` is the same
+/// code everywhere); `fnmatch`/`filter` add [`normcase_deps`].
 fn shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    if !cfg!(unix) {
-        // POSIX path semantics only: on Windows `os.path` is `ntpath`, `fnmatch` normalises
-        // with `ntpath.normcase` and `pathlib.Path` is `WindowsPath`.
-        return Err(Refusal::with(crate::accel::spec::Category::Platform, "validated on POSIX systems only"));
-    }
     if !rt::init_str_layout(py) {
         return Err(refuse!("str layout not calibrated"));
     }
@@ -127,6 +122,21 @@ fn shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     for name in ["isinstance", "str", "bytes", "len", "range"] {
         cx.pin_global(&g, name, &DEPS)?;
     }
+    Ok(())
+}
+
+/// What `fnmatch` and `filter` add: `os.path.normcase` as they reach it (`fnmatch.os` →
+/// `os.path` → `posixpath.normcase` → `os.fspath`), validated and pinned. POSIX only: on
+/// Windows `os.path` is `ntpath`, whose `normcase` lowers case with `LCMapStringEx`.
+/// `fnmatchcase` does not normalize and installs everywhere.
+fn normcase_deps(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    if !cfg!(unix) {
+        return Err(Refusal::with(
+            crate::accel::spec::Category::Platform,
+            "fnmatch/filter: os.path.normcase validated with posixpath only",
+        ));
+    }
+    let g = cx.module()?.dict();
     // os.path.normcase
     let os = cx.loaded_module("os")?;
     let pp = cx.loaded_module("posixpath")?;
@@ -163,12 +173,14 @@ fn prep_fnmatchcase(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal
 }
 
 fn prep_fnmatch(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    normcase_deps(cx)?;
     // Its original calls the global `fnmatchcase` (covered by the namespace snapshot).
     rt::check_fp(cx, FPS, "fnmatch.fnmatchcase", &cx.module_attr("fnmatchcase")?)?;
     prep_fn(cx, "fnmatch", k_fnmatch)
 }
 
 fn prep_filter(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    normcase_deps(cx)?;
     prep_fn(cx, "filter", k_filter)
 }
 
