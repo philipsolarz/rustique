@@ -477,9 +477,10 @@ Full suite per build: ⟨SUITES⟩.
    `--fetch-cpython` on every runner, and the platform job's run time (estimated 10–40 min
    per cell, I). Please run actionlint first.
 5. **Platform floors** are wave 1's counts. Raise `.github/platform-floors.json` to T10
-   (Windows 48, macOS/musl 77) when accel's and text's platform changes are merged. The
-   Windows row of USAGE.md's platform table names the groups expected after accel's
-   `GetProcAddress` change: check it against the first platform-coverage artifact.
+   (Windows 48, macOS/musl 77) when accel's and text's platform changes are merged, and update
+   USAGE.md's platform table (today's coverage: Windows refuses `copy`/`logging`/`random`/
+   `textwrap` for want of run-time symbol lookup, macOS/musl refuse `isoformat` with the
+   rest of datetime text) from the first platform-coverage artifact.
 6. **Upstream** (to file): `sys._current_frames()` frames must not be walked on
    free-threaded builds (§5.4). The earlier items stand: the `.pth` `utf-8-sig` decode, and
    `.start` entry points importing `pkgutil` (w2-startup §6).

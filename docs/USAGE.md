@@ -69,9 +69,9 @@ CPython's own code runs.
 | platform | wheels | targets on (3.15) | what refuses there |
 |---|---|---|---|
 | Linux x86_64 and aarch64, glibc (manylinux_2_28) | cp314, cp314t, cp315, cp315t | all (3.14: all but 5 `pathlib` properties, which 3.14's specializer inlines) | — |
-| Linux x86_64 and aarch64, musl (musllinux_1_2) | same | all but the `datetime`/`time` text targets whose behaviour depends on the C library | `strptime`/`strftime` (locale and `%`-directive behaviour validated on glibc only) |
+| Linux x86_64 and aarch64, musl (musllinux_1_2) | same | all but the `datetime`/`time` text targets | `strptime`, `strftime`, `isoformat` (validated with glibc's locale and `%`-directive behaviour only) |
 | macOS arm64 and x86_64 | same | as musl | as musl |
-| Windows x64 and arm64 | same | containers, builtins, `float`, `json`, `copy`, `random`, `textwrap`, `statistics`, `urllib.parse`, `dataclasses`, `logging` (the Windows-specific ones are being validated) | POSIX path semantics (`posixpath`, `fnmatch`, `pathlib`) and C-library `datetime` text |
+| Windows x64 and arm64 | same | containers, builtins, `float`, `json` (not on 3.15t yet), `statistics`, `urllib.parse`, `dataclasses` | POSIX path semantics (`posixpath`, `fnmatch`, `pathlib`); `datetime` text; the groups that look up a CPython function at run time (`copy`, `logging`, `random`, `textwrap`), until that lookup is validated on Windows |
 
 The exact numbers for a release are in its CI run: the `platform-coverage` artifact of the
 `Wheels` workflow tabulates every platform × build. It counts a target as "on" only after
