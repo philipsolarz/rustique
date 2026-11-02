@@ -316,9 +316,8 @@ unsafe fn template_checked(st: &state::Funcs, p: O, repl: O, _istext: bool) -> b
         // access) costs more than the kernel saves (measured 1.09): such templates decline
         // and run the original; numeric references (`\1`, `\g<1>`) are checked here.
         let mut index = |_name: &[u32]| -> Option<u32> { None };
-        let ok = with_units(repl, |units, _| template::check(units, groups as u32, maxgroups, &mut index).is_ok())
-            .unwrap_or(false);
-        ok
+        with_units(repl, |units, _| template::check(units, groups as u32, maxgroups, &mut index).is_ok())
+            .unwrap_or(false)
     }
 }
 

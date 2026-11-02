@@ -186,7 +186,6 @@ pub(crate) struct Funcs {
     pub n_maxsplit: O,
     pub n_value_: O,
     pub n_groups: O,
-    pub n_groupindex: O,
     pub n_pattern: O,
     pub refs: Vec<O>,
 }

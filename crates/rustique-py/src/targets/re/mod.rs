@@ -587,7 +587,7 @@ fn shared_funcs(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if !cache2.is_exact_instance_of::<PyDict>() {
         return Err(refuse!(Deps: "re._cache2 is not a dict"));
     }
-    let names = ["flags", "count", "maxsplit", "_value_", "groups", "groupindex", "pattern"]
+    let names = ["flags", "count", "maxsplit", "_value_", "groups", "pattern"]
         .map(|n| crate::accel::prepare::interned(py, n).into_any());
     let mut refs: Vec<O> = vec![keep(&cache2), keep(&pattern_t), keep(&regexflag), keep(&zero)];
     refs.extend(fps.iter().map(|(_, o)| *o));
@@ -610,8 +610,7 @@ fn shared_funcs(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         n_maxsplit: names[2].as_ptr(),
         n_value_: names[3].as_ptr(),
         n_groups: names[4].as_ptr(),
-        n_groupindex: names[5].as_ptr(),
-        n_pattern: names[6].as_ptr(),
+        n_pattern: names[5].as_ptr(),
         refs,
     });
     Ok(())
