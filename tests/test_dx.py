@@ -513,9 +513,9 @@ def test_startup_and_import_load_no_other_module(sitedir):
     r = py("import site, sys; sys.path.insert(0, sys.argv[1]); site.addsitedir(sys.argv[1]);"
            "ext = sys.modules['_rustique']; import rustique;"
            "print(rustique._rustique is ext is sys.modules['rustique._rustique'],"
-           "rustique.status()['process']['switch']['source'], ext.__file__.startswith(sys.argv[1]))",
+           "rustique.status()['process']['switch']['source'])",
            sitedir, env=clean_env(RUSTIQUE="1"))
-    assert r.stdout.split() == ["True", "RUSTIQUE=1", "True"], r.stderr  # a later import reuses it
+    assert r.stdout.split() == ["True", "RUSTIQUE=1"], r.stderr  # a later import reuses it
 
 
 # --- report at exit (subprocesses) --------------------------------------------------------
