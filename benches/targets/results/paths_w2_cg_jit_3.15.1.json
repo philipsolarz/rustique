@@ -1,0 +1,158 @@
+{
+ "python": "3.15.1 (main, Oct 21 2026, 17:48:50) [Clang 23.1.3 ]",
+ "jit": true,
+ "rows": {
+  "posixpath: join(d, f)": {
+   "orig": 3470.972,
+   "rs": 707.872
+  },
+  "posixpath: join(root, 'src', 'pkg', f)": {
+   "rs": 1376.672,
+   "orig": 7184.172
+  },
+  "posixpath: join(d, '/abs')": {
+   "rs": 418.372,
+   "orig": 2329.572
+  },
+  "posixpath: join(db, fb) bytes": {
+   "rs": 737.872,
+   "orig": 3513.8985
+  },
+  "posixpath: join(latin1, f)": {
+   "orig": 3495.972,
+   "rs": 724.872
+  },
+  "posixpath: join(ucs2, ucs4)": {
+   "orig": 2316.072,
+   "rs": 414.872
+  },
+  "posixpath: join(ds, fs) str subclass": {
+   "orig": 3878.918,
+   "rs": 2326.872
+  },
+  "posixpath: join(PathLike, f)": {
+   "orig": 4154.772,
+   "rs": 4154.772
+  },
+  "posixpath: join(Path, f)": {
+   "orig": 4156.772,
+   "rs": 4156.772
+  },
+  "posixpath: join(d, f) os.fspath patched": {
+   "orig": 3780.472,
+   "rs": 3780.472
+  },
+  "posixpath: join(d, f) _get_sep patched": {
+   "orig": 3596.0115,
+   "rs": 3596.0115
+  },
+  "posixpath: join(d, f) cProfile on": {
+   "rs": 13854.1335,
+   "orig": 13854.1405
+  },
+  "posixpath: relpath(p, root)": {
+   "rs": 1637.872,
+   "orig": 18072.472
+  },
+  "posixpath: relpath(pb, rootb) bytes": {
+   "rs": 1431.872,
+   "orig": 19050.472
+  },
+  "posixpath: relpath(f) relative": {
+   "rs": 3497.472,
+   "orig": 26444.672
+  },
+  "posixpath: relpath(ps, root) str subclass": {
+   "rs": 2338.872,
+   "orig": 19188.3535
+  },
+  "posixpath: relpath(p, root) os.fspath patched": {
+   "orig": 18880.472,
+   "rs": 18856.472
+  },
+  "posixpath: abspath(p)": {
+   "rs": 939.472,
+   "orig": 2691.472
+  },
+  "posixpath: abspath(f) relative": {
+   "orig": 7493.472,
+   "rs": 2461.472
+  },
+  "posixpath: abspath(ps) str subclass": {
+   "orig": 3187.8535,
+   "rs": 1615.472
+  },
+  "fnmatch: fnmatch(f, '*.py')": {
+   "rs": 524.372,
+   "orig": 4331.766
+  },
+  "fnmatch: fnmatch(f, 'coverage.*') miss": {
+   "rs": 537.372,
+   "orig": 3724.766
+  },
+  "fnmatch: fnmatch(f, '[!t]*_[0-9]*.py')": {
+   "rs": 627.372,
+   "orig": 3789.766
+  },
+  "fnmatch: fnmatch(fb, b'*.py') bytes": {
+   "rs": 493.372,
+   "orig": 4383.766
+  },
+  "fnmatch: fnmatch(fs, '*.py') str subclass": {
+   "rs": 539.372,
+   "orig": 4329.766
+  },
+  "fnmatch: fnmatch(Path, '*.py')": {
+   "orig": 5028.766,
+   "rs": 2404.8085
+  },
+  "fnmatch: fnmatch(f, '*.py') os.fspath patched": {
+   "rs": 4796.766,
+   "orig": 4711.766
+  },
+  "fnmatch: fnmatch(f, '*.py') cProfile on": {
+   "rs": 15219.697,
+   "orig": 15205.7065
+  },
+  "fnmatch: fnmatchcase(f, '*.py')": {
+   "rs": 524.372,
+   "orig": 3159.366
+  },
+  "fnmatch: fnmatchcase(fs, '*.py') str subclass": {
+   "rs": 539.372,
+   "orig": 3157.366
+  },
+  "fnmatch: any(fnmatch(f, pat) for 12 pats)": {
+   "rs": 11477.9005,
+   "orig": 51357.066
+  },
+  "fnmatch: filter(32 names, '*.py')": {
+   "rs": 3606.372,
+   "orig": 57296.566
+  },
+  "fnmatch: filter(iter, '*.py')": {
+   "orig": 59221.366,
+   "rs": 57955.366
+  },
+  "pathlib: str(pp / f)": {
+   "rs": 7472.972,
+   "orig": 29223.3805
+  },
+  "pathlib: pp.relative_to(root)": {
+   "rs": 4618.572,
+   "orig": 100392.0655
+  },
+  "pathlib: PurePosixPath(d, f)": {
+   "orig": 4679.472,
+   "rs": 1915.472
+  },
+  "pathlib: str(ms / f) subclass": {
+   "orig": 27716.6955,
+   "rs": 27768.6955
+  },
+  "pathlib: pp.relative_to(root) cProfile on": {
+   "rs": 301587.0375,
+   "orig": 301503.0445
+  }
+ }
+}

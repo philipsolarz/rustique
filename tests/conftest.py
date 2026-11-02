@@ -38,6 +38,17 @@ settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 FREE_THREADED = bool(getattr(sys, "_is_gil_enabled", lambda: True)() is False)
 
+# Targets validate at install in the test-suite (their tests assert "installed" right after
+# enable()); the first-call path has its own tests (tests/test_accel_firstcall.py). Child
+# processes inherit the setting through the environment.
+os.environ.setdefault("RUSTIQUE_VALIDATE", "eager")
+try:
+    from rustique import _rustique as _rq
+
+    _rq._accel._set_validation(os.environ["RUSTIQUE_VALIDATE"])
+except (ImportError, AttributeError):  # not built, or an older build
+    pass
+
 
 def pytest_report_header(config: pytest.Config) -> list[str]:
     return [f"GIL {'disabled (free-threaded)' if FREE_THREADED else 'enabled'}"]

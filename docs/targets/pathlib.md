@@ -1,4 +1,5 @@
-STATUS: wave 1, workstream `paths` (2026-11-01). Contract: docs/ACCELERATION.md.
+STATUS: wave 1, workstream `paths` (2026-11-01); wave 2, workstream `text` (2026-11-02: §Wave 2).
+Contract: docs/ACCELERATION.md.
 
 # Group `pathlib`
 
@@ -82,7 +83,66 @@ remove that; not done in wave 1.
 None: the kernels fill the same private slots with the same values. Not filled where
 CPython would not fill them either.
 
-## Measurements
+## Wave 2 (workstream `text`, 2026-11-02)
+
+Same targets, subset and stored state. Changed: no per-call Rust heap in parsing and
+formatting. `_parse_path` of several raw segments joins them (as `parser.join` would) into
+a stack buffer of code points (heap only beyond 512 units or 16 segments) instead of a
+`Vec<u32>` plus three plan `Vec`s; one segment is parsed in place; `_format_parsed_parts`
+measures and writes in two passes over the tail list (no `Vec` of views; no Python code
+runs in between, so the list is the same). The tail list itself is still built by
+appends, so its capacity matches the list comprehension's. Windows-flavour paths
+(`PureWindowsPath`, `WindowsPath`) stay CPython's (unchanged; w2-dx §6 step 8).
+
+Callgrind (3.15.1, wave 1 = bc2ce1a, wave 2 = ws2/text-paths on wave2 c9fb335; the
+uniform +13 Ir on untouched property kernels comes with the merged framework):
+
+| cell | CPython Ir | wave 1 Ir | wave 2 Ir | ratio (wave 2) |
+|---|---:|---:|---:|---:|
+| `Path(p)` | 4,528 | 1,813 | 1,839 | 0.406 |
+| `str(Path(p))` | 26,231 | 6,421 | 6,172 | 0.235 |
+| `Path(d) / f` | 10,647 | 3,241 | 3,280 | 0.308 |
+| `str(pp / f)` | 32,517 | 9,103 | 7,556 | 0.232 |
+| `pp.name` | 715 | 391 | 404 | 0.565 |
+| `pp.suffix` | 2,080 | 694 | 726 | 0.349 |
+| `pp.stem` | 2,208 | 675 | 688 | 0.311 |
+| `pp.parent` | 9,215 | 2,684 | 2,572 | 0.279 |
+| `pp.parts` | 2,488 | 699 | 712 | 0.286 |
+| `pp.with_suffix('.txt')` | 13,443 | 9,432 | 9,491 | 0.706 |
+| `pp.relative_to(root)` | 108,479 | 4,899 | 4,624 | 0.043 |
+| `hash(Path(p))` | 38,282 | 7,167 | 6,918 | 0.181 |
+| `Path(p) == pp` | 33,068 | 6,557 | 6,308 | 0.191 |
+| `pp.as_posix()` | 1,221 | 1,015 | 1,028 | 0.842 |
+| `pp.is_absolute()` | 912 | 912 | 912 | 1.000 |
+| `PurePosixPath(d, f)` | 5,475 | 1,877 | 1,903 | 0.348 |
+| `MyP(p) subclass` | 4,376 | 4,390 | 4,390 | 1.003 |
+| `str(pp)` | 609 | 403 | 416 | 0.683 |
+| `os.fspath(pp)` | 895 | 689 | 702 | 0.784 |
+| `pp == pq` | 1,595 | 497 | 510 | 0.320 |
+| `hash(pp)` | 830 | 616 | 629 | 0.758 |
+| `PurePosixPath(p).name (fresh)` | 18,083 | 5,230 | 5,122 | 0.283 |
+| `pw.name PureWindowsPath` | 715 | 715 | 715 | 1.000 |
+| `pw.parent PureWindowsPath` | 9,156 | 9,165 | 9,151 | 0.999 |
+| `ms.name subclass` | 715 | 715 | 715 | 1.000 |
+| `ms.suffix subclass` | 2,080 | 2,094 | 2,099 | 1.009 |
+| `ms.parent subclass` | 9,343 | 9,371 | 9,376 | 1.004 |
+| `str(ms / f) subclass` | 30,991 | 31,043 | 31,062 | 1.002 |
+| `pp.name cProfile on` | 2,817 | 2,817 | 2,817 | 1.000 |
+| `pp.relative_to(root) cProfile on` | 301,325 | 301,409 | 301,409 | 1.000 |
+
+8-thread rule (`benches/targets/paths_scaling.py`, 3.15.1t, enabled ÷ plain CPU per call
+at 8 threads, `local` / `shared`): `p / 'x' / 'y'` 0.256 / 0.208, `relative_to` 0.027 /
+0.048. The shared-receiver cells keep wave 1's extra reference-count traffic on the shared
+path (CPU ×1.47–2.10 from 1 to 8 threads, w2-threads §3.1), still far below CPython's
+cost per call.
+
+Not taken (measured, `data/fs_inventory` §`Path.rglob`, 190M Ir enabled): the pathlib
+kernels are 10M of it; the rest is `glob._StringGlobber`'s generators and closures,
+`os.scandir`, regex matching of names and allocation (fnmatch.md §"glob and os.scandir").
+pathlib subclasses (w2-floors gap #13: sphinx ~2,500, pytest ~600 calls/run, ≤ 0.08%) stay
+fallbacks.
+
+## Measurements (wave 1)
 
 Callgrind as in docs/targets/posixpath.md (`benches/targets/paths_cg.py`, CPython 3.15.1).
 `pp` = `Path(p)` with `str()` already computed; `pq` an equal path; `pw` a `PureWindowsPath`;
@@ -167,6 +227,10 @@ outcomes compared; all 24 targets of the three groups asserted installed). CPyth
 | **differences plain vs enabled** | **0** | **0** | **0** | **0** |
 
 The `test_os` failures and error are the box's environment (identical without Rustique).
+**Wave 2** (ws2/text-paths on wave2 c9fb335, same command, the 24 targets installed): the same
+counts and **0 differences** on 3.15.1, 3.15.1t, 3.14.9 and 3.14.9t
+(`benches/targets/results/paths_w2_conformance_<build>.json`); full `pytest -q`: 2205 passed /
+5 skipped (3.15.1, 3.15.1t), 2207 / 3 (3.14.9, 3.14.9t).
 Plus `tests/targets/test_posixpath.py`, `test_fnmatch.py`, `test_pathlib.py` (differential
 Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `pytest -q` on
 the four builds.

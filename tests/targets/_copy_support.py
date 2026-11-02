@@ -10,6 +10,8 @@ which object they are), the remaining recursion budget hooks see, and exceptions
 
 from __future__ import annotations
 
+import contextlib
+
 import copy
 import copyreg
 import dataclasses
@@ -160,9 +162,41 @@ def canon(x: Any, lab: Labeler) -> Any:
     return root, out
 
 
+def forget_slotnames(root) -> None:
+    """Drop `__slotnames__` cached on the classes reachable from `root`: copying caches it
+    on first use (`copyreg._slotnames`, CPython and the kernel alike), so each leg of a
+    comparison must start from classes that never were copied (the reference leg would
+    otherwise not enter `copyreg._slotnames`, which a tracer can see)."""
+    seen: set[int] = set()
+    stack = [root]
+    while stack:
+        o = stack.pop()
+        if id(o) in seen:
+            continue
+        seen.add(id(o))
+        for c in type(o).__mro__:
+            if "__slotnames__" in getattr(c, "__dict__", {}) and isinstance(c, type) and c.__flags__ & (1 << 9):
+                with contextlib.suppress(AttributeError, TypeError):
+                    del c.__slotnames__
+        if isinstance(o, (list, tuple, set, frozenset)):
+            stack.extend(o)
+        elif isinstance(o, dict):
+            stack.extend(o.keys())
+            stack.extend(o.values())
+        elif not isinstance(o, type):
+            d = getattr(o, "__dict__", None)
+            if isinstance(d, dict):
+                stack.extend(d.values())
+            for s in getattr(type(o), "__slots__", ()) or ():
+                if isinstance(s, str) and s not in ("__dict__", "__weakref__"):
+                    with contextlib.suppress(Exception):
+                        stack.append(object.__getattribute__(o, s))
+
+
 def run(fn, cp: Any, dc: Any, sources_fn) -> tuple:
     """Build the sources, run `fn(cp, dc, root)`; return everything observable."""
     root, named = sources_fn()
+    forget_slotnames((root, named))
     lab = Labeler({id(o): n for n, o in named.items()})
     Ctx.cp, Ctx.dc, Ctx.log, Ctx.lab = cp, dc, [], lab
     try:

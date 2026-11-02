@@ -28,7 +28,7 @@ python_extern! {
 pub type GetMethodFn = unsafe extern "C" fn(O, O, *mut O) -> c_int;
 
 #[inline(always)]
-fn addr<T>(f: Option<T>) -> usize
+pub(super) fn addr<T>(f: Option<T>) -> usize
 where
     T: Copy,
 {

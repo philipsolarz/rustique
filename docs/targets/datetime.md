@@ -1,10 +1,82 @@
-STATUS: wave 1 (2026-11-01). Contract: `docs/ACCELERATION.md`. Code:
+STATUS: wave 1 (2026-11-01), wave 2 (2026-11-02: format plans, §0). Contract: `docs/ACCELERATION.md`. Code:
 `crates/rustique-py/src/targets/datetime/`, pure algorithms in
 `crates/rustique-core/src/datetime/` (with `cargo test`s). Tests:
 `tests/targets/test_datetime.py`, `tests/targets/test_datetime_hypothesis.py`. Benchmarks:
 `benches/targets/datetime_cg.py` (callgrind), `benches/targets/datetime_pyperf.py` (wall).
 
 # Group `datetime`: date/time text behind `_datetime` and `time`
+
+## 0. Wave 2 (2026-11-02, workstream `text`)
+
+What changed, and why (instruction counts: callgrind, 3.15.1, `benches/targets/datetime_cg.py`
+cells; workloads: `benches/targets/text_wl.py`, user-space instructions per steady-state
+`run()`, identical digests):
+
+- **strftime format plans.** A format is compiled once (`rustique_core::datetime::strftime::
+  compile`, cached by `fmtcache`): composite directives (`%F %T %D %R %x %X %r %c`) expanded,
+  literal text merged, every number resolved to field/width/pad. Formats made only of
+  literals and fixed-width numbers (`%Y-%m-%d %H:%M:%S`, `%Y-%m`, `%H:00`, …) keep a template
+  with the literals in place and render straight into the result `str` (one allocation, no
+  intermediate buffer); weekday/day-of-year are computed only when the plan reads them.
+  Plans are tested against the directive-by-directive renderer for every pair of
+  directives and four boundary dates (`plans_match_the_reference_renderer`).
+- **ZoneInfo calls.** The kernels called `tz.utcoffset`/`tzname`/`dst` through
+  `PyObject_CallMethodOneArg` with a name interned *per call* (~470 Ir of interning and
+  hashing); they now call the method descriptors captured with the exact C `ZoneInfo` type
+  (immutable, no instance `__dict__`, so `tz.<name>` always resolves to them). Zone and
+  offset texts live in fixed buffers instead of `Vec`s (no heap traffic per call).
+- **strptime greedy pass.** sre's first match is found in one forward pass when it lies on
+  the greedy path: each item takes the first of its ends (sre's order) that passes a check
+  the next item needs anyway (the next literal is there, whitespace is there, the next
+  directive has an end there); `\s+` takes the whole run. Every end sre tries earlier fails
+  that check, so a successful pass *is* sre's first match; when the pass fails the
+  backtracking matcher runs (it may still find a match). Exhaustively tested against the
+  backtracking matcher (every input of length ≤ 4 over a 19-character alphabet plus every
+  1–2 position mutation of realistic inputs, 16 formats, both regex versions). Names are
+  lowercased once and stop at the first match (no name is a prefix of another, tested).
+- **Platforms** (w2-dx §6, patch B and the `strstate` part of patch A): only the seven
+  libc-dependent targets keep the glibc gate (a failed `LC_TIME` probe refuses just them);
+  `ustr` reads the `PyASCIIObject.state` unit at its ABI offset (MSVC free-threaded builds
+  start the kind/compact/ascii bitfield in the next 32-bit unit: the old fixed mask read
+  uninitialised padding there) and calibrates on ASCII, Latin-1 and UCS-2 probes.
+  `cargo check -p rustique-py --lib` passes for aarch64-apple-darwin,
+  x86_64-unknown-linux-musl and x86_64-pc-windows-msvc × {3.15, 3.15t} (dx's cross
+  toolchain on the dev box): macOS/musl 74 → 77 targets; on Windows the three `isoformat`
+  targets install once `accel`'s `GetProcAddress` lookup lands. Runtime validation per
+  platform is dx's CI job.
+
+| cell (Ir per call) | CPython | wave 1 | wave 2 | ratio |
+|---|---:|---:|---:|---:|
+| `dt.strftime('%Y-%m-%d %H:%M:%S')` | 17,120 | 1,854 | 1,457 | 0.085 |
+| `d0.strftime('%Y-%m-%d')` | 15,878 | 1,348 | 1,143 | 0.072 |
+| `dto.strftime('%Y-%m-%d %H:00')` (fixed offset) | 17,762 | 1,729 | 1,519 | 0.086 |
+| `dtz.strftime('%a %d %b %Y %H:%M %Z')` (ZoneInfo) | 21,837 | 4,396 | 2,649 | 0.121 |
+| `dtz.strftime('%A')` (ZoneInfo) | 16,746 | 2,343 | 1,701 | 0.102 |
+| `time.strftime(ISOF, struct_time)` | 5,309 | 1,972 | 1,627 | 0.306 |
+| `dtz.isoformat(timespec='minutes')` (ZoneInfo) | 8,627 | 2,525 | 1,402 | 0.163 |
+| `datetime.strptime(LOG, '%d/%b/%Y:%H:%M:%S %z')` | 62,633 | 4,895 | 3,916 | 0.063 |
+| `datetime.strptime(ISO, '%Y-%m-%d %H:%M:%S')` | 42,774 | 3,095 | 2,805 | 0.066 |
+| `datetime.strptime(AMPM, '%m/%d/%Y %I:%M %p')` | 45,728 | 3,344 | 2,880 | 0.063 |
+
+**8 threads** (3.15.1t, `benches/targets/text_scaling.py -t 1,8`, CPU per call at 8 threads,
+enabled ÷ CPython, local / shared): `strptime` 0.07 / 0.05, access-log `strptime` 0.06 /
+0.05, `date.strftime` 0.07 / 0.15, numeric `strftime` 0.10 / 0.10, ZoneInfo `strftime`
+0.07 / 0.09, `isoformat` 0.16 / 0.54, ZoneInfo `isoformat` 0.20 / 0.17: every kernel well
+under 1.05 (CPython serializes on `_strptime._cache_lock` and imports `time.strftime` per
+call; the kernels take neither, and the format plans are read-only after insertion).
+
+**Workloads** (`benches/targets/text_wl.py`, all groups, instruction ratios, identical
+digests, wave 1 → wave 2): `data/tz_events` 0.584 → 0.570, `data/log_analytics` 0.614 →
+0.608.
+
+**Settled, with the reason.** strptime: the matcher is ~650 Ir of the 2.8k; the rest is the
+call site (a bound classmethod per call), the steady-state guards of `_strptime` (frame
+builtins, `_regex_cache` hit) and building the datetime. strftime: ~1.1–1.5k is CPython's
+`CALL`, the guards and the result object. **zoneinfo arithmetic** (`astimezone`, 17% of
+`tz_events`): `datetime.astimezone`, `ZoneInfo.fromutc`/`utcoffset` and `timedelta(...)` are
+already C in `_datetime`/`_zoneinfo`; an exact Rust entry would replace C with C (≤ 1.1×,
+wave 1) and read `_zoneinfo`'s private struct: not pursued.
+
 
 Parsing (`strptime`), formatting (`strftime`) and ISO formatting (`isoformat`, `str()`) of
 dates. Every entry point is a C method or function of `_datetime` or `time`, so each target
@@ -30,8 +102,10 @@ this is the biggest win in the group (0.07–0.09).
 
 All targets: versions 3.14 and 3.15, free-threaded builds validated, `checkable` (check
 mode compares every fast-path result with the original's), `jit_safe` (`ml_meth` sites; the
-registry clears JIT caches). Linux/glibc only: every target refuses elsewhere (the glibc
-`strftime` and locale behaviour it reproduces is not validated on other C libraries).
+registry clears JIT caches). The seven `strptime`/`strftime` targets are Linux/glibc only
+(the glibc `strftime` and locale behaviour they reproduce is not validated on other C
+libraries; refusal category `platform`); the three `isoformat` targets call no C-library
+function and install on every platform (wave 2, §0).
 `datetime.fromisoformat` is already C and has no headroom (2,191 Ir; nothing to remove):
 not a target.
 
