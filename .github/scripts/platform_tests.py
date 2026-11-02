@@ -101,7 +101,8 @@ def venv_python(venv: str) -> str:
 
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    print("+ " + " ".join(cmd), flush=True)
+    shown = [a if len(a) < 120 else a[:60].replace("\n", " ") + " ..." for a in cmd]
+    print("+ " + " ".join(shown), flush=True)
     return subprocess.run(cmd, **kw)
 
 
