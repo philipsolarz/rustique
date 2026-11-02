@@ -52,12 +52,17 @@ impl Chunk {
     }
 }
 
-/// `str.expandtabs(tabsize)` then (if `replace`) `translate` of `_whitespace` to spaces.
-pub fn munge(text: &[u32], expand_tabs: bool, tabsize: i64, replace: bool) -> Vec<u32> {
-    let mut out = Vec::with_capacity(text.len());
+/// `str.expandtabs(tabsize)` then (if `replace`) `translate` of `_whitespace` to spaces,
+/// written into `out` (cleared first; reused between calls, so steady-state calls do not
+/// allocate). `text` is any PEP 393 code-unit width.
+pub fn munge_into<T: Copy + Into<u32>>(text: &[T], expand_tabs: bool, tabsize: i64, replace: bool, out: &mut Vec<u32>) {
+    out.clear();
+    out.reserve(text.len());
+    let map = |c: u32| if replace && is_ws(c) { 0x20 } else { c };
     if expand_tabs {
         let mut col: i64 = 0;
         for &c in text {
+            let c: u32 = c.into();
             if c == 0x09 {
                 if tabsize > 0 {
                     let incr = tabsize - col % tabsize;
@@ -69,26 +74,25 @@ pub fn munge(text: &[u32], expand_tabs: bool, tabsize: i64, replace: bool) -> Ve
                 if c == 0x0a || c == 0x0d {
                     col = 0;
                 }
-                out.push(c);
+                out.push(map(c));
             }
         }
     } else {
-        out.extend_from_slice(text);
+        out.extend(text.iter().map(|&c| map(c.into())));
     }
-    if replace {
-        for c in &mut out {
-            if is_ws(*c) {
-                *c = 0x20;
-            }
-        }
-    }
+}
+
+/// [`munge_into`] into a new `Vec`.
+pub fn munge(text: &[u32], expand_tabs: bool, tabsize: i64, replace: bool) -> Vec<u32> {
+    let mut out = Vec::new();
+    munge_into(text, expand_tabs, tabsize, replace, &mut out);
     out
 }
 
-/// `wordsep_simple_re.split(text)` without empty strings: maximal runs of `_whitespace`
-/// and of everything else.
-pub fn split_simple(text: &[u32]) -> Vec<Chunk> {
-    let mut out = Vec::new();
+/// `wordsep_simple_re.split(text)` without empty strings, into `out` (cleared first):
+/// maximal runs of `_whitespace` and of everything else.
+pub fn split_simple_into(text: &[u32], out: &mut Vec<Chunk>) {
+    out.clear();
     let mut i = 0;
     while i < text.len() {
         let ws = is_ws(text[i]);
@@ -99,10 +103,16 @@ pub fn split_simple(text: &[u32]) -> Vec<Chunk> {
         out.push(Chunk::Text(i, j));
         i = j;
     }
+}
+
+/// [`split_simple_into`] into a new `Vec`.
+pub fn split_simple(text: &[u32]) -> Vec<Chunk> {
+    let mut out = Vec::new();
+    split_simple_into(text, &mut out);
     out
 }
 
-/// `wordsep_re.split(text)` without empty strings.
+/// `wordsep_re.split(text)` without empty strings, into `out` (cleared first).
 ///
 /// The pattern (`TextWrapper.wordsep_re`) is
 /// `( WS+ | (?<=WP) -{2,} (?=\w) | NWS+? (?: -(?: (?<=LT{2}-) | (?<=LT-LT-)) (?= LT -? LT)
@@ -110,8 +120,11 @@ pub fn split_simple(text: &[u32]) -> Vec<Chunk> {
 /// At every position one alternative matches (whitespace: the first; anything else: the
 /// third, at the end of the non-whitespace run at the latest), so `split` yields exactly the
 /// consecutive matches. Each is found as `sre` would: alternatives in order, the lazy
-/// `NWS+?` tried with 1, 2, ... characters, lookarounds on the whole string.
-pub fn split_words(text: &[u32], cls: &impl Classes) -> Vec<Chunk> {
+/// `NWS+?` tried with 1, 2, ... characters, lookarounds on the whole string. Tails (a) and
+/// (c) need a `-` at the candidate end and (b) whitespace or the end, so the candidates
+/// between are skipped in one scan (they cannot match).
+pub fn split_words_into(text: &[u32], cls: &impl Classes, out: &mut Vec<Chunk>) {
+    out.clear();
     let n = text.len();
     let at = |i: usize| -> Option<u32> { text.get(i).copied() };
     let word = |c: Option<u32>| c.is_some_and(|c| cls.is_word(c));
@@ -127,7 +140,6 @@ pub fn split_words(text: &[u32], cls: &impl Classes) -> Vec<Chunk> {
         let r = run(i);
         r >= 2 && word(at(i + r))
     };
-    let mut out = Vec::new();
     let mut p = 0;
     while p < n {
         if is_ws(text[p]) {
@@ -147,39 +159,39 @@ pub fn split_words(text: &[u32], cls: &impl Classes) -> Vec<Chunk> {
             continue;
         }
         // Alternative 3: lazy non-whitespace, then one of three tails.
-        let mut end = None;
         let mut q = p + 1;
-        loop {
-            // text[p..q] is non-whitespace (q - p >= 1).
-            // (a) hyphenated word: '-' at q, lookbehinds at q + 1, lookahead after it.
-            if hyph(q) {
-                let behind = (q >= 2 && letter(at(q - 2)) && letter(at(q - 1)))
-                    || (q >= 3 && letter(at(q - 3)) && hyph(q - 2) && letter(at(q - 1)));
-                let ahead = letter(at(q + 1)) && (letter(at(q + 2)) || (hyph(q + 2) && letter(at(q + 3))));
-                if behind && ahead {
-                    end = Some(q + 1);
-                    break;
-                }
+        let end = loop {
+            // text[p..q] is non-whitespace (q - p >= 1). No tail can match at a q whose
+            // character is neither '-' nor whitespace: skip to the next candidate.
+            while q < n && text[q] != 0x2d && !is_ws(text[q]) {
+                q += 1;
             }
             // (b) end of word.
             if q == n || is_ws(text[q]) {
-                end = Some(q);
-                break;
+                break q;
+            }
+            // text[q] == '-': (a) hyphenated word, lookbehinds at q + 1, lookahead after it.
+            let behind = (q >= 2 && letter(at(q - 2)) && letter(at(q - 1)))
+                || (q >= 3 && letter(at(q - 3)) && hyph(q - 2) && letter(at(q - 1)));
+            let ahead = letter(at(q + 1)) && (letter(at(q + 2)) || (hyph(q + 2) && letter(at(q + 3))));
+            if behind && ahead {
+                break q + 1;
             }
             // (c) em-dash follows.
             if wp(at(q - 1)) && dashes_word(q) {
-                end = Some(q);
-                break;
+                break q;
             }
             q += 1;
-            if is_ws(text[q - 1]) {
-                break; // unreachable: (b) stops at whitespace
-            }
-        }
-        let q = end.expect("the end-of-word tail always matches");
-        out.push(Chunk::Text(p, q));
-        p = q;
+        };
+        out.push(Chunk::Text(p, end));
+        p = end;
     }
+}
+
+/// [`split_words_into`] into a new `Vec`.
+pub fn split_words(text: &[u32], cls: &impl Classes) -> Vec<Chunk> {
+    let mut out = Vec::new();
+    split_words_into(text, cls, &mut out);
     out
 }
 
@@ -229,23 +241,110 @@ pub enum WrapError {
     NoProgress,
 }
 
-/// A piece of a line: part of a chunk or of the placeholder.
-#[derive(Debug, Clone, Copy)]
-enum Piece {
-    Chunk(Chunk, usize, usize),
+/// Where a [`Seg`] points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Src {
+    /// The munged text.
+    Text,
+    /// The two spaces `_fix_sentence_endings` substitutes.
+    Two,
+    Initial,
+    Subsequent,
     Placeholder,
+}
+
+/// A piece of an output line: `src[a..b]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Seg {
+    pub src: Src,
+    pub a: usize,
+    pub b: usize,
+}
+
+impl Seg {
+    #[inline]
+    pub fn len(self) -> usize {
+        self.b - self.a
+    }
+    #[inline]
+    pub fn is_empty(self) -> bool {
+        self.a == self.b
+    }
+    /// The code points of this piece.
+    #[inline]
+    pub fn get<'a>(self, text: &'a [u32], o: &WrapOpts<'a>) -> &'a [u32] {
+        const TWO: &[u32] = &[0x20, 0x20];
+        let s: &'a [u32] = match self.src {
+            Src::Text => text,
+            Src::Two => TWO,
+            Src::Initial => o.initial_indent,
+            Src::Subsequent => o.subsequent_indent,
+            Src::Placeholder => o.placeholder,
+        };
+        &s[self.a..self.b]
+    }
+}
+
+impl From<Chunk> for Seg {
+    #[inline]
+    fn from(c: Chunk) -> Seg {
+        match c {
+            Chunk::Text(a, b) => Seg { src: Src::Text, a, b },
+            Chunk::TwoSpaces => Seg { src: Src::Two, a: 0, b: 2 },
+        }
+    }
+}
+
+/// The wrapped lines, as pieces: line `i` is `segs[lines[i - 1]..lines[i]]` (`lines[-1]`
+/// = 0). The buffers are reused between calls.
+#[derive(Debug, Default)]
+pub struct Wrapped {
+    pub segs: Vec<Seg>,
+    pub lines: Vec<usize>,
+    rev: Vec<Seg>,
+    cur: Vec<Seg>,
+}
+
+impl Wrapped {
+    pub const fn new() -> Wrapped {
+        Wrapped { segs: Vec::new(), lines: Vec::new(), rev: Vec::new(), cur: Vec::new() }
+    }
+    /// The pieces of line `i`.
+    #[inline]
+    pub fn line(&self, i: usize) -> &[Seg] {
+        let a = if i == 0 { 0 } else { self.lines[i - 1] };
+        &self.segs[a..self.lines[i]]
+    }
+    /// Number of lines.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+    /// Release capacity above `keep` elements per buffer.
+    pub fn trim(&mut self, keep: usize) {
+        for v in [&mut self.segs, &mut self.rev, &mut self.cur] {
+            v.clear();
+            if v.capacity() > keep {
+                v.shrink_to(keep);
+            }
+        }
+        self.lines.clear();
+        if self.lines.capacity() > keep {
+            self.lines.shrink_to(keep);
+        }
+    }
+    /// Line `i` as code points (tests, diagnostics).
+    pub fn line_cps(&self, i: usize, text: &[u32], o: &WrapOpts<'_>) -> Vec<u32> {
+        self.line(i).iter().flat_map(|s| s.get(text, o).iter().copied()).collect()
+    }
 }
 
 fn is_blank(s: &[u32], cls: &impl Classes) -> bool {
     s.iter().all(|&c| cls.is_space(c))
-}
-
-fn rstrip<'s>(s: &'s [u32], cls: &impl Classes) -> &'s [u32] {
-    let mut e = s.len();
-    while e > 0 && cls.is_space(s[e - 1]) {
-        e -= 1;
-    }
-    &s[..e]
 }
 
 fn lstrip<'s>(s: &'s [u32], cls: &impl Classes) -> &'s [u32] {
@@ -256,14 +355,18 @@ fn lstrip<'s>(s: &'s [u32], cls: &impl Classes) -> &'s [u32] {
     &s[b..]
 }
 
-/// `TextWrapper._wrap_chunks(chunks)`: the lines as code points.
-pub fn wrap_chunks(
+/// `TextWrapper._wrap_chunks(chunks)`: the lines, as pieces, in `w` (cleared first).
+pub fn wrap_chunks_into(
     text: &[u32],
-    chunks: Vec<Chunk>,
+    chunks: &[Chunk],
     o: &WrapOpts<'_>,
     cls: &impl Classes,
-) -> Result<Vec<Vec<u32>>, WrapError> {
-    let mut lines: Vec<Vec<u32>> = Vec::new();
+    w: &mut Wrapped,
+) -> Result<(), WrapError> {
+    w.segs.clear();
+    w.lines.clear();
+    w.cur.clear();
+    w.rev.clear();
     if o.width <= 0 {
         return Err(WrapError::InvalidWidth);
     }
@@ -273,66 +376,48 @@ pub fn wrap_chunks(
             return Err(WrapError::PlaceholderTooLarge);
         }
     }
-    // Chunks as (chunk, start, end) slices so `_handle_long_word` can split them.
-    let mut rev: Vec<(Chunk, usize, usize)> = chunks.into_iter().rev().map(|c| (c, 0, c.len())).collect();
-    let piece_text = |p: &Piece| -> Vec<u32> {
-        match *p {
-            Piece::Chunk(c, a, b) => c.get(text)[a..b].to_vec(),
-            Piece::Placeholder => o.placeholder.to_vec(),
-        }
-    };
-    let slice_of = |(c, a, b): (Chunk, usize, usize)| -> &[u32] { &c.get(text)[a..b] };
-    let plen = |p: &Piece| -> usize {
-        match *p {
-            Piece::Chunk(_, a, b) => b - a,
-            Piece::Placeholder => o.placeholder.len(),
-        }
-    };
-    let pblank = |p: &Piece| -> bool {
-        match *p {
-            Piece::Chunk(c, a, b) => is_blank(&c.get(text)[a..b], cls),
-            Piece::Placeholder => is_blank(o.placeholder, cls),
-        }
-    };
-    let build = |indent: &[u32], line: &[Piece]| -> Vec<u32> {
-        let mut s = indent.to_vec();
-        for p in line {
-            s.extend(piece_text(p));
-        }
-        s
-    };
+    let ph_len = o.placeholder.len();
+    let ph_lstrip = ph_len - lstrip(o.placeholder, cls).len();
+    // chunks.reverse(): the next chunk is the last element.
+    w.rev.extend(chunks.iter().rev().map(|&c| Seg::from(c)));
+    let blank = |s: Seg| is_blank(s.get(text, o), cls);
     let mut stalls = 0;
-    while !rev.is_empty() {
-        let before = (rev.len(), rev.last().copied(), lines.len());
-        let mut cur: Vec<Piece> = Vec::new();
+    while !w.rev.is_empty() {
+        let before = (w.rev.len(), w.rev.last().copied(), w.lines.len());
+        w.cur.clear();
         let mut cur_len: i64 = 0;
-        let indent = if lines.is_empty() { o.initial_indent } else { o.subsequent_indent };
+        let first = w.lines.is_empty();
+        let indent = if first {
+            Seg { src: Src::Initial, a: 0, b: o.initial_indent.len() }
+        } else {
+            Seg { src: Src::Subsequent, a: 0, b: o.subsequent_indent.len() }
+        };
         let width = o.width - indent.len() as i64;
         if o.drop_whitespace
-            && !lines.is_empty()
-            && let Some(&last) = rev.last()
-            && is_blank(slice_of(last), cls)
+            && !first
+            && let Some(&last) = w.rev.last()
+            && blank(last)
         {
-            rev.pop();
+            w.rev.pop();
         }
-        while let Some(&(c, a, b)) = rev.last() {
-            let l = (b - a) as i64;
+        while let Some(&s) = w.rev.last() {
+            let l = s.len() as i64;
             if cur_len + l <= width {
-                cur.push(Piece::Chunk(c, a, b));
-                rev.pop();
+                w.cur.push(s);
+                w.rev.pop();
                 cur_len += l;
             } else {
                 break;
             }
         }
-        if let Some(&(c, a, b)) = rev.last()
-            && (b - a) as i64 > width
+        if let Some(&s) = w.rev.last()
+            && s.len() as i64 > width
         {
             // _handle_long_word
             let space_left = if width < 1 { 1 } else { width - cur_len };
             if o.break_long_words && space_left > 0 {
                 let mut end = space_left as usize;
-                let chunk = &c.get(text)[a..b];
+                let chunk = s.get(text, o);
                 if o.break_on_hyphens && chunk.len() > end {
                     // hyphen = chunk.rfind('-', 0, space_left)
                     if let Some(h) = chunk[..end].iter().rposition(|&x| x == 0x2d)
@@ -342,68 +427,96 @@ pub fn wrap_chunks(
                         end = h + 1;
                     }
                 }
-                let end = end.min(b - a);
-                cur.push(Piece::Chunk(c, a, a + end));
-                let last = rev.len() - 1;
-                rev[last] = (c, a + end, b);
-            } else if cur.is_empty() {
-                let (c, a, b) = rev.pop().expect("non-empty");
-                cur.push(Piece::Chunk(c, a, b));
+                let end = end.min(s.len());
+                w.cur.push(Seg { b: s.a + end, ..s });
+                let last = w.rev.len() - 1;
+                w.rev[last].a = s.a + end;
+            } else if w.cur.is_empty() {
+                let s = w.rev.pop().expect("non-empty");
+                w.cur.push(s);
             }
-            cur_len = cur.iter().map(|p| plen(p) as i64).sum();
+            cur_len = w.cur.iter().map(|p| p.len() as i64).sum();
         }
         if o.drop_whitespace
-            && let Some(p) = cur.last()
-            && pblank(p)
+            && let Some(&p) = w.cur.last()
+            && blank(p)
         {
-            cur_len -= plen(p) as i64;
-            cur.pop();
+            cur_len -= p.len() as i64;
+            w.cur.pop();
         }
-        if !cur.is_empty() {
+        if !w.cur.is_empty() {
             let fits = match o.max_lines {
                 None => true,
                 Some(m) => {
-                    (lines.len() as i64) + 1 < m
-                        || ((rev.is_empty()
-                            || (o.drop_whitespace && rev.len() == 1 && is_blank(slice_of(rev[0]), cls)))
+                    (w.lines.len() as i64) + 1 < m
+                        || ((w.rev.is_empty() || (o.drop_whitespace && w.rev.len() == 1 && blank(w.rev[0])))
                             && cur_len <= width)
                 }
             };
             if fits {
-                lines.push(build(indent, &cur));
+                w.segs.push(indent);
+                w.segs.extend_from_slice(&w.cur);
+                w.lines.push(w.segs.len());
             } else {
                 let mut placed = false;
-                while let Some(p) = cur.last() {
-                    if !pblank(p) && cur_len + o.placeholder.len() as i64 <= width {
-                        cur.push(Piece::Placeholder);
-                        lines.push(build(indent, &cur));
+                while let Some(&p) = w.cur.last() {
+                    if !blank(p) && cur_len + ph_len as i64 <= width {
+                        w.segs.push(indent);
+                        w.segs.extend_from_slice(&w.cur);
+                        w.segs.push(Seg { src: Src::Placeholder, a: 0, b: ph_len });
+                        w.lines.push(w.segs.len());
                         placed = true;
                         break;
                     }
-                    cur_len -= plen(p) as i64;
-                    cur.pop();
+                    cur_len -= p.len() as i64;
+                    w.cur.pop();
                 }
                 if !placed {
-                    if let Some(prev) = lines.last() {
-                        let prev_line = rstrip(prev, cls).to_vec();
-                        if (prev_line.len() + o.placeholder.len()) as i64 <= o.width {
-                            let mut l = prev_line;
-                            l.extend_from_slice(o.placeholder);
-                            let last = lines.len() - 1;
-                            lines[last] = l;
+                    if let Some(&end) = w.lines.last() {
+                        // prev_line = lines[-1].rstrip()
+                        let start = if w.lines.len() >= 2 { w.lines[w.lines.len() - 2] } else { 0 };
+                        let mut keep = end; // segs[start..keep] survive, the last trimmed to `cut`
+                        let mut cut = 0;
+                        while keep > start {
+                            let s = w.segs[keep - 1];
+                            let t = s.get(text, o);
+                            let mut e = t.len();
+                            while e > 0 && cls.is_space(t[e - 1]) {
+                                e -= 1;
+                            }
+                            if e > 0 {
+                                cut = s.a + e;
+                                break;
+                            }
+                            keep -= 1;
+                        }
+                        let prev_len: usize =
+                            w.segs[start..keep].iter().map(|s| s.len()).sum::<usize>() - (if keep > start {
+                                w.segs[keep - 1].b - cut
+                            } else {
+                                0
+                            });
+                        if (prev_len + ph_len) as i64 <= o.width {
+                            w.segs.truncate(keep);
+                            if keep > start {
+                                w.segs[keep - 1].b = cut;
+                            }
+                            w.segs.push(Seg { src: Src::Placeholder, a: 0, b: ph_len });
+                            let last = w.lines.len() - 1;
+                            w.lines[last] = w.segs.len();
                             break;
                         }
                     }
-                    let mut l = indent.to_vec();
-                    l.extend_from_slice(lstrip(o.placeholder, cls));
-                    lines.push(l);
+                    w.segs.push(indent);
+                    w.segs.push(Seg { src: Src::Placeholder, a: ph_lstrip, b: ph_len });
+                    w.lines.push(w.segs.len());
                 }
                 break;
             }
         }
-        if (rev.len(), rev.last().copied(), lines.len()).0 == before.0 && rev.last().copied() == before.1 {
+        if w.rev.len() == before.0 && w.rev.last().copied() == before.1 {
             // Nothing consumed: the next iteration starts from the same chunks.
-            if lines.len() == before.2 {
+            if w.lines.len() == before.2 {
                 return Err(WrapError::NoProgress);
             }
             stalls += 1;
@@ -414,17 +527,33 @@ pub fn wrap_chunks(
             stalls = 0;
         }
     }
-    Ok(lines)
+    Ok(())
 }
 
-/// `textwrap.dedent(text)`: `None` when the result is `text` itself (CPython returns the
-/// same object: one line, nothing removed).
-pub fn dedent(text: &[u32], cls: &impl Classes) -> Option<Vec<u32>> {
-    let lines: Vec<&[u32]> = text.split(|&c| c == 0x0a).collect();
-    let blank = |l: &[u32]| !l.is_empty() && l.iter().all(|&c| cls.is_space(c));
-    let mut l1: Option<&[u32]> = None;
-    let mut l2: Option<&[u32]> = None;
-    for &l in &lines {
+/// `TextWrapper._wrap_chunks(chunks)`: the lines as code points (allocating; tests and
+/// callers that want owned lines).
+pub fn wrap_chunks(
+    text: &[u32],
+    chunks: Vec<Chunk>,
+    o: &WrapOpts<'_>,
+    cls: &impl Classes,
+) -> Result<Vec<Vec<u32>>, WrapError> {
+    let mut w = Wrapped::new();
+    wrap_chunks_into(text, &chunks, o, cls, &mut w)?;
+    Ok((0..w.len()).map(|i| w.line_cps(i, text, o)).collect())
+}
+
+/// `textwrap.dedent(text)` into `out` (cleared first): `false` when the result is `text`
+/// itself (CPython returns the same object: one line, nothing removed) and `out` is unused.
+pub fn dedent_into<T: Copy + Ord + Into<u32>>(text: &[T], cls: &impl Classes, out: &mut Vec<u32>) -> bool {
+    out.clear();
+    let nl = |c: &T| (*c).into() == 0x0a;
+    let blank = |l: &[T]| !l.is_empty() && l.iter().all(|&c| cls.is_space(c.into()));
+    let mut l1: Option<&[T]> = None;
+    let mut l2: Option<&[T]> = None;
+    let mut nlines = 0usize;
+    for l in text.split(nl) {
+        nlines += 1;
         if l.is_empty() || blank(l) {
             continue;
         }
@@ -439,69 +568,95 @@ pub fn dedent(text: &[u32], cls: &impl Classes) -> Option<Vec<u32>> {
     if let (Some(l1), Some(l2)) = (l1, l2) {
         for (i, &c) in l1.iter().enumerate() {
             margin = i;
-            if l2.get(i) != Some(&c) || !(c == 0x20 || c == 0x09) {
+            let cu: u32 = c.into();
+            if l2.get(i) != Some(&c) || !(cu == 0x20 || cu == 0x09) {
                 break;
             }
         }
     }
-    if lines.len() == 1 && margin == 0 && !blank(lines[0]) {
-        return None;
+    if nlines == 1 && margin == 0 && !blank(text) {
+        return false;
     }
-    let mut out = Vec::with_capacity(text.len());
-    for (i, l) in lines.iter().enumerate() {
+    out.reserve(text.len());
+    for (i, l) in text.split(nl).enumerate() {
         if i > 0 {
             out.push(0x0a);
         }
         if !blank(l) {
-            out.extend_from_slice(&l[margin.min(l.len())..]);
+            out.extend(l[margin.min(l.len())..].iter().map(|&c| c.into()));
         }
     }
-    Some(out)
+    true
 }
 
-/// `str.splitlines(True)` boundaries: `\n \r \r\n \x0b \x0c \x1c \x1d \x1e \x85    `.
+/// `textwrap.dedent(text)`: `None` when the result is `text` itself.
+pub fn dedent(text: &[u32], cls: &impl Classes) -> Option<Vec<u32>> {
+    let mut out = Vec::new();
+    dedent_into(text, cls, &mut out).then_some(out)
+}
+
+/// `str.splitlines(True)` boundaries: `\n \r \r\n \x0b \x0c \x1c \x1d \x1e \x85    `.
 pub fn is_line_break(c: u32) -> bool {
     matches!(c, 0x0a | 0x0b | 0x0c | 0x0d | 0x1c | 0x1d | 0x1e | 0x85 | 0x2028 | 0x2029)
 }
 
-/// The lines of `str.splitlines(True)` as ranges.
-pub fn splitlines_keepends(text: &[u32]) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    let (mut i, n) = (0, text.len());
-    while i < n {
+/// The lines of `str.splitlines(True)` as ranges, one at a time.
+pub fn lines_keepends<T: Copy + Into<u32>>(text: &[T]) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let n = text.len();
+    let mut i = 0;
+    std::iter::from_fn(move || {
+        if i >= n {
+            return None;
+        }
         let start = i;
-        while i < n && !is_line_break(text[i]) {
+        while i < n && !is_line_break(text[i].into()) {
             i += 1;
         }
         if i < n {
-            if text[i] == 0x0d && i + 1 < n && text[i + 1] == 0x0a {
+            if text[i].into() == 0x0d && i + 1 < n && text[i + 1].into() == 0x0a {
                 i += 2;
             } else {
                 i += 1;
             }
         }
-        out.push((start, i));
-    }
-    out
+        Some((start, i))
+    })
 }
 
-/// `textwrap.indent(text, prefix)` (no predicate): `None` when CPython returns `text`
-/// itself (a single line that is all whitespace: nothing to prefix, `''.join([text])`).
-pub fn indent(text: &[u32], prefix: &[u32], cls: &impl Classes) -> Option<Vec<u32>> {
-    let lines = splitlines_keepends(text);
-    let space = |l: &[u32]| !l.is_empty() && l.iter().all(|&c| cls.is_space(c));
-    if lines.len() == 1 && space(text) {
-        return None;
+/// The lines of `str.splitlines(True)` as ranges.
+pub fn splitlines_keepends(text: &[u32]) -> Vec<(usize, usize)> {
+    lines_keepends(text).collect()
+}
+
+/// `textwrap.indent(text, prefix)` (no predicate) into `out` (cleared first): `false` when
+/// CPython returns `text` itself (a single line that is all whitespace: nothing to prefix,
+/// `''.join([text])`) and `out` is unused.
+pub fn indent_into<T: Copy + Into<u32>>(text: &[T], prefix: &[u32], cls: &impl Classes, out: &mut Vec<u32>) -> bool {
+    out.clear();
+    let space = |l: &[T]| !l.is_empty() && l.iter().all(|&c| cls.is_space(c.into()));
+    let mut it = lines_keepends(text);
+    if let Some((a, b)) = it.next()
+        && b == text.len()
+        && a == 0
+        && space(text)
+    {
+        return false;
     }
-    let mut out = Vec::with_capacity(text.len() + prefix.len() * lines.len());
-    for (a, b) in lines {
+    out.reserve(text.len() + 2 * prefix.len());
+    for (a, b) in lines_keepends(text) {
         let l = &text[a..b];
         if !space(l) {
             out.extend_from_slice(prefix);
         }
-        out.extend_from_slice(l);
+        out.extend(l.iter().map(|&c| c.into()));
     }
-    Some(out)
+    true
+}
+
+/// `textwrap.indent(text, prefix)` (no predicate): `None` when CPython returns `text`.
+pub fn indent(text: &[u32], prefix: &[u32], cls: &impl Classes) -> Option<Vec<u32>> {
+    let mut out = Vec::new();
+    indent_into(text, prefix, cls, &mut out).then_some(out)
 }
 
 #[cfg(test)]
