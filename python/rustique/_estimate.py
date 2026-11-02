@@ -425,6 +425,7 @@ class Sampler:
         self._stop = False
         self._thread = None
         self._switch = None
+        self.disabled = None
 
     def _resolve(self) -> None:
         pending = False
@@ -462,6 +463,12 @@ class Sampler:
     def start(self) -> "Sampler":
         import threading
 
+        if not getattr(sys, "_is_gil_enabled", lambda: True)():
+            # Free-threaded build: the frames sys._current_frames() returns keep running after
+            # it restarts the world, and walking another running thread's f_back segfaults
+            # (measured: 1 in 3 runs of data/xml_feeds on 3.15.1t). No stack samples there.
+            self.disabled = "free-threaded build"
+            return self
         self.tid = self.tid or threading.get_ident()
         self._resolve()
         self._switch = sys.getswitchinterval()
@@ -479,7 +486,10 @@ class Sampler:
         return self
 
     def shares(self) -> dict:
-        return {"samples": self.total, "shares": {n: c / self.total for n, c in self.counts.items()} if self.total else {}}
+        out = {"samples": self.total, "shares": {n: c / self.total for n, c in self.counts.items()} if self.total else {}}
+        if self.disabled:
+            out["disabled"] = self.disabled
+        return out
 
 
 def _dummy_py(a, b=1):
@@ -651,6 +661,8 @@ def predict(profile: dict, replayed: dict, counters: dict | None, total_ns: floa
     under = 0.0
     counters = counters or {}
     targets = {n: dict(p) for n, p in profile["targets"].items()}
+    if sampled is not None and not sampled.get("samples"):
+        sampled = None  # no stack samples (free-threaded build): the profiler's times only
     if sampled is not None:
         # The profiler's per-call correction is exact enough where its own events are few;
         # where a call contains many of them (recursion: deepcopy, asdict) the stack sample

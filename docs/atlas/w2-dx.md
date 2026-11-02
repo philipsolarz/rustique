@@ -30,7 +30,7 @@ I record what I saw of both.
 | 5 | **`python -m rustique app.py` was not quite `python app.py`.** It added 5 runner frames to tracebacks, made `__file__` relative, and did not accelerate spawned children. All three are fixed on this branch | §2, M |
 | 6 | **Installing from the sdist without Rust silently downloads a 1.4 GB toolchain** (maturin's puccinialin) and compiles (90 s on 32 cores). The result then enables every target with no platform validation. On CPython 3.16 pre-releases, uv still picks the sdist despite `requires-python <3.16` | §1, M; hazards I |
 | 7 | **Platform coverage: Windows 30 → 48 targets and macOS/musl 74 → 77, from three small changes.** A run-time `GetProcAddress` lookup, a layout-correct read of `PyASCIIObject.state` on free-threaded MSVC builds, and an ungated `isoformat` (it never used the C library). Prototype patches pass `cargo check` for 4 target triples. One latent correctness hazard is closed along the way: fixed-mask string-state reads in the opt-in containers land on uninitialised padding under MSVC free-threaded builds. Reaching 84 everywhere takes M–L work, listed | §6, I + cargo check |
-| 8 | **The estimator works on compute-bound programs.** It predicts each workload's enabled/plain ratio from the program itself: median absolute error 0.007, 22/34 workloads within ±0.02 and 27/34 within ±0.05 (3.15.1). It explains the result per target and states the share no in-place kernel can reach. The misses are understood and mostly under-promise: I/O-bound programs (`fs_inventory` +0.25, `asyncio_http` +0.21: stack samples under-see compute) and time held in one huge call (`state_snapshot` −0.14). The reported range (two time sources) covers 26/34 measured values (±0.02) | §5, M |
+| 8 | **The estimator works on compute-bound programs.** It predicts each workload's enabled/plain ratio from the program itself: median absolute error 0.007, 22/34 workloads within ±0.02 and 27/34 within ±0.05 (3.15.1). It explains the result per target and states the share no in-place kernel can reach. The misses are understood and mostly under-promise: I/O-bound programs (`fs_inventory` +0.25, `asyncio_http` +0.21: stack samples under-see compute) and time held in one huge call (`state_snapshot` −0.14). The reported range (two time sources) covers 26/34 measured values (±0.02). On 3.15.1t the stack sampler segfaulted CPython (frame walking is racy on free-threaded builds), so free-threaded builds get the less accurate profiler-only mode for now | §5, M |
 | 9 | **Everything else in the journey holds.** Patch releases 3.15.2/3.15.2t/3.14.10 activate the same targets. gunicorn, uvicorn, IPython, xdist, `uv tool`, shiv, `RUSTIQUE=0`, `disable()` and selection typos all work | §1, §2, M |
 
 ## 1. Install
@@ -134,14 +134,14 @@ plain and one enabled run in sequence on the loaded box: **±5% is noise here** 
 
 | project @ tag | tests (outcomes) | plain s | ratio (1 pair) | shipped diff | prototype diff | Python processes | accelerated calls / fallbacks | biggest fallback signal (floors) |
 |---|---:|---:|---:|---|---|---:|---|---|
-| requests v2.34.2 | 633 | 77.6 | 1.000 | DIFFERENT (log stamps, server thread) | identical (v2) ⟨V2-requests⟩ | 1 | 131k / 23k | `list.__contains__` 41% args |
+| requests v2.34.2 | 633 | 77.6 | 1.000 | DIFFERENT (log stamps, server thread) | DIFFERENT in v1 (server thread vs progress dots) → identical (v2) | 1 | 131k / 23k | `list.__contains__` 41% args |
 | flask 3.1.3 | 490 | 1.25 | 0.988 | DIFFERENT (junit path) | identical | 1 | 362k / 19k | `list.__contains__` 45% args |
 | attrs 26.1.0 | 1,387 | 6.75 | 1.000 | identical | identical | 1 | 337k / 156k | `builtins.min` 44% deopt; `tuple.__contains__` 39% args |
 | rich v15.0.0 | 981 | 4.62 | 1.053 | identical | identical | 3 | 332k / 64k | `builtins.max` 10% args |
 | httpx 0.28.1 | 1,418 | 4.42 | 1.004 | DIFFERENT (ports) | identical | 1 | 202k / 75k | `list.__contains__` 75% args |
 | jinja 3.1.6 | 909 | 1.78 | 0.976 | identical | identical | 1 | 422k / 31k | (random 238k hits, 0 fallbacks) |
 | click 8.5.0 | 2,016 | 5.85 | 0.902 | identical | identical | 2 | 364k / 47k | `list.__contains__` 50% args |
-| marshmallow 4.3.1 | 1,188 | 1.16 | 1.028 | identical (by luck) | DIFFERENT in v1 (ids with `now()`) → identical (v2) ⟨V2-marshmallow⟩ | 1 | 116k / 29k | `copy.deepcopy` 57% deopt |
+| marshmallow 4.3.1 | 1,188 | 1.16 | 1.028 | identical (same second, by luck) | DIFFERENT in v1 (ids with `now()`) → identical (v2) | 1 | 116k / 29k | `copy.deepcopy` 57% deopt |
 | sqlglot v30.28.0 | 1,459 + 22,789 subtests | 104.9 | 0.995 (first pass 1.076) | identical | identical | 54 | 1.90M / 2.29M | `tuple.__contains__` 80% args; `copy.deepcopy` 49% deopt |
 | black 26.10.1 | 573 | 37.8 | 1.016 | DIFFERENT (junit path) | identical | 4 | 8.86M / 4.50M | **`list.__contains__` 99.4% args (3.57M)** |
 | pydantic v2.14.2 | 6,603 | 14.7 | 0.989 | identical | identical | 8 | 1.00M / 214k | `list.__contains__` 36% args |
@@ -170,37 +170,44 @@ Reading:
 ### 5.1 Design (prototype: `python/rustique/_estimate.py`)
 
 `python -m rustique estimate -- <command>` runs the command three times and prints a prediction
-with its reasons. Each run gives:
+with its reasons. A `sitecustomize` on `PYTHONPATH` puts the instruments into every Python
+process of the command. The three runs:
 
-1. **Plain, profiled.** A `sys.monitoring` profiler (tool id 4):
+1. **Plain, sampled.** A stack sampler thread (`sys._current_frames` of the main thread every
+   0.5 ms, switch interval lowered to 0.1 ms) gives the share of wall time under each
+   Python-level target, with no per-call cost. This run's wall time is `T`.
+2. **Plain, profiled.** A `sys.monitoring` profiler (tool id 4):
    - Python-level targets: local `PY_START`/`PY_RETURN` events on exactly the targets' code
      objects. C-level targets: `CALL`→`C_RETURN`, with `DISABLE` on any call site that is not
      a target's after 3 misses.
-   - It times every call (exclusive of other targets' calls; recursion folded into the
-     outermost) and subtracts its own calibrated cost per event (`calibrate()`: about 190 ns
-     per measured call, about 500 ns per nested event on the box).
-   - It keeps a systematic sample of 24 calls per Python-level target. Arguments come from the
-     callee's frame at `PY_START`, rebuilt as the caller most likely wrote them (trailing
-     defaults dropped). It also keeps the target's longest outermost call.
-   - A stack sampler thread (`sys._current_frames`, 0.5 ms) measures each Python-level target's
-     share of wall time with no per-call cost.
-   - At exit, **replay**: each kept call is timed in a loop (after one warm-up call), first with
-     CPython's original, then with `rustique.enable(only=<target>)`, with counters on. This
-     gives the per-call ratio and the fallback rate on the program's own arguments. `logging`
-     calls are never replayed (they emit); `random` replays on the program's own generator,
-     after the program has finished.
-2. **Enabled with counters** (what `report` does). Hit rates of the C-level targets, and the
+   - It counts every call and times it (exclusive of other targets' calls; recursion folded
+     into the outermost). It subtracts its own calibrated cost per event (`calibrate()`:
+     about 190 ns per measured call, about 500 ns per nested event on the box).
+   - It keeps a systematic sample of 24 calls per Python-level target. Arguments come from
+     the callee's frame at `PY_START`, rebuilt as the caller most likely wrote them (trailing
+     and keyword-only defaults dropped: kernels' exact subsets often exclude explicit
+     keywords). It also keeps the target's longest outermost call.
+   - At exit, **replay**: each kept call is timed in a loop (after one warm-up call), first
+     with CPython's original, then with `rustique.enable(only=<target>)`, with counters on.
+     This gives the per-call ratio and the fallback rate on the program's own arguments.
+     The longest call is weighted by its share of the target's time. `logging` calls are
+     never replayed (they emit); `random` replays on the program's own generator, after the
+     program has finished.
+3. **Enabled with counters** (what `report` does). Hit rates of the C-level targets, and the
    hits of `in` on tuples/lists and of `float.__repr__`, which no event can see.
-3. **Plain, unprofiled.** The total time.
 
 Prediction: `ratio = 1 − Σ_t T_t (1 − r_t) / T`. The inputs:
 
-- `T_t` comes from stack samples for Python-level targets and from the profiler for C-level
-  targets outside them.
+- `T_t` comes from run 1 for Python-level targets and from run 2 for C-level targets called
+  outside them.
 - `r_t` is the replayed ratio for Python-level targets. C-level targets use a table ratio ×
-  their hit rate (`benches/dx/c_ratios.py`, measured: `strftime` 0.09, `isoformat` 0.15–0.26,
-  `min`/`max` 0.34–0.46, `sort`/`sorted` 1.0, see §5.4).
-- `in` and `float.__repr__` use a per-hit saving × hits (12 / 79 / 188 ns).
+  their hit rate (`benches/dx/c_ratios.py`, measured: `strftime` 0.09–0.13, `isoformat`
+  0.15–0.26, `min`/`max` 0.34–0.46, `sort`/`sorted` 1.0, see §5.4).
+- `in` and `float.__repr__` use a per-hit saving × hits: 12 ns for short containers,
+  188 ns for `float.__repr__`.
+
+The printed range comes from the other time source (the profiler's per-call times for flat
+targets), so the user sees how much the answer depends on it.
 
 The output names the targets that save the most and the share of time under no accelerated
 entry point, which is the honest "out of reach" number for that program.
@@ -262,7 +269,25 @@ default source; "top saver" = the target saving the most, as % of the run):
 | web/requests_local | 0.941 | 0.995 | +0.054 | 0.92–0.99 | 2% | - |
 | web/sqlalchemy_orm | 0.997 | 0.998 | +0.001 | 1.00–1.00 | 1% | - |
 
-⟨ESTIMATOR-T⟩
+**3.15.1t** (M, same method; 31 of 34). The stack sampler **segfaulted CPython 3.15.1t** in
+`devtools/black_format`, `devtools/pytest_networkx` and `data/xml_feeds` (reproduced: 1 crash
+in 3 runs of `xml_feeds`, in the sampler thread's frame walk). `sys._current_frames()` stops
+the world only while it collects the frames; walking `f_back` of a frame that another thread
+is still running is a data race on free-threaded builds (I, from `Python/pystate.c`
+`_PyThread_CurrentFrames`; worth an upstream report). The prototype now disables the sampler
+on free-threaded builds and falls back to the profiler's times (the "profiler only" row).
+
+| time source | MAE | median abs error | within ±0.02 | within ±0.05 | worst |
+|---|---:|---:|---:|---:|---:|
+| stack samples (31 workloads that did not crash) | 0.046 | 0.009 | 18 | 26 | +0.638 (`sqlglot_transpile`) |
+| profiler only (what free-threaded builds get now) | 0.128 | 0.010 | 16 | 21 | +1.88 |
+
+`sqlglot_transpile` on 3.15.1t: replaying its sampled `deepcopy` calls (objects with
+`__deepcopy__`, 610 restarts in 2,842 replayed calls) gives kernel/original **4.4** on 3.15.1t
+against 0.57 on 3.15.1, same calls (M, replay). The workload as a whole measured 0.974 in
+Phase 3, and a plain `deepcopy` with or without `memo` is 0.21–0.35 on both builds (M,
+`~/rustique-research/w2/dx/dcmemo.py`). So restarts cost far more on the free-threaded build. That is an
+unconfirmed signal for w2-floors and w2-threads, not a measured regression.
 
 Reading:
 
@@ -299,8 +324,12 @@ Reading:
 - **C-level targets use table ratios**: `CALL` events carry no arguments, so `sorted()` of
   presorted strings (ratio up to 3.2, §5.4) cannot be told apart from random ints (0.42). The
   table assumes 1.0 for sort.
-- Costs 3 runs, plus a profiled run at 1.3–4× slowdown. The prediction's noise is the noise of
-  the run (a single T).
+- **Free-threaded builds**: no stack samples (they crash CPython, §5.2), so the profiler's
+  per-call times are used. They over-count recursive targets (MAE 0.128 on 3.15.1t). Phase 2
+  needs a sampler that never walks another running thread's frames: a `sys.monitoring`
+  `PY_START`/`PY_RETURN`-driven shadow stack sampled by a timer flag, or `perf` where it exists.
+- Costs 3 runs; the profiled run is 0.9–5.5× slower than plain. The prediction's noise is
+  the noise of the run (a single T).
 
 ### 5.4 Side finding: the `list.sort` kernel is slower on presorted and string lists
 
@@ -390,7 +419,7 @@ Ranked by how many developers a break stops × how early in the journey × effor
 | 1 | **Ship the diff fixes** on this branch: one junit path, timestamps and ports masked, pytest progress dropped, volatile ids paired, plain-vs-plain calibration, `--strict-output` | trust in CI | high (6/14 false alarms) | done (prototype + 4 tests) | §3.2 | dx |
 | 2 | **`process_gate` platform allowlist** + Rustique's own tests skip on `version`/`platform` refusals + an sdist-build notice + `--only-binary` docs | install, safety | high (silent unvalidated targets) | S | §6.3 | accel/dx |
 | 3 | **Report counters survive processes**: mmap'd per-process counters, zeroed after fork | visibility | high for servers and workers | M | §3.1 (0 of 8, 1 of 50, 110 vs 10) | accel |
-| 4 | **`python -m rustique estimate`**: productise the prototype (hybrid time source, cold replay of the longest call, `estimate --json` for CI) | "will it help me?" | high (the first question) | M | §5 (MAE 0.027, 30/34 within 0.05) | dx |
+| 4 | **`python -m rustique estimate`**: productise the prototype (pick the time source per target by the profiler's event density and detect I/O-bound runs, a sampler that is safe on free-threaded builds, cold replay of the longest call, `estimate --json` for CI) | "will it help me?" | high (the first question) | M | §5 (3.15.1: median error 0.007, 27/34 within ±0.05) | dx |
 | 5 | **Platform steps 1–3 and 5** (patches A and B, allowlist, posixpath/fnmatchcase on Windows) + the per-platform CI job | every platform | high on Windows (30 → 55) | S each | §6 | platform |
 | 6 | **The runner fixes on this branch** (absolute `__file__`, traceback, SIGINT, `RUSTIQUE=1` exported) | turn it on | medium | done (2 tests) | §2 | dx |
 | 7 | **Report readability**: only targets that ran, a `saved ≈` column, suspensions rendered, pending as a count, status wording | visibility | medium | S | §3.1 | dx |
@@ -399,6 +428,13 @@ Ranked by how many developers a break stops × how early in the journey × effor
 | 10 | `diff --from-ci`, confirmation re-runs, pytest-randomly seed | CI cost | medium | S–M | §3.2 | dx |
 | 11 | Docs: `-S`, coverage in CI, zipapps, `--only-binary`; a `python:3.15-slim` CI cell | install, CI | low | S | §1, §2 | dx |
 | 12 | Credit for `deopt` restarts weighted by their cost (sqlglot deepcopy 49%) | never slower | medium | S | §3.1, §4 | floors |
+
+### 7.1 Candidate rows (the brief's format, for the lead's table)
+
+| candidate | layer | entry points + mechanism | share mean / max | s | exact subset & fallback | floor vs current | risks | upstream | reach | prototype | evidence |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `list.sort` / `sorted` regression on presorted, reverse-sorted and string input: restore never-slower (run detection like timsort's `count_run`, or fall back when the first run covers the list) | language (builtins) | `list.sort` `ml_meth` (reached by `sorted`, which falls back `args` into it) | `list.sort` hit 422k / 252k / 52k times in black / sqlglot / dateutil suites; time share not measured | today 1.4–3.2× **slower** on those inputs → ≥ 1.0 | same subset; presorted runs → original | timsort's O(n) run scan vs the kernel's full sort | none new (perf only) | none | very high (`sorted(keys)`, `sorted(set)` of strings everywhere) | — (w2-floors) | §5.4 |
+| platform reach: Windows 30 → 55, macOS/musl 74 → 77 (steps 1, 2, 5) | all groups | `GetProcAddress` symbol lookup; `strstate` accessor; gate only C-library datetime targets; 6 posixpath + `fnmatchcase` ungated | every workload's share of the gained groups on Windows (json, copy, logging, random, textwrap) | as on Linux | unchanged | — | MSVC/UCRT differences: needs the per-platform CI job before "on" | none | Windows ≈ a large share of developer machines (I) | patches A, B (`cargo check` 4 triples) | §6 |
 
 **Settled / out of scope here:**
 
