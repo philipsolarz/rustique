@@ -21,7 +21,7 @@
 //! type watcher id of its own; CPython's watchers (globals/builtins for the specializer,
 //! type watcher 0 for the optimizer) use other ids and are unaffected.
 
-use std::cell::UnsafeCell;
+use std::cell::Cell;
 use std::ffi::c_int;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
@@ -51,6 +51,8 @@ python_extern! {
     ) -> c_int;
     fn PyDict_AddWatcher(cb: DictWatchCallback) -> c_int;
     fn PyType_AddWatcher(cb: TypeWatchCallback) -> c_int;
+    fn PyDict_ClearWatcher(watcher_id: c_int) -> c_int;
+    fn PyType_ClearWatcher(watcher_id: c_int) -> c_int;
     fn PyType_Watch(watcher_id: c_int, ty: *mut ffi::PyObject) -> c_int;
     fn PyType_Unwatch(watcher_id: c_int, ty: *mut ffi::PyObject) -> c_int;
 }
@@ -76,31 +78,24 @@ pub const LOCAL_EVENTS: usize = if cfg!(Py_3_15) { 16 } else { 11 };
 /// Monitoring scope of one target: is any `sys.monitoring` tool listening, globally, to any
 /// event a Python function's execution can produce (all ungrouped events: PY_START, LINE,
 /// CALL, RAISE, ...; `sys.settrace`/`setprofile`, cProfile and coverage are tools too)?
-/// `PyMonitoring_EnterScope` returns after one compare when the interpreter's monitoring
-/// version has not changed; the any-active verdict is recomputed only when it has.
 ///
-/// Shared by all threads: the API writes `version`/`states` non-atomically; concurrent
-/// writers store the same values (a benign race, as in Cython's use of the same API).
+/// One atomic word: `(monitoring version << 1) | busy`, published as a unit. The fast path
+/// asks CPython for the interpreter's monitoring version (`PyMonitoring_EnterScope` with no
+/// events and a stack-local version: it only writes our local) and compares; when the
+/// version moved, the verdict is recomputed from a *private* state array filled by one
+/// `EnterScope` call, so a thread never pairs a new version with another thread's
+/// half-written states (docs/atlas/w2-threads.md §3.4 S3: possible on weakly ordered CPUs
+/// with shared arrays). Race-free on every build; no `unsafe impl Sync`.
 pub struct Tools {
-    version: UnsafeCell<u64>,
-    states: UnsafeCell<[PyMonitoringState; UNGROUPED_EVENTS]>,
-    /// Version for which `busy` was computed.
-    seen: UnsafeCell<u64>,
-    busy: UnsafeCell<bool>,
+    state: AtomicU64,
 }
 
-// SAFETY: see the type docs (benign same-value races, written only by CPython's API and by
-// `quiet`, which derives `busy` from them).
-unsafe impl Sync for Tools {}
+/// No verdict yet (no monitoring version is `2^63 - 1`).
+const TOOLS_UNSET: u64 = u64::MAX;
 
 impl Tools {
     pub const fn new() -> Self {
-        Tools {
-            version: UnsafeCell::new(0),
-            states: UnsafeCell::new([PyMonitoringState { active: 0, opaque: 0 }; UNGROUPED_EVENTS]),
-            seen: UnsafeCell::new(0),
-            busy: UnsafeCell::new(false),
-        }
+        Tools { state: AtomicU64::new(TOOLS_UNSET) }
     }
 
     /// True when no tool listens globally to any ungrouped event in this interpreter.
@@ -109,29 +104,31 @@ impl Tools {
     /// Attached thread.
     #[inline(always)]
     pub unsafe fn quiet(&self) -> bool {
-        // SAFETY: valid pointers to this scope's storage.
-        unsafe {
-            PyMonitoring_EnterScope(
-                self.states.get().cast(),
-                self.version.get(),
-                ALL_EVENTS.as_ptr(),
-                UNGROUPED_EVENTS as ffi::Py_ssize_t,
-            );
-            let v = *self.version.get();
-            if v != *self.seen.get() {
-                self.recompute(v);
-            }
-            !*self.busy.get()
+        let mut v: u64 = 0;
+        // SAFETY: attached thread; no events: CPython writes only `v` (the interpreter's
+        // monitoring version; left 0 when that is 0).
+        unsafe { PyMonitoring_EnterScope(std::ptr::null_mut(), &mut v, std::ptr::null(), 0) };
+        let s = self.state.load(Ordering::Relaxed);
+        if s >> 1 == v && s != TOOLS_UNSET {
+            return s & 1 == 0;
         }
+        // SAFETY: per the caller.
+        unsafe { self.recompute() }
     }
 
     #[cold]
-    unsafe fn recompute(&self, v: u64) {
-        // SAFETY: per `quiet`.
+    unsafe fn recompute(&self) -> bool {
+        let mut states = [PyMonitoringState { active: 0, opaque: 0 }; UNGROUPED_EVENTS];
+        // A version CPython never has: `EnterScope` fills every state and stores the
+        // version it read them at.
+        let mut v = TOOLS_UNSET;
+        // SAFETY: attached thread; private arrays of the declared length.
         unsafe {
-            *self.busy.get() = (*self.states.get()).iter().any(|s| s.active != 0);
-            *self.seen.get() = v;
-        }
+            PyMonitoring_EnterScope(states.as_mut_ptr(), &mut v, ALL_EVENTS.as_ptr(), UNGROUPED_EVENTS as ffi::Py_ssize_t)
+        };
+        let busy = states.iter().any(|s| s.active != 0);
+        self.state.store((v << 1) | u64::from(busy), Ordering::Relaxed);
+        !busy
     }
 }
 
@@ -249,8 +246,8 @@ struct Dep {
     flag: &'static DepFlag,
     /// The pinned value (strong reference), or 0 to pin "absent".
     expected: usize,
-    /// Attribute pins: the class whose MRO the pin follows (strong ref) and its `tp_mro`
-    /// at pin time (identity only); 0 for dict pins.
+    /// Attribute pins: the class whose MRO the pin follows and its `tp_mro` as validated
+    /// (strong references: neither address can be reused while pinned); 0 for dict pins.
     ty: usize,
     mro: usize,
     /// Holds the expected value right now and was never broken.
@@ -347,7 +344,9 @@ pub(crate) enum PendingPin {
         /// `None`: pin "absent".
         expected: Option<Py<PyAny>>,
         flag: &'static DepFlag,
-        ty: Option<Py<PyType>>,
+        /// Attribute pins: the class whose MRO the pin follows and its `__mro__` tuple as
+        /// `prepare` walked it.
+        ty: Option<(Py<PyType>, Py<PyAny>)>,
     },
     Dict {
         dict: Py<PyDict>,
@@ -356,11 +355,114 @@ pub(crate) enum PendingPin {
     },
 }
 
-/// Lock the tables. Held only for short, Python-free sections (never across a call that
-/// could run Python code, release the GIL or block), so the watcher callbacks may wait on
-/// it.
-fn tables() -> std::sync::MutexGuard<'static, Option<Tables>> {
-    TABLES.lock().unwrap_or_else(|p| p.into_inner())
+// ---------------------------------------------------------------------------------------
+// The pin-table lock is a leaf (docs/atlas/w2-threads.md §3.4 S2)
+// ---------------------------------------------------------------------------------------
+//
+// The dict and type watcher callbacks take it while CPython holds the mutated dict's
+// critical section (and, for class dicts, the global type lock). So while it is held,
+// nothing may take a per-object critical section or the type lock, detach (any contended
+// `PyMutex`, including a `Py_DECREF` that queues to another thread's biased refcount or
+// frees an object with a finalizer), allocate Python objects, run Python code or stop the
+// world. Code that needs both takes the dict's critical section *first* and this lock
+// second: the same order as the watchers. Every CPython call in this module that could
+// break the rule calls [`leaf_check`] first; a violation is counted (`_accel._lock_violations()`,
+// asserted zero by the test-suite) and is a debug assertion.
+
+thread_local! {
+    static IN_TABLES: Cell<bool> = const { Cell::new(false) };
+}
+
+static LOCK_VIOLATIONS: AtomicU64 = AtomicU64::new(0);
+
+/// The pin tables, locked. Held only for short, CPython-free sections.
+struct TablesGuard(std::sync::MutexGuard<'static, Option<Tables>>);
+
+impl std::ops::Deref for TablesGuard {
+    type Target = Option<Tables>;
+    fn deref(&self) -> &Option<Tables> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for TablesGuard {
+    fn deref_mut(&mut self) -> &mut Option<Tables> {
+        &mut self.0
+    }
+}
+
+impl Drop for TablesGuard {
+    fn drop(&mut self) {
+        IN_TABLES.set(false);
+    }
+}
+
+fn tables() -> TablesGuard {
+    if IN_TABLES.get() {
+        // Re-entry (a watcher firing on the thread that holds the lock) would deadlock.
+        lock_violation("pin tables re-entered");
+    }
+    let g = TABLES.lock().unwrap_or_else(|p| p.into_inner());
+    IN_TABLES.set(true);
+    TablesGuard(g)
+}
+
+#[cold]
+fn lock_violation(what: &str) {
+    LOCK_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+    debug_assert!(false, "rustique: lock order violated: {what} while holding the pin tables");
+}
+
+/// Call before any CPython call that may lock, detach or run code (see above).
+#[inline]
+fn leaf_check(what: &str) {
+    if IN_TABLES.get() {
+        lock_violation(what);
+    }
+}
+
+/// For other locks of the framework (the registry lock): taking them while holding the pin
+/// tables violates the order too.
+pub(crate) fn assert_not_in_tables(what: &str) {
+    leaf_check(what);
+}
+
+/// Lock-order violations seen in this process (tests assert 0).
+pub fn lock_violations() -> u64 {
+    LOCK_VIOLATIONS.load(Ordering::Relaxed)
+}
+
+/// References a watcher callback dropped: released at the next safe point (a registry
+/// operation, or the registry's pending call). A `Py_DECREF` inside a watcher could park on
+/// a free-threaded build (biased refcounting's queue lock), and parking would suspend the
+/// critical section of the dict being mutated, in the middle of its mutation. On GIL builds
+/// the str keys released here run no code and take no lock: released at once.
+static WATCHER_RELEASE: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+fn release_from_watcher(refs: Vec<usize>) {
+    if cfg!(Py_GIL_DISABLED) {
+        WATCHER_RELEASE.lock().unwrap_or_else(|p| p.into_inner()).extend(refs);
+    } else {
+        release_refs(refs);
+    }
+}
+
+/// Release what watcher callbacks deferred (attached thread, no lock held, not in a
+/// watcher).
+pub(crate) fn release_deferred() {
+    let refs = std::mem::take(&mut *WATCHER_RELEASE.lock().unwrap_or_else(|p| p.into_inner()));
+    if !refs.is_empty() {
+        release_refs(refs);
+    }
+}
+
+/// Release strong references collected under the tables lock, after it was released.
+fn release_refs(refs: Vec<usize>) {
+    leaf_check("Py_DECREF");
+    for o in refs {
+        // SAFETY: attached thread; strong references owned by the caller.
+        unsafe { ffi::Py_DECREF(o as *mut ffi::PyObject) };
+    }
 }
 
 fn flag_addr(f: &'static DepFlag) -> usize {
@@ -500,6 +602,8 @@ unsafe extern "C" fn on_dict_event(
     // Python code, so every pin of the dict breaks.
     let unknown = !wholesale && hash.is_none();
     let mut changes: Vec<(&'static DepFlag, bool, bool)> = Vec::new();
+    // Keys leaving a snapshot's deviation set: released after the lock (leaf rule).
+    let mut release: Vec<usize> = Vec::new();
     for g in &slot.gens {
         // SAFETY: attached thread; live objects.
         if wholesale || unknown || g.key.0 == 0 || unsafe { same_key(key, hash, g.key) } {
@@ -550,8 +654,7 @@ unsafe extern "C" fn on_dict_event(
                             sn.dev.push((ffi::Py_NewRef(key) as usize, hash));
                         }
                     }
-                    // Decref of a str key: no Python code runs.
-                    (false, Some(i)) => ffi::Py_DECREF(sn.dev.swap_remove(i).0 as *mut _),
+                    (false, Some(i)) => release.push(sn.dev.swap_remove(i).0),
                     _ => {}
                 }
             }
@@ -564,6 +667,9 @@ unsafe extern "C" fn on_dict_event(
         flipped |= t.transition(f, was, now);
     }
     drop(guard);
+    if !release.is_empty() {
+        release_from_watcher(release);
+    }
     if flipped {
         super::registry::schedule_resync();
     }
@@ -604,20 +710,31 @@ unsafe extern "C" fn on_type_event(ty: *mut ffi::PyTypeObject) -> c_int {
     0
 }
 
-/// The process's (main interpreter's) dict watcher id, registered once. Every dict watch
-/// of Rustique goes through it.
+/// The process's (main interpreter's) dict watcher id, registered once (two threads racing
+/// here register one id; the loser clears its own). Every dict watch of Rustique goes
+/// through it.
 pub fn dict_watcher_id() -> PyResult<c_int> {
     let id = DICT_WATCHER.load(Ordering::Acquire);
     if id >= 0 {
         return Ok(id);
     }
+    leaf_check("PyDict_AddWatcher");
     // SAFETY: attached thread (callers are attached).
     let id = unsafe { PyDict_AddWatcher(on_dict_event) };
     if id < 0 {
         return Err(Python::attach(PyErr::fetch));
     }
-    DICT_WATCHER.store(id, Ordering::Release);
-    Ok(id)
+    match DICT_WATCHER.compare_exchange(-1, id, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => Ok(id),
+        Err(winner) => {
+            // SAFETY: our own unused watcher id.
+            if unsafe { PyDict_ClearWatcher(id) } < 0 {
+                // SAFETY: attached thread.
+                unsafe { ffi::PyErr_Clear() };
+            }
+            Ok(winner)
+        }
+    }
 }
 
 fn type_watcher_id() -> PyResult<c_int> {
@@ -625,13 +742,23 @@ fn type_watcher_id() -> PyResult<c_int> {
     if id >= 0 {
         return Ok(id);
     }
+    leaf_check("PyType_AddWatcher");
     // SAFETY: attached thread.
     let id = unsafe { PyType_AddWatcher(on_type_event) };
     if id < 0 {
         return Err(Python::attach(PyErr::fetch));
     }
-    TYPE_WATCHER.store(id, Ordering::Release);
-    Ok(id)
+    match TYPE_WATCHER.compare_exchange(-1, id, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => Ok(id),
+        Err(winner) => {
+            // SAFETY: our own unused watcher id.
+            if unsafe { PyType_ClearWatcher(id) } < 0 {
+                // SAFETY: attached thread.
+                unsafe { ffi::PyErr_Clear() };
+            }
+            Ok(winner)
+        }
+    }
 }
 
 /// Pre-registry API (prototype users): the dict watcher id.
@@ -639,47 +766,62 @@ pub fn watcher_id() -> PyResult<c_int> {
     dict_watcher_id()
 }
 
-/// The dict's slot, watching the dict when it is new.
-fn dict_slot<'t>(py: Python<'_>, t: &'t mut Tables, dict: &Bound<'_, PyAny>) -> PyResult<&'t mut DictSlot> {
-    match t.dicts.entry(dict.as_ptr() as usize) {
-        std::collections::hash_map::Entry::Occupied(e) => Ok(e.into_mut()),
-        std::collections::hash_map::Entry::Vacant(e) => {
-            let id = dict_watcher_id()?;
-            // SAFETY: attached thread; live dict.
-            if unsafe { ffi::PyDict_Watch(id, dict.as_ptr()) } < 0 {
-                return Err(PyErr::fetch(py));
-            }
-            Ok(e.insert(DictSlot {
-                dict: dict.clone().into_ptr() as usize,
-                keys: FastMap::default(),
-                snaps: Vec::new(),
-                gens: Vec::new(),
-            }))
-        }
+/// The dict's slot (created with a strong reference to the dict). The dict must already be
+/// watched ([`watch_locked`]). Runs under the tables lock: no CPython call but an incref.
+fn dict_slot<'t>(t: &'t mut Tables, dict: *mut ffi::PyObject) -> &'t mut DictSlot {
+    t.dicts.entry(dict as usize).or_insert_with(|| DictSlot {
+        // SAFETY: a live dict (the caller holds a reference); an incref only.
+        dict: unsafe { ffi::Py_NewRef(dict) } as usize,
+        keys: FastMap::default(),
+        snaps: Vec::new(),
+        gens: Vec::new(),
+    })
+}
+
+/// Watch `dict` (call under its critical section, before reading what is pinned: every
+/// writer that takes the section after this sees the watcher bit, so no change between the
+/// read and the registration in the tables can be missed).
+///
+/// # Safety
+/// Attached thread; live dict; the caller holds the dict's critical section and not the
+/// tables lock.
+unsafe fn watch_locked(py: Python<'_>, id: c_int, dict: *mut ffi::PyObject) -> PyResult<()> {
+    leaf_check("PyDict_Watch");
+    // SAFETY: per the caller (an atomic OR of the watcher bit).
+    if unsafe { ffi::PyDict_Watch(id, dict) } < 0 {
+        return Err(PyErr::fetch(py));
     }
+    Ok(())
 }
 
 /// Generation watch: bump `gen` (relaxed) whenever `dict[key]` is added, replaced or
 /// deleted, or the dict is cleared or replaced wholesale. For dependencies that are
 /// legitimately replaced at run time (`_strptime._TimeRE_cache`, `time.tzname`): kernels
-/// cache the generation they validated at and revalidate by value when it moves.
-/// Idempotent per `(dict, key, gen)`; lives as long as the process.
+/// cache the generation they validated at and revalidate by value when it moves. Every
+/// change made after this returns bumps `gen` (read the value afterwards). Idempotent per
+/// `(dict, key, gen)`; lives as long as the process.
 pub fn watch(dict: &Bound<'_, PyDict>, key: &str, gen_: &'static AtomicU64) -> PyResult<()> {
     let py = dict.py();
     let k = super::prepare::interned(py, key);
     // SAFETY: attached thread; live str.
     let h = unsafe { str_hash(k.as_ptr()) };
-    let mut guard = tables();
-    let t = guard.get_or_insert_with(Tables::default);
-    let slot = dict_slot(py, t, dict.as_any())?;
-    let known = slot.gens.iter().any(|g| {
-        // SAFETY: attached thread; live objects (no Python code).
-        std::ptr::eq(g.counter, gen_) && g.key.0 != 0 && unsafe { same_key(k.as_ptr(), h, g.key) }
-    });
-    if !known {
-        slot.gens.push(GenWatch { key: (k.into_ptr() as usize, h), counter: gen_ });
-    }
-    Ok(())
+    let id = dict_watcher_id()?;
+    pyo3::sync::critical_section::with_critical_section(dict.as_any(), || -> PyResult<()> {
+        // SAFETY: attached thread; we hold the dict's critical section, not the tables lock.
+        unsafe { watch_locked(py, id, dict.as_ptr())? };
+        let mut guard = tables();
+        let t = guard.get_or_insert_with(Tables::default);
+        let slot = dict_slot(t, dict.as_ptr());
+        let known = slot.gens.iter().any(|g| {
+            // SAFETY: attached thread; live objects (no Python code).
+            std::ptr::eq(g.counter, gen_) && g.key.0 != 0 && unsafe { same_key(k.as_ptr(), h, g.key) }
+        });
+        if !known {
+            // SAFETY: an incref only.
+            slot.gens.push(GenWatch { key: (unsafe { ffi::Py_NewRef(k.as_ptr()) } as usize, h), counter: gen_ });
+        }
+        Ok(())
+    })
 }
 
 /// Whole-dict generation watch: bump `gen` on every added, replaced or deleted key of
@@ -687,19 +829,26 @@ pub fn watch(dict: &Bound<'_, PyDict>, key: &str, gen_: &'static AtomicU64) -> P
 /// (a mapping it scans) between mutations. Idempotent per `(dict, gen)`; process lifetime.
 pub fn watch_dict_generation(dict: &Bound<'_, PyDict>, gen_: &'static AtomicU64) -> PyResult<()> {
     let py = dict.py();
-    let mut guard = tables();
-    let t = guard.get_or_insert_with(Tables::default);
-    let slot = dict_slot(py, t, dict.as_any())?;
-    if !slot.gens.iter().any(|g| g.key.0 == 0 && std::ptr::eq(g.counter, gen_)) {
-        slot.gens.push(GenWatch { key: (0, None), counter: gen_ });
-    }
-    Ok(())
+    let id = dict_watcher_id()?;
+    pyo3::sync::critical_section::with_critical_section(dict.as_any(), || -> PyResult<()> {
+        // SAFETY: attached thread; we hold the dict's critical section, not the tables lock.
+        unsafe { watch_locked(py, id, dict.as_ptr())? };
+        let mut guard = tables();
+        let t = guard.get_or_insert_with(Tables::default);
+        let slot = dict_slot(t, dict.as_ptr());
+        if !slot.gens.iter().any(|g| g.key.0 == 0 && std::ptr::eq(g.counter, gen_)) {
+            slot.gens.push(GenWatch { key: (0, None), counter: gen_ });
+        }
+        Ok(())
+    })
 }
 
 /// Activate `pins` under a new owner id; returns the owner id and the distinct flags of
 /// the pins. Pins already held by other targets are shared (one key slot per `(dict,
 /// key)`). Each pin's state is read now (a change between `prepare` and install shows as a
-/// deviation).
+/// deviation), under the pinned dict's critical section, which is held until the pin is in
+/// the tables (lock order: dict section, then the tables lock, as in the watchers). On an
+/// error nothing stays registered.
 pub(crate) fn activate(py: Python<'_>, pins: Vec<PendingPin>) -> PyResult<(u64, Vec<&'static DepFlag>)> {
     let owner = NEXT_OWNER.fetch_add(1, Ordering::Relaxed);
     if pins.is_empty() {
@@ -714,105 +863,183 @@ pub(crate) fn activate(py: Python<'_>, pins: Vec<PendingPin>) -> PyResult<(u64, 
             flags.push(f);
         }
     }
-    let mut guard = tables();
-    let t = guard.get_or_insert_with(Tables::default);
+    match activate_pins(py, owner, pins) {
+        Ok(()) => Ok((owner, flags)),
+        Err(e) => {
+            deactivate(owner);
+            Err(e)
+        }
+    }
+}
+
+fn activate_pins(py: Python<'_>, owner: u64, pins: Vec<PendingPin>) -> PyResult<()> {
+    let id = dict_watcher_id()?;
     for p in pins {
+        // References dropped by this pin (read values, unused snapshot entries): released
+        // outside the dict's section and the tables lock.
+        let mut drop_later: Vec<Py<PyAny>> = Vec::new();
         match p {
             PendingPin::Key { dict, key, expected, flag, ty } => {
-                let d = dict.bind(py);
-                // Current value (exact dict, interned str key: no Python code, cached hash).
-                let mut cur: *mut ffi::PyObject = std::ptr::null_mut();
-                // SAFETY: attached thread; live dict and key.
-                if unsafe { ffi::PyDict_GetItemRef(d.as_ptr(), key.as_ptr(), &mut cur) } < 0 {
-                    return Err(PyErr::fetch(py));
+                // Class attribute pins: watch the class before its dicts (`PyType_Watch`
+                // takes the type lock: never under a dict section or the tables lock).
+                if let Some((tp, _)) = &ty {
+                    let tid = type_watcher_id()?;
+                    leaf_check("PyType_Watch");
+                    // SAFETY: attached thread; live type; no section or table lock held.
+                    if unsafe { PyType_Watch(tid, tp.as_ptr()) } < 0 {
+                        return Err(PyErr::fetch(py));
+                    }
                 }
-                let exp = expected.as_ref().map_or(0, |o| o.as_ptr() as usize);
-                let good = cur as usize == exp;
-                // SAFETY: the new reference from PyDict_GetItemRef (or NULL).
-                unsafe { ffi::Py_XDECREF(cur) };
-                let (tyaddr, mro) = match &ty {
-                    Some(tp) => {
-                        let tid = type_watcher_id()?;
-                        // SAFETY: attached thread; live type.
-                        if unsafe { PyType_Watch(tid, tp.as_ptr()) } < 0 {
-                            return Err(PyErr::fetch(py));
+                let d = dict.bind(py);
+                pyo3::sync::critical_section::with_critical_section(d.as_any(), || -> PyResult<()> {
+                    // SAFETY: attached thread; we hold the dict's section, not the tables lock.
+                    unsafe { watch_locked(py, id, d.as_ptr())? };
+                    // Current value: an exact dict and an interned str key (no Python code);
+                    // consistent with the watcher (writers wait for our section).
+                    let mut cur: *mut ffi::PyObject = std::ptr::null_mut();
+                    leaf_check("PyDict_GetItemRef");
+                    // SAFETY: attached thread; live dict and key.
+                    if unsafe { ffi::PyDict_GetItemRef(d.as_ptr(), key.as_ptr(), &mut cur) } < 0 {
+                        return Err(PyErr::fetch(py));
+                    }
+                    let exp = expected.as_ref().map_or(0, |o| o.as_ptr() as usize);
+                    let good_value = cur as usize == exp;
+                    // SAFETY: the new reference from PyDict_GetItemRef (or NULL): dropped later.
+                    if let Some(c) = unsafe { Bound::from_owned_ptr_or_opt(py, cur) } {
+                        drop_later.push(c.unbind());
+                    }
+                    // SAFETY: attached thread; live str.
+                    let h = unsafe { str_hash(key.as_ptr()) }.unwrap_or(0);
+                    let mut guard = tables();
+                    let t = guard.get_or_insert_with(Tables::default);
+                    // An MRO change since `prepare` walked it: the pinned path is not the
+                    // validated one (an MRO change after this is seen by the type watcher).
+                    let (tyaddr, mro, mro_ok) = match &ty {
+                        // SAFETY: live type; increfs only.
+                        Some((tp, m)) => unsafe {
+                            let now = (*tp.as_ptr().cast::<ffi::PyTypeObject>()).tp_mro;
+                            (
+                                ffi::Py_NewRef(tp.as_ptr()) as usize,
+                                ffi::Py_NewRef(m.as_ptr()) as usize,
+                                now as usize == m.as_ptr() as usize,
+                            )
+                        },
+                        None => (0, 0, true),
+                    };
+                    let good = good_value && mro_ok;
+                    let slot = dict_slot(t, d.as_ptr());
+                    // Keys come from the interning cache (or `pyo3::intern!`): one object per
+                    // name, so identity is the key slot's identity.
+                    let kp = key.as_ptr() as usize;
+                    let bucket = slot.keys.entry(h).or_default();
+                    let ks = match bucket.iter().position(|k| k.key == kp) {
+                        Some(i) => &mut bucket[i],
+                        None => {
+                            // SAFETY: an incref only.
+                            bucket.push(KeySlot { key: unsafe { ffi::Py_NewRef(key.as_ptr()) } as usize, deps: Vec::new() });
+                            bucket.last_mut().expect("just pushed")
                         }
-                        // SAFETY: live type object.
-                        let mro = unsafe { (*tp.as_ptr().cast::<ffi::PyTypeObject>()).tp_mro } as usize;
-                        (tp.clone_ref(py).into_ptr() as usize, mro)
-                    }
-                    None => (0, 0),
-                };
-                let slot = dict_slot(py, t, d.as_any())?;
-                // Keys come from the interning cache (or `pyo3::intern!`): one object per
-                // name, so identity is the key slot's identity.
-                let kp = key.as_ptr() as usize;
-                // SAFETY: attached thread; live str.
-                let h = unsafe { str_hash(key.as_ptr()) }.unwrap_or(0);
-                let bucket = slot.keys.entry(h).or_default();
-                let ks = match bucket.iter().position(|k| k.key == kp) {
-                    Some(i) => &mut bucket[i],
-                    None => {
-                        bucket.push(KeySlot { key: key.clone_ref(py).into_ptr() as usize, deps: Vec::new() });
-                        bucket.last_mut().expect("just pushed")
-                    }
-                };
-                ks.deps.push(Dep {
-                    owner,
-                    flag,
-                    expected: expected.map_or(0, |o| o.into_ptr() as usize),
-                    ty: tyaddr,
-                    mro,
-                    good,
-                    broken: false,
-                });
-                t.add_dep(flag, good);
+                    };
+                    ks.deps.push(Dep {
+                        owner,
+                        flag,
+                        // SAFETY: an incref only (the dep's strong reference).
+                        expected: expected.as_ref().map_or(0, |o| unsafe { ffi::Py_NewRef(o.as_ptr()) } as usize),
+                        ty: tyaddr,
+                        mro,
+                        good,
+                        broken: !mro_ok,
+                    });
+                    t.add_dep(flag, good);
+                    Ok(())
+                })?;
+                drop_later.push(dict.into_any());
+                drop_later.push(key.into_any());
+                if let Some(e) = expected {
+                    drop_later.push(e);
+                }
+                if let Some((tp, m)) = ty {
+                    drop_later.push(tp.into_any());
+                    drop_later.push(m);
+                }
             }
             PendingPin::Dict { dict, snap, flag } => {
                 let d = dict.bind(py);
-                let snap: Vec<(Key, Py<PyAny>)> = snap
-                    .into_iter()
-                    .map(|(k, v)| {
-                        // SAFETY: attached thread; live str.
-                        let h = unsafe { str_hash(k.as_ptr()) };
-                        ((k.into_ptr() as usize, h), v)
-                    })
-                    .collect();
-                let mut dev = Vec::new();
-                for (k, v) in d.iter() {
-                    // SAFETY: attached thread; live key (no Python code).
-                    let h = unsafe { str_hash(k.as_ptr()) };
-                    let same = snap.iter().any(|(sk, sv)| {
-                        // SAFETY: attached thread; live objects (no Python code).
-                        sv.as_ptr() == v.as_ptr() && unsafe { same_key(k.as_ptr(), h, *sk) }
-                    });
-                    if !same {
-                        dev.push((k.into_ptr() as usize, h));
+                pyo3::sync::critical_section::with_critical_section(d.as_any(), || -> PyResult<()> {
+                    // SAFETY: attached thread; we hold the dict's section, not the tables lock.
+                    unsafe { watch_locked(py, id, d.as_ptr())? };
+                    let snap: Vec<(Key, usize)> = snap
+                        .iter()
+                        .map(|(k, v)| {
+                            // SAFETY: attached thread; live str.
+                            let h = unsafe { str_hash(k.as_ptr()) };
+                            (
+                                // SAFETY: increfs only (the snapshot's strong references).
+                                (unsafe { ffi::Py_NewRef(k.as_ptr()) } as usize, h),
+                                unsafe { ffi::Py_NewRef(v.as_ptr()) } as usize,
+                            )
+                        })
+                        .collect();
+                    // Deviations of the current contents from the snapshot. `PyDict_Next`
+                    // under the dict's section: one consistent view, no concurrent resize.
+                    let mut dev: Vec<Key> = Vec::new();
+                    let mut seen = 0usize;
+                    let mut pos: ffi::Py_ssize_t = 0;
+                    let mut k: *mut ffi::PyObject = std::ptr::null_mut();
+                    let mut v: *mut ffi::PyObject = std::ptr::null_mut();
+                    // SAFETY: attached thread; borrowed references valid under the section.
+                    unsafe {
+                        while ffi::PyDict_Next(d.as_ptr(), &mut pos, &mut k, &mut v) != 0 {
+                            let h = str_hash(k);
+                            let same = snap.iter().any(|&(sk, sv)| sv == v as usize && same_key(k, h, sk));
+                            if same {
+                                seen += 1;
+                            } else {
+                                dev.push((ffi::Py_NewRef(k) as usize, h));
+                            }
+                        }
                     }
-                }
-                for ((sk, h), _) in &snap {
-                    // SAFETY: the snapshot's strong reference.
-                    let k = unsafe { Bound::from_borrowed_ptr(py, *sk as *mut ffi::PyObject) };
-                    if !d.contains(&k)? {
-                        dev.push((k.clone().into_ptr() as usize, *h));
+                    // Snapshot keys no longer present (every present one matched exactly once:
+                    // keys are unique, values compared by identity).
+                    if seen < snap.len() {
+                        for &((sk, h), _) in &snap {
+                            let mut out: *mut ffi::PyObject = std::ptr::null_mut();
+                            leaf_check("PyDict_GetItemRef");
+                            // SAFETY: attached thread; str key, exact dict: no Python code.
+                            let r = unsafe { ffi::PyDict_GetItemRef(d.as_ptr(), sk as *mut _, &mut out) };
+                            if r < 0 {
+                                // SAFETY: attached thread.
+                                unsafe { ffi::PyErr_Clear() };
+                            }
+                            if r <= 0 {
+                                // SAFETY: an incref only.
+                                dev.push((unsafe { ffi::Py_NewRef(sk as *mut ffi::PyObject) } as usize, h));
+                            } else {
+                                // SAFETY: the new reference: dropped later.
+                                drop_later.push(unsafe { Bound::from_owned_ptr(py, out) }.unbind());
+                            }
+                        }
                     }
+                    let broken = dev.len() > MAX_DEVIATIONS;
+                    let good = dev.is_empty() && !broken;
+                    let mut guard = tables();
+                    let t = guard.get_or_insert_with(Tables::default);
+                    let slot = dict_slot(t, d.as_ptr());
+                    slot.snaps.push(Snapshot { owner, flag, snap, dev, broken, good });
+                    t.add_dep(flag, good);
+                    Ok(())
+                })?;
+                drop_later.push(dict.into_any());
+                for (k, v) in snap {
+                    drop_later.push(k.into_any());
+                    drop_later.push(v);
                 }
-                let broken = dev.len() > MAX_DEVIATIONS;
-                let good = dev.is_empty() && !broken;
-                let slot = dict_slot(py, t, d.as_any())?;
-                slot.snaps.push(Snapshot {
-                    owner,
-                    flag,
-                    snap: snap.into_iter().map(|(k, v)| (k, v.into_ptr() as usize)).collect(),
-                    dev,
-                    broken,
-                    good,
-                });
-                t.add_dep(flag, good);
             }
         }
+        leaf_check("Py_DECREF");
+        drop(drop_later);
     }
-    Ok((owner, flags))
+    Ok(())
 }
 
 /// Report flips of `flags` to the registry (deopt while unpinned), or stop.
@@ -857,9 +1084,10 @@ pub(crate) fn deactivate(owner: u64) {
                         release.push(d.expected);
                     }
                     if d.ty != 0 {
-                        // The dep's strong reference to the class (taken at activation).
+                        // The dep's strong references to the class and its validated MRO.
                         types.push(d.ty);
                         release.push(d.ty);
+                        release.push(d.mro);
                     }
                     false
                 });
@@ -953,6 +1181,7 @@ pub(crate) fn teardown() {
                 if d.ty != 0 {
                     types.push(d.ty);
                     release.push(d.ty);
+                    release.push(d.mro);
                 }
             }
         }
@@ -999,33 +1228,46 @@ pub(crate) fn teardown() {
 /// Pin state of `owner` for diagnostics: (key, absent-pin, intact, broken); snapshot pins
 /// show as `("<dict>", false, no deviation, broken)`.
 pub(crate) fn describe(py: Python<'_>, owner: u64) -> Vec<(String, bool, bool, bool)> {
-    let guard = tables();
-    let Some(t) = guard.as_ref() else { return Vec::new() };
-    let mut out = Vec::new();
-    for slot in t.dicts.values() {
-        for ks in slot.keys.values().flatten() {
-            for d in ks.deps.iter().filter(|d| d.owner == owner) {
-                // SAFETY: live str key (strong reference held by the slot).
-                let k = unsafe { Bound::from_borrowed_ptr(py, ks.key as *mut ffi::PyObject) }.to_string();
-                out.push((k, d.expected == 0, d.good, d.broken));
+    // Collected under the lock (increfs only), formatted after it.
+    let mut rows: Vec<(usize, bool, bool, bool)> = Vec::new();
+    {
+        let guard = tables();
+        let Some(t) = guard.as_ref() else { return Vec::new() };
+        for slot in t.dicts.values() {
+            for ks in slot.keys.values().flatten() {
+                for d in ks.deps.iter().filter(|d| d.owner == owner) {
+                    // SAFETY: an incref of the slot's live key.
+                    rows.push((unsafe { ffi::Py_NewRef(ks.key as *mut ffi::PyObject) } as usize, d.expected == 0, d.good, d.broken));
+                }
+            }
+            for sn in slot.snaps.iter().filter(|s| s.owner == owner) {
+                rows.push((0, false, sn.dev.is_empty(), sn.broken));
             }
         }
-        for sn in slot.snaps.iter().filter(|s| s.owner == owner) {
-            out.push(("<dict>".to_owned(), false, sn.dev.is_empty(), sn.broken));
-        }
     }
-    out
+    rows.into_iter()
+        .map(|(k, absent, good, broken)| {
+            let name = if k == 0 {
+                "<dict>".to_owned()
+            } else {
+                // SAFETY: the new reference taken above.
+                unsafe { Bound::from_owned_ptr(py, k as *mut ffi::PyObject) }.to_string()
+            };
+            (name, absent, good, broken)
+        })
+        .collect()
 }
 
 /// Watch `sys.modules` for lazy activation (idempotent).
 pub(crate) fn watch_sys_modules(py: Python<'_>, sys_modules: &Bound<'_, PyAny>) -> PyResult<()> {
     SYS_MODULES.store(sys_modules.as_ptr() as usize, Ordering::Relaxed);
     let id = dict_watcher_id()?;
-    // SAFETY: attached thread; live dict.
-    if unsafe { ffi::PyDict_Watch(id, sys_modules.as_ptr()) } < 0 {
-        return Err(PyErr::fetch(py));
-    }
-    Ok(())
+    // Under the dict's section: every insert after this sees the watcher bit (the caller
+    // registers the pending names first and checks `sys.modules` afterwards).
+    pyo3::sync::critical_section::with_critical_section(sys_modules, || {
+        // SAFETY: attached thread; we hold the dict's section, not the tables lock.
+        unsafe { watch_locked(py, id, sys_modules.as_ptr()) }
+    })
 }
 
 /// Stop watching `sys.modules` (nothing pending), unless something else watches it.

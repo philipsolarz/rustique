@@ -3,10 +3,19 @@
 //! activation on import, `disable()`, status and counters.
 //!
 //! Locking. One registry lock (a CPython `PyMutex`: a thread blocking on it detaches, so
-//! it never deadlocks against the GIL, a critical section or a stop-the-world). The
-//! `sys.modules` watcher must not block or release the GIL (it runs inside a dict
-//! mutation), so it only *tries* the lock; when the lock is busy it queues the module, and
-//! whoever holds the lock drains the queue before (and right after) releasing it.
+//! it never deadlocks against the GIL, a critical section or a stop-the-world). It is
+//! never taken while the pin tables lock (`guard`, a leaf) is held. The `sys.modules`
+//! watcher must not block, detach or release the GIL (it runs inside a dict mutation, under
+//! the dict's critical section on free-threaded builds: parking would suspend that section
+//! mid-mutation), so it only *tries* the lock; when the lock is busy it queues the module,
+//! and whoever holds the lock drains the queue before (and right after) releasing it. On
+//! free-threaded builds the watcher always queues: activation can take other dicts'
+//! critical sections and stop the world (`PyFunction_SetVectorcall`), so it runs from a
+//! pending call (any thread, between bytecodes) or the next registry operation.
+//!
+//! Suspensions (net benefit, §5.6) are performed by the thread whose fallback asks for one,
+//! right there (the kernel is attached and outside any watcher), when the registry is free;
+//! otherwise by the registry's holder or a pending call.
 
 use std::cell::{Cell, UnsafeCell};
 use std::ffi::c_int;
@@ -61,6 +70,7 @@ impl<T> PyLock<T> {
         if HOLDING.get() {
             return Err(PyRuntimeError::new_err("rustique: re-entrant call into the accel registry"));
         }
+        guard::assert_not_in_tables("the registry lock");
         // SAFETY: a valid PyMutex that never moves (static).
         unsafe { ffi::PyMutex_Lock(self.raw()) };
         HOLDING.set(true);
@@ -131,8 +141,9 @@ struct Rt {
     refusal: Option<Category>,
     /// Installed sites (empty unless `Installed`).
     sites: Vec<Site>,
-    /// Names of the sites last declared (kept for status after refusal/disable).
-    site_names: Vec<String>,
+    /// Names and kinds of the sites last declared (kept for status after refusal/disable;
+    /// labels are formatted by `status()` only).
+    site_names: Vec<(String, Kind)>,
     /// Pin owner id of the installed pins (0: none).
     pin_owner: u64,
     /// Flags of the pins, tracked for deopt-while-unpinned (targets with a vectorcall
@@ -266,8 +277,9 @@ struct Lazy {
     pending: Vec<&'static str>,
     /// Last module object popped from `sys.modules` per pending name (identity only).
     popped: Vec<(&'static str, usize)>,
-    /// Modules that became ready while the registry was busy (strong references).
-    deferred: Vec<(&'static str, usize)>,
+    /// Modules that became ready while the registry was busy, or on a free-threaded build
+    /// (strong references; whether the event was importlib's definitive re-insert).
+    deferred: Vec<(&'static str, usize, bool)>,
 }
 
 static LAZY: Mutex<Lazy> = Mutex::new(Lazy { pending: Vec::new(), popped: Vec::new(), deferred: Vec::new() });
@@ -352,6 +364,12 @@ pub(crate) unsafe fn on_sys_modules_event(
 /// A pending module finished executing (`definitive`: importlib's post-exec re-insert;
 /// otherwise a direct insert, where a refusal leaves the target pending).
 fn module_ready(py: Python<'_>, name: &'static str, module: Bound<'_, PyModule>, definitive: bool) {
+    if cfg!(Py_GIL_DISABLED) {
+        // Never inside the watcher on free-threaded builds (module docs).
+        lazy().deferred.push((name, module.into_ptr() as usize, definitive));
+        schedule_pending();
+        return;
+    }
     match REG.try_lock() {
         Some(mut g) => {
             let reg = registry(&mut g);
@@ -365,7 +383,7 @@ fn module_ready(py: Python<'_>, name: &'static str, module: Bound<'_, PyModule>,
         }
         None => {
             // Busy: the holder drains this before or right after releasing the lock.
-            lazy().deferred.push((name, module.into_ptr() as usize));
+            lazy().deferred.push((name, module.into_ptr() as usize, definitive));
         }
     }
 }
@@ -395,15 +413,15 @@ fn activate_module(
 fn drain_deferred(py: Python<'_>, reg: &mut Registry) -> bool {
     let mut ml = false;
     loop {
-        let batch: Vec<(&'static str, usize)> = std::mem::take(&mut lazy().deferred);
+        let batch: Vec<(&'static str, usize, bool)> = std::mem::take(&mut lazy().deferred);
         if batch.is_empty() {
             return ml;
         }
-        for (name, ptr) in batch {
+        for (name, ptr, definitive) in batch {
             // SAFETY: the strong reference taken when queued.
             let module =
                 unsafe { Bound::from_owned_ptr(py, ptr as *mut ffi::PyObject).cast_into_unchecked::<PyModule>() };
-            ml |= activate_module(py, reg, name, &module, true);
+            ml |= activate_module(py, reg, name, &module, definitive);
         }
     }
 }
@@ -411,12 +429,13 @@ fn drain_deferred(py: Python<'_>, reg: &mut Registry) -> bool {
 /// After releasing the lock: modules queued and resyncs requested meanwhile are handled by
 /// whoever can take it.
 fn after_unlock(py: Python<'_>) {
+    guard::release_deferred();
     while !lazy().deferred.is_empty() || NEED_RESYNC.load(Ordering::Acquire) {
         let Some(mut g) = REG.try_lock() else { return };
         let reg = registry(&mut g);
         let mut ml = drain_deferred(py, reg);
         if NEED_RESYNC.swap(false, Ordering::AcqRel) {
-            ml |= resync(py, reg);
+            ml |= resync(py, reg, false).0;
         }
         drop(g);
         if ml {
@@ -426,42 +445,124 @@ fn after_unlock(py: Python<'_>) {
 }
 
 // ---------------------------------------------------------------------------------------
-// Deopt while unpinned (vectorcall targets)
+// Suspensions: deopt while unpinned, net benefit (vectorcall targets)
 // ---------------------------------------------------------------------------------------
 //
 // A vectorcall site costs +180–260 Ir per fallback call (callers lose the inlined frame
-// push). When a pinned dependency of such a target changes (`mock.patch`, a shadowing
-// global), every call would fall back; instead the registry restores the original
-// vectorcall (and specializer version), and reinstalls the kernel when every pin re-arms.
-// The dict-watcher callback must not swap (on free-threaded builds `PyFunction_SetVectorcall`
-// stops the world), so it schedules a pending call; swaps happen there, coalesced.
+// push). Two policies restore the original vectorcall (and specializer version) while a
+// target is not paying off:
+// - Net benefit (§5.6): the kernel's score reached its floor. The falling-back thread
+//   suspends the target right away (`suspend_from_kernel`); resumed by the next `enable()`.
+// - A pinned dependency changed (`mock.patch`, a shadowing global). On GIL builds the
+//   target is suspended as soon as a kernel falls back for it (or a pending call runs) and
+//   resumed when every pin re-arms (cheap pointer swaps). On free-threaded builds swaps stop
+//   the world (~1 ms with busy threads), so nothing is swapped in steady state for a
+//   dependency: the kernel stays installed, its deps guard routes calls to the original,
+//   and those fallbacks debit the net-benefit score like any other, so a dependency that
+//   stays changed ends in a net-benefit suspension (one swap); resumed by the next
+//   `enable()`.
+// Dict-watcher callbacks never swap; they set flags and schedule a pending call.
 
-/// A target suspended more often than this stays uninstalled ("unstable dependencies").
+/// A target suspended for its dependencies more often than this stays uninstalled
+/// ("unstable dependencies"; GIL builds).
 const MAX_SUSPENSIONS: u32 = 16;
 
 static SCHEDULED: AtomicBool = AtomicBool::new(false);
 static NEED_RESYNC: AtomicBool = AtomicBool::new(false);
 
+/// `_PyEval_AddPendingCall` (exported internal API, 3.14 and 3.15), resolved at the first
+/// `enable()` on free-threaded builds: a pending call any thread of the interpreter can run
+/// (`Py_AddPendingCall` targets the main thread only, which may be blocked in `join()`).
+static ANY_THREAD_PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+type AddPendingCall = unsafe extern "C" fn(
+    *mut ffi::PyInterpreterState,
+    extern "C" fn(*mut std::ffi::c_void) -> c_int,
+    *mut std::ffi::c_void,
+    c_int,
+) -> c_int;
+
+fn resolve_pending_api() {
+    if cfg!(Py_GIL_DISABLED) && ANY_THREAD_PENDING.load(Ordering::Relaxed) == 0 {
+        let a = prepare::lookup_symbol(c"_PyEval_AddPendingCall");
+        ANY_THREAD_PENDING.store(a, Ordering::Relaxed);
+    }
+}
+
+/// Run `resync_pending` at the next eval-breaker check (of any thread on free-threaded
+/// builds, of the main thread otherwise). Callable from any attached thread, including from
+/// a dict watcher callback (no Python code; CPython's pending-call lock is held for a few
+/// instructions).
+fn schedule_pending() {
+    if SCHEDULED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let any = ANY_THREAD_PENDING.load(Ordering::Relaxed);
+    // SAFETY: attached thread; the function has `_PyEval_AddPendingCall`'s signature (3.14,
+    // 3.15: `(interp, func, arg, flags)`; flags 0 = any thread); `Py_AddPendingCall` may be
+    // called from any thread.
+    let r = unsafe {
+        if any != 0 {
+            let f = std::mem::transmute::<usize, AddPendingCall>(any);
+            f(ffi::PyInterpreterState_Get(), resync_pending, std::ptr::null_mut(), 0)
+        } else {
+            ffi::Py_AddPendingCall(Some(resync_pending), std::ptr::null_mut())
+        }
+    };
+    if r < 0 {
+        SCHEDULED.store(false, Ordering::Release);
+    }
+}
+
 /// Called by the dependency tables when a tracked flag flips (any thread, inside a dict
 /// watcher callback: no blocking, no Python code).
 pub(crate) fn schedule_resync() {
     NEED_RESYNC.store(true, Ordering::Release);
-    if !SCHEDULED.swap(true, Ordering::AcqRel) {
-        // SAFETY: Py_AddPendingCall may be called from any thread.
-        if unsafe { ffi::Py_AddPendingCall(Some(resync_pending), std::ptr::null_mut()) } < 0 {
-            SCHEDULED.store(false, Ordering::Release);
-        }
-    }
+    schedule_pending();
 }
 
 extern "C" fn resync_pending(_arg: *mut std::ffi::c_void) -> c_int {
     SCHEDULED.store(false, Ordering::Release);
-    // SAFETY: pending calls run on an attached thread of the main interpreter.
+    // SAFETY: pending calls run on an attached thread of the main interpreter, between
+    // bytecodes.
     let py = unsafe { Python::assume_attached() };
     // The registry may be held (even by this thread, while a `prepare` runs Python code):
     // then its holder picks the request up in `after_unlock`.
     after_unlock(py);
     0
+}
+
+/// A kernel's net-benefit score reached its floor: suspend on this thread now (the kernel
+/// is attached, outside any watcher, and about to call the original) when the registry is
+/// free; otherwise its holder or a pending call does. Only swaps happen here: nothing is
+/// released (a `Py_DECREF` could run a finalizer inside the call).
+pub(crate) fn suspend_from_kernel() {
+    NEED_RESYNC.store(true, Ordering::Release);
+    // SAFETY: kernels run attached.
+    let py = unsafe { Python::assume_attached() };
+    let Some(mut g) = REG.try_lock() else {
+        schedule_pending();
+        return;
+    };
+    NEED_RESYNC.store(false, Ordering::Release);
+    let reg = registry(&mut g);
+    let (ml, more) = resync(py, reg, true);
+    drop(g);
+    if ml {
+        clear_internal_caches();
+    }
+    if more || !lazy().deferred.is_empty() {
+        NEED_RESYNC.store(true, Ordering::Release);
+        schedule_pending();
+    }
+}
+
+/// A kernel fell back because a pinned dependency changed (GIL builds): perform the
+/// pending dependency suspension on this thread.
+#[inline]
+pub(crate) fn deps_fallback() {
+    if NEED_RESYNC.load(Ordering::Relaxed) {
+        suspend_from_kernel();
+    }
 }
 
 /// Restore a target's sites to the originals (kept installed: pins stay active).
@@ -497,14 +598,16 @@ fn resume(reg: &mut Registry, i: usize) -> bool {
     ml
 }
 
-/// Suspend or resume vectorcall targets according to their pins and net-benefit scores.
-/// Returns whether an `ml_meth` site changed.
-fn resync(_py: Python<'_>, reg: &mut Registry) -> bool {
+/// Suspend or resume targets according to their pins and net-benefit scores. Returns
+/// whether an `ml_meth` site changed, and (`from_kernel`: only swaps were allowed) whether
+/// work remains for a later pass.
+fn resync(_py: Python<'_>, reg: &mut Registry, from_kernel: bool) -> (bool, bool) {
     let mut ml = false;
+    let mut more = false;
     for i in 0..reg.rt.len() {
         let spec = all_specs()[i];
         let rt = &mut reg.rt[i];
-        if rt.state != State::Installed || !rt.sites.iter().any(|s| s.kind == Kind::Vectorcall) {
+        if rt.state != State::Installed || rt.sites.is_empty() {
             continue;
         }
         let fallback = spec.counters.suspend_requested.swap(false, Ordering::AcqRel);
@@ -520,19 +623,24 @@ fn resync(_py: Python<'_>, reg: &mut Registry) -> bool {
         if !ok && rt.suspended.is_none() {
             ml |= suspend(rt, Suspended::Deps);
             rt.suspensions += 1;
-            if rt.suspensions > MAX_SUSPENSIONS {
-                let n = rt.suspensions;
-                ml |= deactivate(reg, i);
-                let rt = &mut reg.rt[i];
-                rt.state = State::Refused;
-                rt.reason = Some(format!("unstable dependencies (suspended {n} times)"));
-                rt.refusal = Some(Category::Deps);
+        }
+        if rt.suspended == Some(Suspended::Deps) && rt.suspensions > MAX_SUSPENSIONS {
+            if from_kernel {
+                // Releasing pins may run finalizers: not inside a call.
+                more = true;
+                continue;
             }
+            let n = rt.suspensions;
+            ml |= deactivate(reg, i);
+            let rt = &mut reg.rt[i];
+            rt.state = State::Refused;
+            rt.reason = Some(format!("unstable dependencies (suspended {n} times)"));
+            rt.refusal = Some(Category::Deps);
         } else if ok && rt.suspended == Some(Suspended::Deps) {
             ml |= resume(reg, i);
         }
     }
-    ml
+    (ml, more)
 }
 
 fn refresh_pending(reg: &Registry) {
@@ -572,6 +680,49 @@ fn jit_enabled(py: Python<'_>) -> bool {
 
 static JIT: AtomicBool = AtomicBool::new(false);
 
+/// The message of a caught panic.
+fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = p.downcast_ref::<&str>() {
+        (*s).to_owned()
+    } else if let Some(s) = p.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "panic".to_owned()
+    }
+}
+
+/// Sites swapped and pins activated by an activation in progress: rolled back when dropped
+/// uncommitted, so a refusal, an error or a panic anywhere leaves nothing behind.
+struct Staged {
+    sites: Vec<Site>,
+    /// Sites declared but not (yet) swapped: released only.
+    declared: Vec<Site>,
+    owner: u64,
+}
+
+impl Staged {
+    fn commit(mut self) -> (Vec<Site>, u64) {
+        let sites = std::mem::take(&mut self.sites);
+        let owner = std::mem::replace(&mut self.owner, 0);
+        (sites, owner)
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        for mut s in self.sites.drain(..).rev() {
+            s.uninstall(true);
+            s.release();
+        }
+        for s in self.declared.drain(..) {
+            s.release();
+        }
+        if self.owner != 0 {
+            guard::deactivate(self.owner);
+        }
+    }
+}
+
 /// Make the shared declarations `g` active (prepared and pinned once); returns its index.
 fn ensure_group(
     py: Python<'_>,
@@ -597,16 +748,21 @@ fn ensure_group(
     {
         return Err(r.clone());
     }
-    let mut cx = Prepare::new(py, spec, module, false);
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (g.prepare)(py, &mut cx)));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut cx = Prepare::new(py, spec, module, false);
+        let r = match (g.prepare)(py, &mut cx) {
+            Ok(()) if cx.sites.is_empty() => guard::activate(py, std::mem::take(&mut cx.pins))
+                .map_err(|e| Refusal::with(Category::Deps, format!("shared {}: pins: {}", g.name, e.value(py)))),
+            Ok(()) => Err(Refusal::new(format!("shared {}: declares sites", g.name))),
+            Err(r) => Err(r),
+        };
+        release_sites(cx.sites.drain(..).map(|d| d.site));
+        r
+    }));
     let result = match outcome {
-        Ok(Ok(())) if cx.sites.is_empty() => guard::activate(py, std::mem::take(&mut cx.pins))
-            .map_err(|e| Refusal::with(Category::Deps, format!("shared {}: pins: {}", g.name, e.value(py)))),
-        Ok(Ok(())) => Err(Refusal::new(format!("shared {}: declares sites", g.name))),
-        Ok(Err(r)) => Err(r),
-        Err(_) => Err(Refusal::new(format!("shared {}: prepare panicked", g.name))),
+        Ok(r) => r,
+        Err(p) => Err(Refusal::new(format!("shared {}: panic while preparing: {}", g.name, panic_message(&*p)))),
     };
-    release_sites(cx.sites.into_iter().map(|d| d.site));
     let st = &mut reg.groups[gi];
     match result {
         Ok((owner, flags)) => {
@@ -634,7 +790,41 @@ fn release_group(reg: &mut Registry, gi: usize) {
 }
 
 /// Gate, prepare and install target `i`. Returns whether an `ml_meth` site was installed.
+/// Never panics out (`enable()`, the import hook): a panic anywhere becomes a refusal, and
+/// whatever was swapped or pinned is rolled back.
 fn activate(
+    py: Python<'_>,
+    reg: &mut Registry,
+    i: usize,
+    module: Option<Bound<'_, PyModule>>,
+    definitive: bool,
+) -> bool {
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| activate_inner(py, reg, i, module, definitive)));
+    match outcome {
+        Ok(ml) => ml,
+        Err(p) => {
+            // `Staged` rolled the sites and pins back while unwinding.
+            let spec = all_specs()[i];
+            if let Some(g) = spec.shared
+                && let Some(gi) = reg.groups.iter().position(|x| std::ptr::eq(x.spec, g))
+                && reg.groups[gi].users == 0
+            {
+                reg.groups[gi].users = 1;
+                release_group(reg, gi);
+            }
+            let rt = &mut reg.rt[i];
+            if definitive {
+                rt.state = State::Refused;
+            }
+            rt.reason = Some(format!("panic while activating: {}", panic_message(&*p)));
+            rt.refusal = Some(Category::Other);
+            false
+        }
+    }
+}
+
+fn activate_inner(
     py: Python<'_>,
     reg: &mut Registry,
     i: usize,
@@ -677,56 +867,44 @@ fn activate(
     };
     let mut cx = Prepare::new(py, spec, module, false);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.prepare)(py, &mut cx)));
-    let names: Vec<String> = cx.sites.iter().map(|d| site_label(&d.site)).collect();
-    reg.rt[i].site_names = names;
+    // Labels are formatted by `status()` only (no `format!` per site at install).
+    reg.rt[i].site_names = cx.sites.iter().map(|d| (d.site.name.clone(), d.site.kind)).collect();
+    let mut staged =
+        Staged { sites: Vec::with_capacity(cx.sites.len()), declared: cx.sites.drain(..).map(|d| d.site).collect(), owner: 0 };
     match outcome {
         Ok(Ok(())) => {}
-        Ok(Err(r)) => {
-            release_sites(cx.sites.into_iter().map(|d| d.site));
-            return refuse(reg, r);
-        }
-        Err(_) => {
-            release_sites(cx.sites.into_iter().map(|d| d.site));
-            return refuse(reg, Refusal::new("prepare panicked"));
-        }
+        Ok(Err(r)) => return refuse(reg, r),
+        Err(p) => return refuse(reg, Refusal::new(format!("prepare panicked: {}", panic_message(&*p)))),
     }
-    if cx.sites.is_empty() {
+    if staged.declared.is_empty() {
         return refuse(reg, Refusal::new("declared no sites"));
     }
     // All-or-nothing: CAS each site from its validated original.
-    let mut installed: Vec<Site> = Vec::with_capacity(cx.sites.len());
+    let declared = std::mem::take(&mut staged.declared);
     let mut failure = None;
-    for d in cx.sites {
-        let mut s = d.site;
-        if failure.is_some() {
-            s.release();
-            continue;
-        }
+    let mut rest = declared.into_iter();
+    for mut s in rest.by_ref() {
         match s.install() {
-            Ok(()) => installed.push(s),
+            Ok(()) => staged.sites.push(s),
             Err(e) => {
                 failure = Some(format!("{}: {}", s.name, e.value(py)));
                 s.release();
+                break;
             }
         }
     }
+    staged.declared.extend(rest);
     if let Some(f) = failure {
-        for mut s in installed.into_iter().rev() {
-            s.uninstall(true);
-            s.release();
-        }
         return refuse(reg, Refusal::with(Category::Conflict, f));
     }
-    let (owner, own_flags) = match guard::activate(py, cx.pins) {
-        Ok(o) => o,
-        Err(e) => {
-            for mut s in installed.into_iter().rev() {
-                s.uninstall(true);
-                s.release();
-            }
-            return refuse(reg, Refusal::with(Category::Deps, format!("pins: {}", e.value(py))));
+    match guard::activate(py, std::mem::take(&mut cx.pins)) {
+        Ok((owner, flags)) => {
+            staged.owner = owner;
+            reg.rt[i].flags = flags;
         }
-    };
+        Err(e) => return refuse(reg, Refusal::with(Category::Deps, format!("pins: {}", e.value(py)))),
+    }
+    let (installed, owner) = staged.commit();
     let ml = installed.iter().any(|s| s.kind == Kind::MlMeth);
     let has_vc = installed.iter().any(|s| s.kind == Kind::Vectorcall);
     let group_flags = match group {
@@ -738,7 +916,6 @@ fn activate(
     };
     let rt = &mut reg.rt[i];
     rt.group = group;
-    rt.flags = own_flags;
     rt.sites = installed;
     rt.pin_owner = owner;
     rt.state = State::Installed;
@@ -747,7 +924,8 @@ fn activate(
     rt.suspended = None;
     rt.suspensions = 0;
     spec.counters.arm(spec.hit_credit, spec.fallback_debit);
-    if has_vc {
+    // Deopt while unpinned: GIL builds only (see "Suspensions").
+    if has_vc && !cfg!(Py_GIL_DISABLED) {
         rt.tracked = rt.flags.clone();
         for f in group_flags {
             if !rt.tracked.iter().any(|t| std::ptr::eq(*t, f)) {
@@ -769,19 +947,20 @@ fn release_sites(sites: impl Iterator<Item = Site>) {
     }
 }
 
-fn site_label(s: &Site) -> String {
-    let kind = match s.kind {
+fn site_label(name: &str, kind: Kind) -> String {
+    let kind = match kind {
         Kind::MlMeth => "ml_meth",
         Kind::Slot => "slot",
         Kind::Vectorcall => "vectorcall",
     };
-    format!("{} ({kind})", s.name)
+    format!("{name} ({kind})")
 }
 
 /// Restore target `i`'s sites and drop its pins. Returns whether an `ml_meth` site was
 /// restored.
 fn deactivate(reg: &mut Registry, i: usize) -> bool {
     let rt = &mut reg.rt[i];
+    let was_installed = rt.state == State::Installed;
     let ml = rt.sites.iter().any(|s| s.kind == Kind::MlMeth);
     for mut s in rt.sites.drain(..).rev() {
         s.uninstall(true);
@@ -805,7 +984,17 @@ fn deactivate(reg: &mut Registry, i: usize) -> bool {
     rt.reason = None;
     rt.refusal = None;
     rt.suspended = None;
+    if was_installed && let Some(f) = all_specs()[i].on_disable {
+        // A panic in the hook must not leave the registry half-updated.
+        let _ = std::panic::catch_unwind(f_with_py(f));
+    }
     ml
+}
+
+/// `on_disable(py)` as an unwind-safe closure (deactivate runs attached).
+fn f_with_py(f: fn(Python<'_>)) -> impl FnOnce() + std::panic::UnwindSafe {
+    // SAFETY: the registry runs on an attached thread.
+    move || f(unsafe { Python::assume_attached() })
 }
 
 /// `sys._clear_internal_caches()`: 3.15's tier 2 copies `ml_meth` into traces (M§4).
@@ -880,9 +1069,13 @@ pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -
     prepare::clear_pass_caches();
     reg.pass += 1;
     JIT.store(jit_enabled(py), Ordering::Relaxed);
+    resolve_pending_api();
     let sys_modules = prepare::sys_modules(py).map_err(|r| PyRuntimeError::new_err(r.reason().to_owned()))?;
-    let mut ml = false;
-    let mut wait = false;
+    let mut ml = drain_deferred(py, reg);
+    // Module targets become pending first and `sys.modules` is watched before it is read,
+    // so a module finishing its import on another thread meanwhile is either seen here or
+    // queued by the watcher (drained below).
+    let mut check: Vec<usize> = Vec::new();
     for (i, spec) in all_specs().iter().enumerate() {
         if !selected(spec, only.as_deref(), &exclude) {
             continue;
@@ -896,25 +1089,32 @@ pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -
         }
         match spec.module {
             None => ml |= activate(py, reg, i, None, true),
-            Some(name) => {
-                let m = sys_modules.get_item(prepare::interned(py, name))?.and_then(|m| m.cast_into::<PyModule>().ok());
-                match m {
-                    Some(m) if !prepare::module_initializing(&m) => ml |= activate(py, reg, i, Some(m), true),
-                    _ => {
-                        reg.rt[i].state = State::Pending;
-                        reg.rt[i].reason = None;
-                        reg.rt[i].refusal = None;
-                        wait = true;
-                    }
-                }
+            Some(_) => {
+                reg.rt[i].state = State::Pending;
+                reg.rt[i].reason = None;
+                reg.rt[i].refusal = None;
+                check.push(i);
             }
+        }
+    }
+    if !check.is_empty() {
+        refresh_pending(reg);
+        guard::watch_sys_modules(py, sys_modules.as_any())?;
+    }
+    for i in check {
+        let Some(name) = all_specs()[i].module else { continue };
+        if reg.rt[i].state != State::Pending {
+            continue;
+        }
+        let m = sys_modules.get_item(prepare::interned(py, name))?.and_then(|m| m.cast_into::<PyModule>().ok());
+        if let Some(m) = m
+            && !prepare::module_initializing(&m)
+        {
+            ml |= activate(py, reg, i, Some(m), true);
         }
     }
     reg.only = only;
     reg.exclude = exclude;
-    if wait {
-        guard::watch_sys_modules(py, sys_modules.as_any())?;
-    }
     refresh_pending(reg);
     ml |= drain_deferred(py, reg);
     prepare::clear_pass_caches();
@@ -989,10 +1189,11 @@ pub fn teardown(py: Python<'_>) -> PyResult<()> {
     drop(g);
     // SAFETY: attached thread; the strong references taken when the modules were queued.
     unsafe {
-        for (_, p) in deferred {
+        for (_, p, _) in deferred {
             ffi::Py_DECREF(p as *mut ffi::PyObject);
         }
     }
+    guard::release_deferred();
     let mut seen: Vec<usize> = Vec::new();
     for spec in all_specs() {
         if let Some(f) = spec.release
@@ -1012,12 +1213,19 @@ pub fn teardown(py: Python<'_>) -> PyResult<()> {
 pub fn installed(py: Python<'_>, names: Option<&[String]>) -> PyResult<Vec<&'static str>> {
     let mut g = REG.lock(py)?;
     let reg = registry(&mut g);
-    Ok(all_specs()
+    let ml = drain_deferred(py, reg);
+    let out = all_specs()
         .iter()
         .enumerate()
         .filter(|(i, s)| reg.rt[*i].state == State::Installed && names.is_none_or(|n| matches(s, n)))
         .map(|(_, s)| s.name)
-        .collect())
+        .collect();
+    drop(g);
+    if ml {
+        clear_internal_caches();
+    }
+    after_unlock(py);
+    Ok(out)
 }
 
 /// Per-target immutable status values (name, group, module, versions), built once.
@@ -1070,6 +1278,10 @@ fn versions_of(spec: &TargetSpec) -> Vec<String> {
 pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     let mut g = REG.lock(py)?;
     let reg = registry(&mut g);
+    // Modules queued by the watcher are activated first (free-threaded builds always queue).
+    if drain_deferred(py, reg) {
+        clear_internal_caches();
+    }
     let targets = PyList::empty(py);
     let mut enabled = false;
     for (i, spec) in all_specs().iter().enumerate() {
@@ -1088,7 +1300,7 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
             intern!(py, "refusal"),
             if rt.state == State::Refused { rt.refusal.map(Category::as_str) } else { None },
         )?;
-        d.set_item(intern!(py, "sites"), PyList::new(py, &rt.site_names)?)?;
+        d.set_item(intern!(py, "sites"), PyList::new(py, rt.site_names.iter().map(|(n, k)| site_label(n, *k)))?)?;
         d.set_item(intern!(py, "versions"), PyList::new(py, fixed.versions.iter().map(|v| v.bind(py)))?)?;
         d.set_item(intern!(py, "checkable"), spec.checkable)?;
         if let Some(m) = &fixed.module {

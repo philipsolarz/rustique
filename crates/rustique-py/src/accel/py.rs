@@ -207,6 +207,12 @@ fn func_version(func: &Bound<'_, pyo3::types::PyFunction>) -> u32 {
     unsafe { (*func.as_ptr().cast::<pyo3::ffi::PyFunctionObject>()).func_version }
 }
 
+/// Lock-order violations of the pin tables' leaf rule seen in this process (tests assert 0).
+#[pyfunction]
+fn _lock_violations() -> u64 {
+    super::guard::lock_violations()
+}
+
 /// Is the exit hook registered (tests)?
 #[pyfunction]
 fn exit_hook_registered() -> bool {
@@ -228,6 +234,7 @@ fn add_extras(sub: &Bound<'_, PyModule>) -> PyResult<()> {
         sub.add_function(wrap_pyfunction!(vectorcall_is_original, sub)?)?;
         sub.add_function(wrap_pyfunction!(super::exit::exit_hook, sub)?)?;
         sub.add_function(wrap_pyfunction!(exit_hook_registered, sub)?)?;
+        sub.add_function(wrap_pyfunction!(_lock_violations, sub)?)?;
         sub.add("RustiqueCheckError", sub.py().get_type::<super::check::RustiqueCheckError>())?;
         crate::targets::register(sub)
     })?;
@@ -252,21 +259,30 @@ fn accel_getattr(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let sub = PyModule::new(m.py(), "_accel")?;
-    sub.add_function(wrap_pyfunction!(enable, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(disable, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(status, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(stats, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(_set_native, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(installed, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(check, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(check_mode, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(accel_getattr, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::startup, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::py_switch_enable, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::killed, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::report_to, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::record, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::report_at_exit, &sub)?)?;
-    sub.add("FREE_THREADED", super::version::FREE_THREADED)?;
-    m.add("_accel", sub)
+    // Through the module dict, not `PyModule::add`: `add` maintains `__all__`, whose first
+    // lookup raises AttributeError, and PyO3's `PyErr::take` then creates its
+    // `PanicException` type (~40k instructions at startup; docs/atlas/w2-startup.md §1.5).
+    let d = sub.dict();
+    macro_rules! set {
+        ($name:literal, $f:path) => {
+            d.set_item(pyo3::intern!(m.py(), $name), wrap_pyfunction!($f, &sub)?)?
+        };
+    }
+    set!("enable", enable);
+    set!("disable", disable);
+    set!("status", status);
+    set!("stats", stats);
+    set!("_set_native", _set_native);
+    set!("installed", installed);
+    set!("check", check);
+    set!("check_mode", check_mode);
+    set!("__getattr__", accel_getattr);
+    set!("startup", super::switch::startup);
+    set!("switch_enable", super::switch::py_switch_enable);
+    set!("killed", super::switch::killed);
+    set!("report_to", super::switch::report_to);
+    set!("_record", super::switch::record);
+    set!("_report_at_exit", super::switch::report_at_exit);
+    d.set_item("FREE_THREADED", super::version::FREE_THREADED)?;
+    m.dict().set_item("_accel", sub)
 }

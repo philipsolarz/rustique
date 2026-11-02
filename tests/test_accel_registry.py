@@ -310,6 +310,10 @@ def test_generation_watch(selftest_module):
     assert A._selftest_gen() == g + 3
 
 
+@pytest.mark.skipif(
+    not getattr(sys, "_is_gil_enabled", lambda: True)(),
+    reason="GIL builds only: free-threaded builds swap nothing for a dependency (test_accel_threads)",
+)
 def test_deopt_while_unpinned(selftest_module):
     m = importlib.import_module(MOD)
     rt.enable(only=["_selftest.vectorcall"])
