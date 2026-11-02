@@ -18,11 +18,13 @@ pub mod float;
 pub mod fnmatch;
 pub mod functools;
 pub mod generated;
+pub mod interp;
 pub mod json;
 pub mod logging;
 pub mod pathlib;
 pub mod posixpath;
 pub mod random;
+pub mod set;
 pub mod statistics;
 pub mod textwrap;
 pub mod urllib;
@@ -49,6 +51,8 @@ pub static ALL: &[&[&TargetSpec]] = &[
     generated::TARGETS,
     contextlib::TARGETS,
     functools::TARGETS,
+    set::TARGETS,
+    interp::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
     _selftest::TARGETS,
@@ -65,5 +69,6 @@ pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {
     datetime::register(accel)?;
     copy::register(accel)?;
     generated::register(accel)?;
+    interp::register(accel)?;
     Ok(())
 }

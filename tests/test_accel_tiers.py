@@ -86,7 +86,7 @@ def test_any_site_kind_can_be_suspended_and_resumed():
 
 
 def run(code: str, **env: str) -> subprocess.CompletedProcess[str]:
-    e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
+    e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE") or k == "RUSTIQUE_VALIDATE"}
     e.update(env)
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)], capture_output=True, text=True, env=e, timeout=120

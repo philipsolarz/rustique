@@ -8,6 +8,7 @@ arithmetic test in test_logging.py.
 
 from __future__ import annotations
 
+import decimal
 import io
 import logging
 import string
@@ -27,7 +28,9 @@ A = _rustique._accel
 def logging_targets():
     A.disable(["logging"])
     rt.enable(only=["logging"])
-    assert len(A.installed(["logging"])) == 5
+    import sysconfig
+
+    assert len(A.installed(["logging"])) == (5 if sysconfig.get_config_var("Py_GIL_DISABLED") else 6)
     A.stats(True, True)
     yield
     A.stats(False, True)
@@ -73,6 +76,9 @@ datefmt_strategy = st.one_of(
 scalar = st.one_of(
     st.none(), st.booleans(), st.integers(min_value=-(2**70), max_value=2**70),
     st.floats(allow_nan=True, allow_infinity=True), st.text(max_size=8),
+    # C Decimals (wave 2: plain values for %-formatting), incl. specials and exponents
+    st.decimals(allow_nan=True, allow_infinity=True, places=None),
+    st.builds(lambda m, e: decimal.Decimal(m).scaleb(e), st.integers(-10**12, 10**12), st.integers(-30, 30)),
 )
 msg_args = st.one_of(
     st.tuples(st.sampled_from(["plain", "x=%s", "%d", "%s %s", "%5s|%-5s", "%05d", "%r", "%(a)s %(b)d", "%.2f", "100%%", "%s%%"]),
@@ -228,7 +234,12 @@ def test_log_record_init(name, level, pathname, lineno, args, func, sinfo):
 def test_kernels_were_exercised():
     """The examples above reached every kernel's fast path (and its fallbacks)."""
     s = A.stats()
-    for name in ("logging.Logger.level", "logging.Logger.findCaller", "logging.LogRecord.__init__",
-                 "logging.Formatter.formatTime", "logging.Formatter.format"):
+    import sysconfig
+
+    names = ["logging.Logger.findCaller", "logging.LogRecord.__init__", "logging.Formatter.formatTime",
+             "logging.Formatter.format"]
+    if not sysconfig.get_config_var("Py_GIL_DISABLED"):
+        names.append("logging.Logger.level")  # not installed on free-threaded builds
+    for name in names:
         assert s[name]["hits"] > 50, (name, s[name])
         assert sum(s[name]["fallback"].values()) > 0, (name, s[name])

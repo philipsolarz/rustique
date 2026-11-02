@@ -59,6 +59,7 @@ pub mod registry;
 pub mod site;
 pub mod spec;
 pub mod stats;
+pub mod stubs;
 pub mod switch;
 pub mod version;
 
