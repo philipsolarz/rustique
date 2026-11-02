@@ -173,6 +173,8 @@ def test_report_at_exit_imports_formatting_only_then(tmp_path):
     assert rec["stats"]["list.index"]["hits"] >= 1
 
 
+@pytest.mark.skipif(not os.path.isfile(os.path.join(SITEDIR, "_rustique.py")),
+                    reason="the extension is installed top-level here (a release wheel)")
 def test_in_package_layout_loads_through_the_shim():
     # The source tree (and wheels built from the sdist): `_rustique` is the shim, which loads
     # `rustique/_rustique<suffix>` by path, still without importing the package.
