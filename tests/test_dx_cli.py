@@ -145,8 +145,30 @@ def test_diff_normalizes_addresses_and_ignore():
     code = ENABLE + "import time; print(object()); print('t', time.time())"
     r = rq("diff", "--ignore", r"t \d+\.\d+", "--", sys.executable, "-c", code)
     assert r.returncode == 0, r.stdout
-    r = rq("diff", "--no-normalize", "--", sys.executable, "-c", code)
+    r = rq("diff", "--no-normalize", "--strict-output", "--", sys.executable, "-c", code)
     assert r.returncode == 1
+    # without --strict-output, output that also differs between two plain runs is volatile
+    r = rq("diff", "--no-normalize", "--", sys.executable, "-c", code)
+    assert r.returncode == 0 and "volatile" in r.stdout
+
+
+def test_diff_volatile_output_is_not_a_difference():
+    # output that differs between two plain runs (a random value) is reported as volatile
+    code = ENABLE + "import random; print('ok'); print(random.random())"
+    r = rq("diff", "--", sys.executable, "-c", code)
+    assert r.returncode == 0, r.stdout
+    assert "identical" in r.stdout and "also differs between two plain runs" in r.stdout
+    r = rq("diff", "--strict-output", "--", sys.executable, "-c", code)
+    assert r.returncode == 1 and "DIFFERENT" in r.stdout
+
+
+def test_diff_masks_log_stamps_and_local_ports():
+    code = ENABLE + ("import datetime, random\n"
+                     "print(datetime.datetime.now().isoformat(' '), '127.0.0.1:%d' % random.randint(20000, 60000))\n"
+                     "print(datetime.datetime.now().strftime('[%d/%b/%Y %H:%M:%S]'), 'GET /')\n"
+                     "print(datetime.date(2026, 11, 2).isoformat(), datetime.time(12, 30).isoformat())")
+    r = rq("diff", "--strict-output", "--", sys.executable, "-c", code)
+    assert r.returncode == 0, r.stdout
 
 
 def test_diff_without_rustique_in_the_command():
@@ -199,6 +221,13 @@ def test_diff_pytest_outcome_change(suite):
     assert r.returncode == 1
     assert "test outcomes differ (1 changed" in r.stdout
     assert "test_a::test_differs: plain failed, rustique passed" in r.stdout
+
+
+def test_diff_pytest_verbose_junit_path(suite):
+    # pytest prints the --junitxml path diff adds at default verbosity: it must be the same file
+    r = rq("diff", "--strict-output", "--", sys.executable, "-m", "pytest", "-p", "no:randomly", str(suite), cwd=suite)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "7 test outcomes" in r.stdout
 
 
 def test_diff_refuses_plugin_flag(suite):
