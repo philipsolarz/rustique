@@ -125,6 +125,49 @@ impl Mt<'_> {
         }
     }
 
+    /// `Random.normalvariate`'s rejection loop (Kinderman and Monahan), returning the
+    /// accepted `z` (the method returns `mu + z * sigma`): `u1 = random()`,
+    /// `u2 = 1.0 - random()`, `z = NV_MAGICCONST * (u1 - 0.5) / u2`, accepted when
+    /// `z * z / 4.0 <= -_log(u2)`. Same operations in the same order (no fused
+    /// multiply-add: Rust never contracts), `_log` = libm `log` ([`libm::log`]).
+    /// `u2` lies in `[2**-53, 1]`, so an accepted `|z|` is at most `2 * sqrt(53 ln 2)`
+    /// (< 12.2): see [`NORMAL_Z_BOUND`].
+    #[inline]
+    pub fn normal_z(&mut self, nv_magicconst: f64) -> f64 {
+        loop {
+            let (u1, r) = self.random2();
+            if let Some(z) = variates::normal_try(nv_magicconst, u1, r) {
+                return z;
+            }
+        }
+    }
+
+    /// Two `random()` values, in order.
+    #[inline]
+    pub fn random2(&mut self) -> (f64, f64) {
+        let a = self.random();
+        (a, self.random())
+    }
+
+    /// `-_log(1.0 - self.random())`: `Random.expovariate` before the division by `lambd`.
+    #[inline]
+    pub fn expo(&mut self) -> f64 {
+        variates::expo(self.random())
+    }
+
+    /// `Random.paretovariate(alpha)` given `e = -1.0 / alpha` (see [`variates::pareto`]).
+    #[inline]
+    pub fn pareto(&mut self, e: f64) -> f64 {
+        variates::pareto(self.random(), e)
+    }
+
+    /// `Random.gauss`'s new pair when `gauss_next` is `None` (see [`variates::gauss_pair`]).
+    #[inline]
+    pub fn gauss_pair(&mut self, twopi: f64) -> (f64, f64) {
+        let (a, b) = self.random2();
+        variates::gauss_pair(a, b, twopi)
+    }
+
     /// The swaps of `Random.shuffle(x)` for `len(x) == n`, in order: `(i, j)` means
     /// `x[i], x[j] = x[j], x[i]`.
     pub fn shuffle_swaps(&mut self, n: usize, mut swap: impl FnMut(usize, usize)) {
@@ -138,25 +181,194 @@ impl Mt<'_> {
     /// == n`, in selection order (`0 <= k <= n` is the caller's check). Follows CPython's
     /// choice between the pool and the set method exactly (see [`sample_uses_pool`]).
     pub fn sample_indices(&mut self, n: usize, k: usize) -> Vec<usize> {
-        let mut out = Vec::with_capacity(k);
-        if sample_uses_pool(n, k) {
-            let mut pool: Vec<usize> = (0..n).collect();
-            for i in 0..k {
-                let j = self.randbelow((n - i) as u64) as usize;
-                out.push(pool[j]);
-                pool[j] = pool[n - i - 1];
-            }
-        } else {
-            let mut selected = hashbrown::HashSet::with_capacity(k);
-            for _ in 0..k {
-                let mut j = self.randbelow(n as u64) as usize;
-                while !selected.insert(j) {
-                    j = self.randbelow(n as u64) as usize;
-                }
-                out.push(j);
-            }
-        }
+        let mut out = vec![0; k];
+        self.sample_each(n, k, |i, j| out[i] = j);
         out
+    }
+
+    /// [`Self::sample_indices`] without building the result: `emit(i, j)` for the `i`-th
+    /// pick `j`, in order. No heap allocation for the usual sizes: the pool method's
+    /// index pool (`n <= 512`) and the set method's selected-index table (`k <= 256`)
+    /// live on the stack.
+    pub fn sample_each(&mut self, n: usize, k: usize, emit: impl FnMut(usize, usize)) {
+        if sample_uses_pool(n, k) {
+            if n <= POOL_STACK { self.sample_pool_stack(n, k, emit) } else { self.sample_pool_heap(n, k, emit) }
+        } else if k <= SET_STACK / 4 {
+            self.sample_set_stack(n, k, emit)
+        } else {
+            self.sample_set_heap(n, k, emit)
+        }
+    }
+
+    /// The pool method, `pool = list(population)`; `result[i] = pool[j]`;
+    /// `pool[j] = pool[n - i - 1]`, on a stack pool of indices.
+    #[inline(never)]
+    fn sample_pool_stack(&mut self, n: usize, k: usize, mut emit: impl FnMut(usize, usize)) {
+        let mut buf = [std::mem::MaybeUninit::<u32>::uninit(); POOL_STACK];
+        for (i, slot) in buf[..n].iter_mut().enumerate() {
+            slot.write(i as u32);
+        }
+        // SAFETY: the first `n` entries were just initialised (`n <= POOL_STACK`).
+        let pool = unsafe { &mut *(&raw mut buf[..n] as *mut [u32]) };
+        for i in 0..k {
+            let j = self.randbelow((n - i) as u64) as usize;
+            emit(i, pool[j] as usize);
+            pool[j] = pool[n - i - 1];
+        }
+    }
+
+    #[inline(never)]
+    fn sample_pool_heap(&mut self, n: usize, k: usize, mut emit: impl FnMut(usize, usize)) {
+        let mut pool: Vec<usize> = (0..n).collect();
+        for i in 0..k {
+            let j = self.randbelow((n - i) as u64) as usize;
+            emit(i, pool[j]);
+            pool[j] = pool[n - i - 1];
+        }
+    }
+
+    /// The set method, `selected = set()`; `j = randbelow(n)` until not in `selected`, on
+    /// a stack open-addressing table sized to a power of two at least `4k` (load factor
+    /// <= 1/4), Fibonacci hashing, linear probing, storing `j + 1` (0 = empty).
+    #[inline(never)]
+    fn sample_set_stack(&mut self, n: usize, k: usize, mut emit: impl FnMut(usize, usize)) {
+        let size = (4 * k).next_power_of_two().max(16);
+        debug_assert!(size <= SET_STACK);
+        let mut buf = [std::mem::MaybeUninit::<u64>::uninit(); SET_STACK];
+        for slot in &mut buf[..size] {
+            slot.write(0);
+        }
+        // SAFETY: the first `size` entries were just initialised.
+        let table = unsafe { &mut *(&raw mut buf[..size] as *mut [u64]) };
+        let (mask, shift) = (size - 1, 64 - size.trailing_zeros());
+        let mut insert = |j: usize| -> bool {
+            let key = j as u64 + 1;
+            let mut h = (key.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> shift) as usize;
+            loop {
+                let v = table[h];
+                if v == 0 {
+                    table[h] = key;
+                    return true;
+                }
+                if v == key {
+                    return false;
+                }
+                h = (h + 1) & mask;
+            }
+        };
+        for i in 0..k {
+            let mut j = self.randbelow(n as u64) as usize;
+            while !insert(j) {
+                j = self.randbelow(n as u64) as usize;
+            }
+            emit(i, j);
+        }
+    }
+
+    #[inline(never)]
+    fn sample_set_heap(&mut self, n: usize, k: usize, mut emit: impl FnMut(usize, usize)) {
+        let mut selected = hashbrown::HashSet::with_capacity(k);
+        for i in 0..k {
+            let mut j = self.randbelow(n as u64) as usize;
+            while !selected.insert(j) {
+                j = self.randbelow(n as u64) as usize;
+            }
+            emit(i, j);
+        }
+    }
+}
+
+/// Largest population whose index pool `sample` keeps on the stack (2 KiB).
+const POOL_STACK: usize = 512;
+/// Slots of the stack table of selected indices (4 KiB); used for `k <= SET_STACK / 4`.
+const SET_STACK: usize = 512;
+
+/// The arithmetic of the continuous distributions on given `random()` values (`r`), so
+/// that callers can draw under the generator's lock and compute outside it. Same IEEE
+/// operations in the same order as `Lib/random.py` (Rust never contracts into FMA), and
+/// [`libm`] for the C library calls.
+pub mod variates {
+    use super::libm;
+
+    /// One round of `normalvariate`'s loop with `u1 = random()`, `u2 = 1.0 - r`:
+    /// `z = NV_MAGICCONST * (u1 - 0.5) / u2`, accepted when `z * z / 4.0 <= -_log(u2)`.
+    #[inline]
+    pub fn normal_try(nv_magicconst: f64, u1: f64, r: f64) -> Option<f64> {
+        let u2 = 1.0 - r;
+        let z = nv_magicconst * (u1 - 0.5) / u2;
+        let zz = z * z / 4.0;
+        (zz <= -libm::log(u2)).then_some(z)
+    }
+
+    /// `-_log(1.0 - r)`.
+    #[inline]
+    pub fn expo(r: f64) -> f64 {
+        -libm::log(1.0 - r)
+    }
+
+    /// `(1.0 - r) ** e` as `float_pow` computes it (`1.0 ** e` is 1.0, else libm `pow`),
+    /// for `e = -1.0 / alpha` with `1/16 <= |alpha|` finite: `1.0 - r` lies in
+    /// `[2**-53, 1]` and `|e| <= 16`, so the result lies in `[2**-848, 2**848]` (never a
+    /// range error).
+    #[inline]
+    pub fn pareto(r: f64, e: f64) -> f64 {
+        let u = 1.0 - r;
+        if u == 1.0 { 1.0 } else { libm::pow(u, e) }
+    }
+
+    /// `x2pi = a * TWOPI`, `g2rad = _sqrt(-2.0 * _log(1.0 - b))`:
+    /// `(z, next) = (_cos(x2pi) * g2rad, _sin(x2pi) * g2rad)`.
+    #[inline]
+    pub fn gauss_pair(a: f64, b: f64, twopi: f64) -> (f64, f64) {
+        let x2pi = a * twopi;
+        let g2rad = libm::sqrt(-2.0 * libm::log(1.0 - b));
+        (libm::cos(x2pi) * g2rad, libm::sin(x2pi) * g2rad)
+    }
+}
+
+/// Upper bound of `|z|` for an accepted [`Mt::normal_z`]: `zz <= -log(u2)` with
+/// `u2 >= 2**-53` gives `|z| <= 2 * sqrt(53 * ln 2) = 12.12...`; rounded up.
+pub const NORMAL_Z_BOUND: f64 = 12.5;
+
+/// The C library functions `Lib/random.py` binds from `math` (`_log`, `_exp`, `_sqrt`,
+/// `_cos`, `_sin`) and that `float_pow` calls, on the arguments the variates pass them
+/// (finite, in the functions' domains, results in range: `math`'s error checks never
+/// fire there, so the result is the C function's). Rust's `f64` methods lower to the same
+/// C library calls (`log`, `exp`, `cos`, `sin`, `pow`; `sqrt` is the correctly rounded
+/// IEEE operation everywhere); the Python extension checks them against `math` on probe
+/// values before the first use.
+pub mod libm {
+    /// `log(x)` for `x > 0`.
+    #[inline]
+    pub fn log(x: f64) -> f64 {
+        x.ln()
+    }
+    /// `exp(x)`.
+    #[inline]
+    pub fn exp(x: f64) -> f64 {
+        x.exp()
+    }
+    /// `sqrt(x)` (IEEE, correctly rounded).
+    #[inline]
+    pub fn sqrt(x: f64) -> f64 {
+        x.sqrt()
+    }
+    /// `cos(x)`.
+    #[inline]
+    pub fn cos(x: f64) -> f64 {
+        x.cos()
+    }
+    /// `sin(x)`. The argument goes through `black_box` so that a `cos` and a `sin` of the
+    /// same value stay two C calls, as in CPython (code generators may otherwise fuse
+    /// them into one `sincos` call).
+    #[inline]
+    pub fn sin(x: f64) -> f64 {
+        std::hint::black_box(x).sin()
+    }
+    /// `pow(x, y)`.
+    #[inline]
+    pub fn pow(x: f64, y: f64) -> f64 {
+        x.powf(y)
     }
 }
 
@@ -319,6 +531,122 @@ mod tests {
             }
         }
         lo
+    }
+
+    /// CPython 3.15.1 / 3.14.9 on the state `seeded(5489)` (`r.setstate((3, mt + (624,),
+    /// None))`), `float` bit patterns.
+    #[test]
+    fn variates_match_cpython() {
+        const NV: f64 = f64::from_bits(0x3ffb72cd3f331398);
+        const TWOPI: f64 = f64::from_bits(0x401921fb54442d18);
+        let fresh = || seeded(5489);
+        let (mut mt, mut ix) = fresh();
+        let mut g = Mt { index: &mut ix, mt: &mut mt };
+        for want in [
+            0x3fd01a580441a4ea_u64,
+            0xbfead5f17279a132,
+            0x3ff86243ce9ca735,
+            0x3fe335ca32fd125e,
+            0xbff97c509361d614,
+            0x3fd1bb8d11ef70b5,
+        ] {
+            // normalvariate(0.0, 1.0) = 0.0 + z * 1.0
+            assert_eq!((0.0 + g.normal_z(NV) * 1.0).to_bits(), want);
+        }
+        assert_eq!(ix, 44, "words consumed");
+        let (mut mt, mut ix) = fresh();
+        let mut g = Mt { index: &mut ix, mt: &mut mt };
+        for want in [0x3ffaf9799940f04f_u64, 0x4002e5e311d9b563, 0x3fc1620bbc4e737d, 0x400391c5179acfcf] {
+            assert_eq!((g.expo() / 1.0).to_bits(), want);
+        }
+        let (mut mt, mut ix) = fresh();
+        let mut g = Mt { index: &mut ix, mt: &mut mt };
+        let mut out = Vec::new();
+        for _ in 0..2 {
+            let (z, next) = g.gauss_pair(TWOPI);
+            out.push(0.0 + z * 1.0);
+            out.push(0.0 + next * 1.0);
+        }
+        let want = [0x3feb8341dd258761_u64, 0xbffff0ec537b9a11, 0x3ff8b5c7aad2ec64, 0x3ff955b898aae69e];
+        assert_eq!(out.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), want);
+        let (mut mt, mut ix) = fresh();
+        let mut g = Mt { index: &mut ix, mt: &mut mt };
+        for want in [0x400295f38f0a799c_u64, 0x400a1075826e25bf, 0x3ff11fc9bc98092a, 0x400b2e6ad8f7cfec] {
+            assert_eq!(g.pareto(-1.0 / 2.0).to_bits(), want);
+        }
+        let (mut mt, mut ix) = fresh();
+        let mut g = Mt { index: &mut ix, mt: &mut mt };
+        for want in [0x3ff2251be7253b3e_u64, 0x3fe50a40d56967ee, 0x400123ef961f4581, 0x3ff599e54e364750] {
+            assert_eq!(libm::exp(0.0 + g.normal_z(NV) * 0.5).to_bits(), want);
+        }
+    }
+
+    #[test]
+    fn normal_z_bound_holds() {
+        // The largest accepted |z| comes from the smallest u2 = 2**-53.
+        let max = 2.0 * (-libm::log(2f64.powi(-53))).sqrt();
+        assert!(max < NORMAL_Z_BOUND && max > 12.1, "{max}");
+        let (mut mt, mut ix) = seeded(11);
+        let mut g = Mt { index: &mut ix, mt: &mut mt };
+        for _ in 0..200_000 {
+            assert!(g.normal_z(f64::from_bits(0x3ffb72cd3f331398)).abs() <= max);
+        }
+    }
+
+    /// The reference: CPython's `sample` with a Python `set` (here a `HashSet`) and a full
+    /// pool, against [`Mt::sample_each`] (stack pool / stack set / heap variants).
+    #[test]
+    fn sample_each_matches_reference() {
+        fn reference(g: &mut Mt<'_>, n: usize, k: usize) -> Vec<usize> {
+            let mut out = Vec::new();
+            if sample_uses_pool(n, k) {
+                let mut pool: Vec<usize> = (0..n).collect();
+                for i in 0..k {
+                    let j = g.randbelow((n - i) as u64) as usize;
+                    out.push(pool[j]);
+                    pool[j] = pool[n - i - 1];
+                }
+            } else {
+                let mut sel = std::collections::HashSet::new();
+                for _ in 0..k {
+                    let mut j = g.randbelow(n as u64) as usize;
+                    while !sel.insert(j) {
+                        j = g.randbelow(n as u64) as usize;
+                    }
+                    out.push(j);
+                }
+            }
+            out
+        }
+        let cases = [
+            (1, 0),
+            (1, 1),
+            (6, 2),
+            (21, 5),
+            (22, 5),
+            (40, 5),
+            (40, 40),
+            (100, 6),
+            (300, 20),
+            (512, 100),
+            (513, 100),
+            (600, 590),
+            (10_000, 255),
+            (10_000, 256),
+            (10_000, 257),
+            (1_000_000, 20),
+            (1_000_000, 300),
+            (5_000, 1_000),
+        ];
+        for (seed, &(n, k)) in cases.iter().enumerate() {
+            let (mut a, mut ia) = seeded(seed as u32 + 100);
+            let (mut b, mut ib) = seeded(seed as u32 + 100);
+            let want = reference(&mut Mt { index: &mut ib, mt: &mut b }, n, k);
+            let got = Mt { index: &mut ia, mt: &mut a }.sample_indices(n, k);
+            assert_eq!(got, want, "n={n} k={k}");
+            assert_eq!(ia, ib, "stream position n={n} k={k}");
+            assert_eq!(a, b);
+        }
     }
 
     #[test]

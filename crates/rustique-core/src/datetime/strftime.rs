@@ -122,7 +122,8 @@ const DIGITS2: [u8; 200] = {
 
 /// Output buffer of bounded size: rendering reports overflow (the caller falls back).
 pub struct Out {
-    buf: [u8; Out::CAP],
+    /// Initialised up to `len`.
+    buf: [std::mem::MaybeUninit<u8>; Out::CAP],
     len: usize,
     overflow: bool,
 }
@@ -132,18 +133,19 @@ impl Out {
 
     #[inline(always)]
     pub fn new() -> Self {
-        Out { buf: [0; Out::CAP], len: 0, overflow: false }
+        Out { buf: [std::mem::MaybeUninit::uninit(); Out::CAP], len: 0, overflow: false }
     }
 
     /// The rendered bytes, `None` if they did not fit.
     pub fn bytes(&self) -> Option<&[u8]> {
-        (!self.overflow).then(|| &self.buf[..self.len])
+        // SAFETY: the first `len` bytes were written by `put`/`extend`.
+        (!self.overflow).then(|| unsafe { std::slice::from_raw_parts(self.buf.as_ptr().cast::<u8>(), self.len) })
     }
 
     #[inline(always)]
     fn put(&mut self, b: u8) {
         if self.len < Out::CAP {
-            self.buf[self.len] = b;
+            self.buf[self.len] = std::mem::MaybeUninit::new(b);
             self.len += 1;
         } else {
             self.overflow = true;
@@ -153,7 +155,17 @@ impl Out {
     #[inline(always)]
     fn extend(&mut self, b: &[u8]) {
         if self.len + b.len() <= Out::CAP {
-            self.buf[self.len..self.len + b.len()].copy_from_slice(b);
+            let dst = self.buf[self.len..].as_mut_ptr().cast::<u8>();
+            if b.len() <= 16 {
+                // Short runs (separators, names, offsets): a byte loop beats a memcpy call.
+                for (i, &x) in b.iter().enumerate() {
+                    // SAFETY: in bounds (checked above).
+                    unsafe { *dst.add(i) = x };
+                }
+            } else {
+                // SAFETY: in bounds; u8 and MaybeUninit<u8> have the same layout.
+                unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), dst, b.len()) };
+            }
             self.len += b.len();
         } else {
             self.overflow = true;
@@ -164,20 +176,28 @@ impl Out {
     #[inline(always)]
     fn num(&mut self, v: u64, width: usize, pad: u8) {
         if v < 100 && width == 2 {
-            let i = 2 * v as usize;
-            let mut two = [DIGITS2[i], DIGITS2[i + 1]];
-            if v < 10 {
-                two[0] = pad;
+            if self.len + 2 > Out::CAP {
+                self.overflow = true;
+                return;
             }
-            self.extend(&two);
+            let i = 2 * v as usize;
+            let hi = if v < 10 { pad } else { DIGITS2[i] };
+            self.buf[self.len] = std::mem::MaybeUninit::new(hi);
+            self.buf[self.len + 1] = std::mem::MaybeUninit::new(DIGITS2[i + 1]);
+            self.len += 2;
             return;
         }
         if v < 10_000 && width == 4 {
-            let d = v as u16;
-            self.put(b'0' + (d / 1000) as u8);
-            self.put(b'0' + (d / 100 % 10) as u8);
-            self.put(b'0' + (d / 10 % 10) as u8);
-            self.put(b'0' + (d % 10) as u8);
+            if self.len + 4 > Out::CAP {
+                self.overflow = true;
+                return;
+            }
+            let (a, b) = ((v / 100) as usize * 2, (v % 100) as usize * 2);
+            self.buf[self.len] = std::mem::MaybeUninit::new(DIGITS2[a]);
+            self.buf[self.len + 1] = std::mem::MaybeUninit::new(DIGITS2[a + 1]);
+            self.buf[self.len + 2] = std::mem::MaybeUninit::new(DIGITS2[b]);
+            self.buf[self.len + 3] = std::mem::MaybeUninit::new(DIGITS2[b + 1]);
+            self.len += 4;
             return;
         }
         self.num_slow(v, width, pad);
@@ -211,24 +231,167 @@ impl Default for Out {
     }
 }
 
-/// A format checked by [`scan`], split into literal runs and directives.
+/// A format checked by [`scan`], compiled to a plan: composite directives (`%F %T %D %R
+/// %x %X %r %c`) expanded, adjacent literal text merged, each numeric directive resolved to
+/// its field, width and pad (the format is read once, not per call).
 #[derive(Clone, Debug)]
 pub struct Compiled {
     fmt: Box<[u8]>,
-    /// (start, end) of a literal run, or (directive byte, [`DIRECTIVE`]).
-    toks: Vec<(u16, u16)>,
+    /// Literal bytes the ops point into (the format's literal runs and the separators of
+    /// expanded composites).
+    lits: Box<[u8]>,
+    ops: Box<[Op]>,
+    /// Formats made only of literals and fixed-width numbers (`%Y-%m-%d %H:%M:%S`): the
+    /// output with the literals in place and where each number goes.
+    fixed: Option<Fixed>,
+    /// The plan reads `Tm::wday` or `Tm::yday` (`%a %A %u %w %j %c`).
+    calendar: bool,
     pub needs: Needs,
 }
 
-const DIRECTIVE: u16 = u16::MAX;
+/// A fixed-width plan: copy `template`, then write each number at its offset.
+#[derive(Clone, Debug)]
+struct Fixed {
+    template: Box<[u8]>,
+    slots: Box<[(u16, Field, u8, u8)]>,
+}
 
-/// [`scan`] and split `fmt` into tokens for [`render_compiled`].
+/// One step of a compiled format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Op {
+    /// `lits[start..end]`
+    Lit(u16, u16),
+    /// A number: field, width, pad byte.
+    Num(Field, u8, u8),
+    /// `%a %A %b %B %p` (C locale names).
+    Name(u8),
+    /// `%z`, `%:z`, `%Z` texts.
+    Tz(u8),
+    /// `%c`'s year: decimal, no padding (glibc).
+    YearPlain,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Field {
+    Year,
+    Year2,
+    Century,
+    Month,
+    Day,
+    Hour,
+    Hour12,
+    Minute,
+    Second,
+    Yday,
+    WdayMon1,
+    Wday,
+    Micro,
+}
+
+struct Builder {
+    lits: Vec<u8>,
+    ops: Vec<Op>,
+}
+
+impl Builder {
+    fn lit(&mut self, b: &[u8]) {
+        if b.is_empty() {
+            return;
+        }
+        let start = self.lits.len();
+        self.lits.extend_from_slice(b);
+        let end = self.lits.len();
+        if let Some(Op::Lit(_, e)) = self.ops.last_mut()
+            && *e as usize == start
+        {
+            *e = end as u16;
+            return;
+        }
+        self.ops.push(Op::Lit(start as u16, end as u16));
+    }
+    fn num(&mut self, f: Field, width: u8, pad: u8) {
+        self.ops.push(Op::Num(f, width, pad));
+    }
+    fn dir(&mut self, d: u8) {
+        match d {
+            b'Y' => self.num(Field::Year, 4, b'0'),
+            b'y' => self.num(Field::Year2, 2, b'0'),
+            b'C' => self.num(Field::Century, 2, b'0'),
+            b'm' => self.num(Field::Month, 2, b'0'),
+            b'd' => self.num(Field::Day, 2, b'0'),
+            b'e' => self.num(Field::Day, 2, b' '),
+            b'H' => self.num(Field::Hour, 2, b'0'),
+            b'I' => self.num(Field::Hour12, 2, b'0'),
+            b'M' => self.num(Field::Minute, 2, b'0'),
+            b'S' => self.num(Field::Second, 2, b'0'),
+            b'j' => self.num(Field::Yday, 3, b'0'),
+            b'u' => self.num(Field::WdayMon1, 1, b'0'),
+            b'w' => self.num(Field::Wday, 1, b'0'),
+            b'f' => self.num(Field::Micro, 6, b'0'),
+            b'p' | b'a' | b'A' | b'b' | b'h' | b'B' => self.ops.push(Op::Name(if d == b'h' { b'b' } else { d })),
+            b'n' => self.lit(b"\n"),
+            b't' => self.lit(b"\t"),
+            b'%' => self.lit(b"%"),
+            b'z' | b'Z' | b':' => self.ops.push(Op::Tz(d)),
+            b'F' => {
+                self.dir(b'Y');
+                self.lit(b"-");
+                self.dir(b'm');
+                self.lit(b"-");
+                self.dir(b'd');
+            }
+            b'T' | b'X' => {
+                self.dir(b'H');
+                self.lit(b":");
+                self.dir(b'M');
+                self.lit(b":");
+                self.dir(b'S');
+            }
+            b'R' => {
+                self.dir(b'H');
+                self.lit(b":");
+                self.dir(b'M');
+            }
+            b'D' | b'x' => {
+                self.dir(b'm');
+                self.lit(b"/");
+                self.dir(b'd');
+                self.lit(b"/");
+                self.dir(b'y');
+            }
+            b'r' => {
+                self.dir(b'I');
+                self.lit(b":");
+                self.dir(b'M');
+                self.lit(b":");
+                self.dir(b'S');
+                self.lit(b" ");
+                self.dir(b'p');
+            }
+            b'c' => {
+                // C locale d_t_fmt: "%a %b %e %H:%M:%S %Y" (glibc's %Y: no padding)
+                self.dir(b'a');
+                self.lit(b" ");
+                self.dir(b'b');
+                self.lit(b" ");
+                self.dir(b'e');
+                self.lit(b" ");
+                self.dir(b'T');
+                self.lit(b" ");
+                self.ops.push(Op::YearPlain);
+            }
+            _ => unreachable!("scan() accepted only the directives above"),
+        }
+    }
+}
+
+/// [`scan`] and compile `fmt` for [`render_compiled`].
 pub fn compile(fmt: &[u8], wrapped: bool) -> Option<Compiled> {
     if fmt.len() > 1024 {
         return None;
     }
     let needs = scan(fmt, wrapped)?;
-    let mut toks = Vec::new();
+    let mut b = Builder { lits: Vec::with_capacity(fmt.len() + 16), ops: Vec::new() };
     let mut i = 0;
     let mut lit = 0;
     while i < fmt.len() {
@@ -236,23 +399,121 @@ pub fn compile(fmt: &[u8], wrapped: bool) -> Option<Compiled> {
             i += 1;
             continue;
         }
-        if lit < i {
-            toks.push((lit as u16, i as u16));
-        }
+        b.lit(&fmt[lit..i]);
         let d = fmt[i + 1];
         if d == b':' {
-            toks.push((u16::from(b':'), DIRECTIVE));
+            b.dir(b':');
             i += 3;
         } else {
-            toks.push((u16::from(d), DIRECTIVE));
+            b.dir(d);
             i += 2;
         }
         lit = i;
     }
-    if lit < fmt.len() {
-        toks.push((lit as u16, fmt.len() as u16));
+    b.lit(&fmt[lit..]);
+    if b.lits.len() > u16::MAX as usize {
+        return None;
     }
-    Some(Compiled { fmt: fmt.into(), toks, needs })
+    let fixed = fixed_plan(&b.lits, &b.ops);
+    let calendar = b
+        .ops
+        .iter()
+        .any(|op| matches!(op, Op::Num(Field::Yday | Field::Wday | Field::WdayMon1, ..) | Op::Name(b'a' | b'A')));
+    Some(Compiled { fmt: fmt.into(), lits: b.lits.into(), ops: b.ops.into(), fixed, calendar, needs })
+}
+
+/// The width every value of `f` takes with `width` (the ranges a valid `Tm` has: years
+/// 1..=9999, seconds <= 61, microseconds < 10**6), or `None` when it varies.
+fn fixed_width(f: Field, width: u8) -> Option<usize> {
+    let max_digits = match f {
+        Field::Year => 4,
+        Field::Year2 | Field::Century | Field::Month | Field::Day | Field::Hour | Field::Hour12 => 2,
+        Field::Minute | Field::Second => 2,
+        Field::Yday => 3,
+        Field::WdayMon1 | Field::Wday => 1,
+        Field::Micro => 6,
+    };
+    (max_digits <= width as usize).then_some(width as usize)
+}
+
+fn fixed_plan(lits: &[u8], ops: &[Op]) -> Option<Fixed> {
+    let mut template = Vec::new();
+    let mut slots = Vec::new();
+    for &op in ops {
+        match op {
+            Op::Lit(a, b) => template.extend_from_slice(&lits[a as usize..b as usize]),
+            Op::Num(f, w, pad) => {
+                let n = fixed_width(f, w)?;
+                slots.push((template.len() as u16, f, n as u8, pad));
+                template.resize(template.len() + n, b'0');
+            }
+            _ => return None,
+        }
+    }
+    (template.len() <= Out::CAP).then(|| Fixed { template: template.into(), slots: slots.into() })
+}
+
+#[inline(always)]
+fn field_value(f: Field, tm: &Tm, micro: u32) -> u64 {
+    match f {
+        Field::Year => tm.year as u64,
+        Field::Year2 => tm.year as u64 % 100,
+        Field::Century => tm.year as u64 / 100,
+        Field::Month => u64::from(tm.month),
+        Field::Day => u64::from(tm.mday),
+        Field::Hour => u64::from(tm.hour),
+        Field::Hour12 => hour12(tm.hour),
+        Field::Minute => u64::from(tm.minute),
+        Field::Second => u64::from(tm.second),
+        Field::Yday => u64::from(tm.yday),
+        Field::WdayMon1 => u64::from((tm.wday + 6) % 7 + 1),
+        Field::Wday => u64::from(tm.wday),
+        Field::Micro => u64::from(micro),
+    }
+}
+
+impl Compiled {
+    /// Does rendering read `Tm::wday`/`Tm::yday`? (Otherwise the caller may leave them 0.)
+    #[inline(always)]
+    pub fn uses_calendar(&self) -> bool {
+        self.calendar
+    }
+
+    /// The output length of a fixed-width plan (`None`: the format has names, zone texts
+    /// or variable-width numbers; use [`render_compiled`]).
+    #[inline(always)]
+    pub fn fixed_len(&self) -> Option<usize> {
+        self.fixed.as_ref().map(|f| f.template.len())
+    }
+
+    /// Render a fixed-width plan into `out` (exactly [`Self::fixed_len`] bytes). Values
+    /// out of the `Tm` ranges are the caller's to exclude (as for `render_compiled`).
+    #[inline]
+    pub fn render_fixed(&self, tm: &Tm, micro: u32, out: &mut [u8]) {
+        let Some(fx) = &self.fixed else { return };
+        out.copy_from_slice(&fx.template);
+        for &(at, f, w, pad) in fx.slots.iter() {
+            let mut v = field_value(f, tm, micro);
+            let at = at as usize;
+            let mut i = w as usize;
+            // digits from the right; leading zeros become `pad` (only `%e` pads with ' ')
+            loop {
+                i -= 1;
+                out[at + i] = b'0' + (v % 10) as u8;
+                v /= 10;
+                if i == 0 {
+                    break;
+                }
+                if v == 0 {
+                    while i > 0 {
+                        i -= 1;
+                        out[at + i] = pad;
+                    }
+                    break;
+                }
+            }
+        }
+    }
 }
 
 impl Compiled {
@@ -263,16 +524,31 @@ impl Compiled {
 }
 
 /// Render a compiled format. `micro` is the microsecond field for `%f`.
+#[inline]
 pub fn render_compiled(c: &Compiled, tm: &Tm, micro: u32, tz: &TzText<'_>, out: &mut Out) {
-    for &(a, b) in &c.toks {
-        if b == DIRECTIVE {
-            if a == u16::from(b':') {
-                out.extend(tz.colon_z);
-            } else {
-                directive(a as u8, tm, micro, tz, out);
-            }
-        } else {
-            out.extend(&c.fmt[a as usize..b as usize]);
+    for &op in c.ops.iter() {
+        match op {
+            Op::Lit(a, b) => out.extend(&c.lits[a as usize..b as usize]),
+            Op::Num(f, w, pad) => out.num(field_value(f, tm, micro), w as usize, pad),
+            Op::Name(d) => out.extend(match d {
+                b'p' => {
+                    if tm.hour < 12 {
+                        b"AM"
+                    } else {
+                        b"PM"
+                    }
+                }
+                b'a' => A_WEEKDAY[tm.wday as usize],
+                b'A' => F_WEEKDAY[tm.wday as usize],
+                b'b' => A_MONTH[tm.month as usize - 1],
+                _ => F_MONTH[tm.month as usize - 1],
+            }),
+            Op::Tz(d) => out.extend(match d {
+                b'z' => tz.z,
+                b':' => tz.colon_z,
+                _ => tz.name,
+            }),
+            Op::YearPlain => out.num_slow(tm.year as u64, 1, b'0'),
         }
     }
 }
@@ -285,11 +561,33 @@ pub fn render(fmt: &[u8], tm: &Tm, micro: u32, tz: &TzText<'_>, out: &mut Vec<u8
     out.extend_from_slice(o.bytes().expect("fits"));
 }
 
+/// The reference renderer (one directive at a time, as glibc's strftime walks a format):
+/// the compiled plans are tested against it.
+#[cfg(test)]
+fn render_reference(fmt: &[u8], tm: &Tm, micro: u32, tz: &TzText<'_>, out: &mut Out) {
+    let mut i = 0;
+    while i < fmt.len() {
+        if fmt[i] != b'%' {
+            out.put(fmt[i]);
+            i += 1;
+            continue;
+        }
+        if fmt[i + 1] == b':' {
+            out.extend(tz.colon_z);
+            i += 3;
+        } else {
+            directive(fmt[i + 1], tm, micro, tz, out);
+            i += 2;
+        }
+    }
+}
+
 fn hour12(h: u32) -> u64 {
     let h = h % 12;
     u64::from(if h == 0 { 12 } else { h })
 }
 
+#[cfg(test)]
 fn directive(d: u8, tm: &Tm, micro: u32, tz: &TzText<'_>, out: &mut Out) {
     let y = || tm.year as u64;
     match d {
@@ -371,11 +669,21 @@ fn directive(d: u8, tm: &Tm, micro: u32, tz: &TzText<'_>, out: &mut Out) {
 /// `format_utcoffset` text for an offset of `seconds` + `micros` (normalized timedelta:
 /// `days` in {-1, 0}), with `sep` between the fields.
 pub fn utcoffset_text(days: i32, seconds: i32, micros: i32, sep: &[u8], out: &mut Vec<u8>) {
-    let num = |out: &mut Vec<u8>, v: u64, width: usize, _pad: u8| {
-        let mut o = Out::new();
-        o.num(v, width, b'0');
-        out.extend_from_slice(o.bytes().unwrap_or_default());
+    let mut b = [0u8; 32];
+    let n = utcoffset_into(days, seconds, micros, sep, &mut b);
+    out.extend_from_slice(&b[..n]);
+}
+
+/// [`utcoffset_text`] into a fixed buffer (no allocation): the length written. `sep` is
+/// at most one byte in practice (`""` or `":"`); the longest text is 19 bytes.
+pub fn utcoffset_into(days: i32, seconds: i32, micros: i32, sep: &[u8], out: &mut [u8; 32]) -> usize {
+    let mut n = 0usize;
+    let mut put = |b: &[u8]| {
+        out[n..n + b.len()].copy_from_slice(b);
+        n += b.len();
     };
+    let two = |v: i64| [b'0' + (v / 10 % 10) as u8, b'0' + (v % 10) as u8];
+    let sep = &sep[..sep.len().min(1)];
     // offset = days * 86400 + seconds (+ micros); negative iff days < 0.
     let (sign, secs, us) = if days < 0 {
         // -(offset): CPython calls delta_negative and reads the normalized fields.
@@ -386,18 +694,25 @@ pub fn utcoffset_text(days: i32, seconds: i32, micros: i32, sep: &[u8], out: &mu
     };
     let (mm, ss) = (secs / 60, secs % 60);
     let (hh, mm) = (mm / 60, mm % 60);
-    out.push(sign);
-    num(out, hh as u64, 2, b'0');
-    out.extend_from_slice(sep);
-    num(out, mm as u64, 2, b'0');
+    put(&[sign]);
+    put(&two(hh));
+    put(sep);
+    put(&two(mm));
     if us != 0 || ss != 0 {
-        out.extend_from_slice(sep);
-        num(out, ss as u64, 2, b'0');
+        put(sep);
+        put(&two(ss));
         if us != 0 {
-            out.push(b'.');
-            num(out, us as u64, 6, b'0');
+            put(b".");
+            let mut d = [0u8; 6];
+            let mut v = us;
+            for x in d.iter_mut().rev() {
+                *x = b'0' + (v % 10) as u8;
+                v /= 10;
+            }
+            put(&d);
         }
     }
+    n
 }
 
 #[cfg(test)]
@@ -423,6 +738,46 @@ mod tests {
         assert_eq!(r("%F %T %D %R %x %X %r"), "2024-03-05 13:04:09 03/05/24 13:04 03/05/24 13:04:09 01:04:09 PM");
         assert_eq!(r("%c"), "Tue Mar  5 13:04:09 2024");
         assert_eq!(r("%z %:z %Z %% %n%t"), "+0100 +01:00 CET % \n\t");
+    }
+
+    #[test]
+    fn plans_match_the_reference_renderer() {
+        let dirs = [
+            "Y", "m", "d", "H", "M", "S", "y", "j", "I", "p", "a", "A", "b", "B", "h", "e", "u", "w", "F", "T", "D",
+            "R", "C", "n", "t", "c", "x", "X", "r", "%", "f", "z", ":z", "Z",
+        ];
+        let tz = TzText { z: b"-0130", colon_z: b"-01:30", name: b"XYZ" };
+        let mut fmts: Vec<String> = Vec::new();
+        for a in &dirs {
+            fmts.push(format!("%{a}"));
+            for b in &dirs {
+                fmts.push(format!("x%{a}-%{b}y"));
+                fmts.push(format!("%{a}%{b}"));
+            }
+        }
+        fmts.push("%Y-%m-%d %H:%M:%S.%f%z %% plain".into());
+        let tms = [
+            tm(),
+            Tm { year: 1000, month: 12, mday: 31, hour: 0, minute: 0, second: 61, wday: 6, yday: 366 },
+            Tm { year: 9999, month: 1, mday: 1, hour: 12, minute: 59, second: 0, wday: 0, yday: 1 },
+            Tm { year: 1, month: 7, mday: 9, hour: 23, minute: 5, second: 5, wday: 3, yday: 190 },
+        ];
+        for f in &fmts {
+            let c = compile(f.as_bytes(), true).unwrap();
+            for t in &tms {
+                for micro in [0, 7, 999_999] {
+                    let (mut a, mut b) = (Out::new(), Out::new());
+                    render_compiled(&c, t, micro, &tz, &mut a);
+                    render_reference(f.as_bytes(), t, micro, &tz, &mut b);
+                    assert_eq!(a.bytes(), b.bytes(), "{f}");
+                    if let Some(n) = c.fixed_len() {
+                        let mut v = vec![0u8; n];
+                        c.render_fixed(t, micro, &mut v);
+                        assert_eq!(Some(&v[..]), b.bytes(), "fixed {f}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

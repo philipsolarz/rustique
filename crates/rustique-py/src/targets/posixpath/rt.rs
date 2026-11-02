@@ -68,13 +68,31 @@ pub fn init_str_layout(py: Python<'_>) -> bool {
     STR_LAYOUT.get_or_init(|| calibrate_str(py)).is_some()
 }
 
+/// Byte offset, from `&PyASCIIObject.state`, of the 32-bit unit that holds the
+/// kind/compact/ascii bits. CPython 3.14/3.15 declare `state` as an `unsigned char interned`
+/// (free-threaded builds) or `unsigned int interned:2` followed by `unsigned int kind:3`,
+/// `compact:1`, `ascii:1`, ... GCC and Clang (SysV/Itanium rules) pack `kind` into the
+/// first 32-bit unit on every build; MSVC starts a new storage unit when the declared type
+/// changes, so on free-threaded Windows builds the first unit holds only `interned` and
+/// three padding bytes CPython never writes, and the bitfields live in the next unit
+/// (docs/atlas/w2-dx.md §6). Reading that unit keeps the calibration below searching
+/// initialised bits on every ABI; the calibration still verifies the positions.
+const STATE_UNIT: usize = if cfg!(all(windows, Py_GIL_DISABLED)) { 4 } else { 0 };
+
+const _: () =
+    assert!(std::mem::offset_of!(ffi::PyASCIIObject, state) + STATE_UNIT + 4 <= size_of::<ffi::PyASCIIObject>());
+
 /// # Safety
 /// `op` is a `str` (exact or subclass).
 #[inline(always)]
 unsafe fn str_state(op: O) -> u32 {
-    // SAFETY: the kind/compact/ascii bits never change after creation; volatile because
-    // free-threaded builds update the `interned` bits of the same word atomically.
-    unsafe { std::ptr::read_volatile(&raw const (*op.cast::<ffi::PyASCIIObject>()).state) }
+    // SAFETY: the unit lies inside the PyASCIIObject header on every ABI (assert above);
+    // the kind/compact/ascii bits never change after creation; volatile because
+    // free-threaded builds update the `interned` byte of the same word atomically (Unix).
+    unsafe {
+        let p = (&raw const (*op.cast::<ffi::PyASCIIObject>()).state).cast::<u8>().add(STATE_UNIT);
+        std::ptr::read_volatile(p.cast::<u32>())
+    }
 }
 
 /// The code units of a `str`.
@@ -286,6 +304,16 @@ pub unsafe fn new_str(len: usize, maxchar: u32) -> (O, *mut c_void, u32) {
         let o = ffi::PyUnicode_New(len as ffi::Py_ssize_t, maxchar);
         if o.is_null() {
             return (o, std::ptr::null_mut(), 0);
+        }
+        // `PyUnicode_New` makes a compact string whose kind follows `maxchar`.
+        if let Some(Some(l)) = STR_LAYOUT.get() {
+            let (off, kind) = match maxchar {
+                0..0x80 => (l.ascii_data, 1),
+                0x80..0x100 => (l.compact_data, 1),
+                0x100..0x10000 => (l.compact_data, 2),
+                _ => (l.compact_data, 4),
+            };
+            return (o, o.cast::<u8>().add(off).cast(), kind);
         }
         let v = str_view(o);
         let (data, kind) = match v.text {
