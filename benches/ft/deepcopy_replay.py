@@ -101,6 +101,10 @@ def main() -> None:
         gc.disable()
 
     if a.cg:
+        if a.nogc:
+            import gc
+
+            gc.disable()
         sys.path.insert(0, os.path.join(HERE, "..", "targets"))
         from _callgrind import helper
 

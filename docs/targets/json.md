@@ -322,6 +322,9 @@ hook is never called on hits; a needed hook runs with CPython's calls and argume
 non-callable `default` raises CPython's `TypeError`), and `default=` now counts as `deopt`
 where the hook is needed (`test_fallbacks_are_counted`).
 
+8-thread CPU per call, enabled ÷ plain (3.15.1t, `kernel_scaling.py`): `json.dumps` 0.171
+(local) / 0.216 (shared inputs), within DECISIONS §10.9.
+
 Not done (open, ranked for the next round): the `_json.make_encoder` `tp_call` kernel that
 would call `default` where `_json` calls it (ruling 15 permits it) for json_api's needed
 hooks (estimated ~4% of json_api, `w2-floors.md` §2.2(d)). It needs the C encoder's private
