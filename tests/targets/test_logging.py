@@ -103,6 +103,8 @@ def both(fn):
 
 def test_status_installed_with_sites():
     st = {t["name"]: t for t in rt.status()["targets"] if t["group"] == "logging"}
+    if FT:  # listed, refused on this build
+        assert st.pop("logging.Logger.level")["state"] == "refused"
     assert set(st) == set(TARGETS)
     for t in st.values():
         assert t["state"] == "installed", t

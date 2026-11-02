@@ -19,7 +19,7 @@ user-space instructions per steady-state `run()`, all digests identical):
 | `Formatter.format` checks | instance-shadowing checks (`usesTime`/`formatTime`/`formatMessage`/`getMessage`/the style's methods) read the inline values instead of `_PyObject_GetMethod`; class attributes cached per type version (GIL builds); `usesTime` answered once per format plan; record attributes read through the validated class; no buffer zeroing | 9,674 → 7,704 (23,760) |
 | format-plan cache | the global `parking_lot` mutex (`FMT_CACHE`, the 8-thread cliff: CPU ×3.25) becomes an insert-only lock-free table keyed by the `_fmt` object (64 entries, kept for the process; a full table parses per call) | 8-thread CPU per call 1.01 → 0.45 of CPython's |
 | C `Decimal` arguments | an exact `decimal.Decimal` of a loaded `_decimal` (immutable C type; `str`/`repr`/`int`/`float` are C, reading the thread's decimal context as CPython's own `str()` does) is a plain value for `%`-formatting and the `Mapping` answer of `LogRecord`; `shared_cache`'s `Formatter.format` had been suspended by them | `info('total %s', Decimal)` 69.1k → 23.8k |
-| `Logger.level` enabled calls | an enabled call costs the kernel's checks + the vectorcall fallback (~+800 Ir), a disabled one saves ~500: enabled calls now debit the score (credit 5 / debit 7), so a program logging mostly enabled records (services) suspends the target and pays nothing | services: 0 overhead after 64 calls |
+| `Logger.level` enabled calls | an enabled call costs the kernel's checks + the vectorcall fallback (~+800 Ir), a disabled one saves ~500: enabled calls now debit the score (credit 5 / debit 7), so a program logging mostly enabled records (services) suspends the target and pays nothing; GIL builds only (8 threads, below) | services: 0 overhead after 64 calls |
 | `Handler.handle` (new target) | `StreamHandler` → exact `io.StringIO`, no filters, exact `_thread.RLock`, a formatter `Formatter.format`'s kernel handles: filter/lock/emit/format/write/flush/unlock natively (§0.1) | `_HS.handle(rec)` 29.6k → 10.1k; a record to StringIO 70.7k → 23.1k |
 
 Records end to end (StreamHandler to StringIO): `info` with `%(asctime)s …` **0.327** (wave 1
@@ -31,10 +31,16 @@ Workloads (3.15.1, all groups on, ratio of instructions, wave 1 → wave 2):
 `web/logging_service` 0.737 → **0.709**, `services/job_worker` 0.638 → **0.612**,
 `threads/shared_cache` 0.614 → **0.532**.
 
-**8 threads** (3.15.1t, `benches/targets/text_scaling.py`, CPU time per call at 8 threads,
-enabled ÷ CPython): `Formatter.format` 0.45 local / 0.32 shared (wave 1: 1.010),
-`LogRecord` 0.29 / 0.37, `findCaller` 0.21 / 0.15, a record to StringIO 0.39 / 0.47, a
-disabled `debug` 1.003 / 0.47, a Decimal argument 0.39 / 0.20: every logging kernel ≤ 1.05.
+**8 threads** (3.15.1t, `benches/targets/text_scaling.py -t 1,8`, CPU time per call at 8
+threads, enabled ÷ CPython, local / shared inputs; a loaded shared box, so ±0.2):
+`Formatter.format` 0.56 / 0.51 (wave 1: 1.010, the `FMT_CACHE` mutex), `LogRecord` 0.45 /
+0.38, `findCaller` 0.21 / 0.27, a record to StringIO (with `Handler.handle`) 0.53 / 0.53, a
+Decimal argument 0.63 / 0.43. **`Logger.level` is not installed on free-threaded builds**:
+its `isEnabledFor` shadowing check (`_PyObject_GetMethod`) takes a reference to the shared
+function object on every call, which CPython's specialized call avoids, and a disabled
+`debug()` cost 2.1–3.2× CPython's CPU per call at 8 threads with per-thread loggers (three
+runs), for ~200 Ir saved at one thread. Every installed logging kernel meets the ≤ 1.05
+rule.
 
 **Install** (`benches/targets/logging_install_cost.py`, 3.15.1): `import logging` with the
 group pending 27.65M vs 27.92M plain (accel's deferred activation; within the 5% budget);
