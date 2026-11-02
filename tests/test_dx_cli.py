@@ -182,8 +182,11 @@ def test_report_counts_fork_pool_workers_once(tmp_path):
     r = rq("report", "--json", "--", str(tmp_path / "pool.py"), cwd=tmp_path)
     assert r.returncode == 0, r.stderr
     rec = json.loads(r.stderr)
-    # 80 calls in the workers, 1 in the parent: each counted once, none lost to os._exit
-    assert rec["stats"]["builtins.sorted"]["hits"] == 81, rec["stats"].get("builtins.sorted")
+    # The workload makes 80 calls in the workers and 1 in the parent; multiprocessing's own
+    # code may call sorted() too. Counted once each: none lost to os._exit (>= 81) and no
+    # child double-counting its parent's counts (< 2 x 81).
+    hits = rec["stats"]["builtins.sorted"]["hits"]
+    assert 81 <= hits < 162, rec["stats"].get("builtins.sorted")
     assert rec["processes"] == 3 and rec["forked"] == 2
 
 

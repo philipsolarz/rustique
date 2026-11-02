@@ -33,26 +33,30 @@ builds unless stated. **M** = measured (how), **I** = inferred (from what).
 Targets are *armed* at install (sites resolved, first-call stubs in place) and validated at
 their first call (GIL builds; free-threaded builds validate eagerly). `tests/test_accel_firstcall.py`.
 
-Install costs, callgrind regions in fresh processes, GC off in the region, 3.15.1 dev-release
-(`benches/accel/install_costs.py`; **M**):
+Install costs, callgrind regions in fresh processes, GC off in the region, 3.15.1 dev-release,
+wave2 d1c0a78 with every group merged (`benches/accel/install_costs.py`; **M**). "Eager" is
+wave 1's behaviour (validate at install).
 
-| cell | plain import | eager (wave 1 behaviour) | first call | first call vs plain (budget) |
+| cell | plain import | eager | first call | first call vs plain (budget) |
 |---|---:|---:|---:|---|
-| `import json` lazy | 22.23M | +265k | +155k | 1.007 (+1.11M) |
-| `import copy` lazy | 4.05M | +175k | +90k | 1.022 (+0.20M) |
-| `import logging` lazy | 52.57M | +1.10M | +0.69M | 1.013 (+2.63M) |
-| `import random` lazy | 3.46M | +137k | +61k | 1.018 (+0.17M) |
-| `import pathlib` lazy | 9.23M | +405k | +234k | 1.025 (+0.46M) |
-| `import datetime` lazy | 0.43M | +92k | +89k | 1.207 (+0.10M) |
-| enable `logging` (imported) | | 554k | 324k | (0.1M: over) |
-| enable `copy` (imported) | | 230k | 117k | (over) |
-| enable all, fresh process (`RUSTIQUE=1`'s work) | | 521k | 355k | |
+| `import json` lazy | 22.22M | +725k | +619k | 1.028 (+1.11M) |
+| `import copy` lazy | 4.05M | +152k | +69k | 1.017 (+0.20M) |
+| `import logging` lazy | 52.56M | +1.90M | +1.20M | 1.023 (+2.63M) |
+| `import random` lazy | 3.46M | +245k | +90k | 1.026 (+0.17M) |
+| `import pathlib` lazy | 9.23M | +498k | +220k | 1.024 (+0.46M) |
+| `import datetime` lazy | 0.43M | +91k | +80k | 1.186 (+0.10M) |
+| enable `logging` (imported) | | 809k | 408k | (0.1M: over) |
+| enable `json` (imported) | | 405k | 200k | (over) |
+| enable `copy` (imported) | | 266k | 155k | (over) |
 
-A lazy install plus the first call of one target (`import M` lazy+call) stays within budget for
-every module but random (+253k with the call, the group's shared validation). The remaining
-arming cost is the targets' own `prepare` (interning of names, lookups): logging and pathlib
-dominate. `status()`: first call 881k → 413k Ir, later calls ~270k (84 targets; templates,
-shared strings, cached site labels).
+Every lazy install is within its budget with first-call validation (T9). `import json` and
+`import logging` also install the enum and functools groups now (they import `re` and
+`enum`). Enabling a group whose module is already imported stays over 0.1M: the rest is the
+targets' own arming `prepare` (name interning and lookups; logging and pathlib dominate).
+Framework fixes measured on the way: the recorded fingerprint data is indexed at compile time
+(a run-time parse cost 1.2M Ir at the first gate), and the pending-module list comes from a
+prebuilt index (−45k Ir per lazy install). `status()`: first call 881k → 413k Ir, later
+calls ~270k.
 
 ## 4. Fingerprint v3 and recorded patch releases (DECISIONS §10.5; target T10)
 
