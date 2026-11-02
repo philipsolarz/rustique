@@ -45,14 +45,15 @@ the set's lock is held (CPython itself releases it whenever such code blocks).
 
 Private state skipped: none.
 
-## GIL builds: refused by design (category `build`)
+## GIL builds: not needed (category `not-needed`)
 
 With the GIL the clinic critical section is a no-op, so the kernel makes exactly the calls
 the original makes: callgrind cells 0.993–1.008 (measured in Phase 1, `w2-threads.md`
 §4.1: `set()`, `{1..5}`, `set(range(100))`, `frozenset`, subclass with `__dict__`,
-`deepcopy(frozenset)`, `deepcopy(set)`, `pickle.dumps(set, 2)`). No gain, so the target
-refuses on GIL builds (`status()`: `refused`, category `build`) instead of adding a site and
-install work.
+`deepcopy(frozenset)`, `deepcopy(set)`, `pickle.dumps(set, 2)`). No gain, so on GIL
+builds the target reports `not-needed` (`status()`: state `refused`, `refusal:
+"not-needed"`, reason "only free-threaded builds need it"; reported apart from refusals,
+ACCELERATION §6.3) instead of adding a site and install work.
 
 ## Install
 
@@ -88,4 +89,4 @@ digests identical), **measured**:
 test.test_set,test.test_copy,test.test_pickle` (`benches/targets/core_conformance.sh`),
 same outcome for every test id with and without the target, **measured**: 3.15.1t
 test_set 644 pass, test_copy 84, test_pickle 1039 + 47 skip; 3.14.9t 630 / 81 / 960 + 55
-skip; 0 differences. On GIL builds the target is refused (test_set 644 / 630, identical).
+skip; 0 differences. On GIL builds the target is `not-needed` (test_set 644 / 630, identical).

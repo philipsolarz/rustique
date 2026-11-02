@@ -29,7 +29,7 @@
 //!
 //! GIL builds: the clinic section is a no-op there, so the kernel would make the same calls
 //! as the original (measured 0.993-1.008 per call, `docs/atlas/w2-threads.md` §4.1): no
-//! gain, so the target refuses (category `build`) rather than add install work and a site.
+//! gain, so the target is `not-needed` there rather than add install work and a site.
 
 use pyo3::ffi;
 use pyo3::prelude::*;
@@ -90,10 +90,7 @@ unsafe extern "C" fn frozenset_kernel(so: *mut ffi::PyObject, _arg: *mut ffi::Py
 
 fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     if !cfg!(Py_GIL_DISABLED) {
-        return Err(Refusal::with(
-            crate::accel::Category::Build,
-            "set.__reduce__: only free-threaded builds contend with themselves here; no gain with the GIL",
-        ));
+        return Err(Refusal::not_needed("only free-threaded builds need it"));
     }
     cx.symbol(c"_PyObject_GetState", &GETSTATE)?;
     let set_t = py.get_type::<pyo3::types::PySet>();

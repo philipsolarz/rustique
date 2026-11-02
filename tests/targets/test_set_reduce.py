@@ -2,7 +2,7 @@
 
 Differential: every probe is reduced (and deep-copied, copied, pickled) with the target
 disabled, then enabled, and the two results are compared structurally (types, list order
-and capacity, state). On GIL builds the target must refuse with category `build`.
+and capacity, state). On GIL builds the target reports `not-needed`.
 """
 
 from __future__ import annotations
@@ -50,7 +50,8 @@ def test_refuses_on_gil_builds_installs_on_free_threaded():
         assert len(st_["sites"]) == 2, st_
     else:
         assert st_["state"] == "refused", st_
-        assert st_.get("refusal") == "build", st_
+        assert st_.get("refusal") == "not-needed", st_
+        assert st_["reason"] == "only free-threaded builds need it", st_
 
 
 ft_only = pytest.mark.skipif(not FREE_THREADED, reason="the target installs on free-threaded builds only")
