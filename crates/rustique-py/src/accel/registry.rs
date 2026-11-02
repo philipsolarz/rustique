@@ -146,8 +146,9 @@ struct Rt {
     /// Installed sites (empty unless `Installed`).
     sites: Vec<Site>,
     /// Names and kinds of the sites last declared (kept for status after refusal/disable;
-    /// labels are formatted by `status()` only).
+    /// labels are formatted by `status()` only, once: `site_labels`).
     site_names: Vec<(String, Kind)>,
+    site_labels: Option<Py<PyList>>,
     /// Pin owner id of the installed pins (0: none).
     pin_owner: u64,
     /// Flags of the pins, tracked for deopt-while-unpinned (targets with a vectorcall
@@ -175,6 +176,7 @@ impl Rt {
             refusal: None,
             sites: Vec::new(),
             site_names: Vec::new(),
+            site_labels: None,
             pin_owner: 0,
             tracked: Vec::new(),
             suspended: None,
@@ -887,6 +889,7 @@ fn activate_inner(
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.prepare)(py, &mut cx)));
     // Labels are formatted by `status()` only (no `format!` per site at install).
     reg.rt[i].site_names = cx.sites.iter().map(|d| (d.site.name.clone(), d.site.kind)).collect();
+    reg.rt[i].site_labels = None;
     let mut staged = Staged {
         sites: Vec::with_capacity(cx.sites.len()),
         declared: cx.sites.drain(..).map(|d| d.site).collect(),
@@ -1216,6 +1219,7 @@ fn arm(
         return None;
     }
     reg.rt[i].site_names = decls.iter().map(|d| (d.site.name.clone(), d.site.kind)).collect();
+    reg.rt[i].site_labels = None;
     // Stubs for every site, then swap them in all-or-nothing.
     let mut stubs_used: Vec<usize> = Vec::new();
     let mut sites: Vec<Site> = Vec::with_capacity(decls.len());
@@ -1721,49 +1725,111 @@ pub fn installed(py: Python<'_>, names: Option<&[String]>) -> PyResult<Vec<&'sta
     Ok(out)
 }
 
-/// Per-target immutable status values (name, group, module, versions), built once.
+/// Per-target immutable status values (name, group, tier, module, versions), built once
+/// (strings shared across targets).
 struct StaticStatus {
     name: Py<pyo3::types::PyString>,
     group: Py<pyo3::types::PyString>,
+    tier: Option<Py<pyo3::types::PyString>>,
     module: Option<Py<pyo3::types::PyString>>,
-    versions: Vec<Py<pyo3::types::PyString>>,
+    /// Shared by every target with the same versions: copied into each entry.
+    versions: Py<PyList>,
 }
 
-fn static_status(py: Python<'_>) -> &'static [StaticStatus] {
-    static CELL: pyo3::sync::PyOnceLock<Vec<StaticStatus>> = pyo3::sync::PyOnceLock::new();
-    CELL.get_or_init(py, || {
-        // Groups, modules and version strings repeat across targets: one str object each
-        // (this runs inside the public `enable()`, which returns the status; startup cell).
-        let mut shared: Vec<(String, Py<pyo3::types::PyString>)> = Vec::new();
-        let mut text = |t: &str| -> Py<pyo3::types::PyString> {
-            if let Some((_, o)) = shared.iter().find(|(k, _)| k == t) {
-                return o.clone_ref(py);
+/// Empty entries with every key in order (`name`, `group`, `state`, `reason`, `tier`,
+/// `refusal`, `sites`, `versions`, `checkable`[, `module`]), values `None`: `status()` copies
+/// one (a presized dict, keys cloned at once) and sets the values in place.
+struct Templates {
+    plain: Py<PyDict>,
+    module: Py<PyDict>,
+}
+
+/// `"3.14"`, `"3.14t"`: version labels without `core::fmt`.
+fn version_label(major: u8, minor: u8, t: bool) -> String {
+    let mut s = major.to_string();
+    s.push('.');
+    s.push_str(&minor.to_string());
+    if t {
+        s.push('t');
+    }
+    s
+}
+
+fn templates(py: Python<'_>) -> PyResult<&'static Templates> {
+    static CELL: pyo3::sync::PyOnceLock<Templates> = pyo3::sync::PyOnceLock::new();
+    CELL.get_or_try_init(py, || {
+        let make = |module: bool| -> PyResult<Py<PyDict>> {
+            let d = PyDict::new(py);
+            for k in ["name", "group", "state", "reason", "tier", "refusal", "sites", "versions", "checkable"] {
+                d.set_item(prepare::interned(py, k), py.None())?;
             }
-            let o = pyo3::types::PyString::new(py, t).unbind();
-            shared.push((t.to_owned(), o.clone_ref(py)));
-            o
+            if module {
+                d.set_item(intern!(py, "module"), py.None())?;
+            }
+            Ok(d.unbind())
         };
-        all_specs()
-            .iter()
-            .map(|s| StaticStatus {
-                name: pyo3::types::PyString::new(py, s.name).unbind(),
-                group: text(s.group),
-                module: s.module.map(&mut text),
-                versions: versions_of(s).iter().map(|v| text(v)).collect(),
-            })
-            .collect()
+        Ok(Templates { plain: make(false)?, module: make(true)? })
     })
 }
 
-fn versions_of(spec: &TargetSpec) -> Vec<String> {
-    let mut v = Vec::new();
-    for (a, b) in spec.versions {
-        v.push(format!("{a}.{b}"));
-        if spec.free_threaded {
-            v.push(format!("{a}.{b}t"));
+fn static_status(py: Python<'_>) -> PyResult<&'static [StaticStatus]> {
+    static CELL: pyo3::sync::PyOnceLock<Vec<StaticStatus>> = pyo3::sync::PyOnceLock::new();
+    CELL.get_or_try_init(py, || {
+        let mut strs: Vec<(&'static str, Py<pyo3::types::PyString>)> = Vec::new();
+        let mut text = |t: &'static str| -> Py<pyo3::types::PyString> {
+            if let Some((_, o)) = strs.iter().find(|(k, _)| *k == t) {
+                return o.clone_ref(py);
+            }
+            let o = pyo3::types::PyString::new(py, t).unbind();
+            strs.push((t, o.clone_ref(py)));
+            o
+        };
+        let mut lists: Vec<((usize, bool), Py<PyList>)> = Vec::new();
+        let mut out = Vec::with_capacity(all_specs().len());
+        for spec in all_specs() {
+            let key = (spec.versions.as_ptr() as usize, spec.free_threaded);
+            let versions = match lists.iter().find(|(k, _)| *k == key) {
+                Some((_, l)) => l.clone_ref(py),
+                None => {
+                    let mut v: Vec<String> = Vec::new();
+                    for &(a, b) in spec.versions {
+                        v.push(version_label(a, b, false));
+                        if spec.free_threaded {
+                            v.push(version_label(a, b, true));
+                        }
+                    }
+                    let l = PyList::new(py, v)?.unbind();
+                    lists.push((key, l.clone_ref(py)));
+                    l
+                }
+            };
+            out.push(StaticStatus {
+                name: pyo3::types::PyString::new(py, spec.name).unbind(),
+                group: text(spec.group),
+                tier: spec.opt_in.map(&mut text),
+                module: spec.module.map(&mut text),
+                versions,
+            });
         }
+        Ok(out)
+    })
+    .map(Vec::as_slice)
+}
+
+/// A shallow copy of a list (each status entry owns its lists).
+fn list_copy<'py>(l: &Bound<'py, PyList>) -> PyResult<Bound<'py, PyAny>> {
+    // SAFETY: attached thread; a live list; a new reference or NULL with an exception.
+    unsafe { Bound::from_owned_ptr_or_err(l.py(), ffi::PyList_GetSlice(l.as_ptr(), 0, ffi::PY_SSIZE_T_MAX)) }
+}
+
+fn state_str(py: Python<'_>, s: State) -> &Bound<'_, pyo3::types::PyString> {
+    match s {
+        State::Disabled => intern!(py, "disabled"),
+        State::Pending => intern!(py, "pending-import"),
+        State::Installed => intern!(py, "installed"),
+        State::Refused => intern!(py, "refused"),
+        State::Armed => intern!(py, "armed"),
     }
-    v
 }
 
 /// `{"targets": [...], "process": {...}}` (docs/ACCELERATION.md §6.2). The Python layer
@@ -1778,35 +1844,51 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     let targets = PyList::empty(py);
     let mut enabled = false;
     for (i, spec) in all_specs().iter().enumerate() {
-        let rt = &reg.rt[i];
+        let rt = &mut reg.rt[i];
         if spec.hidden() && rt.state == State::Disabled && rt.reason.is_none() {
             continue;
         }
         // A target of a tier nobody requested: disabled, saying how to turn it on.
         let tier_off = spec.opt_in.filter(|t| rt.state == State::Disabled && !reg.tiers.iter().any(|x| x == t));
         enabled |= matches!(rt.state, State::Installed | State::Pending | State::Armed);
-        let d = PyDict::new(py);
-        let fixed = &static_status(py)[i];
+        let fixed = &static_status(py)?[i];
+        let t = templates(py)?;
+        let template = if fixed.module.is_some() { &t.module } else { &t.plain };
+        // SAFETY: attached thread; a live dict; a new reference or NULL with an exception.
+        let d =
+            unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyDict_Copy(template.as_ptr())) }?.cast_into::<PyDict>()?;
         d.set_item(intern!(py, "name"), fixed.name.bind(py))?;
         d.set_item(intern!(py, "group"), fixed.group.bind(py))?;
-        d.set_item(intern!(py, "state"), rt.state.as_str())?;
-        match tier_off {
-            Some(t) if rt.reason.is_none() => {
-                d.set_item(intern!(py, "reason"), format!("opt-in tier: RUSTIQUE_TIERS={t}"))?
-            }
-            _ => d.set_item(intern!(py, "reason"), rt.reason.as_deref())?,
+        d.set_item(intern!(py, "state"), state_str(py, rt.state))?;
+        if let Some(t) = &fixed.tier {
+            d.set_item(intern!(py, "tier"), t.bind(py))?;
         }
-        d.set_item(intern!(py, "tier"), spec.opt_in)?;
-        d.set_item(
-            intern!(py, "refusal"),
-            if rt.state == State::Refused { rt.refusal.map(Category::as_str) } else { None },
-        )?;
-        d.set_item(intern!(py, "sites"), PyList::new(py, rt.site_names.iter().map(|(n, k)| site_label(n, *k)))?)?;
-        d.set_item(intern!(py, "versions"), PyList::new(py, fixed.versions.iter().map(|v| v.bind(py)))?)?;
         d.set_item(intern!(py, "checkable"), spec.checkable)?;
         if let Some(m) = &fixed.module {
             d.set_item(intern!(py, "module"), m.bind(py))?;
         }
+        match tier_off {
+            Some(t) if rt.reason.is_none() => {
+                d.set_item(intern!(py, "reason"), format!("opt-in tier: RUSTIQUE_TIERS={t}"))?
+            }
+            Some(_) | None => {
+                if let Some(r) = rt.reason.as_deref() {
+                    d.set_item(intern!(py, "reason"), r)?;
+                }
+            }
+        }
+        if rt.state == State::Refused
+            && let Some(c) = rt.refusal
+        {
+            d.set_item(intern!(py, "refusal"), c.as_str())?;
+        }
+        if rt.site_labels.is_none() {
+            rt.site_labels = Some(PyList::new(py, rt.site_names.iter().map(|(n, k)| site_label(n, *k)))?.unbind());
+        }
+        if let Some(l) = &rt.site_labels {
+            d.set_item(intern!(py, "sites"), list_copy(l.bind(py))?)?;
+        }
+        d.set_item(intern!(py, "versions"), list_copy(fixed.versions.bind(py))?)?;
         if rt.pin_owner != 0 || rt.group.is_some() {
             let group_ok = rt.group.is_none_or(|gi| reg.groups[gi].flags.iter().all(|f| f.ok()));
             let ok = group_ok && rt.flags.iter().all(|f| f.ok());
