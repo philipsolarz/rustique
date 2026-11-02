@@ -40,10 +40,11 @@ PROJECTS = {
     "marshmallow": ("marshmallow-code/marshmallow", "4.3.1", "pytest simplejson", "-m pytest -q tests"),
     "sqlglot": ("tobymao/sqlglot", "v30.28.0", "pytest pytz duckdb pandas",
                 "-m pytest -q tests --ignore=tests/test_sqlglotc.py"),
-    "black": ("psf/black", "26.10.1", "pytest<9", "-m pytest -q tests"),
+    "black": ("psf/black", "26.10.1", "pytest<9 aiohttp", "-m pytest -q tests"),
     "pydantic": ("pydantic/pydantic", "v2.14.2",
                  "pytest pytz dirty-equals pytest-mock faker jsonschema time-machine packaging pytest-benchmark "
-                 "cloudpickle pytest-run-parallel", "-m pytest -q tests --ignore=tests/benchmarks --ignore=tests/test_docs.py"),
+                 "cloudpickle pytest-run-parallel hypothesis", "-m pytest -q tests --ignore=tests/benchmarks --ignore=tests/test_docs.py "
+                 "--ignore=tests/pydantic_core"),
     "django": ("django/django", "6.1.2", "asgiref sqlparse",
                "tests/runtests.py --parallel 1 -v 1 basic utils_tests template_tests forms_tests serializers "
                "model_fields queries i18n timezones humanize_tests logging_tests ordering view_tests"),
@@ -70,8 +71,8 @@ def interp(py: str) -> str:
     return subprocess.check_output(["uv", "python", "find", req], text=True).strip()
 
 
-def paths(work, py, name):
-    res = os.path.join(work, "results", py, name)
+def paths(work, py, name, tag=""):
+    res = os.path.join(work, "results", py + (f"+{tag}" if tag else ""), name)
     return os.path.join(work, "src", name), os.path.join(work, f"venv-{py}", name), res
 
 
@@ -144,8 +145,19 @@ def summarize(res: str, diff_out: str, rc: int, seconds: float) -> dict:
 def run(args):
     for name in args.projects or PROJECTS:
         _, _, _, cmd = PROJECTS[name]
-        src, venv, res = paths(args.work, args.py, name)
+        src, venv, res = paths(args.work, args.py, name, args.tag)
         vpy = os.path.join(venv, "bin", "python")
+        os.makedirs(res, exist_ok=True)
+        if args.tag:  # meta from the setup
+            import shutil
+
+            shutil.copy(os.path.join(paths(args.work, args.py, name)[2], "meta.json"), res)
+        if args.diff_from:  # run another _diff.py (a prototype) inside the installed wheel
+            import shutil
+
+            pkg = subprocess.check_output([vpy, "-c", "import rustique, os; print(os.path.dirname(rustique.__file__))"],
+                                          text=True).strip()
+            shutil.copy(args.diff_from, os.path.join(pkg, "_diff.py"))
         if not os.path.exists(vpy):
             print(f"{name}: not set up", flush=True)
             continue
@@ -192,6 +204,8 @@ def main():
     p.add_argument("--wheels")
     p.add_argument("--work", required=True)
     p.add_argument("--repeat", type=int, default=1)
+    p.add_argument("--tag", default="", help="results/<py>+<tag>/ (e.g. a run with a prototype diff)")
+    p.add_argument("--diff-from", help="copy this _diff.py into the venv's rustique package before running")
     p.add_argument("projects", nargs="*")
     args = p.parse_intermixed_args()
     {"setup": setup, "run": run, "table": table}[args.cmd](args)

@@ -53,6 +53,33 @@ def test_run_respects_kill_switch():
     assert r.stdout.split() == ["None", "True"], r.stderr
 
 
+def test_run_is_like_python_script(tmp_path):
+    # same traceback, exit status and __file__ as `python script.py`
+    script = tmp_path / "boom.py"
+    script.write_text("import os\nprint(os.path.isabs(__file__))\ndef f():\n    return 1 / 0\nf()\n")
+    plain = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, env=clean_env(), cwd=tmp_path)
+    r = rq("boom.py", cwd=tmp_path)
+    assert (r.returncode, r.stdout, r.stderr) == (plain.returncode, plain.stdout, plain.stderr)
+
+
+def test_run_reaches_spawned_children(tmp_path):
+    script = tmp_path / "mp.py"
+    script.write_text(textwrap.dedent("""
+        import multiprocessing as mp, sys
+        def probe(_):
+            m = sys.modules.get("rustique._rustique")
+            return bool(m) and m._accel.status()["process"]["switch"]["source"]
+        if __name__ == "__main__":
+            with mp.get_context("spawn").Pool(1) as pool:
+                print(pool.map(probe, [0]))
+    """))
+    r = rq(str(script), cwd=tmp_path)
+    # dev installs have no startup file: the child then enables nothing, but it is asked to
+    assert r.returncode == 0, r.stderr
+    r = rq("-c", "import os; print(os.environ.get('RUSTIQUE'))")
+    assert r.stdout.strip() == "1"
+
+
 def test_run_report_flag():
     r = rq("--report", "-c", "sorted([2, 1])")
     assert "enabled by python -m rustique" in r.stderr
