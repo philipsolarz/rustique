@@ -1,0 +1,24 @@
+# Union of REQUIRES of benches/workloads/libs/*.py (exact pins).
+# Installs on CPython 3.15.1 and 3.15.1t (x86_64 manylinux), checked 2026-11-02, from binary wheels except
+# PyYAML 6.0.3: no cp315/cp315t wheel; it builds from the sdist as pure Python (no libyaml extension).
+annotated-types==0.8.0
+attrs==26.1.0
+beautifulsoup4==4.15.0
+boto3==1.43.123
+botocore==1.43.123
+cattrs==26.2.1
+jmespath==1.1.0
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+pydantic==2.14.2
+pydantic-core==2.50.2
+python-dateutil==2.9.0.post0
+PyYAML==6.0.3
+referencing==0.37.0
+rpds-py==2026.9.1
+s3transfer==0.19.3
+six==1.17.0
+soupsieve==3.0.4
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+urllib3==2.8.0

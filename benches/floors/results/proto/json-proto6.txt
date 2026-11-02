@@ -1,0 +1,9 @@
+dumps(rec)                                                                   31140      6564  0.211
+dumps(rec, default=encode) [no hook call]                                    36788      6714  0.183
+dumps(rec_dt, default=encode) [2 hook calls]                                 48394     38061  0.786
+dumps(rec_dt, default=encode, ensure_ascii=False, separators) [json_api]     49283     38930  0.790
+dumps(rec_dt, cls=Enc)                                                       48438     38021  0.785
+dumps(payload, default=str) [logging_service]                                27831      5417  0.195
+dumps(rec, cls=json.JSONEncoder)                                             36696      6762  0.184
+encode(dt)+encode(dec) (the hooks alone)                                      8093      3197  0.395
+json.JSONEncoder(default=encode) (encoder construction alone)                 3958      3944  0.996

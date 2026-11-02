@@ -1,0 +1,418 @@
+# 3.11: 19 final releases v3.11.0..v3.11.18
+v3.11.0 -> v3.11.1:
+  Lib/dataclasses.py: code ['_create_fn', '_field_assign', '_init_fn'] doc-only [] added [] removed []
+  Lib/json/__init__.py: code [] doc-only [] added [] removed []
+  Lib/json/decoder.py: code [] doc-only [] added [] removed []
+  Lib/json/encoder.py: code [] doc-only [] added [] removed []
+  Lib/logging/__init__.py: code ['StringTemplateStyle.usesTime'] doc-only [] added [] removed []
+  Lib/posixpath.py: code ['ismount'] doc-only [] added [] removed []
+  Lib/random.py: code [] doc-only ['Random.randrange'] added [] removed []
+  Lib/statistics.py: code [] doc-only [] added ['NormalDist.__getstate__', 'NormalDist.__setstate__'] removed []
+  Lib/urllib/parse.py: code ['_NetlocResultMixinBase.port', '_splitnport', 'urlsplit'] doc-only [] added [] removed []
+  Modules/posixmodule.c: C/other, 46 changed lines
+  Objects/unicodeobject.c: C/other, 4 changed lines
+  Python/bltinmodule.c: C/other, 14 changed lines
+  Python/compile.c: C/other, 1 changed lines
+v3.11.1 -> v3.11.2:
+  Lib/dataclasses.py: code ['Field.__repr__'] doc-only [] added [] removed []
+  Lib/random.py: code ['Random.choice'] doc-only ['SystemRandom.random'] added [] removed []
+  Modules/posixmodule.c: C/other, 4 changed lines
+  Python/bltinmodule.c: C/other, 4 changed lines
+  Python/compile.c: C/other, 16 changed lines
+v3.11.2 -> v3.11.3:
+  Lib/dataclasses.py: code ['_add_slots', 'fields'] doc-only [] added [] removed []
+  Modules/posixmodule.c: C/other, 5 changed lines
+  Objects/listobject.c: C/other, 20 changed lines
+  Objects/tupleobject.c: C/other, 11 changed lines
+  Objects/unicodeobject.c: C/other, 15 changed lines
+  Python/bltinmodule.c: C/other, 2 changed lines
+v3.11.3 -> v3.11.4:
+  Lib/dataclasses.py: code ['_add_slots', '_process_class'] doc-only [] added [] removed []
+  Lib/pathlib.py: code ['_RecursiveWildcardSelector._iterate_directories'] doc-only [] added [] removed []
+  Lib/urllib/parse.py: code ['urlsplit'] doc-only [] added ['_check_bracketed_host'] removed []
+  Modules/posixmodule.c: C/other, 11 changed lines
+  Objects/unicodeobject.c: C/other, 2 changed lines
+  Python/bltinmodule.c: C/other, 11 changed lines
+  Python/compile.c: C/other, 69 changed lines
+v3.11.4 -> v3.11.5:
+  Lib/urllib/parse.py: code [] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 35 changed lines
+  Modules/posixmodule.c: C/other, 110 changed lines
+  Modules/timemodule.c: C/other, 7 changed lines
+  Objects/unicodeobject.c: C/other, 32 changed lines
+  Python/bltinmodule.c: C/other, 40 changed lines
+  Python/compile.c: C/other, 6 changed lines
+v3.11.5 -> v3.11.6:
+  Lib/calendar.py: code ['main'] doc-only [] added [] removed []
+  Modules/posixmodule.c: C/other, 243 changed lines
+  Objects/unicodeobject.c: C/other, 6 changed lines
+v3.11.6 -> v3.11.7:
+  Lib/locale.py: code ['getdefaultlocale'] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 2 changed lines
+  Modules/posixmodule.c: C/other, 14 changed lines
+v3.11.7 -> v3.11.8:
+  Lib/_strptime.py: code ['_strptime'] doc-only [] added [] removed []
+  Lib/calendar.py: code ['main'] doc-only [] added [] removed []
+  Modules/posixmodule.c: C/other, 9 changed lines
+  Objects/unicodeobject.c: C/other, 6 changed lines
+v3.11.8 -> v3.11.9:
+  Lib/dataclasses.py: code ['_get_slots'] doc-only [] added [] removed []
+  Lib/json/encoder.py: code [] doc-only ['JSONEncoder.default'] added [] removed []
+  Lib/logging/__init__.py: code ['LoggerAdapter._log'] doc-only ['Logger.critical', 'Logger.debug', 'Logger.error', 'Logger.info', 'Logger.log', 'Logger.warning', 'basicConfig'] added [] removed []
+  Lib/urllib/parse.py: code ['parse_qsl'] doc-only [] added [] removed []
+  Modules/posixmodule.c: C/other, 174 changed lines
+  Objects/floatobject.c: C/other, 21 changed lines
+  Objects/listobject.c: C/other, 13 changed lines
+  Python/compile.c: C/other, 1 changed lines
+v3.11.9 -> v3.11.10:
+  Lib/urllib/parse.py: code ['urlunsplit'] doc-only [] added [] removed []
+  Modules/posixmodule.c: C/other, 52 changed lines
+v3.11.10 -> v3.11.11: no target file changed
+v3.11.11 -> v3.11.12:
+  Lib/urllib/parse.py: code ['urlsplit'] doc-only [] added ['_check_bracketed_netloc'] removed []
+v3.11.12 -> v3.11.13:
+  Lib/genericpath.py: code [] doc-only [] added ['ALLOW_MISSING.__reduce__', 'ALLOW_MISSING.__repr__'] removed []
+  Lib/posixpath.py: code ['_joinrealpath'] doc-only [] added [] removed []
+  Objects/unicodeobject.c: C/other, 63 changed lines
+v3.11.13 -> v3.11.14: no target file changed
+v3.11.14 -> v3.11.15:
+  Lib/posixpath.py: code ['expandvars'] doc-only [] added ['expandvars.repl'] removed []
+  Objects/listobject.c: C/other, 54 changed lines
+v3.11.15 -> v3.11.16: no target file changed
+v3.11.16 -> v3.11.17:
+  Python/dtoa.c: C/other, 16 changed lines
+  Python/pystrtod.c: C/other, 23 changed lines
+v3.11.17 -> v3.11.18: no target file changed
+# 3.12: 17 final releases v3.12.0..v3.12.16
+v3.12.0 -> v3.12.1:
+  Lib/locale.py: code ['getdefaultlocale'] doc-only [] added [] removed []
+  Lib/pathlib.py: code ['PurePath.with_name'] doc-only [] added [] removed []
+  Lib/random.py: code [] doc-only ['Random.betavariate', 'Random.binomialvariate', 'Random.expovariate', 'Random.gammavariate', 'Random.triangular', 'Random.uniform'] added [] removed []
+  Modules/_datetimemodule.c: C/other, 2 changed lines
+  Modules/posixmodule.c: C/other, 151 changed lines
+  Modules/timemodule.c: C/other, 27 changed lines
+  Objects/unicodeobject.c: C/other, 72 changed lines
+  Python/bltinmodule.c: C/other, 5 changed lines
+  Python/flowgraph.c: C/other, 16 changed lines
+v3.12.1 -> v3.12.2:
+  Lib/_strptime.py: code ['_strptime'] doc-only [] added [] removed []
+  Lib/calendar.py: code ['main'] doc-only [] added [] removed []
+  Modules/posixmodule.c: C/other, 25 changed lines
+  Objects/unicodeobject.c: C/other, 6 changed lines
+  Python/flowgraph.c: C/other, 1 changed lines
+v3.12.2 -> v3.12.3:
+  Lib/dataclasses.py: code ['_get_slots'] doc-only [] added [] removed []
+  Lib/json/encoder.py: code [] doc-only ['JSONEncoder.default'] added [] removed []
+  Lib/logging/__init__.py: code ['LoggerAdapter._log'] doc-only ['Logger.critical', 'Logger.debug', 'Logger.error', 'Logger.info', 'Logger.log', 'Logger.warning', 'basicConfig'] added [] removed []
+  Lib/urllib/parse.py: code ['parse_qsl'] doc-only [] added [] removed []
+  Modules/posixmodule.c: C/other, 184 changed lines
+  Objects/floatobject.c: C/other, 21 changed lines
+  Objects/listobject.c: C/other, 13 changed lines
+  Objects/unicodeobject.c: C/other, 2 changed lines
+  Python/compile.c: C/other, 2 changed lines
+v3.12.3 -> v3.12.4:
+  Lib/dataclasses.py: code ['_get_slots'] doc-only [] added [] removed []
+  Lib/locale.py: code [] doc-only [] added [] removed []
+  Lib/pathlib.py: code [] doc-only ['Path.open'] added [] removed []
+  Lib/posixpath.py: code ['expanduser'] doc-only [] added [] removed []
+  Lib/urllib/parse.py: code ['urlunsplit'] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 16 changed lines
+  Modules/posixmodule.c: C/other, 969 changed lines
+  Modules/timemodule.c: C/other, 31 changed lines
+  Python/compile.c: C/other, 111 changed lines
+  Python/dtoa.c: C/other, 2 changed lines
+v3.12.4 -> v3.12.5:
+  Lib/calendar.py: code [] doc-only ['monthrange'] added [] removed []
+  Lib/statistics.py: code [] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 14 changed lines
+  Modules/posixmodule.c: C/other, 8 changed lines
+  Modules/timemodule.c: C/other, 10 changed lines
+  Objects/floatobject.c: C/other, 10 changed lines
+  Objects/listobject.c: C/other, 54 changed lines
+  Objects/tupleobject.c: C/other, 2 changed lines
+  Python/bltinmodule.c: C/other, 4 changed lines
+  Python/compile.c: C/other, 13 changed lines
+v3.12.5 -> v3.12.6:
+  Lib/urllib/parse.py: code ['urlunsplit'] doc-only [] added [] removed []
+  Python/compile.c: C/other, 25 changed lines
+v3.12.6 -> v3.12.7:
+  Lib/dataclasses.py: code ['_get_slots'] doc-only [] added [] removed []
+  Objects/unicodeobject.c: C/other, 506 changed lines
+  Python/compile.c: C/other, 7 changed lines
+v3.12.7 -> v3.12.8:
+  Lib/_strptime.py: code ['LocaleTime.__calc_am_pm', 'LocaleTime.__calc_date_time', 'TimeRE.__init__', 'TimeRE.pattern'] doc-only [] added ['LocaleTime.__find_month_format', 'LocaleTime.__find_weekday_format', 'TimeRE.pattern.repl', '_findall'] removed []
+  Lib/calendar.py: code ['HTMLCalendar.formatmonthname', 'TextCalendar.formatmonthname', 'main', 'monthrange'] doc-only [] added ['_validate_month'] removed []
+  Lib/json/decoder.py: code ['_decode_uXXXX'] doc-only [] added [] removed []
+  Lib/json/scanner.py: code [] doc-only [] added [] removed []
+  Lib/pathlib.py: code ['PurePath.__init__'] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 169 changed lines
+  Modules/posixmodule.c: C/other, 20 changed lines
+  Modules/timemodule.c: C/other, 254 changed lines
+  Objects/unicodeobject.c: C/other, 78 changed lines
+  Python/compile.c: C/other, 11 changed lines
+v3.12.8 -> v3.12.9:
+  Lib/_strptime.py: code [] doc-only [] added [] removed []
+  Lib/urllib/parse.py: code ['urlsplit'] doc-only [] added ['_check_bracketed_netloc'] removed []
+  Modules/posixmodule.c: C/other, 40 changed lines
+  Objects/unicodeobject.c: C/other, 9 changed lines
+v3.12.9 -> v3.12.10:
+  Lib/json/encoder.py: code [] doc-only ['JSONEncoder.__init__'] added [] removed []
+  Lib/random.py: code ['Random.sample'] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 101 changed lines
+  Objects/unicodeobject.c: C/other, 7 changed lines
+  Python/assemble.c: C/other, 9 changed lines
+  Python/bltinmodule.c: C/other, 305 changed lines
+  Python/compile.c: C/other, 4 changed lines
+  Python/flowgraph.c: C/other, 5 changed lines
+v3.12.10 -> v3.12.11:
+  Lib/genericpath.py: code [] doc-only [] added ['ALLOW_MISSING.__reduce__', 'ALLOW_MISSING.__repr__'] removed []
+  Lib/posixpath.py: code ['_joinrealpath'] doc-only [] added [] removed []
+  Objects/unicodeobject.c: C/other, 61 changed lines
+v3.12.11 -> v3.12.12: no target file changed
+v3.12.12 -> v3.12.13:
+  Lib/posixpath.py: code ['expandvars'] doc-only [] added ['expandvars.repl'] removed []
+v3.12.13 -> v3.12.14: no target file changed
+v3.12.14 -> v3.12.15:
+  Python/dtoa.c: C/other, 16 changed lines
+  Python/pystrtod.c: C/other, 23 changed lines
+v3.12.15 -> v3.12.16: no target file changed
+# 3.13: 19 final releases v3.13.0..v3.13.18
+v3.13.0 -> v3.13.1:
+  Lib/_strptime.py: code ['LocaleTime.__calc_am_pm', 'LocaleTime.__calc_date_time', 'TimeRE.__init__', 'TimeRE.pattern'] doc-only [] added ['LocaleTime.__find_month_format', 'LocaleTime.__find_weekday_format', 'TimeRE.pattern.repl', '_findall'] removed []
+  Lib/calendar.py: code ['HTMLCalendar.formatmonthname', 'TextCalendar.formatmonthname', 'main', 'monthrange'] doc-only [] added ['_validate_month'] removed []
+  Lib/dataclasses.py: code ['_get_slots'] doc-only [] added [] removed []
+  Lib/json/decoder.py: code ['_decode_uXXXX'] doc-only [] added [] removed []
+  Lib/json/scanner.py: code [] doc-only [] added [] removed []
+  Lib/pathlib/_local.py: code ['PurePath.__init__'] doc-only [] added [] removed []
+  Lib/posixpath.py: code ['realpath'] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 169 changed lines
+  Modules/posixmodule.c: C/other, 28 changed lines
+  Modules/timemodule.c: C/other, 253 changed lines
+  Objects/listobject.c: C/other, 20 changed lines
+  Objects/unicodeobject.c: C/other, 50 changed lines
+  Python/compile.c: C/other, 12 changed lines
+v3.13.1 -> v3.13.2:
+  Lib/_strptime.py: code [] doc-only [] added [] removed []
+  Lib/urllib/parse.py: code ['urlsplit'] doc-only [] added ['_check_bracketed_netloc'] removed []
+  Modules/posixmodule.c: C/other, 40 changed lines
+  Objects/listobject.c: C/other, 54 changed lines
+  Objects/tupleobject.c: C/other, 1 changed lines
+  Objects/unicodeobject.c: C/other, 176 changed lines
+v3.13.2 -> v3.13.3:
+  Lib/json/encoder.py: code [] doc-only ['JSONEncoder.__init__'] added [] removed []
+  Lib/locale.py: code [] doc-only [] added [] removed []
+  Lib/random.py: code ['Random.sample'] doc-only [] added [] removed []
+  Modules/posixmodule.c: C/other, 147 changed lines
+  Modules/timemodule.c: C/other, 2 changed lines
+  Objects/listobject.c: C/other, 10 changed lines
+  Objects/unicodeobject.c: C/other, 7 changed lines
+  Python/assemble.c: C/other, 27 changed lines
+  Python/bltinmodule.c: C/other, 99 changed lines
+  Python/compile.c: C/other, 4 changed lines
+  Python/flowgraph.c: C/other, 5 changed lines
+v3.13.3 -> v3.13.4:
+  Lib/_strptime.py: code ['TimeRE.pattern', '_strptime'] doc-only [] added [] removed []
+  Lib/genericpath.py: code [] doc-only [] added ['ALLOW_MISSING.__reduce__', 'ALLOW_MISSING.__repr__'] removed []
+  Lib/logging/__init__.py: code ['Logger.handle', 'Logger.isEnabledFor'] doc-only [] added ['Logger._is_disabled'] removed []
+  Lib/posixpath.py: code ['realpath'] doc-only [] added [] removed []
+  Modules/_randommodule.c: C/other, 20 changed lines
+  Objects/listobject.c: C/other, 8 changed lines
+  Objects/unicodeobject.c: C/other, 104 changed lines
+  Python/bltinmodule.c: C/other, 1 changed lines
+  Python/compile.c: C/other, 25 changed lines
+v3.13.4 -> v3.13.5:
+  Lib/json/encoder.py: code ['_make_iterencode', '_make_iterencode._iterencode_dict'] doc-only [] added [] removed []
+  Lib/locale.py: code [] doc-only [] added [] removed []
+  Modules/_json.c: C/other, 15 changed lines
+  Modules/_randommodule.c: C/other, 12 changed lines
+  Modules/posixmodule.c: C/other, 24 changed lines
+  Python/compile.c: C/other, 21 changed lines
+v3.13.5 -> v3.13.6:
+  Lib/_strptime.py: code ['LocaleTime.__calc_date_time', 'LocaleTime.__find_month_format', 'LocaleTime.__find_weekday_format', 'LocaleTime.__init__', 'TimeRE.__init__', 'TimeRE.__seqToRE', 'TimeRE.pattern', '_strptime'] doc-only [] added ['LocaleTime.__calc_alt_digits', '_fixmonths'] removed []
+  Lib/logging/__init__.py: code ['Logger.handle', 'Logger.isEnabledFor'] doc-only [] added [] removed ['Logger._is_disabled']
+  Modules/posixmodule.c: C/other, 4 changed lines
+  Objects/listobject.c: C/other, 3 changed lines
+  Objects/unicodeobject.c: C/other, 4 changed lines
+v3.13.6 -> v3.13.7:
+  Python/bltinmodule.c: C/other, 12 changed lines
+v3.13.7 -> v3.13.8:
+  Modules/posixmodule.c: C/other, 14 changed lines
+v3.13.8 -> v3.13.9: no target file changed
+v3.13.9 -> v3.13.10:
+  Lib/json/__init__.py: code [] doc-only ['dump', 'dumps', 'load', 'loads'] added [] removed []
+  Lib/json/decoder.py: code [] doc-only ['JSONDecoder.__init__'] added [] removed []
+  Lib/json/encoder.py: code [] doc-only ['JSONEncoder.__init__'] added [] removed []
+  Lib/logging/__init__.py: code ['LoggerAdapter.process'] doc-only ['LoggerAdapter.__init__'] added [] removed []
+  Lib/posixpath.py: code ['expandvars'] doc-only [] added ['expandvars.repl'] removed []
+  Lib/statistics.py: code ['pstdev', 'stdev'] doc-only [] added [] removed []
+  Lib/textwrap.py: code ['TextWrapper._handle_long_word'] doc-only [] added [] removed []
+  Modules/_randommodule.c: C/other, 2 changed lines
+  Modules/posixmodule.c: C/other, 144 changed lines
+  Python/bltinmodule.c: C/other, 5 changed lines
+  Python/compile.c: C/other, 14 changed lines
+v3.13.10 -> v3.13.11: no target file changed
+v3.13.11 -> v3.13.12:
+  Modules/_json.c: C/other, 3 changed lines
+  Modules/posixmodule.c: C/other, 47 changed lines
+  Objects/floatobject.c: C/other, 79 changed lines
+v3.13.12 -> v3.13.13:
+  Lib/urllib/parse.py: code [] doc-only ['urlparse'] added [] removed []
+  Modules/posixmodule.c: C/other, 32 changed lines
+  Objects/listobject.c: C/other, 2 changed lines
+  Objects/unicodeobject.c: C/other, 6 changed lines
+  Python/bltinmodule.c: C/other, 4 changed lines
+v3.13.13 -> v3.13.14:
+  Lib/dataclasses.py: code ['_add_slots', '_process_class'] doc-only [] added ['_frozen_set_del_attr', '_update_func_cell_for__class__'] removed ['_frozen_get_del_attr']
+  Lib/json/__init__.py: code [] doc-only ['dump', 'dumps'] added [] removed []
+  Lib/locale.py: code [] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 6 changed lines
+  Modules/_json.c: C/other, 32 changed lines
+  Modules/posixmodule.c: C/other, 2 changed lines
+  Objects/floatobject.c: C/other, 8 changed lines
+  Objects/listobject.c: C/other, 13 changed lines
+  Objects/tupleobject.c: C/other, 8 changed lines
+  Objects/unicodeobject.c: C/other, 212 changed lines
+  Python/assemble.c: C/other, 6 changed lines
+  Python/bltinmodule.c: C/other, 121 changed lines
+  Python/compile.c: C/other, 17 changed lines
+  Python/flowgraph.c: C/other, 16 changed lines
+v3.13.14 -> v3.13.15:
+  Lib/dataclasses.py: code [] doc-only [] added [] removed []
+  Lib/json/decoder.py: code ['py_scanstring'] doc-only [] added [] removed []
+  Lib/locale.py: code ['getdefaultlocale'] doc-only [] added [] removed []
+  Lib/logging/__init__.py: code ['Logger.removeHandler'] doc-only [] added [] removed []
+  Lib/random.py: code ['Random.binomialvariate'] doc-only [] added [] removed []
+  Lib/urllib/parse.py: code ['_check_bracketed_host'] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 19 changed lines
+  Modules/_json.c: C/other, 2 changed lines
+  Modules/posixmodule.c: C/other, 674 changed lines
+  Modules/timemodule.c: C/other, 7 changed lines
+  Objects/tupleobject.c: C/other, 6 changed lines
+  Python/compile.c: C/other, 3 changed lines
+  Python/flowgraph.c: C/other, 2 changed lines
+v3.13.15 -> v3.13.16:
+  Lib/logging/__init__.py: code ['FileHandler.emit'] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 13 changed lines
+  Modules/posixmodule.c: C/other, 48 changed lines
+  Modules/timemodule.c: C/other, 14 changed lines
+  Objects/unicodeobject.c: C/other, 16 changed lines
+  Python/compile.c: C/other, 44 changed lines
+  Python/dtoa.c: C/other, 16 changed lines
+  Python/pystrtod.c: C/other, 23 changed lines
+v3.13.16 -> v3.13.17: no target file changed
+v3.13.17 -> v3.13.18: no target file changed
+# 3.14: 11 final releases v3.14.0..v3.14.10
+v3.14.0 -> v3.14.1:
+  Lib/dataclasses.py: code ['_FuncBuilder.__init__', '_FuncBuilder.add_fn', '_FuncBuilder.add_fns_to_class', '_add_slots', '_init_fn', '_init_param'] doc-only [] added ['_make_annotate_function', '_make_annotate_function.__annotate__'] removed []
+  Lib/json/__init__.py: code [] doc-only ['dump', 'dumps', 'load', 'loads'] added [] removed []
+  Lib/json/decoder.py: code [] doc-only ['JSONDecoder.__init__'] added [] removed []
+  Lib/json/encoder.py: code [] doc-only ['JSONEncoder.__init__'] added [] removed []
+  Lib/logging/__init__.py: code ['LoggerAdapter.process'] doc-only ['LoggerAdapter.__init__'] added [] removed []
+  Lib/pathlib/__init__.py: code ['PurePath._raw_path'] doc-only [] added [] removed []
+  Lib/pathlib/_local.py: code [] doc-only [] added [] removed []
+  Lib/posixpath.py: code ['expandvars'] doc-only [] added ['expandvars.repl'] removed []
+  Lib/statistics.py: code ['pstdev', 'stdev'] doc-only [] added [] removed []
+  Lib/textwrap.py: code ['TextWrapper._handle_long_word'] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 73 changed lines
+  Modules/_randommodule.c: C/other, 2 changed lines
+  Modules/posixmodule.c: C/other, 168 changed lines
+  Objects/floatobject.c: C/other, 16 changed lines
+  Objects/tupleobject.c: C/other, 43 changed lines
+  Objects/unicodeobject.c: C/other, 6 changed lines
+  Python/bltinmodule.c: C/other, 49 changed lines
+  Python/compile.c: C/other, 14 changed lines
+v3.14.1 -> v3.14.2:
+  Lib/dataclasses.py: code ['_add_slots', '_make_annotate_function', '_make_annotate_function.__annotate__'] doc-only [] added [] removed []
+v3.14.2 -> v3.14.3:
+  Modules/_json.c: C/other, 4 changed lines
+  Modules/posixmodule.c: C/other, 47 changed lines
+  Objects/floatobject.c: C/other, 79 changed lines
+  Python/compile.c: C/other, 2 changed lines
+v3.14.3 -> v3.14.4:
+  Lib/urllib/parse.py: code [] doc-only ['urlparse'] added [] removed []
+  Modules/posixmodule.c: C/other, 50 changed lines
+  Objects/floatobject.c: C/other, 6 changed lines
+  Objects/listobject.c: C/other, 12 changed lines
+  Objects/unicodeobject.c: C/other, 127 changed lines
+  Python/bltinmodule.c: C/other, 8 changed lines
+  Python/codegen.c: C/other, 6 changed lines
+  Python/flowgraph.c: C/other, 2 changed lines
+v3.14.4 -> v3.14.5:
+  Lib/dataclasses.py: code ['_process_class', '_update_func_cell_for__class__'] doc-only [] added ['_frozen_set_del_attr'] removed ['_frozen_get_del_attr']
+  Lib/random.py: code ['Random.binomialvariate'] doc-only [] added [] removed []
+  Objects/unicodeobject.c: C/other, 56 changed lines
+  Python/bltinmodule.c: C/other, 10 changed lines
+  Python/codegen.c: C/other, 9 changed lines
+  Python/compile.c: C/other, 14 changed lines
+  Python/flowgraph.c: C/other, 146 changed lines
+v3.14.5 -> v3.14.6:
+  Lib/json/__init__.py: code [] doc-only ['dump', 'dumps'] added [] removed []
+  Lib/locale.py: code [] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 87 changed lines
+  Modules/_json.c: C/other, 29 changed lines
+  Modules/_randommodule.c: C/other, 35 changed lines
+  Modules/posixmodule.c: C/other, 498 changed lines
+  Modules/timemodule.c: C/other, 9 changed lines
+  Objects/floatobject.c: C/other, 8 changed lines
+  Objects/listobject.c: C/other, 13 changed lines
+  Objects/tupleobject.c: C/other, 8 changed lines
+  Objects/unicodeobject.c: C/other, 212 changed lines
+  Python/assemble.c: C/other, 6 changed lines
+  Python/bltinmodule.c: C/other, 125 changed lines
+  Python/flowgraph.c: C/other, 2 changed lines
+v3.14.6 -> v3.14.7:
+  Lib/dataclasses.py: code [] doc-only [] added [] removed []
+  Lib/json/decoder.py: code ['py_scanstring'] doc-only [] added [] removed []
+  Lib/locale.py: code ['getdefaultlocale'] doc-only [] added [] removed []
+  Lib/logging/__init__.py: code ['Logger.removeHandler'] doc-only [] added [] removed []
+  Lib/random.py: code ['Random.binomialvariate'] doc-only [] added [] removed []
+  Lib/urllib/parse.py: code ['_check_bracketed_host'] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 27 changed lines
+  Modules/_json.c: C/other, 2 changed lines
+  Modules/posixmodule.c: C/other, 200 changed lines
+  Modules/timemodule.c: C/other, 7 changed lines
+  Objects/tupleobject.c: C/other, 6 changed lines
+  Objects/unicodeobject.c: C/other, 22 changed lines
+  Python/compile.c: C/other, 8 changed lines
+  Python/flowgraph.c: C/other, 2 changed lines
+v3.14.7 -> v3.14.8:
+  Lib/logging/__init__.py: code ['FileHandler.emit'] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 13 changed lines
+  Modules/posixmodule.c: C/other, 48 changed lines
+  Modules/timemodule.c: C/other, 14 changed lines
+  Objects/unicodeobject.c: C/other, 16 changed lines
+  Python/codegen.c: C/other, 101 changed lines
+  Python/compile.c: C/other, 4 changed lines
+  Python/dtoa.c: C/other, 16 changed lines
+  Python/flowgraph.c: C/other, 71 changed lines
+  Python/pystrtod.c: C/other, 23 changed lines
+v3.14.8 -> v3.14.9:
+  Modules/_datetimemodule.c: C/other, 10 changed lines
+  Modules/posixmodule.c: C/other, 212 changed lines
+  Objects/listobject.c: C/other, 29 changed lines
+  Objects/tupleobject.c: C/other, 15 changed lines
+  Objects/unicodeobject.c: C/other, 207 changed lines
+v3.14.9 -> v3.14.10:
+  Objects/listobject.c: C/other, 4 changed lines
+  Objects/tupleobject.c: C/other, 10 changed lines
+  Python/codegen.c: C/other, 72 changed lines
+  Python/compile.c: C/other, 11 changed lines
+# 3.15: 3 final releases v3.15.0..v3.15.2
+v3.15.0 -> v3.15.1:
+  Lib/copy.py: code ['deepcopy'] doc-only [] added [] removed []
+  Lib/dataclasses.py: code ['_get_type_from_annotation'] doc-only [] added [] removed []
+  Lib/logging/__init__.py: code ['FileHandler.emit'] doc-only [] added [] removed []
+  Modules/_datetimemodule.c: C/other, 23 changed lines
+  Modules/posixmodule.c: C/other, 259 changed lines
+  Modules/timemodule.c: C/other, 14 changed lines
+  Objects/listobject.c: C/other, 31 changed lines
+  Objects/tupleobject.c: C/other, 15 changed lines
+  Objects/unicodeobject.c: C/other, 94 changed lines
+  Python/codegen.c: C/other, 246 changed lines
+  Python/compile.c: C/other, 11 changed lines
+  Python/flowgraph.c: C/other, 25 changed lines
+v3.15.1 -> v3.15.2:
+  Lib/json/decoder.py: code [] doc-only ['JSONDecoder.__init__'] added [] removed []
+  Modules/posixmodule.c: C/other, 3 changed lines
+  Objects/listobject.c: C/other, 4 changed lines
+  Objects/tupleobject.c: C/other, 10 changed lines
