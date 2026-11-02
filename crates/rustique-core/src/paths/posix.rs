@@ -244,6 +244,40 @@ pub fn normpath_in_place<T: Unit>(b: &mut [T]) -> usize {
     (q + 1) as usize
 }
 
+/// `normpath(s) == s` for an absolute path, decided in one pass: one leading `/` (two
+/// leading slashes are kept by `normpath`, three or more collapse: those take the full
+/// algorithm), no empty, `.` or `..` component, no trailing `/` except the root itself.
+/// Such a path passes through `_Py_normpath_and_size` unchanged (every character is copied
+/// to its own position), so callers may use the input as the normalized path.
+pub fn is_normal_abs<T: Unit>(s: &[T]) -> bool {
+    if s.first() != Some(&T::SLASH) {
+        return false;
+    }
+    if s.len() == 1 {
+        return true;
+    }
+    // Scan components: each starts after a '/', must be non-empty and not '.'/'..'.
+    let mut start = 1usize;
+    let n = s.len();
+    loop {
+        let mut end = start;
+        while end < n && s[end] != T::SLASH {
+            end += 1;
+        }
+        let len = end - start;
+        if len == 0 {
+            return false; // '//' or a trailing '/'
+        }
+        if s[start] == T::DOT && (len == 1 || (len == 2 && s[start + 1] == T::DOT)) {
+            return false;
+        }
+        if end == n {
+            return true;
+        }
+        start = end + 1;
+    }
+}
+
 /// The components of an absolute normalized path after `lstrip(sep)`, as `split(sep)`
 /// would return them (`[]` for the root itself).
 pub fn abs_components<T: Unit>(norm: &[T]) -> impl Iterator<Item = &[T]> + Clone {
@@ -295,6 +329,33 @@ mod tests {
         ];
         for (inp, want) in cases {
             assert_eq!(np(inp), want, "normpath({inp:?})");
+        }
+    }
+
+    #[test]
+    fn normal_abs() {
+        let yes = ["/", "/a", "/a/b", "/a/.b/..c/...", "/x y/z"];
+        let no = ["", "a", "//", "//a", "///a", "/a/", "/a//b", "/a/./b", "/a/../b", "/.", "/..", "/a/.", "/a/.."];
+        for s in yes {
+            assert!(is_normal_abs(s.as_bytes()), "{s:?}");
+            assert_eq!(np(s), s, "{s:?}");
+        }
+        for s in no {
+            assert!(!is_normal_abs(s.as_bytes()), "{s:?}");
+        }
+        // Exhaustive over short strings of '/', '.', 'a': the check implies normpath(s) == s.
+        let alphabet = [b'/', b'.', b'a'];
+        for len in 1..=7u32 {
+            for mut k in 0..3usize.pow(len) {
+                let mut v = Vec::new();
+                for _ in 0..len {
+                    v.push(alphabet[k % 3]);
+                    k /= 3;
+                }
+                if is_normal_abs(&v) {
+                    assert_eq!(normpath(&v), v, "{:?}", String::from_utf8_lossy(&v));
+                }
+            }
         }
     }
 

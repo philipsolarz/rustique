@@ -744,14 +744,50 @@ impl Wide for u32 {
 /// Scratch capacity (code units) on the stack; longer paths use one heap buffer.
 const SCRATCH: usize = 512;
 
-/// `normpath(p if p.startswith(sep) else join(cwd, p))` written into a scratch buffer of
-/// `B` (no allocation for paths up to [`SCRATCH`] units), then `f(normalized)`. `cwd` is
-/// required when `p` is relative.
+impl<'a> Src<'a> {
+    /// The units as a [`Text`] (bytes as one byte per unit).
+    #[inline(always)]
+    fn text(self) -> Text<'a> {
+        match self {
+            Src::T(t) => t,
+            Src::B(b) => Text::U1(b),
+        }
+    }
+}
+
+/// `normpath(p if p.startswith(sep) else join(cwd, p))`, handed to `f` as code units: the
+/// argument's own buffer when it is already an absolute normalized path
+/// ([`posix::is_normal_abs`]: `normpath` would copy it unchanged), else a scratch buffer
+/// (`u8` when every source is one byte per unit, else `u32`; on the stack up to
+/// [`SCRATCH`] units) normalized in place by the port of C `normpath`. `cwd` is required
+/// when `p` is relative. No allocation for paths up to [`SCRATCH`] units.
 ///
 /// # Safety
-/// The views stay valid during the call; `B` is `u8` only if every source is narrow.
+/// The views stay valid during the call.
 #[inline(always)]
-unsafe fn with_abs<B: Wide, R>(p: Src<'_>, cwd: Option<Src<'_>>, f: impl FnOnce(&[B]) -> R) -> Option<R> {
+unsafe fn with_abs<R>(p: Src<'_>, cwd: Option<Src<'_>>, f: impl FnOnce(Text<'_>) -> R) -> Option<R> {
+    if p.is_abs() {
+        let t = p.text();
+        if crate::with_text!(t, |s| posix::is_normal_abs(s)) {
+            return Some(f(t));
+        }
+    }
+    // SAFETY: forwarded.
+    unsafe {
+        if p.narrow() && cwd.is_none_or(|c| c.narrow()) {
+            scratch_abs::<u8, R>(p, cwd, |b| f(Text::U1(b)))
+        } else {
+            scratch_abs::<u32, R>(p, cwd, |b| f(Text::U4(b)))
+        }
+    }
+}
+
+/// The scratch-buffer half of [`with_abs`].
+///
+/// # Safety
+/// As [`with_abs`]; `B` is `u8` only if every source is narrow.
+#[inline(always)]
+unsafe fn scratch_abs<B: Wide, R>(p: Src<'_>, cwd: Option<Src<'_>>, f: impl FnOnce(&[B]) -> R) -> Option<R> {
     // join(cwd, p) for a relative p: `cwd + p` if cwd is empty or ends with '/', else
     // `cwd + '/' + p` (p never resets: it is relative).
     let (c, sep) = if p.is_abs() {
@@ -788,21 +824,36 @@ unsafe fn with_abs<B: Wide, R>(p: Src<'_>, cwd: Option<Src<'_>>, f: impl FnOnce(
     }
 }
 
-/// The components of an absolute normalized path (`abspath(x).lstrip(sep).split(sep)`,
-/// `[]` for the root).
-#[inline(always)]
-fn comps<B: Unit>(norm: &[B]) -> impl Iterator<Item = &[B]> + Clone {
-    posix::abs_components(norm)
-}
-
-/// `abspath`'s str result: C `normpath` builds it with `PyUnicode_FromWideChar` (the
-/// narrowest kind; `'.'` for an empty result).
+/// `abspath`'s str result: C `normpath` builds it with `PyUnicode_FromWideChar` (a new
+/// object of the narrowest kind; the latin-1 singletons for one character; `'.'` for an
+/// empty result).
 ///
 /// # Safety
 /// Attached thread.
-unsafe fn abs_str<B: Unit>(norm: &[B]) -> O {
+unsafe fn abs_str(norm: Text<'_>) -> O {
     // SAFETY: attached thread.
-    unsafe { if norm.is_empty() { ffi::PyUnicode_FromOrdinal(b'.' as i32) } else { str_from_units(norm) } }
+    unsafe {
+        crate::with_text!(norm, |s| if s.is_empty() {
+            ffi::PyUnicode_FromOrdinal(b'.' as i32)
+        } else {
+            str_from_units(s)
+        })
+    }
+}
+
+/// `abspath`'s bytes result (`PyBytes_FromStringAndSize`: the one-byte singletons).
+///
+/// # Safety
+/// Attached thread; `norm` is one byte per unit.
+unsafe fn abs_bytes(norm: Text<'_>) -> O {
+    // SAFETY: attached thread.
+    unsafe {
+        match norm {
+            Text::U1([]) => ffi::PyBytes_FromStringAndSize(c".".as_ptr(), 1),
+            Text::U1(b) => ffi::PyBytes_FromStringAndSize(b.as_ptr().cast(), b.len() as ffi::Py_ssize_t),
+            _ => std::ptr::null_mut(),
+        }
+    }
 }
 
 crate::paths_kernel!(k_abspath, RT_ABSPATH, ABSPATH, |func, args, nargsf, n, kw| one_arg!(
@@ -812,49 +863,30 @@ crate::paths_kernel!(k_abspath, RT_ABSPATH, ABSPATH, |func, args, nargsf, n, kw|
     n,
     kw,
     |p, t| {
-        match t {
-            Ty::Str => {
-                let pv = Src::T(str_view(p).text);
-                let cwd = if pv.is_abs() {
-                    None
-                } else {
-                    match cwd_obj(Ty::Str) {
-                        Some(c) => Some(c),
-                        None => return RT_ABSPATH.fallback(Reason::Deopt, func, args, nargsf, kw),
-                    }
-                };
-                let cv = cwd.as_ref().map(|c| Src::T(str_view(c.0).text));
-                let r = if pv.narrow() && cv.is_none_or(|c| c.narrow()) {
-                    with_abs::<u8, _>(pv, cv, |norm| abs_str(norm))
-                } else {
-                    with_abs::<u32, _>(pv, cv, |norm| abs_str(norm))
-                };
-                r.unwrap_or(std::ptr::null_mut())
-            }
-            Ty::Bytes => {
-                if !BYTES_OK.load(Relaxed) {
-                    return RT_ABSPATH.fallback(Reason::Args, func, args, nargsf, kw);
-                }
-                let pv = Src::B(bytes_view(p));
-                let cwd = if pv.is_abs() {
-                    None
-                } else {
-                    match cwd_obj(Ty::Bytes) {
-                        Some(c) => Some(c),
-                        None => return RT_ABSPATH.fallback(Reason::Deopt, func, args, nargsf, kw),
-                    }
-                };
-                let cv = cwd.as_ref().map(|c| Src::B(bytes_view(c.0)));
-                with_abs::<u8, _>(pv, cv, |norm| {
-                    if norm.is_empty() {
-                        ffi::PyBytes_FromStringAndSize(c".".as_ptr(), 1)
-                    } else {
-                        ffi::PyBytes_FromStringAndSize(norm.as_ptr().cast(), norm.len() as ffi::Py_ssize_t)
-                    }
-                })
-                .unwrap_or(std::ptr::null_mut())
-            }
+        if t == Ty::Bytes && !BYTES_OK.load(Relaxed) {
+            return RT_ABSPATH.fallback(Reason::Args, func, args, nargsf, kw);
         }
+        let pv = match t {
+            Ty::Str => Src::T(str_view(p).text),
+            Ty::Bytes => Src::B(bytes_view(p)),
+        };
+        let cwd = if pv.is_abs() {
+            None
+        } else {
+            match cwd_obj(t) {
+                Some(c) => Some(c),
+                None => return RT_ABSPATH.fallback(Reason::Deopt, func, args, nargsf, kw),
+            }
+        };
+        let cv = cwd.as_ref().map(|c| match t {
+            Ty::Str => Src::T(str_view(c.0).text),
+            Ty::Bytes => Src::B(bytes_view(c.0)),
+        });
+        let r = match t {
+            Ty::Str => with_abs(pv, cv, |norm| abs_str(norm)),
+            Ty::Bytes => with_abs(pv, cv, |norm| abs_bytes(norm)),
+        };
+        r.unwrap_or(std::ptr::null_mut())
     }
 ));
 
@@ -916,79 +948,96 @@ unsafe fn relpath(t: Ty, p: O, s: Option<O>) -> O {
             }
         };
         let cv = cwd.as_ref().map(|c| view(c.0));
-        let narrow = pv.narrow() && sv.narrow() && cv.is_none_or(|c| c.narrow());
-        let r = if narrow { rel_build::<u8>(t, pv, sv, cv) } else { rel_build::<u32>(t, pv, sv, cv) };
-        r.unwrap_or(std::ptr::null_mut())
+        with_abs(sv, cv, |sa| with_abs(pv, cv, |pa| rel_text(t, sa, pa))).flatten().unwrap_or(std::ptr::null_mut())
     }
 }
 
-/// abspath both, compare components, build `sep.join([pardir] * ups + rest)`.
-///
-/// # Safety
-/// Attached thread; live views.
-unsafe fn rel_build<B: Wide>(t: Ty, pv: Src<'_>, sv: Src<'_>, cv: Option<Src<'_>>) -> Option<O> {
-    // SAFETY: forwarded.
-    unsafe {
-        with_abs::<B, _>(sv, cv, |sa| {
-            with_abs::<B, _>(pv, cv, |pa| {
-                let mut sc = comps(sa);
-                let mut pc = comps(pa);
-                // common prefix of the component lists
-                let mut ups = 0usize;
-                let mut rest = pc.clone();
-                loop {
-                    match (sc.next(), pc.next()) {
-                        (Some(a), Some(b)) if a == b => {
-                            rest = pc.clone();
-                        }
-                        (Some(_), _) => {
-                            ups = 1 + sc.count();
-                            break;
-                        }
-                        (None, _) => break,
-                    }
-                }
-                rel_object(t, ups, rest)
-            })
-        })?
-    }
-}
-
-/// The result object of `relpath` from `ups` parent steps and the remaining components.
+/// [`rel_units`] on two texts of any widths.
 ///
 /// # Safety
 /// Attached thread.
-unsafe fn rel_object<'a, B: Wide>(t: Ty, ups: usize, rest: impl Iterator<Item = &'a [B]> + Clone) -> O {
+unsafe fn rel_text(t: Ty, sa: Text<'_>, pa: Text<'_>) -> O {
+    // SAFETY: forwarded.
+    unsafe { crate::with_text!(sa, |a| crate::with_text!(pa, |b| rel_units(t, a, b))) }
+}
+
+/// Number of components of a normalized path tail (no leading/trailing `/`, single `/`
+/// separators): `len(x.split(sep)) if x else 0`.
+#[inline(always)]
+fn ncomps<T: Unit>(x: &[T]) -> usize {
+    if x.is_empty() { 0 } else { 1 + x.iter().filter(|&&c| c == T::SLASH).count() }
+}
+
+/// `sep.join([pardir] * (len(start_list) - i) + path_list[i:])` (or `curdir`) from the
+/// normalized absolute `start` and `path`: the common component prefix found in one scan
+/// of the two strings (both are `/c1/c2/...` with single separators after the leading
+/// slashes, so a component boundary is a `/` or the end on both sides).
+///
+/// # Safety
+/// Attached thread.
+unsafe fn rel_units<A: Unit, P: Unit>(t: Ty, sa: &[A], pa: &[P]) -> O {
+    // `abspath(x).lstrip(sep)`
+    let a = &sa[sa.iter().position(|&c| c != A::SLASH).unwrap_or(sa.len())..];
+    let p = &pa[pa.iter().position(|&c| c != P::SLASH).unwrap_or(pa.len())..];
+    let (la, lp) = (a.len(), p.len());
+    let m = la.min(lp);
+    let i = a[..m].iter().zip(&p[..m]).position(|(&x, &y)| x.cp() != y.cp()).unwrap_or(m);
+    // (number of `..`, start index of the remaining path components in `p`)
+    let (ups, rest_at) = if la == 0 {
+        (0, 0)
+    } else if lp == 0 {
+        (ncomps(a), lp)
+    } else if i == la && i == lp {
+        (0, lp)
+    } else if i == la && p[i] == P::SLASH {
+        (0, i + 1)
+    } else if i == lp && a[i] == A::SLASH {
+        (ncomps(&a[i + 1..]), lp)
+    } else {
+        // the mismatch is inside a component: back up to the last boundary before it
+        match a[..i].iter().rposition(|&c| c == A::SLASH) {
+            Some(b) => (ncomps(&a[b + 1..]), b + 1),
+            None => (ncomps(a), 0),
+        }
+    };
+    // SAFETY: attached thread.
+    unsafe { rel_object(t, ups, &p[rest_at..]) }
+}
+
+/// The result object of `relpath` from `ups` parent steps and the remaining components
+/// `rest` (single `/` separators).
+///
+/// # Safety
+/// Attached thread.
+unsafe fn rel_object<P: Unit>(t: Ty, ups: usize, rest: &[P]) -> O {
     // SAFETY: attached thread; the object is filled completely before it is returned.
     unsafe {
-        let mut nrest = 0usize;
-        let mut len = if ups > 0 { 3 * ups - 1 } else { 0 };
-        let mut maxcp = 0x2eu32;
-        let mut first: &[B] = &[];
-        for c in rest.clone() {
-            if nrest == 0 {
-                first = c;
-            }
-            len += c.len() + usize::from(ups > 0 || nrest > 0);
-            if size_of::<B>() > 1 || t == Ty::Str {
-                maxcp = c.iter().fold(maxcp, |m, u| m.max(u.cp()));
-            }
-            nrest += 1;
-        }
         let k = if t == Ty::Str { 0 } else { 2 };
-        match (ups, nrest) {
-            (0, 0) => return ffi::Py_NewRef(REL_CONSTS[k].load(Relaxed) as O),
-            (1, 0) => return ffi::Py_NewRef(REL_CONSTS[k + 1].load(Relaxed) as O),
-            (0, 1) => {
-                return match t {
-                    Ty::Str => str_from_units(first),
-                    Ty::Bytes => ffi::PyBytes_FromStringAndSize(first.as_ptr().cast(), first.len() as ffi::Py_ssize_t),
-                };
+        if rest.is_empty() {
+            match ups {
+                0 => return ffi::Py_NewRef(REL_CONSTS[k].load(Relaxed) as O),
+                1 => return ffi::Py_NewRef(REL_CONSTS[k + 1].load(Relaxed) as O),
+                _ => {}
             }
-            _ => {}
+        } else if ups == 0 && !rest.contains(&P::SLASH) {
+            // `sep.join([comp])` returns the one component (a `split` substring)
+            return match t {
+                Ty::Str => str_from_units(rest),
+                // bytes are always one byte per unit
+                Ty::Bytes if size_of::<P>() == 1 => {
+                    ffi::PyBytes_FromStringAndSize(rest.as_ptr().cast(), rest.len() as ffi::Py_ssize_t)
+                }
+                Ty::Bytes => std::ptr::null_mut(),
+            };
         }
+        let prefix = if ups > 0 { 3 * ups - usize::from(rest.is_empty()) } else { 0 };
+        let len = prefix + rest.len();
         let (o, data, kind) = match t {
-            Ty::Str => new_str(len, maxcp.max(0x7f)),
+            Ty::Str => {
+                let maxcp = rest.iter().fold(0x7fu32, |m, u| m.max(u.cp()));
+                new_str(len, maxcp)
+            }
+            Ty::Bytes if size_of::<P>() != 1 => return std::ptr::null_mut(),
             Ty::Bytes => {
                 let o = ffi::PyBytes_FromStringAndSize(std::ptr::null(), len as ffi::Py_ssize_t);
                 let d: *mut std::ffi::c_void =
@@ -1008,13 +1057,13 @@ unsafe fn rel_object<'a, B: Wide>(t: Ty, ups: usize, rest: impl Iterator<Item = 
             rt::write_units(data, kind, at, b"..");
             at += 2;
         }
-        for (k, c) in rest.enumerate() {
-            if ups > 0 || k > 0 {
+        if !rest.is_empty() {
+            if ups > 0 {
                 rt::write_units(data, kind, at, b"/");
                 at += 1;
             }
-            rt::write_units(data, kind, at, c);
-            at += c.len();
+            rt::write_units(data, kind, at, rest);
+            at += rest.len();
         }
         debug_assert_eq!(at, len);
         o
