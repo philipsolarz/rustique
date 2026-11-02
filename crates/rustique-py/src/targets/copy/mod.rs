@@ -9,6 +9,7 @@ mod memo;
 mod reduce;
 mod rt;
 mod shallow;
+mod uuidk;
 
 use std::ffi::c_int;
 use std::sync::atomic::Ordering::Relaxed;

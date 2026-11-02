@@ -111,6 +111,16 @@ fn capture_zoneinfo(py: Python<'_>, e: &Env) {
         let immutable = ffi::PyType_GetFlags(ty) & ffi::Py_TPFLAGS_IMMUTABLETYPE != 0;
         let name_ok = std::ffi::CStr::from_ptr((*ty).tp_name).to_bytes() == b"zoneinfo.ZoneInfo";
         if immutable && name_ok && (*ty).tp_dictoffset == 0 {
+            // The C methods, as `tz.<name>` resolves them (method descriptors of the type).
+            for (i, name) in ["dst", "utcoffset", "tzname"].into_iter().enumerate() {
+                let Ok(m) = t.getattr(name) else { return };
+                if ffi::Py_TYPE(m.as_ptr()) != &raw mut ffi::PyMethodDescr_Type {
+                    return;
+                }
+                if ZI_METHODS[i].load(Ordering::Relaxed) == 0 {
+                    ZI_METHODS[i].store(m.into_ptr() as usize, Ordering::Relaxed);
+                }
+            }
             ZI_TYPE.store(t.into_ptr() as usize, Ordering::Relaxed);
         }
     }
@@ -149,12 +159,43 @@ fn revalidate(py: Python<'_>, e: &Env, g: u64) -> bool {
 // tzinfo
 // ---------------------------------------------------------------------------------------
 
+/// A short ASCII text in a fixed buffer (offsets, zone names): no heap traffic per call.
+#[derive(Clone, Copy)]
+pub(super) struct Txt {
+    b: [u8; 64],
+    n: u8,
+}
+
+impl Txt {
+    pub(super) const fn new() -> Self {
+        Txt { b: [0; 64], n: 0 }
+    }
+    /// Append `t`; `false` when it does not fit (the caller falls back).
+    #[inline(always)]
+    fn push(&mut self, t: &[u8]) -> bool {
+        let n = self.n as usize;
+        if n + t.len() > self.b.len() {
+            return false;
+        }
+        self.b[n..n + t.len()].copy_from_slice(t);
+        self.n = (n + t.len()) as u8;
+        true
+    }
+}
+
+impl std::ops::Deref for Txt {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.b[..self.n as usize]
+    }
+}
+
 /// Replacement texts, computed in `wrap_strftime`'s order. `None`: fall back (nothing
 /// observable happened: only pure C methods were called).
 struct Tz {
-    z: Vec<u8>,
-    colon_z: Vec<u8>,
-    name: Vec<u8>,
+    z: Txt,
+    colon_z: Txt,
+    name: Txt,
 }
 
 /// `(days, seconds, microseconds)` of a valid utcoffset/dst result, `None` = Python None;
@@ -177,25 +218,34 @@ unsafe fn offset_fields(o: O) -> Result<Option<(i32, i32, i32)>, ()> {
     }
 }
 
-fn offset_text(f: Option<(i32, i32, i32)>, sep: &[u8]) -> Vec<u8> {
-    let mut v = Vec::new();
+fn offset_text(f: Option<(i32, i32, i32)>, sep: &[u8]) -> Txt {
+    let mut v = Txt::new();
     if let Some((d, s, u)) = f {
-        strftime::utcoffset_text(d, s, u, sep, &mut v);
+        let mut b = [0u8; 32];
+        let n = strftime::utcoffset_into(d, s, u, sep, &mut b);
+        v.push(&b[..n]);
     }
     v
 }
 
-/// Call `tz.<name>(arg)` (a pure C method of an exact `ZoneInfo`).
-unsafe fn call_pure(tz: O, name: &std::ffi::CStr, arg: O) -> Option<O> {
-    // SAFETY: attached thread; live objects.
+/// `ZoneInfo.dst`, `.utcoffset`, `.tzname` (C method descriptors of the immutable C type
+/// captured with it: an exact instance has no `__dict__`, so `tz.<name>` is always these).
+static ZI_METHODS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
+const ZI_DST: usize = 0;
+const ZI_UTCOFFSET: usize = 1;
+const ZI_TZNAME: usize = 2;
+
+/// Call `tz.<method>(arg)` (a pure C method of an exact `ZoneInfo`) through its captured
+/// descriptor: no name lookup, no bound method.
+unsafe fn call_pure(tz: O, which: usize, arg: O) -> Option<O> {
+    // SAFETY: attached thread; live objects; the descriptor is kept alive by the capture.
     unsafe {
-        let n = ffi::PyUnicode_InternFromString(name.as_ptr());
-        if n.is_null() {
-            ffi::PyErr_Clear();
+        let d = ZI_METHODS[which].load(Ordering::Relaxed) as O;
+        if d.is_null() {
             return None;
         }
-        let r = ffi::PyObject_CallMethodOneArg(tz, n, arg);
-        ffi::Py_DECREF(n);
+        let a = [tz, arg];
+        let r = ffi::PyObject_Vectorcall(d, a.as_ptr(), 2, std::ptr::null_mut());
         if r.is_null() {
             ffi::PyErr_Clear();
             return None;
@@ -207,7 +257,7 @@ unsafe fn call_pure(tz: O, name: &std::ffi::CStr, arg: O) -> Option<O> {
 /// The replacements for `tzinfo` (`arg` is what CPython passes: the datetime, or None for
 /// `time` objects), or `None` to fall back.
 unsafe fn tz_texts(tzinfo: O, arg: O, needs: &Needs, is_datetime: bool) -> Option<Tz> {
-    let mut out = Tz { z: Vec::new(), colon_z: Vec::new(), name: Vec::new() };
+    let mut out = Tz { z: Txt::new(), colon_z: Txt::new(), name: Txt::new() };
     // SAFETY: attached thread; live objects; datetime C API filled.
     unsafe {
         if tzinfo == ffi::Py_None() {
@@ -225,16 +275,15 @@ unsafe fn tz_texts(tzinfo: O, arg: O, needs: &Needs, is_datetime: bool) -> Optio
                     b':' => out.colon_z = offset_text(f, b":"),
                     _ => {
                         if raw.name.is_null() {
-                            match f {
-                                Some((0, 0, 0)) | None => out.name = b"UTC".to_vec(),
-                                Some(_) => {
-                                    out.name = b"UTC".to_vec();
-                                    out.name.extend(offset_text(f, b":"));
-                                }
+                            out.name.push(b"UTC");
+                            if !matches!(f, Some((0, 0, 0)) | None) {
+                                out.name.push(&offset_text(f, b":"));
                             }
                         } else {
-                            out.name =
-                                ustr::ascii(raw.name).filter(|_| ffi::PyUnicode_CheckExact(raw.name) != 0)?.to_vec();
+                            let t = ustr::ascii(raw.name).filter(|_| ffi::PyUnicode_CheckExact(raw.name) != 0)?;
+                            if !out.name.push(t) {
+                                return None;
+                            }
                         }
                     }
                 }
@@ -243,7 +292,7 @@ unsafe fn tz_texts(tzinfo: O, arg: O, needs: &Needs, is_datetime: bool) -> Optio
         }
         if is_datetime && t != 0 && t == zoneinfo_type() {
             // timetuple(): dst(self) first (its value only feeds tm_isdst, unused here).
-            let dst = call_pure(tzinfo, c"dst", arg)?;
+            let dst = call_pure(tzinfo, ZI_DST, arg)?;
             let ok = offset_fields(dst).is_ok();
             ffi::Py_DECREF(dst);
             if !ok {
@@ -252,7 +301,7 @@ unsafe fn tz_texts(tzinfo: O, arg: O, needs: &Needs, is_datetime: bool) -> Optio
             for &c in needs.tz_order.iter().filter(|&&c| c != 0) {
                 match c {
                     b'z' | b':' => {
-                        let r = call_pure(tzinfo, c"utcoffset", arg)?;
+                        let r = call_pure(tzinfo, ZI_UTCOFFSET, arg)?;
                         let f = offset_fields(r);
                         ffi::Py_DECREF(r);
                         let f = f.ok()?;
@@ -263,16 +312,15 @@ unsafe fn tz_texts(tzinfo: O, arg: O, needs: &Needs, is_datetime: bool) -> Optio
                         }
                     }
                     _ => {
-                        let r = call_pure(tzinfo, c"tzname", arg)?;
-                        let name = if r == ffi::Py_None() {
-                            Some(Vec::new())
-                        } else if ffi::PyUnicode_CheckExact(r) != 0 {
-                            ustr::ascii(r).map(<[u8]>::to_vec)
-                        } else {
-                            None
-                        };
+                        let r = call_pure(tzinfo, ZI_TZNAME, arg)?;
+                        let mut name = Txt::new();
+                        let ok = r == ffi::Py_None()
+                            || ffi::PyUnicode_CheckExact(r) != 0 && ustr::ascii(r).is_some_and(|t| name.push(t));
                         ffi::Py_DECREF(r);
-                        out.name = name?;
+                        if !ok {
+                            return None;
+                        }
+                        out.name = name;
                     }
                 }
             }
@@ -288,7 +336,7 @@ unsafe fn tz_texts(tzinfo: O, arg: O, needs: &Needs, is_datetime: bool) -> Optio
 ///
 /// # Safety
 /// Attached thread; live objects.
-pub(super) unsafe fn utcoffset_colon(tzinfo: O, arg: O, is_datetime: bool) -> Option<Vec<u8>> {
+pub(super) unsafe fn utcoffset_colon(tzinfo: O, arg: O, is_datetime: bool) -> Option<Txt> {
     // SAFETY: per the caller.
     unsafe {
         let t = ffi::Py_TYPE(tzinfo) as usize;
@@ -297,7 +345,7 @@ pub(super) unsafe fn utcoffset_colon(tzinfo: O, arg: O, is_datetime: bool) -> Op
             return Some(offset_text(offset_fields(raw.offset).ok()?, b":"));
         }
         if is_datetime && t != 0 && t == zoneinfo_type() {
-            let r = call_pure(tzinfo, c"utcoffset", arg)?;
+            let r = call_pure(tzinfo, ZI_UTCOFFSET, arg)?;
             let f = offset_fields(r);
             ffi::Py_DECREF(r);
             return Some(offset_text(f.ok()?, b":"));
@@ -362,10 +410,45 @@ unsafe fn compiled(fmt: O, wrapped: bool) -> Option<fmtcache::Cached<Compiled>> 
     }
 }
 
+/// A `str` from ASCII bytes (the rendered formats are ASCII): one allocation, one copy;
+/// the singletons CPython returns for lengths 0 and 1.
 #[inline]
 unsafe fn result(buf: &[u8]) -> O {
-    // SAFETY: ASCII bytes.
-    unsafe { ffi::PyUnicode_FromStringAndSize(buf.as_ptr().cast(), buf.len() as ffi::Py_ssize_t) }
+    // SAFETY: attached thread; ASCII bytes (maxchar 127: a compact ASCII string whose data
+    // follows the header).
+    unsafe {
+        if buf.len() <= 1 {
+            // "" and one-character strings are CPython's cached singletons.
+            return ffi::PyUnicode_FromStringAndSize(buf.as_ptr().cast(), buf.len() as ffi::Py_ssize_t);
+        }
+        let r = ffi::PyUnicode_New(buf.len() as ffi::Py_ssize_t, 127);
+        if !r.is_null() {
+            std::ptr::copy_nonoverlapping(buf.as_ptr(), ffi::PyUnicode_DATA(r).cast::<u8>(), buf.len());
+        }
+        r
+    }
+}
+
+/// A fixed-width plan rendered straight into a new `str` of its length (`n` >= 2: the
+/// shorter results are CPython's singletons, built by [`result`]).
+#[inline]
+unsafe fn fixed_result(cf: &Compiled, tm: &Tm, micro: u32, n: usize) -> Option<O> {
+    // SAFETY: attached thread; ASCII output written into the new compact string's data.
+    unsafe {
+        if n <= 1 {
+            let mut b = [0u8; 1];
+            cf.render_fixed(tm, micro, &mut b[..n]);
+            return Some(result(&b[..n]));
+        }
+        let r = ffi::PyUnicode_New(n as ffi::Py_ssize_t, 127);
+        if r.is_null() {
+            ffi::PyErr_Clear();
+            return None;
+        }
+        let data = std::slice::from_raw_parts_mut(ffi::PyUnicode_DATA(r).cast::<u8>(), n);
+        cf.render_fixed(tm, micro, data);
+        Some(r)
+    }
 }
 
 fn names_ok(needs: &Needs) -> bool {
@@ -440,8 +523,8 @@ unsafe fn method(this: O, fmt: O, time_method: bool) -> Option<O> {
                     hour: hh,
                     minute: mm,
                     second: ss,
-                    wday: (cal::weekday(year, m, d) + 1) % 7,
-                    yday: cal::day_of_year(year, m, d),
+                    wday: if cf.uses_calendar() { (cal::weekday(year, m, d) + 1) % 7 } else { 0 },
+                    yday: if cf.uses_calendar() { cal::day_of_year(year, m, d) } else { 0 },
                 };
                 (tm, us, tz)
             }
@@ -468,6 +551,9 @@ unsafe fn method(this: O, fmt: O, time_method: bool) -> Option<O> {
             c.fallback(Reason::Args);
             return None;
         };
+        if let Some(n) = cf.fixed_len() {
+            return fixed_result(&cf, &tm, micro, n);
+        }
         let mut out = Out::new();
         strftime::render_compiled(
             &cf,
@@ -602,6 +688,9 @@ unsafe fn function(module: O, args: O) -> Option<O> {
             wday: ((wday + 1) % 7) as u32,
             yday: yday as u32,
         };
+        if let Some(n) = cf.fixed_len() {
+            return fixed_result(&cf, &tm, 0, n);
+        }
         let mut out = Out::new();
         strftime::render_compiled(&cf, &tm, 0, &TzText::default(), &mut out);
         Some(result(out.bytes()?))

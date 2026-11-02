@@ -1,0 +1,9 @@
+{
+  "_doc": "Minimum targets installed per platform family and build, checked by .github/scripts/platform_report.py after the platform job (wheels.yml). Families: linux-glibc, linux-musl, macos, windows. Values = what wheels.yml run 41362578712 measured (wave 1 code; docs/atlas/w2-dx.md §6). Raise them when a release widens platform coverage; wave 2 target T10 (IMPACT_ATLAS §14.4): windows >= 48, macos and linux-musl >= 77 once the accel (Windows symbol lookup, platform allowlist) and text (datetime gating) changes are merged.",
+  "floors": {
+    "linux-glibc": {"3.15": 84, "3.15t": 84, "3.14": 79, "3.14t": 79},
+    "linux-musl": {"3.15": 74, "3.15t": 74, "3.14": 69, "3.14t": 69},
+    "macos": {"3.15": 74, "3.15t": 74, "3.14": 69, "3.14t": 69},
+    "windows": {"3.15": 30, "3.15t": 28, "3.14": 30, "3.14t": 28}
+  }
+}

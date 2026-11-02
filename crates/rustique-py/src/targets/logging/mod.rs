@@ -16,6 +16,7 @@
 pub mod caller;
 pub mod common;
 pub mod format;
+pub mod handler;
 pub mod level;
 pub mod record;
 
@@ -66,6 +67,11 @@ mod fp {
     pub const TIME_NS: F = &[(3, 14, "cfd8cf62a2e81346"), (3, 15, "cfd8cf62a2e81346")];
     pub const GET_IDENT: F = &[(3, 14, "aefc494fea7ff696"), (3, 15, "aefc494fea7ff696")];
     pub const GETPID: F = &[(3, 14, "e7b51de1800a9fd6"), (3, 15, "e7b51de1800a9fd6")];
+    pub const HANDLER_HANDLE: F = &[(3, 14, "4186d3bbc3ed8723"), (3, 15, "8a2be889b658734c")];
+    pub const FILTERER_FILTER: F = &[(3, 14, "9dfd454a50d5e6be"), (3, 15, "9748f1f503bfc514")];
+    pub const STREAM_EMIT: F = &[(3, 14, "46844155d1cbee1a"), (3, 15, "8802b936e128b59a")];
+    pub const HANDLER_FORMAT: F = &[(3, 14, "7d44464efcc2edb6"), (3, 15, "8c301ae3869abfe7")];
+    pub const STREAM_FLUSH: F = &[(3, 14, "2329c1ae2c2bd5f8"), (3, 15, "3e140a746b37b95c")];
 }
 
 /// `Thread.name`'s getter compiled with `-O` (no `assert`), per minor version.
@@ -150,6 +156,16 @@ fn same<'py>(
 // ---------------------------------------------------------------------------------------
 
 fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    if !cfg!(unix) {
+        // The kernels reproduce `os.path` as `posixpath` (findCaller's `normcase`, the
+        // record's `basename`/`splitext`) and convert times with `localtime_r`; on Windows
+        // `os.path` is `ntpath` (normcase via `_winapi.LCMapStringEx`, drive-aware
+        // basename). An expected refusal there (`platform`), not a dependency surprise.
+        return Err(Refusal::with(
+            crate::accel::spec::Category::Platform,
+            "os.path is ntpath: logging kernels validated with posixpath only",
+        ));
+    }
     init_names();
     cx.symbol(c"_PyObject_GetMethod", &common::GET_METHOD)?;
     calibrate(cx)?;
@@ -193,15 +209,44 @@ fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         record::MP_PROCS.set_names([n.t_name]);
         level::LOGGERS.set_names([n.disabled, n.cache]);
         format::TIME_FORMATTERS.set_names([n.converter, n.default_time_format, n.default_msec_format]);
-        format::FORMATTERS.set_names([n.converter, n.default_time_format, n.default_msec_format, n.style, n.datefmt]);
-        format::STYLES.set_names([n.fmt, n.asctime_search, n.defaults]);
-        format::FMT_RECORDS.set_names([n.msg, n.args]);
+        format::FORMATTERS.set_names([
+            n.converter,
+            n.default_time_format,
+            n.default_msec_format,
+            n.style,
+            n.datefmt,
+            n.uses_time,
+            n.format_time,
+            n.format_message,
+        ]);
+        format::STYLES.set_names([n.fmt, n.asctime_search, n.defaults, n.uses_time, n.format, n.format_]);
+        handler::HANDLERS.set_names([
+            n.filters,
+            n.lock,
+            n.formatter,
+            n.stream,
+            n.terminator,
+            n.filter,
+            n.emit,
+            n.format,
+            n.flush,
+        ]);
+        handler::HFORMATTERS.set_names([n.format]);
+        format::FMT_RECORDS.set_names([
+            n.msg,
+            n.args,
+            n.get_message,
+            n.exc_info,
+            n.exc_text,
+            n.stack_info,
+            n.created,
+            n.msecs,
+        ]);
     }
     let lr = ty(cx.module_attr("LogRecord")?)?;
     format::R_GET_MESSAGE.set_obj(&cx.type_attr(&lr, "getMessage")?);
     format::R_DICT.set_obj(&cx.type_attr(&lr, "__dict__")?);
     format::clear_type_caches();
-    format::clear_fmt_cache();
     Ok(())
 }
 
@@ -458,9 +503,22 @@ fn prepare_format_time(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refu
     cx.vectorcall(&ft, format::vc_format_time, &accel::FUNCTION_VECTORCALL)
 }
 
-fn prepare_format(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+fn prepare_format(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let py = cx.py();
+    let f = format_statics(py, cx, &format::FORMAT_DEPS)?;
+    cx.vectorcall(&f, format::vc_format, &accel::FUNCTION_VECTORCALL)
+}
+
+/// What the `Formatter.format` kernel needs (also run by `Handler.handle`, which formats
+/// natively): pins on `deps`, fingerprinted functions, captured objects. Returns
+/// `Formatter.format`.
+fn format_statics<'py>(
+    py: Python<'py>,
+    cx: &mut Prepare<'py>,
+    deps: &'static accel::DepFlag,
+) -> Result<Bound<'py, PyAny>, Refusal> {
     let g = cx.module()?.dict();
-    cx.pin_global_s(&g, intern!(py, "str"), &format::FORMAT_DEPS)?;
+    cx.pin_global_s(&g, intern!(py, "str"), deps)?;
     let fmt = ty(cx.module_attr("Formatter")?)?;
     let style = ty(cx.module_attr("PercentStyle")?)?;
     let lr = ty(cx.module_attr("LogRecord")?)?;
@@ -487,7 +545,81 @@ fn prepare_format(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     format::S_USES_TIME.set_obj(&sut);
     format::S_FORMAT.set_obj(&sf);
     format::S_FORMAT_.set_obj(&sf_);
-    cx.vectorcall(&f, format::vc_format, &accel::FUNCTION_VECTORCALL)
+    let search = cx.type_attr(&style, "asctime_search")?;
+    if search.is_exact_instance_of::<PyString>() {
+        format::ASCTIME_SEARCH.set_obj(&search);
+    }
+    Ok(f)
+}
+
+// ---------------------------------------------------------------------------------------
+// logging.Handler.handle (StreamHandler to io.StringIO)
+// ---------------------------------------------------------------------------------------
+
+fn prepare_handle(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let py = cx.py();
+    let deps = &handler::DEPS;
+    let fmt_format = format_statics(py, cx, deps)?;
+    handler::FMT_FORMAT.set_obj(&fmt_format);
+    let g = cx.module()?.dict();
+    let h = ty(cx.module_attr("Handler")?)?;
+    let flt = ty(cx.module_attr("Filterer")?)?;
+    let sh = ty(cx.module_attr("StreamHandler")?)?;
+    let handle = cx.type_attr(&h, "handle")?;
+    function(cx, &handle, fp::HANDLER_HANDLE, &handler::CODES[0])?;
+    let filter = cx.type_attr(&flt, "filter")?;
+    function(cx, &filter, fp::FILTERER_FILTER, &handler::CODES[1])?;
+    let emit = cx.type_attr(&sh, "emit")?;
+    function(cx, &emit, fp::STREAM_EMIT, &handler::CODES[2])?;
+    let format = cx.type_attr(&h, "format")?;
+    function(cx, &format, fp::HANDLER_FORMAT, &handler::CODES[3])?;
+    let flush = cx.type_attr(&sh, "flush")?;
+    function(cx, &flush, fp::STREAM_FLUSH, &handler::CODES[4])?;
+    handler::F_FILTER.set_obj(&filter);
+    handler::F_EMIT.set_obj(&emit);
+    handler::F_FORMAT.set_obj(&format);
+    handler::F_FLUSH.set_obj(&flush);
+    // module globals the path reads: LogRecord (isinstance), _defaultFormatter
+    for k in [intern!(py, "LogRecord"), intern!(py, "_defaultFormatter")] {
+        cx.pin_s(&g, k, deps)?;
+    }
+    cx.pin_global_s(&g, intern!(py, "hasattr"), deps)?;
+    let lr = get_s(cx, &g, intern!(py, "LogRecord"))?;
+    if !lr.get_type().is(py.get_type::<pyo3::types::PyType>()) {
+        return Err(Refusal::new("LogRecord has a metaclass"));
+    }
+    handler::LOG_RECORD.set_obj(&lr);
+    handler::DEFAULT_FORMATTER.set_obj(&get_s(cx, &g, intern!(py, "_defaultFormatter"))?);
+    // _thread.RLock, _io.StringIO and their C methods
+    let rlock = ty(get_s(cx, &module_dict(cx, "_thread")?, intern!(py, "RLock"))?)?;
+    let sio = ty(get_s(cx, &module_dict(cx, "_io")?, intern!(py, "StringIO"))?)?;
+    let methods = [
+        (&rlock, "acquire", &handler::RLOCK_ACQUIRE),
+        (&rlock, "release", &handler::RLOCK_RELEASE),
+        (&sio, "write", &handler::SIO_WRITE),
+        (&sio, "flush", &handler::SIO_FLUSH),
+    ];
+    for (t, name, cell) in methods {
+        // Through the MRO (StringIO inherits `flush` from `_io._IOBase`): type attribute
+        // lookup on a C type runs no Python code.
+        let m = t.getattr(name).map_err(|_| refuse!("missing {name}"))?;
+        // SAFETY: type check of a live object.
+        if unsafe { pyo3::ffi::Py_TYPE(m.as_ptr()) } != &raw mut pyo3::ffi::PyMethodDescr_Type {
+            return Err(refuse!("{name}: not a C method"));
+        }
+        cell.set_obj(&m);
+    }
+    // SAFETY: a live type object.
+    let sio_t = sio.as_ptr().cast::<pyo3::ffi::PyTypeObject>();
+    // SAFETY: field reads of a live type.
+    if unsafe { (*sio_t).tp_dictoffset <= 0 || !handler::stringio_always_true(sio_t) } {
+        return Err(Refusal::new("_io.StringIO layout"));
+    }
+    handler::RLOCK.set_obj(rlock.as_any());
+    handler::STRINGIO.set_obj(sio.as_any());
+    handler::HANDLERS.clear();
+    handler::HFORMATTERS.clear();
+    cx.vectorcall(&handle, handler::vc_handle, &accel::FUNCTION_VECTORCALL)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -514,13 +646,36 @@ macro_rules! target {
 // Checkable: the kernel's exact subset has no side effects (a disabled level call, the
 // frame walk, formatTime). `format` and `__init__` store
 // into the record.
-target!(LEVEL, "logging.Logger.level", &level::STATS, prepare_level, true);
+/// Net benefit (ACCELERATION §5.6, measured on `L.info("x %s", 5)` / `L.debug(...)`,
+/// 3.15.1): a disabled call saves ~500 Ir, an enabled one costs ~+800 Ir (kernel checks +
+/// vectorcall fallback): credit 5 / debit 7 keeps the target while ≥ ~58% of the calls
+/// are disabled ones. Not on free-threaded builds (wave 2, DECISIONS §10.9): there the
+/// shadowing check of `isEnabledFor` (`_PyObject_GetMethod`) takes a reference to the
+/// shared function object on every call — CPython's specialized call does not — and at 8
+/// threads that cost 2–3× CPython's CPU per disabled call (`text_scaling.py`), for a gain of
+/// ~200 Ir at one thread.
+pub static LEVEL: TargetSpec = TargetSpec {
+    name: "logging.Logger.level",
+    group: "logging",
+    module: Some("logging"),
+    versions: VERSIONS,
+    free_threaded: false,
+    counters: &level::STATS,
+    prepare: prepare_level,
+    checkable: true,
+    shared: Some(&SHARED),
+    hit_credit: 5,
+    fallback_debit: 7,
+    ..TargetSpec::DEFAULT
+};
 target!(FIND_CALLER, "logging.Logger.findCaller", &caller::STATS, prepare_caller, true);
 target!(RECORD_INIT, "logging.LogRecord.__init__", &record::STATS, prepare_record, false);
 target!(FORMAT_TIME, "logging.Formatter.formatTime", &format::TIME_STATS, prepare_format_time, true);
 target!(FORMAT, "logging.Formatter.format", &format::FORMAT_STATS, prepare_format, false);
 
-pub static TARGETS: &[&TargetSpec] = &[&LEVEL, &FIND_CALLER, &RECORD_INIT, &FORMAT_TIME, &FORMAT];
+target!(HANDLE, "logging.Handler.handle", &handler::STATS, prepare_handle, false);
+
+pub static TARGETS: &[&TargetSpec] = &[&LEVEL, &FIND_CALLER, &RECORD_INIT, &FORMAT_TIME, &FORMAT, &HANDLE];
 
 /// Test helpers on `rustique._rustique._accel`: forget the logging kernels' learned state
 /// (validated types, ABC answers).
@@ -532,6 +687,8 @@ fn _logging_reset_caches() {
     record::MP_PROCS.clear();
     record::reset_mapping_cache();
     format::clear_type_caches();
+    handler::HANDLERS.clear();
+    handler::HFORMATTERS.clear();
 }
 
 /// Test helper: the kernel's `(created, msecs, relativeCreated)` for `ct` nanoseconds.

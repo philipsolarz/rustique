@@ -4,7 +4,9 @@
 //! keyword arguments among `skipkeys`, `ensure_ascii`, `check_circular`, `allow_nan`,
 //! `sort_keys` (exact `bool`/`int`/`None`: their truthiness runs no code), `indent` (`None`,
 //! an exact `int` in `-4096..=4096` or an exact `str`), `separators` (`None` or an exact
-//! 2-tuple of exact `str`), `cls=None`, `default=None`; under `ensure_ascii` the
+//! 2-tuple of exact `str`), `cls=None` or `cls=JSONEncoder`, and any `default` (lazy: the
+//! hook is needed only for an object outside the subset, where the kernel restarts in the
+//! original before calling anything); under `ensure_ascii` the
 //! separators and indent must be ASCII. Then the object tree must be in the encoder's
 //! subset ([`super::encode`]); otherwise the original runs from the start (nothing
 //! observable happened: no Python code ran, no object was mutated).
@@ -110,8 +112,15 @@ unsafe fn parse_opts(args: *const *mut ffi::PyObject, nargs: usize, kwnames: *mu
                 KW_CHECK_CIRCULAR => o.check_circular = flag(v)?,
                 KW_ALLOW_NAN => o.allow_nan = flag(v)?,
                 KW_SORT_KEYS => o.sort_keys = flag(v)?,
-                KW_CLS | KW_DEFAULT => {
-                    if v != ffi::Py_None() {
+                // Lazy `default=`: the hook is called only for an object outside the
+                // encoder's subset, and there the kernel restarts in the original before
+                // anything observable happened (ruling 15: the original is Python), so any
+                // `default` gives the result of `default=None` whenever the kernel completes.
+                KW_DEFAULT => {}
+                // `cls=JSONEncoder` itself (pinned, its `__dict__` snapshot-pinned) builds the
+                // encoder `cls=None` builds; subclasses fall back.
+                KW_CLS => {
+                    if v != ffi::Py_None() && v != ENCODER_TYPE.load(Relaxed) {
                         return None;
                     }
                 }

@@ -1,0 +1,22 @@
+[package]
+name = "rustique-interp"
+description = "Rustique's interp tier: opcode handlers generated from CPython's bytecodes.c, verified and swapped into the core's dispatch table"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+# Generated C sources and vendored CPython headers (gen/) are under the PSF licence (gen/LICENSE).
+
+[lib]
+name = "rustique_interp"
+
+[dependencies]
+pyo3.workspace = true
+
+[build-dependencies]
+cc = "1.4.6"
+pyo3-build-config = "0.30.1"
+
+[lints]
+workspace = true

@@ -25,6 +25,9 @@ from hypothesis import strategies as st
 from rustique import _takeover as rt
 
 NAMES = ["random.randint", "random.randrange", "random.choice", "random.shuffle", "random.sample", "random.choices"]
+# The continuous distributions (wave 2) are tested in test_random_variates.py.
+VARIATES = ["random.normalvariate", "random.lognormvariate", "random.expovariate", "random.paretovariate",
+            "random.gauss"]
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +39,7 @@ def _restore():
 def enable():
     rt.enable(only=["random"])
     states = {t["name"]: t for t in rt.status()["targets"] if t["group"] == "random"}
-    assert sorted(states) == sorted(NAMES)
+    assert sorted(states) == sorted(NAMES + VARIATES)
     for name in NAMES:
         assert states[name]["state"] == "installed", states[name]
 
@@ -535,7 +538,7 @@ def test_group_declarations_and_lazy_self_test():
     random.Random(4).randint(1, 6)  # first native use (if not already run in this process)
     random.Random(4).choices("ab", k=2)
     for t in rt.status()["targets"]:
-        if t["group"] == "random":
+        if t["name"] in NAMES:
             assert t["state"] == "installed", t
             assert t.get("shared") == "random", t
             assert "degraded" not in t, t

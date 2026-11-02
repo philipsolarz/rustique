@@ -35,6 +35,10 @@
 //! - **Builtin `set`/`frozenset`/`dict`** (keys): the same scan over the hash table (under
 //!   the critical section); if an item needs Python code, the original builtin is called
 //!   from scratch (the scan had no side effects).
+//! - **`sorted(list | tuple)`** of exact `int`/`float` (or, from `STR_NATIVE_MIN` items on,
+//!   `str`) items: the copy CPython makes (`PySequence_List`), sorted by the `list.sort`
+//!   kernel's algorithm without the bound-method round trip; any other item mix goes to
+//!   `list.sort` on that same copy, as in CPython.
 //!
 //! `sum` follows `builtin_sum_impl` state by state (exact `int` accumulation in a C long,
 //! then compensated float summation, then complex, then generic `+`), so float results are
@@ -1690,16 +1694,80 @@ unsafe fn minmax_entry(
 // sorted
 // =======================================================================================
 
-/// `sorted`: builtin inputs go to the original, which copies and calls `list.sort` (itself
-/// accelerated by the `containers` group when enabled).
+/// `list.sort`'s `PyMethodDef` (its `ml_meth` read at call time), captured at prepare.
+static LIST_SORT_DEF: AtomicPtr<ffi::PyMethodDef> = AtomicPtr::new(ptr::null_mut());
+
+/// `sorted(iterable, /, *, key=None, reverse=False)`.
+///
+/// CPython copies the iterable (`PySequence_List`) and calls `newlist.sort(**kwargs)`
+/// through an attribute lookup and a bound method. For an exact `list`/`tuple` whose first
+/// item is an exact `int`/`bool`/`float` (or `str`, in sequences of at least
+/// `STR_NATIVE_MIN` items), with `key=None` and an exact `bool`/`int` `reverse`, the kernel
+/// makes the same copy and sorts it with the `list.sort` kernel's algorithm. The copy is
+/// private to the call (no critical section needed). When the native sort declines (mixed
+/// types, big ints, NaN, structured `str` input), `list.sort` runs on that same copy with
+/// the same keyword arguments, as in CPython. Anything else: the original `sorted`.
 unsafe extern "C" fn rq_sorted(
     _slf: *mut ffi::PyObject,
     args: *const *mut ffi::PyObject,
     nargs: ffi::Py_ssize_t,
     kwnames: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
-    // SAFETY: vectorcall arguments from CPython.
-    unsafe { fallback_fastkw(Which::Sorted, args, nargs, kwnames) }
+    // SAFETY: vectorcall arguments from CPython: `args[1..]` hold the keyword values.
+    unsafe {
+        if nargs == 1 {
+            let seq = *args;
+            let t = type_of(seq);
+            if (t == list_type() || t == tuple_type())
+                && let Some(reverse) = crate::takeover::sort_args(args.add(1), 0, kwnames)
+                && crate::takeover::sorted_candidate(seq, t == list_type())
+            {
+                C_SORTED.hit();
+                return sorted_copy(seq, args, kwnames, reverse);
+            }
+        }
+        fallback_fastkw(Which::Sorted, args, nargs, kwnames)
+    }
+}
+
+/// The copy-and-sort of [`rq_sorted`].
+///
+/// # Safety
+/// As [`rq_sorted`]; `seq` is an exact list or tuple.
+#[inline(never)]
+unsafe fn sorted_copy(
+    seq: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    kwnames: *mut ffi::PyObject,
+    reverse: bool,
+) -> *mut ffi::PyObject {
+    // SAFETY: attached thread; `newlist` is owned here and reachable by nobody else.
+    unsafe {
+        let newlist = ffi::PySequence_List(seq);
+        if newlist.is_null() {
+            return ptr::null_mut();
+        }
+        match crate::takeover::sort_fresh_list(newlist, reverse) {
+            Some(true) => newlist,
+            Some(false) => {
+                // CPython's next step on the same copy: `list.sort` with the keywords.
+                C_SORTED.fallback(Reason::Deopt);
+                let def = LIST_SORT_DEF.load(Atomic::Relaxed);
+                let meth = std::ptr::read_volatile((&raw const (*def).ml_meth).cast::<usize>());
+                let r = crate::takeover::list_sort_after_decline(meth)(newlist, args.add(1), 0, kwnames);
+                if r.is_null() {
+                    ffi::Py_DECREF(newlist);
+                    return ptr::null_mut();
+                }
+                ffi::Py_DECREF(r);
+                newlist
+            }
+            None => {
+                ffi::Py_DECREF(newlist);
+                ptr::null_mut()
+            }
+        }
+    }
 }
 
 // =======================================================================================
@@ -1898,12 +1966,6 @@ fn init_statics(py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 
-/// Kept for `lib.rs` until the native tier's call to it is removed (the Rustique
-/// container types it used to register are retired): nothing to do.
-pub fn core_types_ready(_py: Python<'_>) -> PyResult<()> {
-    Ok(())
-}
-
 fn lock_state() -> PyResult<std::sync::MutexGuard<'static, Option<Captured>>> {
     STATE.lock().map_err(|_| PyRuntimeError::new_err("rustique builtins: state poisoned"))
 }
@@ -1960,6 +2022,8 @@ fn prepare_max(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     prepare(py, cx, Which::Max)
 }
 fn prepare_sorted(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    crate::takeover::prepare_sort_support(py)?;
+    LIST_SORT_DEF.store(crate::takeover::list_sort_def(py)?, Atomic::Relaxed);
     prepare(py, cx, Which::Sorted)
 }
 fn prepare_any(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {

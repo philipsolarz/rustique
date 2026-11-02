@@ -79,6 +79,8 @@ struct Recon {
     i: ffi::Py_ssize_t,
     acopy: O, // strong: the list of argument copies
     y: O,     // strong
+    /// `uuid.UUID`: its `__setstate__` (emulated) applies the state.
+    uuid: Option<&'static super::uuidk::Uuid>,
 }
 
 impl Drop for Recon {
@@ -354,6 +356,18 @@ impl Engine {
                 self.block_root |= root;
                 return Err(());
             }
+            // `uuid.UUID`: `object.__reduce_ex__(4)` -> `UUID.__getstate__` (a Python frame),
+            // `(copyreg.__newobj__, (UUID,), {'int': x.int})`; `_reconstruct` then calls
+            // `UUID.__setstate__` (emulated in `recon`).
+            if let Some(u) = super::uuidk::uuid_class(cls)
+                && let Some(int) = u.fields(x)
+            {
+                self.touch()?;
+                let state = Own::new(super::uuidk::getstate(u, int)?)?;
+                let args = Own::new(ffi::PyTuple_Pack(1, cls.cast::<ffi::PyObject>()))?;
+                let rv = Own::new(ffi::PyTuple_Pack(3, st.newobj, args.get(), state.get()))?;
+                return self.reconstruct_as(x, rv.into_raw(), Some(u));
+            }
             if (cls == &raw mut ffi::PySet_Type || cls == &raw mut ffi::PyFrozenSet_Type) && self.helper(H_SLOTNAMES) {
                 // `object.__reduce_ex__` -> `set.__reduce__`: `(type(x), (list(x),), None)`
                 // once `_PyType_GetSlotNames` called `copyreg._slotnames(cls)` (which returns
@@ -420,6 +434,12 @@ impl Engine {
 
     /// `y = _reconstruct(x, memo, *rv)` for a native reduce value (owned).
     unsafe fn reconstruct(&mut self, x: O, rv: O) -> R<Began> {
+        // SAFETY: forwarded.
+        unsafe { self.reconstruct_as(x, rv, None) }
+    }
+
+    /// [`Self::reconstruct`]; `uuid`: the state goes to `UUID.__setstate__` (emulated).
+    unsafe fn reconstruct_as(&mut self, x: O, rv: O, uuid: Option<&'static super::uuidk::Uuid>) -> R<Began> {
         let rv = Own(rv);
         if !self.helper(H_RECONSTRUCT) {
             return Err(());
@@ -435,6 +455,7 @@ impl Engine {
                 i: 0,
                 acopy: null_mut(),
                 y: null_mut(),
+                uuid,
             });
             self.push()?; // `_reconstruct`'s frame
             self.stack.push(Frame { x: incref(x), hold: rv.into_raw(), helper: true, k: K::Recon(Some(rec)) });
@@ -657,7 +678,13 @@ impl Engine {
                     self.recon_next(rc, x)
                 }
                 P_STATE => {
-                    apply_state(st, rc.y, input.get())?;
+                    if let Some(u) = rc.uuid {
+                        // `y.__setstate__(state)`: its frame, then the two slot stores.
+                        self.touch()?;
+                        super::uuidk::setstate(u, rc.y, input.get())?;
+                    } else {
+                        apply_state(st, rc.y, input.get())?;
+                    }
                     Ok(Step::Done(std::mem::replace(&mut rc.y, null_mut())))
                 }
                 _ => unreachable!(),

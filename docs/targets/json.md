@@ -1,4 +1,5 @@
-STATUS: wave 1, workstream `json`. 2026-11-01.
+STATUS: wave 1, workstream `json` (2026-11-01); wave 2, workstream `core`: lazy `default=`
+and `cls=JSONEncoder` in `json.dumps` (§ "Wave 2").
 
 # Target group `json`
 
@@ -19,7 +20,7 @@ small `dumps` (the C part alone is 0.70 of the call, headroom-text §3.2), so it
 beat ~0.70; the vectorcall on `json.dumps` reaches 0.06–0.29 on small documents, and its
 steady-state fallback cells stay ≤ 1.05 (below; the first 64 calls of an all-invalid
 `loads` stream are 1.092 until the target suspends, an accepted cell). `JSONEncoder.encode` called directly, `json.dump`
-(chunks to `fp.write` are observable) and calls with `default=`/`cls=` stay on CPython.
+(chunks to `fp.write` are observable) and `cls=` subclasses stay on CPython.
 
 ## Exact subset
 
@@ -30,9 +31,16 @@ steady-state fallback cells stay ≤ 1.05 (below; the first 64 calls of an all-i
   truthiness runs no code), `indent` (`None`, an exact `int` in −4096..4096 — `' ' * n`,
   so ≤ 0 is an empty indent with newlines — or an exact `str`), `separators` (`None`, or
   an exact 2-tuple of exact `str`; a list falls back: on free-threaded builds another thread
-  could drop its items mid-call), `cls=None`, `default=None`. Under
+  could drop its items mid-call), `cls=None` or `cls=json.JSONEncoder` itself, and any
+  `default` (lazy, wave 2: see below). Under
   `ensure_ascii`, separators and indent must be ASCII. Anything else (`default=`, `cls=`,
   unknown keywords, other types) → the original (`fallback.args`).
+- `default=` is never called on the kernel's path: the hook is needed only for an object
+  outside the encoder's subset, and there the kernel already restarts in the original
+  before anything observable happened (ruling 15: the original is Python). So a call whose
+  tree is in the subset gives the `default=None` result, which is CPython's (CPython builds
+  a `JSONEncoder(default=f, ...)` whose C encoder never calls `f` either). `cls=JSONEncoder`
+  builds the encoder `cls=None` builds (its class dict is snapshot-pinned).
 - Objects: `None`/`True`/`False`; `str` and its subclasses (the C encoder reads their
   buffer, never `__str__`); `int` and subclasses (`PyLong_Type.tp_repr`: an `IntEnum`
   encodes its value; ≤ 64 bits formatted in Rust, larger by CPython's own conversion so
@@ -292,6 +300,33 @@ in `test_selftest_texts`). `json` stays 1.5 points above its budget (max(5%, 0.1
 219k Ir; +283k, 64k over): accepted by the lead as a documented wave-1 overage. The
 remaining lever is framework-side (deferred first-call fingerprint verification, cheaper
 key interning) and goes to wave 2; pins and fingerprints are not dropped.
+
+## Wave 2 (workstream `core`): lazy `default=`, `cls=JSONEncoder`
+
+callgrind, Ir per call, 3.15.1, plain → `enable(only=["float", "json", "datetime"])`
+(`benches/targets/core_cells.py json`, w2-floors' prototype setups), **measured**:
+
+| cell | plain | enabled | ratio | wave 1 |
+|---|---:|---:|---:|---:|
+| `dumps(rec)` | 31,115 | 6,577 | 0.211 | 0.211 |
+| `dumps(rec, default=encode)` (hook not needed) | 36,763 | 6,727 | **0.183** | 0.849 |
+| `dumps(payload, default=str)` (logging_service's formatter) | 27,821 | 5,430 | **0.195** | ~0.85 |
+| `dumps(rec, cls=json.JSONEncoder)` | 36,671 | 6,775 | **0.185** | 0.849 |
+| `dumps(rec, default=encode, indent=2, sort_keys=True)` | 49,444 | 13,477 | 0.273 | 0.85 |
+| `dumps(rec_dt, default=encode)` (hook needed: restart) | 48,364 | 37,942 | 0.785 | 0.784 |
+| `dumps(rec_dt, cls=Enc)` (subclass: fallback) | 48,408 | 37,993 | 0.785 | 0.785 |
+| `dumps(rec_dt, default=encode, ensure_ascii=False, separators)` (json_api) | 49,309 | 38,842 | 0.788 | 0.788 |
+
+Tests: `tests/targets/test_json_dumps.py::test_lazy_default_and_cls_jsonencoder_hit` (the
+hook is never called on hits; a needed hook runs with CPython's calls and arguments; a
+non-callable `default` raises CPython's `TypeError`), and `default=` now counts as `deopt`
+where the hook is needed (`test_fallbacks_are_counted`).
+
+Not done (open, ranked for the next round): the `_json.make_encoder` `tp_call` kernel that
+would call `default` where `_json` calls it (ruling 15 permits it) for json_api's needed
+hooks (estimated ~4% of json_api, `w2-floors.md` §2.2(d)). It needs the C encoder's private
+fields (`markers`, `defaultfn`, separators, flags); the `PyMemberDef`s give the offsets of
+all but `allow_nan`, which would need a calibrated probe.
 
 ## Open issues
 

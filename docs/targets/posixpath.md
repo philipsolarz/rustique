@@ -1,4 +1,5 @@
-STATUS: wave 1, workstream `paths` (2026-11-01). Contract: docs/ACCELERATION.md.
+STATUS: wave 1, workstream `paths` (2026-11-01); wave 2, workstream `text` (2026-11-02: §Wave 2).
+Contract: docs/ACCELERATION.md.
 
 # Group `posixpath`
 
@@ -95,7 +96,139 @@ accelerated as a whole), `commonpath`, `commonprefix` (3.15: emits a Deprecation
 `normpath` (already C), `expanduser`/`expandvars` (environment, `pwd`) are not targets;
 the table lists `normcase` and `commonpath` to show they are untouched.
 
-## Measurements
+## Wave 2 (workstream `text`, 2026-11-02)
+
+What changed (same exact subset, same identity rules, same fallbacks):
+
+- **`abspath`/`relpath` without per-call heap.** Wave 1 copied every argument and the
+  current directory into `Vec<u32>`s, normalized into a fresh `Vec`, split components into
+  two `Vec<&[u32]>`s and built the result in another `Vec` (~40% of the call in
+  `malloc`/`free`/`realloc`, w2-floors §1). Now:
+  - an argument that is already an absolute normalized path (one leading `/`, no empty,
+    `.` or `..` component, no trailing `/`: `posix::is_normal_abs`, one pass) is read in
+    place: `_Py_normpath_and_size` would copy it character by character to the same
+    positions (exhaustively checked against the port on every string of ≤ 7 characters
+    over `/`, `.`, `a`, plus the Hypothesis differential tests);
+  - anything else (relative paths joined to `os.getcwd()`, `.`/`..`/`//`) is normalized in
+    a stack scratch buffer (`u8` when every source is one byte per unit, else `u32`; one
+    heap buffer only beyond 512 units) by the same port, now in place
+    (`posix::normpath_in_place`, as the C function works);
+  - `relpath` finds the common component prefix in **one scan** of the two normalized
+    strings (code points compared across widths; a component boundary is a `/` or the end
+    on both sides), then writes `'../' * ups + rest` straight into the result object.
+    The result objects are what CPython builds (`'.'`/`'..'` code constants by identity,
+    a single component as a `split` substring would be: narrowest kind, latin-1
+    singletons; `PyUnicode_Join`'s kind otherwise).
+- **`join(a, b)` of two exact `str`**: the plan arrays of the general path (8 views, 8
+  join args, 8 pieces, initialised per call) are skipped; CPython's loop for one step
+  (`b` absolute or `a` empty → `b` itself; `a` ends with `/` and `b` empty → `a` itself;
+  else one allocation). `new_str` takes the data pointer from the calibrated layout.
+- **Platforms.** The six string-only functions (`join split splitext basename dirname
+  isabs`) are platform-independent code (`posixpath` is importable on Windows and used
+  explicitly by `zipfile._path`, `mimetypes`, `http.server`); the group's shared prepare
+  now declares only what they read (`os.fspath`, `_get_sep`, `genericpath._splitext`,
+  builtins) and installs on every OS. `abspath`/`relpath` add their own declarations
+  (`os.getcwd(b)`, the C `posix._path_normpath`, `join`, `abspath`, `(_)commonprefix`,
+  `relpath`'s constants; pinned on the same group flag) and refuse as `platform` off
+  POSIX (Windows' `posixpath.normpath` is the Python fallback and `getcwd` returns
+  `C:\…`). The paths runtime (`rt.rs`, shared with `fnmatch`/`pathlib`) reads the
+  kind/compact/ascii bits from the `PyASCIIObject.state` unit at offset 4 on MSVC
+  free-threaded builds (MSVC starts a new bitfield unit after `unsigned char interned`;
+  the first unit there is `interned` plus three never-written padding bytes): the
+  calibration verifies the bits and never searches uninitialised memory. Checked with
+  `cargo check -p rustique-py --lib` for `x86_64-pc-windows-msvc`, `aarch64-apple-darwin`
+  and `x86_64-unknown-linux-musl` × {3.14, 3.15, 3.15t} (dx's cross toolchain on the dev
+  box, compile-time layout assertion included); **runtime validation off Linux needs dx's
+  per-platform CI job** before these count as "on" there (Windows: +6 targets of this
+  group, +1 `fnmatchcase`).
+
+Callgrind (same method as §Measurements; 3.15.1, ws2/text-paths on wave2 c9fb335; "wave 1"
+is the same bench on bc2ce1a). The uniform +13 Ir on untouched kernels (`split`,
+`basename`, …) comes with the merged framework (accel merge A), not this group:
+
+| cell | CPython Ir | wave 1 Ir | wave 2 Ir | ratio (wave 2) |
+|---|---:|---:|---:|---:|
+| `join(d, f)` | 3,540 | 973 | 705 | 0.199 |
+| `join(root, 'src', 'pkg', f)` | 7,339 | 1,356 | 1,376 | 0.187 |
+| `join(d, '/abs')` | 2,380 | 600 | 416 | 0.175 |
+| `join(db, fb) bytes` | 3,582 | 717 | 735 | 0.205 |
+| `join(latin1, f)` | 3,565 | 989 | 722 | 0.202 |
+| `join(ucs2, ucs4)` | 2,366 | 590 | 412 | 0.174 |
+| `join(ds, fs) str subclass` | 3,920 | 2,305 | 2,324 | 0.593 |
+| `join(PathLike, f)` | 4,165 | 4,165 | 4,165 | 1.000 |
+| `join(Path, f)` | 4,177 | 4,177 | 4,177 | 1.000 |
+| `join(d, f) os.fspath patched` | 4,014 | 4,014 | 4,014 | 1.000 |
+| `join(d, f) _get_sep patched` | 3,603 | 3,603 | 3,603 | 1.000 |
+| `join(d, f) cProfile on` | 13,853 | 13,853 | 13,853 | 1.000 |
+| `split(p)` | 3,951 | 1,103 | 1,116 | 0.282 |
+| `split(pb) bytes` | 4,051 | 996 | 1,011 | 0.249 |
+| `split(ps) str subclass` | 4,455 | 1,779 | 1,792 | 0.402 |
+| `split(PathLike)` | 4,576 | 4,557 | 4,557 | 0.996 |
+| `split(Path)` | 4,583 | 4,564 | 4,564 | 0.996 |
+| `split(p) os.fspath patched` | 4,188 | 4,169 | 4,169 | 0.995 |
+| `split(p) cProfile on` | 14,482 | 14,482 | 14,482 | 1.000 |
+| `splitext(f)` | 3,921 | 1,072 | 1,085 | 0.277 |
+| `splitext(p)` | 3,872 | 1,073 | 1,086 | 0.280 |
+| `splitext(pb) bytes` | 4,140 | 967 | 980 | 0.237 |
+| `splitext(pw) ucs2` | 4,321 | 1,289 | 1,302 | 0.301 |
+| `splitext(ps) str subclass` | 4,691 | 1,749 | 1,762 | 0.376 |
+| `splitext(PathLike)` | 4,497 | 4,497 | 4,497 | 1.000 |
+| `splitext(Path)` | 4,504 | 4,504 | 4,504 | 1.000 |
+| `splitext(p) os.fspath patched` | 4,109 | 4,109 | 4,109 | 1.000 |
+| `basename(p)` | 2,047 | 604 | 617 | 0.301 |
+| `basename(pb) bytes` | 1,986 | 543 | 556 | 0.280 |
+| `basename(ps) str subclass` | 2,375 | 1,279 | 1,292 | 0.544 |
+| `basename(PathLike)` | 2,672 | 2,672 | 2,672 | 1.000 |
+| `basename(Path)` | 2,679 | 2,679 | 2,679 | 1.000 |
+| `basename(p) os.fspath patched` | 2,284 | 2,284 | 2,284 | 1.000 |
+| `basename(p) cProfile on` | 9,400 | 9,400 | 9,400 | 1.000 |
+| `dirname(p)` | 3,385 | 616 | 629 | 0.186 |
+| `dirname(pb) bytes` | 3,389 | 552 | 567 | 0.167 |
+| `dirname(ps) str subclass` | 3,704 | 1,291 | 1,304 | 0.352 |
+| `dirname(PathLike)` | 4,010 | 3,991 | 3,991 | 0.995 |
+| `dirname(p) os.fspath patched` | 3,622 | 3,603 | 3,603 | 0.995 |
+| `isabs(p)` | 1,527 | 310 | 323 | 0.211 |
+| `isabs(pb) bytes` | 1,389 | 294 | 307 | 0.221 |
+| `isabs(ps) str subclass` | 1,670 | 986 | 999 | 0.598 |
+| `isabs(PathLike)` | 2,152 | 2,152 | 2,152 | 1.000 |
+| `isabs(p) os.fspath patched` | 1,764 | 1,764 | 1,764 | 1.000 |
+| `normcase(p)` | 517 | 517 | 517 | 1.000 |
+| `normcase(PathLike)` | 1,142 | 1,142 | 1,142 | 1.000 |
+| `relpath(p, root)` | 20,849 | 6,993 | 1,635 | 0.078 |
+| `relpath(pb, rootb) bytes` | 21,428 | 5,120 | 1,429 | 0.067 |
+| `relpath(f) relative` | 28,916 | 6,511 | 3,494 | 0.121 |
+| `relpath(ps, root) str subclass` | 21,180 | 7,692 | 2,336 | 0.110 |
+| `relpath(p, root) os.fspath patched` | 21,797 | 21,773 | 21,773 | 0.999 |
+| `abspath(p)` | 3,071 | 2,194 | 936 | 0.305 |
+| `abspath(f) relative` | 7,603 | 4,142 | 2,458 | 0.323 |
+| `abspath(ps) str subclass` | 3,211 | 2,870 | 1,612 | 0.502 |
+| `commonpath([p, d])` | 23,109 | 23,061 | 23,085 | 0.999 |
+| `commonpath((pb, db)) bytes` | 24,734 | 24,686 | 24,737 | 1.000 |
+
+Every fallback and reject cell stays ≤ 1.000 in steady state (unchanged). Under
+`PYTHON_JIT=1` (`paths_cg.py --jit`, changed kernels of the three groups,
+`benches/targets/results/paths_w2_cg_jit_3.15.1.json`): `relpath(p, root)` 0.091, bytes
+0.075, relative 0.132, `abspath(p)` 0.349, `fnmatch(f, '*.py')` 0.121, `filter(32)` 0.063,
+`relative_to` 0.046; worst fallback cell 1.018 (`fnmatch` with `os.fspath` patched, the
+group suspended; 0.997 at bc2ce1a under the same bench without JIT).
+
+**8-thread rule** (DECISIONS §10.9; `benches/targets/paths_scaling.py run [--enable] -t 1,8
+-r 3`, 3.15.1t, CPU time per call summed over threads): enabled ÷ plain CPU per call at 8
+threads, `local` / `shared` inputs: `join` 0.197 / 0.198, `join` fallback (PurePosixPath)
+0.928 / 0.586, `relpath` 0.065 / 0.065, `relpath` relative (`os.getcwd`) 0.277 / 0.277,
+`abspath` 0.474 / 0.490, `splitext` 0.301 / 0.309: all ≤ 1.05; the kernels' own CPU per
+call at 8 threads is 0.99–1.06× their 1-thread cost (no shared writes; the scratch buffers
+are on the stack, so the glibc arena locks that cost `urllib.quote` ×19.6 are never taken).
+
+**Workload** (`benches/targets/text_wl.py data/fs_inventory -r 3`, instructions:u per
+steady-state `run()`, digests identical): with all groups 0.492 → **0.462** (enabled
+966.8M → 899.4M Ir per run), with `--only posixpath,pathlib,fnmatch` 0.496 → 0.463.
+Per section of the run (callgrind, enabled, Ir): `os.walk` + `fnmatch` + `relpath`
+205M → 158M; `os.scandir` recursion (user code) 117M → 116M; `Path.rglob` +
+`relative_to` 190M → 190M; `glob.glob(**)` 397M → 379M. What is left is fnmatch.md
+§"glob and os.scandir".
+
+## Measurements (wave 1)
 
 Callgrind, region-instrumented, Ir per call = (Ir(2n) − Ir(n)) / n after ≥ 2,500 warm-up
 calls, statements unrolled 10×, each cell in a fresh process (`benches/targets/paths_cg.py`);
@@ -219,6 +352,10 @@ outcomes compared; all 24 targets of the three groups asserted installed). CPyth
 | **differences plain vs enabled** | **0** | **0** | **0** | **0** |
 
 The `test_os` failures and error are the box's environment (identical without Rustique).
+**Wave 2** (ws2/text-paths on wave2 c9fb335, same command, the 24 targets installed): the same
+counts and **0 differences** on 3.15.1, 3.15.1t, 3.14.9 and 3.14.9t
+(`benches/targets/results/paths_w2_conformance_<build>.json`); full `pytest -q`: 2205 passed /
+5 skipped (3.15.1, 3.15.1t), 2207 / 3 (3.14.9, 3.14.9t).
 Plus `tests/targets/test_posixpath.py`, `test_fnmatch.py`, `test_pathlib.py` (differential
 Hypothesis tests, identity rules, fallbacks, mechanics, threads) in the full `pytest -q` on
 the four builds.
@@ -275,6 +412,9 @@ false, the type cells are null, and `cwd_units` checks for a null `os.getcwd`
 ## Version coverage
 
 3.14 and 3.15 (fingerprints recorded for both; identical on GIL and free-threaded builds).
+Platforms (wave 2): `join`, `split`, `splitext`, `basename`, `dirname`, `isabs` on every OS
+(runtime-validated on Linux; Windows/macOS/musl compile-checked, pending dx's per-platform CI
+job); `abspath`, `relpath` on POSIX only (refusal category `platform` elsewhere).
 Free-threaded builds: the kernels read immutable str/bytes only. `jit_safe: true`: under
 `PYTHON_JIT=1` the steady-state cells stay within 1.05 (table below); a fallback before
 suspension costs +250–350 Ir (docs/atlas/mechanisms.md §1.3).

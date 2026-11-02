@@ -87,6 +87,11 @@ fn find_c_name() -> Result<usize, String> {
     Err("only validated on Linux/glibc".into())
 }
 
+/// Did the install-time probe find glibc's C locale name (see [`find_c_name`])?
+pub fn lc_time_probe_ok() -> bool {
+    C_NAME.load(Ordering::Relaxed) != 0
+}
+
 /// Is the process-wide `LC_TIME` the C/POSIX locale? (glibc returns the name pointer without
 /// locking; only compared, never dereferenced.)
 #[inline(always)]
@@ -186,7 +191,9 @@ pub fn capture_time(cx: &Prepare<'_>) -> Result<&'static TimeEnv, Refusal> {
         return Ok(t);
     }
     let py = cx.py();
-    C_NAME.store(find_c_name().map_err(Refusal::from)?, Ordering::Relaxed);
+    // Off glibc (or if glibc's layout is unexpected) the probe stays 0: `lc_time_is_c()` is
+    // then false, and the libc-dependent targets refuse through `libc_gate`.
+    C_NAME.store(find_c_name().unwrap_or(0), Ordering::Relaxed);
     let time = cx.loaded_module("time")?;
     let tdict = time.dict();
     let strftime =

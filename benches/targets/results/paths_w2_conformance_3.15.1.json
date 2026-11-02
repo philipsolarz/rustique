@@ -1,0 +1,96 @@
+{
+ "python": "3.15.1",
+ "targets": [
+  "posixpath",
+  "fnmatch",
+  "pathlib"
+ ],
+ "modules": {
+  "test.test_posixpath": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 93,
+    "skip": 3
+   },
+   "differences": [],
+   "seconds": [
+    0.5,
+    0.4
+   ],
+   "stderr": ""
+  },
+  "test.test_genericpath": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 26
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_fnmatch": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 24
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_glob": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 20,
+    "skip": 2
+   },
+   "differences": [],
+   "seconds": [
+    0.2,
+    0.2
+   ],
+   "stderr": ""
+  },
+  "test.test_pathlib": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 991,
+    "skip": 407
+   },
+   "differences": [],
+   "seconds": [
+    2.5,
+    1.9
+   ],
+   "stderr": ""
+  },
+  "test.test_os": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 472,
+    "skip": 77,
+    "fail": 3,
+    "error": 1
+   },
+   "differences": [],
+   "seconds": [
+    16.0,
+    16.4
+   ],
+   "stderr": ""
+  }
+ },
+ "ok": true,
+ "not_installed": {}
+}

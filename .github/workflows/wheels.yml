@@ -1,9 +1,13 @@
 # Wheels for every platform and build, each installed with pip into a clean venv and
-# smoke-tested (docs/targets/dx.md §5).
+# smoke-tested, then validated on its platform (docs/targets/dx.md §5).
 #
-#   tags v*, manual dispatch: 8 platforms x cp314, cp314t, cp315, cp315t, plus the sdist
-#                             (and a wheel built from it), then a completeness check
-#   pull requests touching the build: linux x86_64 cp315 + cp315t only
+#   tags v*, manual dispatch: 8 platforms x cp314, cp314t, cp315, cp315t, plus the sdist (and a
+#     wheel built from it). Every wheel is repacked so that the extension is a top-level
+#     `_rustique` (tools/repack_wheel.py; DECISIONS §10.7) and its layout is checked. Then, per
+#     platform and build, the `platform` job runs Rustique's tests and CPython's own test
+#     modules for every target installed there; `platform-report` tabulates the coverage and
+#     checks it against .github/platform-floors.json; `complete` checks that every wheel exists.
+#   pull requests touching the build or the tests: linux x86_64 cp315 + cp315t only.
 name: Wheels
 
 on:
@@ -18,8 +22,13 @@ on:
       - "rust-toolchain.toml"
       - "crates/**"
       - "python/**"
+      - "tools/repack_wheel.py"
+      - "tests/targets/**"
+      - "tests/conformance/**"
+      - "tests/test_dx*.py"
       - ".github/workflows/wheels.yml"
       - ".github/scripts/**"
+      - ".github/platform-floors.json"
 
 permissions:
   contents: read
@@ -36,6 +45,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      tests: ${{ steps.plan.outputs.tests }}
     steps:
       - id: plan
         shell: python
@@ -44,29 +54,32 @@ jobs:
         run: |
           import json, os
           full = [
-              # name, runner, maturin target, manylinux (Linux), smoke ("host" | "alpine"), experimental
-              ("linux-x86_64", "ubuntu-24.04", "x86_64", "2_28", "host", False),
+              # name, runner, maturin target, manylinux (Linux), smoke ("host" | "alpine"), interp
+              # (the opt-in interp tier's handlers are built: clang >= 19 + llvm-profdata, PGO)
+              ("linux-x86_64", "ubuntu-24.04", "x86_64", "2_28", "host", True),
               ("linux-aarch64", "ubuntu-24.04-arm", "aarch64", "2_28", "host", False),
               ("musllinux-x86_64", "ubuntu-24.04", "x86_64-unknown-linux-musl", "musllinux_1_2", "alpine", False),
               ("musllinux-aarch64", "ubuntu-24.04-arm", "aarch64-unknown-linux-musl", "musllinux_1_2", "alpine", False),
               ("macos-arm64", "macos-15", "aarch64-apple-darwin", "", "host", False),
               ("macos-x86_64", "macos-15-intel", "x86_64-apple-darwin", "", "host", False),
               ("windows-x64", "windows-2025", "x86_64-pc-windows-msvc", "", "host", False),
-              ("windows-arm64", "windows-11-arm", "aarch64-pc-windows-msvc", "", "host", True),
+              # promoted from experimental: all 4 smoke cells passed in run 41362578712
+              ("windows-arm64", "windows-11-arm", "aarch64-pc-windows-msvc", "", "host", False),
           ]
           pythons = "3.14 3.14t 3.15 3.15t"
           if os.environ["EVENT"] == "pull_request":
               full, pythons = full[:1], "3.15 3.15t"
-          include = [dict(name=n, os=o, target=t, manylinux=m, smoke=s, experimental=x, pythons=pythons)
-                     for n, o, t, m, s, x in full]
+          include = [dict(name=n, os=o, target=t, manylinux=m, smoke=s, interp=i, pythons=pythons)
+                     for n, o, t, m, s, i in full]
+          tests = [dict(name=n, os=o, smoke=s, python=p) for n, o, t, m, s, i in full for p in pythons.split()]
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"matrix={json.dumps({'include': include})}\n")
+              f.write(f"tests={json.dumps({'include': tests})}\n")
 
   wheels:
     name: ${{ matrix.name }}
     needs: plan
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -110,29 +123,57 @@ jobs:
           echo "args=$args" >> "$GITHUB_OUTPUT"
           echo "building for:$args"
 
+      # The interp tier's opcode handlers (crates/rustique-interp) are compiled with clang >= 19
+      # and profile-guided (llvm-profdata of the same version). RUSTIQUE_INTERP_REQUIRE=1 makes a
+      # missing compiler fail the build instead of shipping a wheel without the tier. Elsewhere
+      # the crate builds an empty handler set and the tier refuses ("built without handlers").
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
           args: --release --out dist ${{ steps.interp.outputs.args }}
+          before-script-linux: ${{ matrix.interp && 'dnf install -y clang llvm && clang --version && llvm-profdata --version && test "$(clang -dumpversion | cut -d. -f1)" -ge 19' || '' }}
+          docker-options: ${{ matrix.interp && '-e RUSTIQUE_INTERP_REQUIRE=1' || '' }}
 
-      - name: Wheels built
+      # Top-level `_rustique` (the .pth line imports it directly: w2-startup §1.2), then the
+      # layout of every wheel: the extension at the root, no shim, RECORD hashes.
+      - name: Repack (top-level _rustique) and check the layout
         shell: bash
-        run: ls -l dist
+        run: |
+          py="${{ steps.py315.outputs.python-path }}"; [ -n "$py" ] || py=python3
+          "$py" tools/repack_wheel.py dist/*.whl
+          "$py" .github/scripts/check_wheels.py --layout top dist/*.whl
+          ls -l dist
 
       - name: Smoke test (pip install into a clean venv, per interpreter)
         if: matrix.smoke == 'host'
         shell: bash
+        env:
+          # setup-python's builds are not python-build-standalone: on Linux x86_64 the interp
+          # tier is checked in the next step instead.
+          SMOKE_INTERP: ${{ matrix.interp && '' || 'refused' }}
         run: |
           bash .github/scripts/smoke_all.sh dist \
             "${{ steps.py314.outputs.python-path }}" "${{ steps.py314t.outputs.python-path }}" \
             "${{ steps.py315.outputs.python-path }}" "${{ steps.py315t.outputs.python-path }}"
 
+      - uses: astral-sh/setup-uv@v7
+        if: matrix.interp
+      - name: Smoke test, python-build-standalone (the interp tier is installable)
+        if: matrix.interp
+        shell: bash
+        env:
+          SMOKE_INTERP: installable
+          UV_MANAGED_PYTHON: "1"
+        run: |
+          uv python install 3.15 3.15t
+          bash .github/scripts/smoke_all.sh dist "$(uv python find 3.15)" "$(uv python find 3.15t)"
+
       - name: Smoke test in Alpine (musl)
         if: matrix.smoke == 'alpine'
         shell: bash
         run: |
-          docker run --rm -v "$PWD:/w" -w /w alpine:3.22 sh -euc '
+          docker run --rm -e SMOKE_INTERP=refused -v "$PWD:/w" -w /w alpine:3.22 sh -euc '
             apk add --no-cache bash curl >/dev/null
             curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null
             export PATH=$HOME/.local/bin:$PATH
@@ -147,6 +188,73 @@ jobs:
           name: wheels-${{ matrix.name }}
           path: dist
 
+  # Every target on every wheel platform: Rustique's tests for the groups installed there and
+  # CPython's own test modules, plain against enabled, from the interpreter's exact source
+  # release. A target counts as "on" for a platform only once this passes there.
+  platform:
+    name: platform ${{ matrix.name }} ${{ matrix.python }}
+    needs: [plan, wheels]
+    if: ${{ !cancelled() }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.tests) }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: py
+        if: matrix.smoke == 'host'
+        uses: actions/setup-python@v6
+        with: { python-version: "${{ matrix.python }}" }
+      - uses: actions/download-artifact@v6
+        with:
+          name: wheels-${{ matrix.name }}
+          path: dist
+      - name: Coverage, tests and conformance
+        if: matrix.smoke == 'host'
+        shell: bash
+        run: |
+          "${{ steps.py.outputs.python-path }}" .github/scripts/platform_tests.py --dist dist \
+            --python "${{ steps.py.outputs.python-path }}" --out coverage --name "${{ matrix.name }}" --fetch-cpython
+      - name: Coverage, tests and conformance in Alpine (musl)
+        if: matrix.smoke == 'alpine'
+        shell: bash
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w alpine:3.22 sh -euc '
+            apk add --no-cache bash curl >/dev/null
+            curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null
+            export PATH=$HOME/.local/bin:$PATH
+            uv python install "${{ matrix.python }}" >/dev/null
+            py=$(uv python find "${{ matrix.python }}")
+            "$py" .github/scripts/platform_tests.py --dist dist --python "$py" --out coverage \
+              --name "${{ matrix.name }}" --fetch-cpython'
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: coverage-${{ matrix.name }}-${{ matrix.python }}
+          path: coverage
+          if-no-files-found: ignore
+
+  platform-report:
+    needs: platform
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: coverage-*
+          path: coverage
+      - name: Per-platform coverage (floors in .github/platform-floors.json)
+        run: |
+          python3 .github/scripts/platform_report.py coverage .github/platform-floors.json \
+            -o platform-coverage.md --json platform-coverage.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: platform-coverage
+          path: platform-coverage.*
+
   sdist:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
@@ -157,12 +265,14 @@ jobs:
           command: sdist
           args: --out dist
       # The sdist must be complete: build a wheel from it (Rust toolchain from
-      # rust-toolchain.toml inside) and smoke-test it.
+      # rust-toolchain.toml inside) and smoke-test it. A wheel built from the sdist keeps
+      # maturin's layout: the extension in the package, loaded through the `_rustique.py` shim.
       - uses: actions/setup-python@v6
         with: { python-version: "3.15" }
       - name: Wheel from the sdist
         run: |
           python -m pip wheel --no-deps -w sdist-wheel dist/*.tar.gz
+          python .github/scripts/check_wheels.py --layout shim sdist-wheel/*.whl
           bash .github/scripts/smoke_all.sh sdist-wheel python3.15
       - uses: actions/upload-artifact@v6
         with:
@@ -187,7 +297,7 @@ jobs:
           wheels = [f for f in files if f.endswith(".whl")]
           need = {
               "manylinux": ("x86_64", "aarch64"), "musllinux": ("x86_64", "aarch64"),
-              "macosx": ("arm64", "x86_64"), "win": ("amd64",),
+              "macosx": ("arm64", "x86_64"), "win": ("amd64", "arm64"),
           }
           missing = []
           for tag in ("cp314-cp314", "cp314-cp314t", "cp315-cp315", "cp315-cp315t"):
