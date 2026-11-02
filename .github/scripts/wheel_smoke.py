@@ -9,9 +9,11 @@ Checks: import + enable + a battery of accelerated stdlib calls gives the same o
 plain CPython; RUSTIQUE=1 enables at startup through the shipped .pth, loading only the extension
 (top-level `_rustique`, also registered as `rustique._rustique`); RUSTIQUE unset imports nothing;
 RUSTIQUE=0 turns enable() into a no-op; `python -m rustique status` and `python -m rustique diff`
-work. `--interp installable`: the opt-in `interp` tier is built in (its targets are `disabled`
-with the opt-in reason, never refused); `--interp refused`: it refuses ("built without
-handlers"). Exit status 0 when every check passes.
+work. `--interp installable`: the opt-in `interp` tier is built in: its targets are `disabled`
+with the opt-in reason unless asked for, and installed with `enable(tiers=["interp"])`;
+`--interp refused`: asked for, every interp target refuses (off x86_64 Linux: "validated on
+x86_64 Linux (glibc) only"; a wheel built without a clang >= 19: "built without handlers").
+Exit status 0 when every check passes.
 """
 
 import json
@@ -29,7 +31,8 @@ print(copy.deepcopy(data) == data, copy.copy(xs) == xs, posixpath.join("a", "b",
 print(datetime.datetime.strptime("2026-11-01 12:30", "%Y-%m-%d %H:%M").isoformat(), repr(0.1 + 0.2), 1e22, 5e-324)
 """
 
-ENV_VARS = ("RUSTIQUE", "RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_STATS", "RUSTIQUE_REPORT")
+ENV_VARS = ("RUSTIQUE", "RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_STATS", "RUSTIQUE_REPORT", "RUSTIQUE_TIERS",
+            "RUSTIQUE_VALIDATE", "RUSTIQUE_CHECK")
 failures: list[str] = []
 
 
@@ -67,7 +70,7 @@ def main() -> int:
              "    st = ext._accel.status()\n"
              "    out['source'] = st['process']['switch']['source']\n"
              "    out['states'] = sorted({t['state'] for t in st['targets']})\n"
-             "    out['installed'] = sum(t['state'] == 'installed' for t in st['targets'])\n"
+             "    out['installed'] = sum(t['state'] in ('installed', 'armed') for t in st['targets'])\n"
              "print(json.dumps(out))\n")
     unset = json.loads(py("-c", probe).stdout)
     check("RUSTIQUE unset imports nothing at startup", unset["loaded"] == [], str(unset))
@@ -99,20 +102,27 @@ def main() -> int:
                         "    importlib.import_module(m)\n"
                         "for t in rustique.status()['targets']:\n"
                         "    if t['state'] == 'refused':\n"
-                        "        print(f\"{t['name']:32} [{t.get('refusal')}] {t.get('reason')}\")\n")
+                        "        print(f\"{t['name']:32} [{t.get('refusal')}] {t.get('reason')}\")\n",
+                  RUSTIQUE_VALIDATE="eager")  # verdicts now, not at each target's first call
     print("     refused here:" + ("" if refusals.stdout.strip() else " none"))
     print("\n".join("       " + ln for ln in refusals.stdout.splitlines()))
 
     interp = sys.argv[sys.argv.index("--interp") + 1] if "--interp" in sys.argv else None
     if interp:
-        tier = py("-c", "import json, rustique\nrustique.enable()\n"
-                        "print(json.dumps([t for t in rustique.status()['targets'] if t.get('tier') == 'interp']))")
-        ts = json.loads(tier.stdout) if tier.returncode == 0 else []
+        tier = py("-c", "import json, rustique\n"
+                        "off = [t for t in rustique.enable()['targets'] if t.get('tier') == 'interp']\n"
+                        "on = [t for t in rustique.enable(tiers=['interp'])['targets'] if t.get('tier') == 'interp']\n"
+                        "print(json.dumps({'off': off, 'on': on}))", RUSTIQUE_VALIDATE="eager")
+        got = json.loads(tier.stdout) if tier.returncode == 0 else {"off": [], "on": []}
+        off_ok = bool(got["off"]) and all(t["state"] == "disabled" and "opt-in" in (t.get("reason") or "")
+                                          for t in got["off"])
         if interp == "installable":
-            ok = bool(ts) and all(t["state"] == "disabled" and "opt-in" in (t.get("reason") or "") for t in ts)
+            ok = off_ok and bool(got["on"]) and all(t["state"] in ("installed", "armed") for t in got["on"])
         else:
-            ok = bool(ts) and all(t["state"] == "refused" and "built without handlers" in (t.get("reason") or "")
-                                  for t in ts)
+            ok = off_ok and bool(got["on"]) and all(
+                t["state"] == "refused" and any(w in (t.get("reason") or "")
+                                                for w in ("x86_64 Linux", "built without handlers"))
+                for t in got["on"])
         check(f"interp tier {interp}", ok, tier.stdout[:800] + tier.stderr[-800:])
 
     status = py("-m", "rustique", "status")

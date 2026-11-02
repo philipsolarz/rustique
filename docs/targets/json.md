@@ -322,9 +322,13 @@ hook is never called on hits; a needed hook runs with CPython's calls and argume
 non-callable `default` raises CPython's `TypeError`), and `default=` now counts as `deopt`
 where the hook is needed (`test_fallbacks_are_counted`).
 
-Not done (open, ranked for the next round): the `_json.make_encoder` `tp_call` kernel that
-would call `default` where `_json` calls it (ruling 15 permits it) for json_api's needed
-hooks (estimated ~4% of json_api, `w2-floors.md` §2.2(d)). It needs the C encoder's private
+8-thread CPU per call, enabled ÷ plain (3.15.1t, `kernel_scaling.py`): `json.dumps` 0.171
+(local) / 0.216 (shared inputs), within DECISIONS §10.9.
+
+**Next wave** (deferred by the lead, wave 2): the `_json.make_encoder` `tp_call` kernel that
+would call `default` where `_json` calls it (ruling 15 permits it) for hooks that are
+actually needed (json_api's Decimal/datetime/UUID/Enum values): estimated **~4% of
+json_api** (`w2-floors.md` §2.2(d): ~38.8k → ~22k Ir per call with a needed hook). It needs the C encoder's private
 fields (`markers`, `defaultfn`, separators, flags); the `PyMemberDef`s give the offsets of
 all but `allow_nan`, which would need a calibrated probe.
 

@@ -25,6 +25,7 @@ pub mod logging;
 pub mod pathlib;
 pub mod posixpath;
 pub mod random;
+pub mod re;
 pub mod set;
 pub mod statistics;
 pub mod textwrap;
@@ -54,6 +55,7 @@ pub static ALL: &[&[&TargetSpec]] = &[
     contextlib::TARGETS,
     functools::TARGETS,
     interp::TARGETS,
+    re::TARGETS,
     gc::TARGETS,
     // Hidden (group `_selftest`): exercise the framework in tests; never enabled unless
     // named in `enable(only=...)`.
@@ -72,6 +74,7 @@ pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {
     copy::register(accel)?;
     generated::register(accel)?;
     interp::register(accel)?;
+    re::register(accel)?;
     gc::register(accel)?;
     Ok(())
 }

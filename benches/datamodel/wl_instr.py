@@ -6,7 +6,8 @@ everything except the data-model groups ("base"), so `all/base` is this workstre
 
 For each workload and side: fresh processes under `perf stat -e instructions:u` with 1 and
 K `run()`s after `setup()` and one warm-up `run()`; per run = (I_K - I_1) / (K - 1) (startup,
-imports and setup cancel). `rustique.enable(...)` runs before the workload module is
+imports and setup cancel). Sides: plain, all, base (all but the data-model groups), tier
+(all + the opt-in interp tier), tier-base. `rustique.enable(...)` runs before the workload module is
 imported (as `RUSTIQUE=1` would). Median of `-r` repeats; every digest must match plain.
 Needs hardware counters (the dev box). Selectors as in benches/workloads/run.py.
 """
@@ -29,7 +30,12 @@ def driver(path, iters, side):
         import rustique
 
         groups = {t["group"] for t in rustique.status()["targets"]}
-        rustique.enable(exclude=[g for g in MINE if g in groups] if side == "base" else [])
+        if side == "tier":
+            rustique.enable(tiers=["interp"])
+        elif side == "tier-base":
+            rustique.enable(exclude=[g for g in MINE if g in groups], tiers=["interp"])
+        else:
+            rustique.enable(exclude=[g for g in MINE if g in groups] if side == "base" else [])
     sys.path.insert(0, os.path.dirname(path))
     spec = importlib.util.spec_from_file_location("wl_" + os.path.basename(path)[:-3], path)
     mod = importlib.util.module_from_spec(spec)

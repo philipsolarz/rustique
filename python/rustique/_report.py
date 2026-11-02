@@ -312,19 +312,26 @@ def tier_lines(status: dict) -> list[str]:
     return [f"  opt-in tiers: {', '.join(parts)}{hint}"]
 
 
-def refusal_lines(refused: list[dict], *, verbose: bool) -> list[str]:
-    """Refusals grouped by category, each with what to do about it."""
+def refusal_lines(refused: list[dict], *, verbose: bool, keep=()) -> list[str]:
+    """Refusals grouped by category, each with what to do about it. Unexpected categories
+    are listed in full; so is every name in ``keep`` (e.g. the ones a pytest session was
+    told to accept); long lists of expected refusals are shortened."""
     if not refused:
         return []
+    keep = set(keep)
     by: dict[str, list[dict]] = {}
     for t in refused:
         by.setdefault(t.get("refusal") or "other", []).append(t)
     order = sorted(by, key=lambda c: (c in EXPECTED_REFUSALS, -len(by[c]), c))
     lines = ["", "  refused (CPython's code runs):"]
     for cat in order:
-        ts = sorted(by[cat], key=lambda t: t["name"])
+        ts = sorted(by[cat], key=lambda t: (t["name"] not in keep, t["name"]))
         names = [t["name"] for t in ts]
-        shown = names if verbose or len(names) <= 6 else names[:5] + [f"... {len(names) - 5} more"]
+        if verbose or cat not in EXPECTED_REFUSALS or len(names) <= 6:
+            shown = names
+        else:
+            n = max(5, sum(n in keep for n in names))
+            shown = names[:n] + ([f"... {len(names) - n} more"] if len(names) > n else [])
         lines.append(f"    [{cat}] {len(ts)}: {', '.join(shown)}")
         lines.append(f"      what to do: {REFUSAL_ADVICE.get(cat, REFUSAL_ADVICE['other'])}")
         reasons = list(dict.fromkeys(t.get("reason") for t in ts if t.get("reason")))
@@ -359,11 +366,11 @@ def advice_lines(counters: dict, status: dict) -> list[str]:
 
 
 def render(rec: dict, *, limit: int | None = None, title: bool = True, counters_note: bool = True,
-           verbose: bool = False) -> str:
+           verbose: bool = False, keep_refused=()) -> str:
     """The report: header, one line per target that ran (sorted by hits), what the fallbacks
     and suspensions mean here, then the targets waiting for their module, refused (by
     category, with what to do) and not selected. ``verbose``: every installed target and every
-    name."""
+    name; ``keep_refused``: refused targets always named."""
     status = rec["status"]
     counters = rec.get("stats") or {}
     have_counters = bool(rec.get("counters"))
@@ -383,12 +390,18 @@ def render(rec: dict, *, limit: int | None = None, title: bool = True, counters_
     live = by_state["installed"] + by_state["armed"]
     called = [t for t in live if (counters.get(t["name"]) or {}).get("hits") or _fallback_total(counters.get(t["name"]))]
     counts = []
+    idle = [t for t in live if t not in called]
+    idle_armed = sum(t["state"] == "armed" for t in idle)
     if have_counters and live:
         counts.append(f"{len(called)} called")
-        if len(live) > len(called):
-            counts.append(f"{len(live) - len(called)} installed but not called")
+        if len(idle) > idle_armed:
+            counts.append(f"{len(idle) - idle_armed} installed but not called")
+        if idle_armed:
+            counts.append(f"{idle_armed} armed but never called (validated at the first call)")
     elif live:
-        counts.append(f"{len(live)} installed")
+        armed = sum(t["state"] == "armed" for t in live)
+        counts.append(f"{len(live) - armed} installed" + (f", {armed} armed (validated at the first call)"
+                                                          if armed else ""))
     counts += [f"{len(by_state[s])} {label}" for s, label in (("pending-import", "waiting for their module"),
                                                                 ("refused", "refused"), ("disabled", "not selected"))
                if by_state.get(s)]
@@ -436,7 +449,7 @@ def render(rec: dict, *, limit: int | None = None, title: bool = True, counters_
         if len(shown) < len(rows):
             lines.append(f"  ... {len(rows) - len(shown)} more")
         if have_counters and not verbose and len(live) > len(called):
-            lines.append(f"  ({len(live) - len(called)} installed targets were not called)")
+            lines.append(f"  ({len(live) - len(called)} installed or armed targets were not called)")
     lines += advice_lines(counters, status)
     pending = by_state["pending-import"]
     if pending:
@@ -448,7 +461,7 @@ def render(rec: dict, *, limit: int | None = None, title: bool = True, counters_
             mods = sorted({t.get("module") or t["group"] for t in pending})
             lines.append(f"  {len(pending)} targets wait for their module ({', '.join(mods[:8])}"
                          f"{', ...' if len(mods) > 8 else ''}): installed when it is imported")
-    lines += refusal_lines(by_state["refused"], verbose=verbose)
+    lines += refusal_lines(by_state["refused"], verbose=verbose, keep=keep_refused)
     disabled = by_state["disabled"]
     if disabled and sw.get("source"):
         groups = sorted({t["group"] for t in disabled if not t.get("tier")})

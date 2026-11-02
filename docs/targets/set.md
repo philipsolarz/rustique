@@ -70,14 +70,22 @@ target should be restricted to the patch releases that still have it.
 
 ## Measured
 
-T7 (free-threading target, 3.15.1t, dev box, `run.py compare -n 3 -p 3`, wall time): see
-the table in the workstream report (`isort_stdlib`, `state_snapshot` with `--only set` and
-with every group but `copy`). Per call (Phase 1, wall ns): `s.__reduce__()` 39,036 → 794
+T7 (free-threading target, 3.15.1t, dev box, `run.py compare -n 3 -p 3`, wall time,
+digests identical), **measured**:
+
+| workload | `--only set` | every group but `copy` | T7 bar |
+|---|---:|---:|---:|
+| `devtools/isort_stdlib` | 1324.0 → 348.9 ms, **0.263** | **0.261** | ≤ 0.35 |
+| `data/state_snapshot` | 1579.4 → 1129.2 ms, **0.715** | **0.699** | ≤ 0.75 |
+
+8-thread CPU per call, enabled ÷ plain (`kernel_scaling.py -t 1,8`): `s.__reduce__()`
+0.032 (per-thread sets) / 0.016 (one shared set). Per call (Phase 1, wall ns): `s.__reduce__()` 39,036 → 794
 (0.020), `deepcopy(frozenset)` 44,044 → 3,258 (0.074).
 
 ## Conformance
 
 `tests/conformance/run_target_suites.py --targets set --modules
-test.test_set,test.test_copy,test.test_pickle` on 3.15.1t and 3.14.9t: same outcome for
-every test id with and without the target (see the workstream report for counts). On GIL
-builds the target is refused, so the suites are trivially identical.
+test.test_set,test.test_copy,test.test_pickle` (`benches/targets/core_conformance.sh`),
+same outcome for every test id with and without the target, **measured**: 3.15.1t
+test_set 644 pass, test_copy 84, test_pickle 1039 + 47 skip; 3.14.9t 630 / 81 / 960 + 55
+skip; 0 differences. On GIL builds the target is refused (test_set 644 / 630, identical).

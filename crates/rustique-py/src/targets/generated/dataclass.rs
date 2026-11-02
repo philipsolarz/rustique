@@ -824,11 +824,28 @@ unsafe extern "C" fn k_process_class(f: P, args: *const P, nargsf: usize, kw: P)
     }
 }
 
+/// The opt-in `interp` tier makes CPython's own generated `__init__` faster than this
+/// kernel: `interp.kwinit` pushes it inline for keyword calls and `interp.setattr` gives its
+/// `object.__setattr__` calls a fast path (callgrind, 3.15.1: `F(x=1, y=2)` 0.456 with the
+/// tier vs 0.636 with the kernel; `F(1, 2)` 0.603 vs 0.643). A kernel would also stop
+/// `interp.kwinit` (its vectorcall is not CPython's) and the routing would stop the inline
+/// positional call: while both overrides are live, new classes keep CPython's `__init__`.
+#[inline]
+fn interp_handles_init() -> bool {
+    crate::targets::interp::SETATTR.counters.live() && crate::targets::interp::KWINIT.counters.live()
+}
+
 /// `_FuncBuilder.add_fns_to_class(self, cls)`.
 unsafe extern "C" fn k_add_fns(f: P, args: *const P, nargsf: usize, kw: P) -> P {
     // SAFETY: CPython's vectorcall protocol.
     unsafe {
-        let cap = if nargs(nargsf) == 2 && kw.is_null() && DEPS.ok() && func_code(f) == ADD_CODE.get() && DYN.alive() {
+        let cap = if nargs(nargsf) == 2
+            && kw.is_null()
+            && DEPS.ok()
+            && func_code(f) == ADD_CODE.get()
+            && DYN.alive()
+            && !interp_handles_init()
+        {
             capture(*args, *args.add(1))
         } else {
             None

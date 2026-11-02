@@ -224,7 +224,7 @@ def test_render_lists_called_targets_by_hits():
     assert [b[0] for b in body] == ["copy.deepcopy", "json.dumps"]  # copy.copy was not called
     assert body[0][2:4] == ["2,000", "100%"]
     assert body[1][2:] == ["10", "71%", "4", "(args", "3,", "deps", "1)"]
-    assert "(1 installed targets were not called)" in text
+    assert "(1 installed or armed targets were not called)" in text
     assert "1 targets wait for their module (logging): installed when it is imported" in text
     assert "    [version] 1: re.match" in text and "reason: CPython 3.14.9 is not validated (3.15)" in text
     assert "not selected: uuid" in text
@@ -271,7 +271,10 @@ def test_render_tiers_armed_and_unvalidated():
                "reason": "opt-in tier: RUSTIQUE_TIERS=interp"})
     ts.append({"name": "gc.policy", "group": "gc", "state": "installed", "tier": "gc", "reason": None})
     rec["status"]["process"]["switch"]["tiers"] = ["gc"]
+    rec["stats"]["copy.copy"] = {"hits": 0, "fallback": {}}
+    ts[2]["state"] = "armed"  # copy.copy: armed, never called
     text = _report.render(rec)
+    assert "2 called, 1 installed but not called, 1 armed but never called (validated at the first call)" in text
     assert "opt-in tiers: gc on (1 of 1 targets active), interp off (0 of 1 targets active); " \
         "RUSTIQUE_TIERS=interp turns it on" in text
     assert "1 installed as unvalidated (RUSTIQUE_UNVALIDATED_PATCH=1)" in text
@@ -357,6 +360,23 @@ def test_counter_file_longer_rows(tmp_path):
     p = str(tmp_path / "x.cnt")
     counter_file(p, 9, {"a.b": [5] + [0] * 10}, row_words=13)
     assert _report.read_counter_file(p)["stats"]["a.b"]["hits"] == 5
+
+
+def test_render_names_refusals_that_matter():
+    rec = record()
+    ts = rec["status"]["targets"]
+    for i in range(12):  # a long list of expected refusals (e.g. a free-threaded build)
+        ts.append({"name": f"gen.t{i:02d}", "group": "gen", "state": "refused", "reason": "free-threaded builds",
+                   "refusal": "build"})
+    ts.append({"name": "zz.accepted", "group": "zz", "state": "refused", "reason": "free-threaded builds",
+               "refusal": "build"})
+    for i in range(9):  # unexpected refusals are never shortened
+        ts.append({"name": f"fp.t{i}", "group": "fp", "state": "refused", "reason": "x", "refusal": "fingerprint"})
+    text = _report.render(rec, keep_refused=["zz.accepted"])
+    line = next(ln for ln in text.splitlines() if ln.startswith("    [build] 13:"))
+    assert "zz.accepted" in line and "... 8 more" in line
+    line = next(ln for ln in text.splitlines() if ln.startswith("    [fingerprint] 9:"))
+    assert all(f"fp.t{i}" in line for i in range(9)) and "more" not in line
 
 
 def test_render_status_groups():

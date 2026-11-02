@@ -74,7 +74,7 @@ MODULES = ("json", "copy", "dataclasses", "datetime", "_strptime", "time", "posi
 PROBE = r"""
 import importlib, json, platform, sys, sysconfig
 import rustique
-rustique.enable()
+rustique.enable()  # RUSTIQUE_VALIDATE=eager: every verdict now, not at each target's first call
 for m in MODULES:
     try:
         importlib.import_module(m)
@@ -107,7 +107,12 @@ def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
 
 
 def clean_env() -> dict[str, str]:
-    return {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE") and k != "PYTHONPATH"}
+    """No RUSTIQUE* variable, except eager validation: a target's verdict (installed or refused)
+    at enable/import, as the coverage and the expect-installed checks need, instead of at its
+    first call (the default on GIL builds; tests/conftest.py sets the same)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE") and k != "PYTHONPATH"}
+    env["RUSTIQUE_VALIDATE"] = "eager"
+    return env
 
 
 def fetch_cpython(version: str, dest: str) -> str:

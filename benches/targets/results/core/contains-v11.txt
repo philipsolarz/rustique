@@ -1,0 +1,18 @@
+type(node) in NODE_TYPES (hit at 5th)                                          799       383  0.480
+type(node) in NODE_TYPES_L (list)                                              853       389  0.456
+C in CLS (hit at 3rd)                                                          419       241  0.576
+D in CLS (miss)                                                                561       261  0.466
+type(o) in CLS (hit at 1st)                                                    215       203  0.944
+o in objs (list, hit at 3rd)                                                   455       239  0.526
+o in objs_miss (list miss)                                                     590       259  0.439
+D in MIXED (classes + scalars, miss)                                           915       504  0.551
+e in eqs [fallback: needle __eq__]                                            1119      1141  1.020
+A in WITH_META [fallback after 1 item: metaclass __eq__]                       789       784  0.994
+o in WITH_EQ [fallback after 1 item: item __eq__]                              789       778  0.986
+3 in (1, 2, 3) [scalar path]                                                   383       246  0.643
+pair_hit in pairs (tuple needle, list)                                         903       507  0.562
+pair_miss in pairs (tuple needle, miss)                                       1383       713  0.516
+pair_hit in tpairs (tuple needle, tuple)                                       858       503  0.586
+pairs.count(pair_hit)                                                         1226       725  0.591
+pairs.index(pair_hit)                                                         1028       644  0.626
+objs.count(o)                                                                  536       364  0.679

@@ -157,8 +157,12 @@ jobs:
             "${{ steps.py314.outputs.python-path }}" "${{ steps.py314t.outputs.python-path }}" \
             "${{ steps.py315.outputs.python-path }}" "${{ steps.py315t.outputs.python-path }}"
 
+      # The interp tier runs only on the python-build-standalone binaries recorded in
+      # crates/rustique-interp/src/builds.rs (by ELF build-id). uv pins one PBS build per
+      # release: use the uv version they were recorded with, and every recorded release.
       - uses: astral-sh/setup-uv@v7
         if: matrix.interp
+        with: { version: "0.13.6" }
       - name: Smoke test, python-build-standalone (the interp tier is installable)
         if: matrix.interp
         shell: bash
@@ -166,8 +170,14 @@ jobs:
           SMOKE_INTERP: installable
           UV_MANAGED_PYTHON: "1"
         run: |
-          uv python install 3.15 3.15t
-          bash .github/scripts/smoke_all.sh dist "$(uv python find 3.15)" "$(uv python find 3.15t)"
+          rels=$(grep -o 'release: "3\.15\.[0-9]*"' crates/rustique-interp/src/builds.rs | grep -o '3\.15\.[0-9]*' | sort -uV)
+          pys=""
+          for r in $rels; do
+            uv python install "$r" "${r}t"
+            pys="$pys $(uv python find "$r") $(uv python find "${r}t")"
+          done
+          echo "verified releases: $rels"
+          bash .github/scripts/smoke_all.sh dist $pys
 
       - name: Smoke test in Alpine (musl)
         if: matrix.smoke == 'alpine'
