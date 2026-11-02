@@ -269,6 +269,13 @@ static const rq_api rq_api_desc = {
     .opname = rq_opname,
 };
 
+#ifdef RQ_PGO_GEN
+/* Instrumented build (tools/pgo.sh): pull in the profile runtime, which the Rust linker does
+ * not request (clang's driver would pass -u__llvm_profile_runtime). */
+extern int __llvm_profile_runtime;
+__attribute__((used)) static int *rq_pgo_runtime = &__llvm_profile_runtime;
+#endif
+
 #define RQ_CAT2(a, b) a##b
 #define RQ_CAT(a, b) RQ_CAT2(a, b)
 __attribute__((visibility("hidden"))) const rq_api *

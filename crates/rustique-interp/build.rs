@@ -110,7 +110,7 @@ fn main() {
                 b.include(hdr.join("include").join(sub));
             }
             if pgo_gen {
-                b.flag("-fprofile-instr-generate");
+                b.flag("-fprofile-instr-generate").define("RQ_PGO_GEN", None);
             } else {
                 // One profile per configuration serves every release: functions are matched
                 // by name and CFG hash, so code a later release changed just gets none.

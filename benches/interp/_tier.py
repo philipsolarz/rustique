@@ -7,14 +7,13 @@ acc = rustique._accel
 
 
 def interp_group():
-    groups = {t["group"] for t in acc.status()["targets"] if t["name"].startswith("interp.")}
-    (g,) = groups
+    (g,) = {grp for name, grp, _ in acc.targets() if name.startswith("interp.")}
     return g
 
 
 def default_groups():
-    return sorted({t["group"] for t in acc.status()["targets"]
-                   if not t["group"].startswith("_") and not t["name"].startswith("interp.")})
+    return sorted({grp for name, grp, _ in acc.targets()
+                   if not grp.startswith("_") and not name.startswith("interp.")})
 
 
 def enable_tier(default=False):
