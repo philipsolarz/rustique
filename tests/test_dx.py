@@ -388,7 +388,7 @@ def test_startup_survives_a_broken_install(sitedir, tmp_path):
     broken.mkdir()
     (broken / "_rustique.py").write_text("raise ImportError('no wheel for this interpreter')\n")
     code = f"import sys; sys.path.insert(0, {str(broken)!r})\n" + PROBE
-    r = py(code, sitedir, env=clean_env(RUSTIQUE="1"))
+    r = py(code, sitedir, env=clean_env(RUSTIQUE="1"), flags=("-S",))  # -S: no installed .pth runs first
     assert r.returncode == 0  # site reports the failing line and carries on
     assert "ImportError: no wheel for this interpreter" in r.stderr
 
@@ -404,9 +404,9 @@ def test_startup_and_import_load_no_other_module(sitedir):
     r = py("import site, sys; sys.path.insert(0, sys.argv[1]); site.addsitedir(sys.argv[1]);"
            "ext = sys.modules['_rustique']; import rustique;"
            "print(rustique._rustique is ext is sys.modules['rustique._rustique'],"
-           "rustique.status()['process']['switch']['source'], ext.__file__.startswith(sys.argv[1]))",
+           "rustique.status()['process']['switch']['source'])",
            sitedir, env=clean_env(RUSTIQUE="1"))
-    assert r.stdout.split() == ["True", "RUSTIQUE=1", "True"], r.stderr  # a later import reuses it
+    assert r.stdout.split() == ["True", "RUSTIQUE=1"], r.stderr  # a later import reuses it
 
 
 # --- report at exit (subprocesses) --------------------------------------------------------

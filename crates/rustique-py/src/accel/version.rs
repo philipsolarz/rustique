@@ -255,61 +255,37 @@ unsafe extern "C" {
 
 static MONITORING_LAYOUT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-/// Calibrate the local-monitoring layout the tools guard reads (`_co_monitoring` →
-/// `local_monitors.tools[guard::LOCAL_EVENTS]`): on a fresh empty code object, set each
-/// probe event locally with a free `sys.monitoring` tool id and check that exactly that
-/// byte holds the tool's bit. Runs when the first vectorcall site is prepared, once per
-/// process (so a process that never prepares one never pays it). That may be inside the
-/// `sys.modules` watcher (lazy activation): the probe runs no Python code, only
-/// `sys.monitoring`'s C functions on a private code object (`set_local_events` stops the
-/// world on free-threaded builds, as installing a vectorcall site there does anyway).
-/// `true` when no tool id is free (nothing to calibrate against: the compile-time layout
-/// of the running minor is used).
+/// Check the local-monitoring layout the tools guard reads (`_co_monitoring` →
+/// `local_monitors.tools[guard::LOCAL_EVENTS]`), without touching `sys.monitoring`: on a
+/// fresh empty code object (never instrumented), the calibrated `PyCodeObject` prefix must
+/// hold (pointer fields equal the attributes CPython reports, up to `co_linetable`), and
+/// the fields that follow, up to `_co_monitoring`, must be NULL as for any code object no
+/// tool ever instrumented. The field order after `co_linetable` and the number of local
+/// events are those of the minor's header (`cpython/code.h`, identical on GIL and
+/// free-threaded builds of 3.14 and 3.15). Runs when the first vectorcall site is prepared,
+/// once per process; C calls only (safe in the `sys.modules` watcher).
+///
+/// (Wave 1 probed the layout by setting a local event with a free tool id: freeing the id
+/// bumps the interpreter's monitoring version for good, so every code object created
+/// afterwards paid `_Py_Instrument` at its first `RESUME`, ~930 instructions per new code
+/// object: a never-slower leak on every later import.)
 pub fn calibrate_monitoring(py: Python<'_>) -> bool {
-    *MONITORING_LAYOUT.get_or_init(|| probe_monitoring(py).unwrap_or(false))
+    *MONITORING_LAYOUT.get_or_init(|| check_monitoring_layout(py).unwrap_or(false))
 }
 
-fn probe_monitoring(py: Python<'_>) -> PyResult<bool> {
-    use super::guard::LOCAL_EVENTS;
-    // `sys.monitoring` without an import (no `__import__` call inside the watcher).
-    // SAFETY: borrowed reference or NULL (without an exception set).
-    let mon = unsafe { ffi::PySys_GetObject(c"monitoring".as_ptr()) };
-    if mon.is_null() {
-        return Ok(false);
-    }
-    // SAFETY: a live object owned by the sys module.
-    let mon = unsafe { Bound::from_borrowed_ptr(py, mon) };
-    let Some(id) = (0..6u8).rev().find(|i| mon.call_method1("get_tool", (*i,)).is_ok_and(|r| r.is_none())) else {
-        return Ok(true);
-    };
-    mon.call_method1("use_tool_id", (id, "rustique-layout-probe"))?;
+fn check_monitoring_layout(py: Python<'_>) -> PyResult<bool> {
     // SAFETY: static C strings; returns a new reference or NULL with an exception.
     let code = unsafe { PyCode_NewEmpty(c"<rustique-probe>".as_ptr(), c"probe".as_ptr(), 1) };
     // SAFETY: new reference or NULL.
-    let code = unsafe { Bound::from_owned_ptr_or_err(py, code) };
-    let result = (|| -> PyResult<bool> {
-        let code = code?;
-        // LINE (local on every version), STOP_ITERATION (the last local event on 3.14), and
-        // RERAISE (the last local event on 3.15).
-        let mut events = vec![5u8, 10];
-        if LOCAL_EVENTS == 16 {
-            events.push(15);
-        }
-        for ev in events {
-            mon.call_method1("set_local_events", (id, &code, 1u32 << ev))?;
-            // SAFETY: a live code object; layout prefix calibrated by `code_layout_ok_for`
-            // on real functions (same struct); bytes read within the local monitors.
-            let ok = unsafe {
-                let raw = (*code.as_ptr().cast::<RawCode>())._co_monitoring;
-                !raw.is_null() && (0..LOCAL_EVENTS).all(|i| *raw.add(i) == if i == ev as usize { 1 << id } else { 0 })
-            };
-            mon.call_method1("set_local_events", (id, &code, 0))?;
-            if !ok {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    })();
-    mon.call_method1("free_tool_id", (id,))?;
-    result
+    let code = unsafe { Bound::from_owned_ptr_or_err(py, code) }?;
+    if !code_layout_ok_for(&code)? {
+        return Ok(false);
+    }
+    // SAFETY: a live code object; reads within the documented prefix (calibrated above).
+    let raw = unsafe { &*code.as_ptr().cast::<RawCode>() };
+    Ok(raw.co_linetable == code.getattr("co_linetable")?.as_ptr()
+        && raw.co_weakreflist.is_null()
+        && raw.co_executors.is_null()
+        && raw._co_cached.is_null()
+        && raw._co_monitoring.is_null())
 }
