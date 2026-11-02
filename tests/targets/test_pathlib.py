@@ -299,6 +299,9 @@ def test_threads_share_objects():
 
 
 def test_shared_mechanics():
+    import cProfile  # noqa: F401  (imported outside the counted windows: their import
+    import pstats  # noqa: F401   code calls the patched functions, which would count as hits)
+
     import _mechanics as M
 
     off()

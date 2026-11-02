@@ -254,6 +254,9 @@ def test_filter_concurrent_mutation_is_safe():
 
 
 def test_shared_mechanics():
+    import cProfile  # noqa: F401  (imported outside the counted windows: their import
+    import pstats  # noqa: F401   code calls the patched functions, which would count as hits)
+
     import _mechanics as M
 
     A.disable(["fnmatch"])

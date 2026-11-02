@@ -265,28 +265,17 @@ const PROBES: usize = 4;
 static TABLE: [std::sync::atomic::AtomicPtr<Entry>; TABLE_SIZE] =
     [const { std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()) }; TABLE_SIZE];
 
-/// FNV-1a over the code points (and the kind: a str and a bytes pattern never share an
-/// entry).
-#[inline(always)]
-fn hash_units<T: Unit>(bytes: bool, s: &[T]) -> u64 {
-    let mut h: u64 = if bytes { 0x84222325cbf29ce4 } else { 0xcbf29ce484222325 };
-    for &u in s {
-        h = (h ^ u64::from(u.cp())).wrapping_mul(0x100000001b3);
-    }
-    h
-}
-
 #[inline(always)]
 fn same<T: Unit>(units: &[u32], s: &[T]) -> bool {
     units.len() == s.len() && units.iter().zip(s).all(|(&a, &b)| a == b.cp())
 }
 
-/// The entry of `pat` (content `s`), compiled and published on first use; `Err(entry)` is
-/// an unpublished entry (probe window full) owned by the caller for this call.
+/// The entry of a pattern with content `s` and hash `h`, compiled and published on first
+/// use; `Err(entry)` is an unpublished entry (probe window full) owned by the caller for
+/// this call.
 #[inline(always)]
-fn lookup<T: Unit>(bytes: bool, s: &[T]) -> Result<&'static Entry, Box<Entry>> {
+fn lookup<T: Unit>(bytes: bool, h: u64, s: &[T]) -> Result<&'static Entry, Box<Entry>> {
     use std::sync::atomic::Ordering::{Acquire, Release};
-    let h = hash_units(bytes, s);
     let base = h as usize;
     for k in 0..PROBES {
         let slot = &TABLE[(base + k) % TABLE_SIZE];
@@ -330,11 +319,14 @@ fn lookup<T: Unit>(bytes: bool, s: &[T]) -> Result<&'static Entry, Box<Entry>> {
 /// reproduced grammar.
 #[inline(always)]
 unsafe fn with_program<R>(k: Kind, pat: O, f: impl FnOnce(Compiled<'_>) -> R) -> Option<R> {
-    // SAFETY: live exact str/bytes (immutable buffers).
+    // SAFETY: live exact str/bytes (immutable buffers). The key is the object's own hash
+    // (cached in the object after its first computation; CPython's original computes it
+    // too, as the `lru_cache` key of `_compile_pattern`); entries are confirmed by content.
     let found = unsafe {
+        let h = ffi::PyObject_Hash(pat) as u64;
         match k {
-            Kind::Str => crate::with_text!(str_view(pat).text, |s| lookup(false, s)),
-            Kind::Bytes => lookup(true, bytes_view(pat)),
+            Kind::Str => crate::with_text!(str_view(pat).text, |s| lookup(false, h, s)),
+            Kind::Bytes => lookup(true, h, bytes_view(pat)),
         }
     };
     let e: &Entry = match &found {
