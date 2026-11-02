@@ -321,4 +321,3 @@ unsafe fn restore_one(f: P, kernel: usize) {
         }
     }
 }
-

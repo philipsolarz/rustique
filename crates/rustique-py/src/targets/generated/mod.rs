@@ -34,7 +34,9 @@ fn datamodel_dynamic_sites(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::Py
 #[pyfunction]
 fn datamodel_generic_alloc(cls: &Bound<'_, pyo3::types::PyType>) -> bool {
     // SAFETY: a live type object.
-    unsafe { (*cls.as_type_ptr()).tp_alloc.map_or(0, |f| f as usize) == pyo3::ffi::PyType_GenericAlloc as *const () as usize }
+    unsafe {
+        (*cls.as_type_ptr()).tp_alloc.map_or(0, |f| f as usize) == pyo3::ffi::PyType_GenericAlloc as *const () as usize
+    }
 }
 
 pub fn register(accel: &Bound<'_, PyModule>) -> PyResult<()> {

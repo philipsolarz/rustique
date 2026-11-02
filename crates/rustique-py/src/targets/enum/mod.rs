@@ -35,7 +35,9 @@ use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::PyType;
 
-use crate::accel::{self, Counters, DepFlag, GroupSpec, Original, Prepare, Reason, Refusal, SlotName, TargetSpec, Tools};
+use crate::accel::{
+    self, Counters, DepFlag, GroupSpec, Original, Prepare, Reason, Refusal, SlotName, TargetSpec, Tools,
+};
 use crate::targets::generated::adapter::{ClassCache, watch_dict_invalidates};
 use crate::targets::generated::common::*;
 
@@ -193,7 +195,17 @@ static ORIG_TP_CALL: Original<ffi::ternaryfunc> = Original::new();
 
 fn release(_py: Python<'_>) {
     for f in [
-        &PROP_GET, &CALL_FN, &NEW_FN, &HASH_FN, &NAME_FGET, &VALUE_FGET, &GET_VALUE, &OR_FN, &AND_FN, &XOR_FN, &INVERT_FN,
+        &PROP_GET,
+        &CALL_FN,
+        &NEW_FN,
+        &HASH_FN,
+        &NAME_FGET,
+        &VALUE_FGET,
+        &GET_VALUE,
+        &OR_FN,
+        &AND_FN,
+        &XOR_FN,
+        &INVERT_FN,
         &CONTAINS_FN,
     ] {
         f.release();
@@ -351,7 +363,9 @@ unsafe fn meta_facts(meta: Tp) -> bool {
     // SAFETY: attached thread; live type; MRO lookups only.
     unsafe {
         let tt = &raw mut ffi::PyType_Type;
-        if addr!((*meta).tp_getattro) != addr!((*tt).tp_getattro) || ffi::PyType_IsSubtype(meta, ENUM_TYPE.get().cast()) == 0 {
+        if addr!((*meta).tp_getattro) != addr!((*tt).tp_getattro)
+            || ffi::PyType_IsSubtype(meta, ENUM_TYPE.get().cast()) == 0
+        {
             return false;
         }
         if !resolves_to(meta, N_MEMBER_MAP.get(), null_mut())
@@ -837,9 +851,13 @@ fn prepare_shared<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Ref
     exact_fn(&gv, "Flag._get_value")?;
     cx.fingerprint_code(&gv, fp::GET_VALUE)?;
     let mut ops = Vec::new();
-    for (n, f) in
-        [("__or__", fp::OR), ("__and__", fp::AND), ("__xor__", fp::XOR), ("__invert__", fp::INVERT), ("__contains__", fp::CONTAINS)]
-    {
+    for (n, f) in [
+        ("__or__", fp::OR),
+        ("__and__", fp::AND),
+        ("__xor__", fp::XOR),
+        ("__invert__", fp::INVERT),
+        ("__contains__", fp::CONTAINS),
+    ] {
         let o = function(cx, &flag_cls, n)?;
         exact_fn(&o, n)?;
         cx.fingerprint_code(&o, f)?;

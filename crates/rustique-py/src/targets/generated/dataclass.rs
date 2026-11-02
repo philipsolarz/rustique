@@ -111,9 +111,7 @@ struct Parsed {
 }
 
 fn ident(s: &str) -> bool {
-    !s.is_empty()
-        && !s.starts_with(|c: char| c.is_ascii_digit())
-        && s.chars().all(|c| c == '_' || c.is_alphanumeric())
+    !s.is_empty() && !s.starts_with(|c: char| c.is_ascii_digit()) && s.chars().all(|c| c == '_' || c.is_alphanumeric())
 }
 
 /// Parse the source `_init_fn` produced for a frozen class without `__post_init__`
@@ -394,7 +392,9 @@ unsafe fn check_type(plan: &DcPlan, t: Tp) -> bool {
 
 #[inline]
 fn is_builtin_factory(f: P) -> bool {
-    f == (&raw mut ffi::PyList_Type).cast() || f == (&raw mut ffi::PyDict_Type).cast() || f == (&raw mut ffi::PySet_Type).cast()
+    f == (&raw mut ffi::PyList_Type).cast()
+        || f == (&raw mut ffi::PyDict_Type).cast()
+        || f == (&raw mut ffi::PySet_Type).cast()
 }
 
 /// The generated frozen `__init__` (reached from `slot_tp_init`, or `super().__init__`).
@@ -567,7 +567,9 @@ unsafe fn capture(builder: P, cls: P) -> Option<Captured> {
         }
         let meta = ffi::Py_TYPE(cls);
         let tt = &raw mut ffi::PyType_Type;
-        if addr!((*meta).tp_setattro) != addr!((*tt).tp_setattro) || addr!((*meta).tp_getattro) != addr!((*tt).tp_getattro) {
+        if addr!((*meta).tp_setattro) != addr!((*tt).tp_setattro)
+            || addr!((*meta).tp_getattro) != addr!((*tt).tp_getattro)
+        {
             return None;
         }
         // `__qualname__` read by add_fns_to_class: `type`'s own descriptor.
@@ -720,7 +722,8 @@ fn on_disable(_py: Python<'_>) {
         for wr in v {
             let mut t: P = null_mut();
             if PyWeakref_GetRef(wr as P, &mut t) > 0 && !t.is_null() {
-                let cell = &*(&raw const (*t.cast::<ffi::PyTypeObject>()).tp_alloc).cast::<std::sync::atomic::AtomicUsize>();
+                let cell =
+                    &*(&raw const (*t.cast::<ffi::PyTypeObject>()).tp_alloc).cast::<std::sync::atomic::AtomicUsize>();
                 let _ = cell.compare_exchange(
                     k_alloc as *const () as usize,
                     ffi::PyType_GenericAlloc as *const () as usize,

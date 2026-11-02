@@ -266,7 +266,11 @@ unsafe extern "C" fn k_contextmanager(f: P, args: *const P, nargsf: usize, kw: P
     // SAFETY: CPython's vectorcall protocol.
     unsafe {
         let h = orig(f, args, nargsf, kw);
-        if !h.is_null() && DEPS.ok() && func_code(f) == CM_CODE.get() && is_function(h) && func_code(h) == HELPER_CODE.get()
+        if !h.is_null()
+            && DEPS.ok()
+            && func_code(f) == CM_CODE.get()
+            && is_function(h)
+            && func_code(h) == HELPER_CODE.get()
         {
             DYN.install(h, k_helper);
         }
@@ -312,8 +316,14 @@ fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     INIT_FN.keep(&init);
     // SAFETY: an exact function.
     INIT_CODE.keep(&unsafe { Bound::from_borrowed_ptr(py, func_code(init.as_ptr())) });
-    for (s, n) in [(&N_GEN, "gen"), (&N_FUNC, "func"), (&N_ARGS, "args"), (&N_KWDS, "kwds"), (&N_DOC, "__doc__"), (&N_INIT, "__init__")]
-    {
+    for (s, n) in [
+        (&N_GEN, "gen"),
+        (&N_FUNC, "func"),
+        (&N_ARGS, "args"),
+        (&N_KWDS, "kwds"),
+        (&N_DOC, "__doc__"),
+        (&N_INIT, "__init__"),
+    ] {
         s.name(py, n);
     }
     GCM_TAG.store(0, Relaxed);

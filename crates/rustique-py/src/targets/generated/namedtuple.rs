@@ -459,15 +459,31 @@ unsafe fn adopt(cls: P, fresh: bool, force: bool) {
         if fresh {
             let new = own_wrapped(cls, N_NEW.get(), &raw mut ffi::PyStaticMethod_Type);
             if !new.is_null() && new_plan(cls, new) {
-                SLOT_TP_NEW.compare_exchange(0, (*cls.cast::<ffi::PyTypeObject>()).tp_new.map_or(0, |f| f as usize), Relaxed, Relaxed).ok();
+                SLOT_TP_NEW
+                    .compare_exchange(
+                        0,
+                        (*cls.cast::<ffi::PyTypeObject>()).tp_new.map_or(0, |f| f as usize),
+                        Relaxed,
+                        Relaxed,
+                    )
+                    .ok();
                 install(new, k_nt_new);
             }
         }
         let mk = own_wrapped(cls, N_MAKE.get(), &raw mut ffi::PyClassMethod_Type);
         if !mk.is_null() && func_code(mk) == MAKE_CODE.get() {
             install(mk, k_nt_make);
-            if SLOT_TP_NEW.load(Relaxed) == 0 && !own_wrapped(cls, N_NEW.get(), &raw mut ffi::PyStaticMethod_Type).is_null() {
-                SLOT_TP_NEW.compare_exchange(0, (*cls.cast::<ffi::PyTypeObject>()).tp_new.map_or(0, |f| f as usize), Relaxed, Relaxed).ok();
+            if SLOT_TP_NEW.load(Relaxed) == 0
+                && !own_wrapped(cls, N_NEW.get(), &raw mut ffi::PyStaticMethod_Type).is_null()
+            {
+                SLOT_TP_NEW
+                    .compare_exchange(
+                        0,
+                        (*cls.cast::<ffi::PyTypeObject>()).tp_new.map_or(0, |f| f as usize),
+                        Relaxed,
+                        Relaxed,
+                    )
+                    .ok();
             }
         }
         let rp = own_wrapped(cls, N_REPLACE.get(), null_mut());
@@ -518,7 +534,10 @@ unsafe fn new_plan(cls: P, new: P) -> bool {
             && ffi::PyTuple_GET_SIZE(lp) as usize == nf + 1
             && same_str(ffi::PyTuple_GET_ITEM(lp, 0), N_CLS.get())
             && (0..nf).all(|i| {
-                same_str(ffi::PyTuple_GET_ITEM(lp, (i + 1) as ffi::Py_ssize_t), ffi::PyTuple_GET_ITEM(fields, i as ffi::Py_ssize_t))
+                same_str(
+                    ffi::PyTuple_GET_ITEM(lp, (i + 1) as ffi::Py_ssize_t),
+                    ffi::PyTuple_GET_ITEM(fields, i as ffi::Py_ssize_t),
+                )
             });
         // The globals the lambda reads.
         let g = (*new.cast::<ffi::PyFunctionObject>()).func_globals;

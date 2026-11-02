@@ -24,7 +24,7 @@
 //!   `_dispatch_arg_index`).
 
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering::*};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering::*};
 
 use pyo3::ffi;
 use pyo3::prelude::*;
@@ -129,8 +129,20 @@ static ONE: Slot = Slot::new();
 fn release(_py: Python<'_>) {
     DYN.release();
     for s in [
-        &SD_CODE, &DISPATCH_CODE, &GET_CACHE_TOKEN, &WKD, &WKD_GETITEM, &WKD_GETITEM_CODE, &WR_DICT, &WR_REF, &SDM, &SDM_GET_FN,
-        &SDM_GET_CODE, &GET_T, &GET_INIT, &GET_INIT_CODE,
+        &SD_CODE,
+        &DISPATCH_CODE,
+        &GET_CACHE_TOKEN,
+        &WKD,
+        &WKD_GETITEM,
+        &WKD_GETITEM_CODE,
+        &WR_DICT,
+        &WR_REF,
+        &SDM,
+        &SDM_GET_FN,
+        &SDM_GET_CODE,
+        &GET_T,
+        &GET_INIT,
+        &GET_INIT_CODE,
     ] {
         s.release();
     }
@@ -296,7 +308,8 @@ unsafe extern "C" fn k_dispatch(f: P, args: *const P, nargsf: usize, kw: P) -> P
             0 => wr_validate(),
             _ => false,
         };
-        if !ready || !DEPS.ok() || !accel::tools_quiet(&TOOLS, f) || !accel::code_locally_quiet(WKD_GETITEM_CODE.get()) {
+        if !ready || !DEPS.ok() || !accel::tools_quiet(&TOOLS, f) || !accel::code_locally_quiet(WKD_GETITEM_CODE.get())
+        {
             C_DISPATCH.fallback_streak(Reason::Tools);
             return orig(f, args, nargsf, kw);
         }
@@ -327,7 +340,11 @@ unsafe fn lookup_impl(f: P, cls: P) -> Option<P> {
         let same = if tok == ffi::Py_None() {
             true
         } else {
-            let cur = if ffi::PyLong_CheckExact(tok) != 0 { ffi::PyObject_CallNoArgs(GET_CACHE_TOKEN.get()) } else { null_mut() };
+            let cur = if ffi::PyLong_CheckExact(tok) != 0 {
+                ffi::PyObject_CallNoArgs(GET_CACHE_TOKEN.get())
+            } else {
+                null_mut()
+            };
             let same = !cur.is_null()
                 && ffi::PyLong_CheckExact(cur) != 0
                 && ffi::PyObject_RichCompareBool(tok, cur, ffi::Py_EQ) == 1;
