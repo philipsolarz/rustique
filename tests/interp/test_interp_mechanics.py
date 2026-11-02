@@ -5,6 +5,7 @@ subinterpreters, the JIT, and net-benefit suspension."""
 
 from __future__ import annotations
 
+import gc
 import subprocess
 import sys
 import textwrap
@@ -98,10 +99,21 @@ def test_tools_see_cpython_handlers(tool: str) -> None:
     tool sees with the tier on are those of plain CPython."""
 
     def record() -> tuple[list[object], list[tuple[str, str]]]:
+        # Only this file's frames, with the cyclic GC off: finalizers of other tests'
+        # garbage must not interleave their own events.
+        gc.collect()
+        gc.disable()
+        try:
+            return _record()
+        finally:
+            gc.enable()
+
+    def _record() -> tuple[list[object], list[tuple[str, str]]]:
         events: list[tuple[str, str]] = []
         if tool == "settrace":
             def tracer(frame, event, arg):  # type: ignore[no-untyped-def]
-                events.append((event, frame.f_code.co_name))
+                if frame.f_code.co_filename == __file__:
+                    events.append((event, frame.f_code.co_name))
                 return tracer
             sys.settrace(tracer)
             try:
@@ -110,7 +122,8 @@ def test_tools_see_cpython_handlers(tool: str) -> None:
                 sys.settrace(None)
         elif tool == "setprofile":
             def prof(frame, event, arg):  # type: ignore[no-untyped-def]
-                events.append((event, getattr(arg, "__name__", frame.f_code.co_name)))
+                if frame.f_code.co_filename == __file__:
+                    events.append((event, getattr(arg, "__name__", frame.f_code.co_name)))
             sys.setprofile(prof)
             try:
                 out = _program()
@@ -121,8 +134,10 @@ def test_tools_see_cpython_handlers(tool: str) -> None:
             tid = mon.PROFILER_ID
             mon.use_tool_id(tid, "interp-test")
             ev = mon.events
-            mon.register_callback(tid, ev.PY_START, lambda code, off: events.append(("start", code.co_name)))
-            mon.register_callback(tid, ev.CALL, lambda code, off, c, a: events.append(("call", getattr(c, "__name__", "?"))))
+            mon.register_callback(tid, ev.PY_START, lambda code, off: code.co_filename == __file__
+                                  and events.append(("start", code.co_name)))
+            mon.register_callback(tid, ev.CALL, lambda code, off, c, a: code.co_filename == __file__
+                                  and events.append(("call", getattr(c, "__name__", "?"))))
             mon.set_events(tid, ev.PY_START | ev.CALL)
             try:
                 out = _program()
