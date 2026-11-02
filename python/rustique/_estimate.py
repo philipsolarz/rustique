@@ -555,6 +555,7 @@ class Sampler:
         self._cpu_last: dict[int, int] = {}
         self.cpu_ns = 0
         self.wall_ns = 0
+        self.delay_ns = 0
         self._t0 = (0, 0)
 
     def _resolve(self) -> None:
@@ -579,9 +580,13 @@ class Sampler:
         index = self.csite_index
         cache = self.csite_cache
         chain = []
+        top = True
         while f is not None:
             code = f.f_code
-            if index:
+            # A C-level target counts only when the sample is in it, not in Python code it
+            # called back (the generator under any(), a key function): its kernel does not
+            # make that code faster.
+            if index and top:
                 sites = cache.get(code, False)
                 if sites is False:
                     sites = cache[code] = index.get((code.co_filename, code.co_qualname, code.co_firstlineno))
@@ -592,6 +597,7 @@ class Sampler:
             n = codes.get(code)
             if n is not None and n not in chain:
                 chain.append(n)
+            top = False
             f = f.f_back
         return tuple(reversed(chain)) if chain else None
 
@@ -671,7 +677,7 @@ class Sampler:
         import threading
 
         self._resolve()
-        self._t0 = (time.process_time_ns(), time.perf_counter_ns())
+        self._t0 = (time.process_time_ns(), time.perf_counter_ns(), run_delay_ns())
         signal = None
         try:
             import signal
@@ -709,6 +715,9 @@ class Sampler:
             sys.setswitchinterval(self._switch)
         self.cpu_ns += time.process_time_ns() - self._t0[0]
         self.wall_ns += time.perf_counter_ns() - self._t0[1]
+        d = run_delay_ns()
+        if d is not None and self._t0[2] is not None:
+            self.delay_ns += d - self._t0[2]
         return self
 
     def shares(self) -> dict:
@@ -719,6 +728,7 @@ class Sampler:
             inner[chain[-1]] = inner.get(chain[-1], 0.0) + w
         t = self.total or 1.0
         out = {"samples": self.samples, "mode": self.mode, "cpu_ns": self.cpu_ns, "wall_ns": self.wall_ns,
+               "delay_ns": self.delay_ns,
                "c_sites": bool(self.csite_index),
                "shares": {n: w / t for n, w in inner.items()} if self.total else {},
                "chains": {">".join(c): w / t for c, w in self.weights.items()} if self.total else {},
@@ -924,9 +934,13 @@ def predict(profile: dict, replayed: dict, counters: dict | None, total_ns: floa
     basis = total_ns  # what Python-level shares are shares of
     denom = total_ns  # what the saving is divided by
     if sampled is not None and sampled.get("mode") == "signal" and sampled.get("wall_ns"):
-        cpu_frac = sampled.get("cpu_ns", 0) / sampled["wall_ns"]
+        w = sampled["wall_ns"]
+        cpu_frac = sampled.get("cpu_ns", 0) / w
         basis = total_ns * cpu_frac
-        denom = max(total_ns, basis)
+        # time the process was ready but not running (a busy machine) is neither its work
+        # nor its waiting: it would not be there on an idle machine
+        busy = min(max(sampled.get("delay_ns", 0) / w, 0.0), 1.0 - cpu_frac)
+        denom = max(total_ns * (1.0 - busy), basis)
     mt = bool(profile.get("thread_clock")) and sampled is not None and mode == "samples"
     if mt:
         # Several threads: stack samples of the threads other than the main one are taken
@@ -935,7 +949,7 @@ def predict(profile: dict, replayed: dict, counters: dict | None, total_ns: floa
         mode = "hybrid"
     if sampled is not None:
         shares = assign_chains(sampled, counters, replayed) if sampled.get("chains") else sampled.get("shares", {})
-        c_sampled = bool(sampled.get("c_sites")) and mode == "samples"
+        c_sampled = bool(sampled.get("c_sites")) and (mode == "samples" or mt)
         for n, p in targets.items():
             if p["kind"] == "c" and c_sampled:
                 # the sampler saw the calls of C-level targets at their call sites: no
@@ -981,6 +995,16 @@ def predict(profile: dict, replayed: dict, counters: dict | None, total_ns: floa
     rows.sort(key=lambda r: -r["saved_ns"])
     return {"ratio": (denom - saved) / denom if denom else 1.0, "under_targets": under / denom if denom else 0.0,
             "saved_ns": saved, "total_ns": denom, "wall_ns": total_ns, "cpu_ns": basis, "rows": rows}
+
+
+def run_delay_ns() -> int | None:
+    """Time this process's main thread spent runnable but waiting for a CPU (Linux
+    ``/proc/self/schedstat``), or None."""
+    try:
+        with open("/proc/self/schedstat") as f:
+            return int(f.read().split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
 
 
 def hit_fraction(name: str, counters: dict, replayed: dict) -> float:
@@ -1117,6 +1141,7 @@ def combine(samples: list[dict], profiles: list[dict], records: list[dict]) -> t
             chains[n] = chains.get(n, 0.0) + sh * w
     modes = {r.get("mode") for r in samples if r.get("samples")}
     sampled = {"samples": sum(r.get("samples", 0) for r in samples), "shares": shares, "chains": chains,
+               "delay_ns": sum(r.get("delay_ns", 0) for r in samples),
                "mode": "signal" if modes == {"signal"} else ("thread" if modes else None),
                "cpu_ns": cpu, "wall_ns": sampled_wall}
     merged = {"targets": {}, "thread_clock": any(pr.get("thread_clock") for pr in profiles)}
