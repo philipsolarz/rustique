@@ -225,8 +225,10 @@ this workstream's effect. Custom family (k=3, r=2, spread ≤ ±0.0034):
 | mini_interp | 0.9994 | 1.0019 |
 | **geometric mean** | **0.929** | **0.944** |
 
-mini_interp re-measured with 6 runs × 3 repeats: all/base 1.0001 (±0.0005; 1,984 namedtuple
-hits per run, no fallback: noise).
+Near-1.0 workloads re-measured after the last merge with 8 runs × 3 repeats (all/plain,
+all/base): mini_interp 0.9992 / 0.9995, task_planner 0.9989 / 0.9960, fulfilment_sim 0.9750
+/ 1.0003 (no data-model kernel runs there; ±0.0001). mini_interp's 1.005 in the k=3 tier
+table above is the same noise (1,984 namedtuple hits per run, no fallback).
 
 Other families (all/base; k=8 runs × 2 repeats, spread ≤ ±0.0033; json_api k=3):
 
@@ -284,7 +286,7 @@ data-model" = the tier and every group except this workstream's):
 | ecs_arena | 0.955 | 0.951 | 0.951 |
 | fulfilment_sim | 0.975 | 0.955 | 0.955 |
 | task_planner | 1.000 | 0.998 | 1.001 |
-| mini_interp | 1.005 (noise, below) | 0.998 | 0.997 |
+| mini_interp | 1.005 (k=3 noise; 0.999 at k=8 × 3) | 0.998 | 0.997 |
 | **geometric mean** | **0.927** | **0.905** | **0.931** |
 
 ## 5. Free-threading
