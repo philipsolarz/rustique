@@ -15,7 +15,7 @@ wave-2 dev box (c7a.8xlarge, shared by nine workstreams: wall times are indicati
 | control | `RUSTIQUE=0` kill switch over everything (tiers too), `RUSTIQUE_ONLY`/`_EXCLUDE`, **`RUSTIQUE_TIERS`** (`--tiers`, `--rustique-tiers`), `RUSTIQUE_UNVALIDATED_PATCH`; `python -m rustique app.py` is `python app.py` (`__file__`, tracebacks, SIGINT, children); `--native` removed with a pointer to MIGRATION.md | §2 |
 | visibility | reports count **every process once**: forked children start at zero, `os._exit`/killed workers counted from live counter files (accel), `report --from FILE.json`; suspensions, `continue`/`abandon` restarts, armed/unvalidated targets, tiers; each fallback reason and refusal category says **what to do** | §3 |
 | CI proof | `diff`: 0 false alarms on 14 real suites (volatile-output rule, masks), **test node ids from the plugin and confirmation re-runs** (a test flaky without Rustique is not a difference); plugin: `--rustique-tiers`, `unvalidated-patch` expected, `--rustique-outcomes` | §4 |
-| "will it help me?" | `python -m rustique estimate -- <cmd>`: CPU-time stack sampler (signal timer, safe on free-threaded builds), C-level targets sampled at their call sites, stacks of targets split by how often each kernel takes the call, entry points from `status()`, thread-CPU profiler for threaded programs | T13: ⟨T13⟩ (§5) |
+| "will it help me?" | `python -m rustique estimate -- <cmd>`: CPU-time stack sampler (signal timer, safe on free-threaded builds), C-level targets sampled at their call sites, stacks of targets split by how often each kernel takes the call, entry points from `status()`, thread-CPU profiler for threaded programs | 50–51/65 within ±0.03 on the loaded box (T13 asks 52); 47/55 without the threaded and service families (§5.2) |
 | wheels and platforms | `wheels.yml`: repack to top-level `_rustique` + layout check on all 32 wheels; interp tier built with clang ≥ 19 on Linux x86_64 and asserted; **per-platform job**: Rustique's tests + CPython's test modules for every installed target on 8 platforms × 4 builds; coverage table + floors; windows-arm64 promoted | §6 |
 | docs | `docs/USAGE.md` rewritten (platforms, versions, patch releases, tiers, estimate, reports, CI recipes, troubleshooting, migration) | — |
 
@@ -217,7 +217,115 @@ quiet-box ratio (`docs/atlas/phase3.md` §4) for wave 1's 34 workloads. For the 
 it is the dev-box `measure` (5 interleaved fresh-process pairs × 5 runs, median wall; two
 rounds averaged where both exist). The prediction ran on the loaded box (M).
 
-⟨VALIDATION⟩
+**Result (3.15.1, M):**
+
+- Final code (v5): **50/65 within ±0.03 (77%)**, 47 within ±0.02, 57 within ±0.05, median
+  |error| 0.011, mean 0.027, bias +0.009.
+- A second run of the same model (v4): 51/65 (78%), 58 within ±0.05.
+- T13 asks for ≥ 80% (52). **Not met on the dev box**, by 1–2 workloads.
+- The run-to-run spread at load 50–100 is ±2 workloads. Two of the box references disagree
+  between their two rounds by 0.08 (`cache_service`) and 0.22 (`django_admin`).
+- The systematic gap is threaded programs: 3 of the 5 `threads` workloads and 3 of the 4
+  `services` miss (§5.3).
+- Without the `threads` and `services` families and the reference that varies by 0.22:
+  47/55 (85%). Per family: `custom` 10/10, `libs` 6/6, `devtools` 10/12, `data` 9/12,
+  `web` 8/10, `frameworks` 4/6.
+
+How the model got there (same 65 workloads, same references):
+
+| version | change | within ±0.03 |
+|---|---|---:|
+| Phase 1 | wall-clock sampler thread, outermost target, profiler for C-level targets | 46 |
+| v2 | CPU-time signal sampler, innermost target, thread-CPU clock with threads | 50 |
+| v3 | stacks split by hit rate, C-level targets sampled at their call sites, replay = fastest of 5 batches | 48 |
+| v4 | run-queue delay out of the denominator, C-level targets only when innermost, threads sample C-level targets | 51 |
+| v5 | CPU, wall and delay from the timed runs (validation harness) | 50 |
+
+What the signal sampler fixed (Phase 1 → v5):
+
+| workload | Phase 1 error | v5 error |
+|---|---:|---:|
+| `fs_inventory` (I/O) | +0.250 | within 0.03 |
+| `asyncio_http` | +0.206 | within 0.03 |
+| `json_api` (`default=` → `asdict`) | +0.077 | within 0.03 |
+| `logging_service` | +0.003 | −0.040 |
+| `state_snapshot` | −0.138 | within 0.03 |
+
+Per workload (v5; `P3` = Phase 3 quiet box; `box ×n` = n rounds on the dev box; **x** =
+outside ±0.03):
+
+| workload | measured | source | predicted | error | under targets | top saver |
+|---|---:|---|---:|---:|---:|---|
+| custom/di_plugins | 0.991 | box ×1 | 0.998 | +0.007 | 0% | tuple.__contains__ (0%) |
+| custom/ecs_arena | 0.987 | box ×1 | 0.998 | +0.011 | 6% | builtins.min (0%) |
+| custom/event_ledger | 0.982 | box ×1 | 1.000 | +0.018 | 0% | dataclasses.asdict (0%) |
+| custom/fulfilment_sim | 0.995 | box ×1 | 0.997 | +0.002 | 0% | random.randrange (0%) |
+| custom/mini_interp | 0.988 | box ×1 | 1.000 | +0.012 | 0% | tuple.__contains__ (0%) |
+| custom/order_domain | 1.001 | box ×1 | 0.995 | -0.005 | 1% | builtins.min (0%) |
+| custom/orm_mapper | 0.971 | box ×1 | 0.979 | +0.008 | 3% | datetime.date.isoformat (1%) |
+| custom/report_engine | 0.900 | box ×1 | 0.916 | +0.016 | 9% | datetime.date.strftime (3%) |
+| custom/rules_engine | 0.998 | box ×1 | 0.996 | -0.002 | 1% | float.repr (0%) |
+| custom/task_planner | 0.997 | box ×1 | 0.996 | -0.001 | 5% | builtins.max (0%) |
+| data/backup_archive | 0.996 | P3 | 0.991 | -0.005 | 2% | builtins.sum (0%) |
+| data/billing_engine | 0.970 | P3 | 0.905 | -0.065 **x** | 16% | builtins.min (1%) |
+| data/config_merge | 1.013 | P3 | 0.997 | -0.016 | 4% | json.loads (0%) |
+| data/csv_etl | 0.625 | P3 | 0.642 | +0.017 | 50% | json.dumps (5%) |
+| data/fs_inventory | 0.743 | P3 | 0.749 | +0.006 | 33% | pathlib.PurePath.relative_to (6%) |
+| data/log_analytics | 0.594 | P3 | 0.637 | +0.043 **x** | 41% | datetime.datetime.strptime (7%) |
+| data/pandas_etl | 1.000 | P3 | 1.000 | -0.000 | 0% | tuple.__contains__ (0%) |
+| data/report_render | 0.436 | P3 | 0.457 | +0.021 | 71% | textwrap.fill (9%) |
+| data/state_snapshot | 0.651 | P3 | 0.624 | -0.027 | 83% | copy.deepcopy (9%) |
+| data/text_corpus | 1.000 | P3 | 0.994 | -0.006 | 2% | builtins.min (0%) |
+| data/tz_events | 0.591 | P3 | 0.531 | -0.060 **x** | 58% | datetime.date.strftime (14%) |
+| data/xml_feeds | 1.000 | P3 | 1.000 | -0.000 | 3% | tuple.__contains__ (0%) |
+| devtools/black_format | 0.990 | P3 | 0.997 | +0.007 | 1% | tuple.__contains__ (0%) |
+| devtools/coverage_pyflakes_tests | 0.995 | P3 | 0.989 | -0.006 | 2% | textwrap.dedent (0%) |
+| devtools/import_startup | 1.000 | P3 | 1.000 | +0.000 | 0% | - |
+| devtools/isort_stdlib | 0.771 | P3 | 0.686 | -0.085 **x** | 50% | copy.deepcopy (6%) |
+| devtools/pip_resolve | 0.949 | P3 | 0.963 | +0.014 | 9% | pathlib.PurePath.relative_to (0%) |
+| devtools/pycodestyle_stdlib | 0.985 | P3 | 0.989 | +0.004 | 0% | list.__contains__ (0%) |
+| devtools/pyflakes_stdlib | 0.997 | P3 | 0.999 | +0.002 | 0% | tuple.__contains__ (0%) |
+| devtools/pylint_stdlib | 1.002 | P3 | 0.998 | -0.004 | 1% | posixpath.abspath (0%) |
+| devtools/pytest_networkx | 0.948 | P3 | 0.979 | +0.031 **x** | 10% | pathlib.PurePath.__eq__ (1%) |
+| devtools/rich_render | 0.998 | P3 | 0.992 | -0.006 | 4% | builtins.max (0%) |
+| devtools/sphinx_autodoc | 0.977 | P3 | 0.989 | +0.012 | 5% | logging.LogRecord.__init__ (0%) |
+| devtools/sqlglot_transpile | 0.968 | P3 | 0.952 | -0.016 | 19% | copy.deepcopy (4%) |
+| frameworks/django_admin | 1.052 | box ×2, spread 0.22 | 0.985 | -0.067 **x** | 5% | urllib.parse.parse_qsl (0%) |
+| frameworks/drf_api | 1.018 | box ×2 | 0.984 | -0.033 **x** | 9% | copy.deepcopy (0%) |
+| frameworks/falcon_api | 0.801 | box ×2 | 0.794 | -0.007 | 27% | json.dumps (5%) |
+| frameworks/fastapi_sqlalchemy | 0.998 | box ×2 | 0.993 | -0.004 | 1% | json.dumps (0%) |
+| frameworks/flask_marshmallow | 1.005 | box ×2 | 0.992 | -0.013 | 4% | datetime.date.isoformat (0%) |
+| frameworks/strawberry_graphql | 0.989 | box ×2 | 1.000 | +0.010 | 2% | float.repr (0%) |
+| libs/attrs_cattrs | 0.912 | box ×2, spread 0.03 | 0.892 | -0.020 | 23% | json.dumps (2%) |
+| libs/boto3_client | 0.980 | box ×2 | 0.972 | -0.008 | 6% | json.loads (0%) |
+| libs/bs4_scrape | 0.985 | box ×2 | 0.997 | +0.013 | 0% | tuple.__contains__ (0%) |
+| libs/jsonschema_validate | 0.993 | box ×2 | 0.999 | +0.006 | 1% | urllib.parse.unquote (0%) |
+| libs/pydantic_payloads | 1.000 | box ×2 | 0.992 | -0.008 | 2% | copy.deepcopy (0%) |
+| libs/yaml_config | 1.010 | box ×2 | 0.999 | -0.010 | 0% | datetime.datetime.isoformat (0%) |
+| services/cache_service | 0.962 | box ×2, spread 0.08 | 0.999 | +0.038 **x** | 0% | tuple.__contains__ (0%) |
+| services/job_worker | 0.628 | box ×2 | 0.876 | +0.248 **x** | 116% | json.dumps (4%) |
+| services/uvicorn_fastapi | 1.003 | box ×2 | 0.967 | -0.036 **x** | 11% | copy.copy (1%) |
+| services/waitress_flask | 0.971 | box ×2 | 0.985 | +0.014 | 13% | logging.Logger.findCaller (1%) |
+| threads/compute_pool | 0.978 | box ×2 | 0.960 | -0.018 | 7% | builtins.min (4%) |
+| threads/http_server | 0.909 | box ×2 | 0.936 | +0.028 | 11% | json.dumps (5%) |
+| threads/pipeline_queue | 0.558 | box ×2, spread 0.03 | 0.889 | +0.331 **x** | 26% | datetime.datetime.strptime (6%) |
+| threads/request_pool | 0.591 | box ×2 | 0.698 | +0.106 **x** | 51% | json.dumps (13%) |
+| threads/shared_cache | 0.679 | box ×2 | 0.770 | +0.091 **x** | 35% | json.dumps (14%) |
+| web/aiohttp_app | 0.910 | P3 | 0.944 | +0.034 **x** | 9% | json.dumps (0%) |
+| web/asyncio_http | 0.791 | P3 | 0.773 | -0.018 | 31% | json.dumps (3%) |
+| web/django_blog | 0.997 | P3 | 0.993 | -0.004 | 4% | urllib.parse.quote (0%) |
+| web/email_mime | 0.995 | P3 | 0.996 | +0.001 | 2% | datetime.date.strftime (0%) |
+| web/fastapi_pydantic | 0.983 | P3 | 0.977 | -0.006 | 6% | json.dumps (1%) |
+| web/flask_jinja | 0.990 | P3 | 0.985 | -0.005 | 8% | json.loads (0%) |
+| web/json_api | 0.835 | P3 | 0.843 | +0.008 | 63% | json.loads (2%) |
+| web/logging_service | 0.817 | P3 | 0.777 | -0.040 **x** | 93% | logging.Logger.level (4%) |
+| web/requests_local | 0.941 | P3 | 0.952 | +0.011 | 9% | json.dumps (2%) |
+| web/sqlalchemy_orm | 0.997 | P3 | 0.998 | +0.001 | 1% | datetime.datetime.isoformat (0%) |
+
+Raw data: `~/rustique-research/w2/ws-dx/est/v{1..5}-3.15.1/` (predictions with their
+inputs), `m2/` and `v1-3.15.1/measured-*.json` (box measurements). Not repeated on 3.15.1t this
+phase (box time). There, the sampler's safety is what was tested: `tests/test_dx_estimate.py`
+passes on 3.15.1t, and the estimate command runs end to end in that suite.
 
 ### 5.3 Limits
 
