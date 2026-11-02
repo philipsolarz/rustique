@@ -151,7 +151,11 @@ impl Located {
     pub fn opname(&self, opcode: u8) -> &'static str {
         // SAFETY: a static string of the set, or NULL.
         let p = unsafe { (self.api.opname)(c_int::from(opcode)) };
-        if p.is_null() { "?" } else { unsafe { CStr::from_ptr(p) }.to_str().unwrap_or("?") }
+        if p.is_null() {
+            return "?";
+        }
+        // SAFETY: a NUL-terminated static string of the set.
+        unsafe { CStr::from_ptr(p) }.to_str().unwrap_or("?")
     }
 
     /// The opcodes of a group.
@@ -262,7 +266,8 @@ fn locate_uncached() -> Result<Located, Refuse> {
         return Err(Refuse::NoHandlers("handler set interface mismatch".into()));
     }
     let ft = api.gil_disabled != 0;
-    let obj = interpreter_object().ok_or_else(|| Refuse::Build("cannot find the object holding the interpreter".into()))?;
+    let obj =
+        interpreter_object().ok_or_else(|| Refuse::Build("cannot find the object holding the interpreter".into()))?;
     let Some(build) = candidates.iter().find(|b| b.free_threaded == ft && b.build_id == obj.build_id) else {
         return Err(Refuse::Build(format!(
             "unverified CPython binary (build-id {}, {}): the interp tier runs only on verified python-build-standalone builds",
@@ -280,8 +285,8 @@ fn locate_uncached() -> Result<Located, Refuse> {
             )));
         }
     }
-    // SAFETY: NOP's verified core handler; the self-test touches only its own scratch data.
     let nop = located.core_handler(NOP).ok_or_else(|| Refuse::Build("no NOP handler recorded".into()))?;
+    // SAFETY: NOP's verified core handler; the self-test touches only its own scratch data.
     if unsafe { (api.abi_selftest)(nop as *mut c_void) } != 1 {
         return Err(Refuse::Selftest(
             "calling-convention self-test failed: the handlers were compiled with an incompatible ABI".into(),

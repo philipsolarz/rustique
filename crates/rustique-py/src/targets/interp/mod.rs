@@ -203,8 +203,12 @@ fn info(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
                 gd.set_item("fills", s.fills)?;
                 gd.set_item("suspended", s.suspended)?;
                 gd.set_item("windows", s.windows)?;
-                let swapped: Vec<&str> =
-                    loc.ops(g).into_iter().filter(|&op| Some(loc.current(op)) == loc.handler(op)).map(|op| loc.opname(op)).collect();
+                let swapped: Vec<&str> = loc
+                    .ops(g)
+                    .into_iter()
+                    .filter(|&op| Some(loc.current(op)) == loc.handler(op))
+                    .map(|op| loc.opname(op))
+                    .collect();
                 gd.set_item("swapped", swapped)?;
                 groups.set_item(group_name(g), gd)?;
             }

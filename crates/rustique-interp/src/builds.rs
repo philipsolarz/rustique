@@ -38,7 +38,7 @@ pub static VERIFIED: &[VerifiedBuild] = &[
         handler_table: 0x14cdbf0,
         tracing_table: 0x14ce400,
         handlers: &[
-            (79, 0x1818612), // LOAD_ATTR
+            (79, 0x1818612),  // LOAD_ATTR
             (186, 0x1801396), // LOAD_ATTR_INSTANCE_VALUE
             (190, 0x18046d0), // LOAD_ATTR_MODULE
             (195, 0x181851c), // LOAD_ATTR_WITH_HINT
@@ -55,7 +55,7 @@ pub static VERIFIED: &[VerifiedBuild] = &[
             (163, 0x1808300), // CALL_NON_PY_GENERAL
             (155, 0x181cc8e), // CALL_KW_NON_PY
             (153, 0x1806b5a), // CALL_ISINSTANCE
-            (25, 0x1801800), // NOP
+            (25, 0x1801800),  // NOP
         ],
     },
     VerifiedBuild {
@@ -67,7 +67,7 @@ pub static VERIFIED: &[VerifiedBuild] = &[
         handler_table: 0x1493a90,
         tracing_table: 0x0,
         handlers: &[
-            (79, 0x1832788), // LOAD_ATTR
+            (79, 0x1832788),  // LOAD_ATTR
             (186, 0x1801a0c), // LOAD_ATTR_INSTANCE_VALUE
             (190, 0x1807bc0), // LOAD_ATTR_MODULE
             (195, 0x1832580), // LOAD_ATTR_WITH_HINT
@@ -84,7 +84,7 @@ pub static VERIFIED: &[VerifiedBuild] = &[
             (163, 0x180bb04), // CALL_NON_PY_GENERAL
             (155, 0x181ed00), // CALL_KW_NON_PY
             (153, 0x1809e80), // CALL_ISINSTANCE
-            (25, 0x18018d2), // NOP
+            (25, 0x18018d2),  // NOP
         ],
     },
     VerifiedBuild {
@@ -96,7 +96,7 @@ pub static VERIFIED: &[VerifiedBuild] = &[
         handler_table: 0x14d21d0,
         tracing_table: 0x14d29e0,
         handlers: &[
-            (79, 0x180e64a), // LOAD_ATTR
+            (79, 0x180e64a),  // LOAD_ATTR
             (186, 0x1801310), // LOAD_ATTR_INSTANCE_VALUE
             (190, 0x1804b90), // LOAD_ATTR_MODULE
             (195, 0x180e554), // LOAD_ATTR_WITH_HINT
@@ -113,7 +113,7 @@ pub static VERIFIED: &[VerifiedBuild] = &[
             (163, 0x1807046), // CALL_NON_PY_GENERAL
             (155, 0x181e9c4), // CALL_KW_NON_PY
             (153, 0x18078da), // CALL_ISINSTANCE
-            (25, 0x1800d00), // NOP
+            (25, 0x1800d00),  // NOP
         ],
     },
     VerifiedBuild {
@@ -125,7 +125,7 @@ pub static VERIFIED: &[VerifiedBuild] = &[
         handler_table: 0x149b500,
         tracing_table: 0x0,
         handlers: &[
-            (79, 0x18339cc), // LOAD_ATTR
+            (79, 0x18339cc),  // LOAD_ATTR
             (186, 0x1802080), // LOAD_ATTR_INSTANCE_VALUE
             (190, 0x1807900), // LOAD_ATTR_MODULE
             (195, 0x18337de), // LOAD_ATTR_WITH_HINT
@@ -142,7 +142,7 @@ pub static VERIFIED: &[VerifiedBuild] = &[
             (163, 0x180afc4), // CALL_NON_PY_GENERAL
             (155, 0x1837700), // CALL_KW_NON_PY
             (153, 0x1809700), // CALL_ISINSTANCE
-            (25, 0x18023cc), // NOP
+            (25, 0x18023cc),  // NOP
         ],
     },
     // END VERIFIED BUILDS

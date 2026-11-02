@@ -143,7 +143,8 @@ fn main() {
         writeln!(sets_rs, "unsafe extern \"C\" {{ fn rq_api_{set}() -> *const crate::RqApi; }}").unwrap();
     }
     writeln!(sets_rs, "/// (CPython release, free-threaded, the set's interface).").unwrap();
-    writeln!(sets_rs, "pub(crate) static SETS: &[(&str, bool, unsafe extern \"C\" fn() -> *const crate::RqApi)] = &[").unwrap();
+    writeln!(sets_rs, "pub(crate) static SETS: &[(&str, bool, unsafe extern \"C\" fn() -> *const crate::RqApi)] = &[")
+        .unwrap();
     for (set, release) in &entries {
         writeln!(sets_rs, "    (\"{release}\", {ft}, rq_api_{set}),").unwrap();
     }
@@ -169,11 +170,8 @@ fn find_clang() -> Option<(String, String)> {
     for (cc, suffix) in cands {
         let Ok(o) = Command::new(&cc).arg("--version").output() else { continue };
         let s = String::from_utf8_lossy(&o.stdout);
-        let major = s
-            .split("version ")
-            .nth(1)
-            .and_then(|r| r.split('.').next())
-            .and_then(|m| m.trim().parse::<u32>().ok());
+        let major =
+            s.split("version ").nth(1).and_then(|r| r.split('.').next()).and_then(|m| m.trim().parse::<u32>().ok());
         if major.is_some_and(|m| m >= 19) {
             return Some((cc, suffix));
         }
@@ -204,12 +202,7 @@ fn copy_tree(src: &Path, dst: &Path) {
 
 fn merge_profile(suffix: &str, text: &Path, dst: &Path) -> Option<PathBuf> {
     let tool = format!("llvm-profdata{suffix}");
-    let ok = Command::new(&tool)
-        .args(["merge", "-o"])
-        .arg(dst)
-        .arg(text)
-        .status()
-        .is_ok_and(|s| s.success());
+    let ok = Command::new(&tool).args(["merge", "-o"]).arg(dst).arg(text).status().is_ok_and(|s| s.success());
     ok.then(|| dst.to_path_buf())
 }
 
