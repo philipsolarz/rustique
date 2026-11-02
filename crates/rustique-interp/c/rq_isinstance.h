@@ -80,16 +80,23 @@ rq_isinstance_type(PyObject *inst, PyObject *cls)
 {
     PyTypeObject *tp = Py_TYPE(inst);
     PyTypeObject *meta = Py_TYPE(cls);
-    if (meta != &PyType_Type && !rq_plain_meta(meta)) {
+    int via_meta = meta != &PyType_Type;
+    if (via_meta && !rq_plain_meta(meta)) {
         return -2;
     }
     if (PyType_IsSubtype(tp, (PyTypeObject *)cls)) {
+        if (via_meta) {
+            RQ_TICK(RQ_G_ISINSTANCE);   /* saved the bound __instancecheck__ call */
+            RQ_HIT(RQ_G_ISINSTANCE);
+        }
         return 1;
     }
+    RQ_TICK(RQ_G_ISINSTANCE);
     if (rq_plain_class(tp)) {
+        RQ_HIT(RQ_G_ISINSTANCE);        /* saved the __class__ lookup (and the call) */
         return 0;
     }
-    /* object_isinstance's negative path, verbatim. */
+    /* object_isinstance's negative path, verbatim (no saving: counted, not credited). */
     PyObject *icls;
     int retval = PyObject_GetOptionalAttr(inst, &_Py_ID(__class__), &icls);
     if (icls != NULL) {
@@ -126,30 +133,30 @@ rq_isinstance_tuple(PyObject *inst, PyObject *cls)
 }
 
 /* 1 / 0, -1 with an exception set, or -2: run PyObject_IsInstance unchanged. */
+/* Counting (net-benefit suspension, rq_common.h): only on paths that cost or save something --
+ * negative and metaclass answers are credited, the slow __class__ lookup and the fallbacks
+ * debited; exact and plain positive answers (no saving, no cost) are not counted. */
 static inline __attribute__((always_inline)) int
 rq_isinstance_fast(PyThreadState *tstate, PyObject *inst, PyObject *cls)
 {
     if ((PyObject *)Py_TYPE(inst) == cls) {
-        return 1;           /* CPython's own first test: never slower, not counted */
+        return 1;
     }
     if (tstate->interp != rq_main_interp) {
         return -2;
     }
-    RQ_TICK(RQ_G_ISINSTANCE);
-    int r;
     if (PyType_Check(cls)) {
-        r = rq_isinstance_type(inst, cls);
+        int r = rq_isinstance_type(inst, cls);
+        if (r == -2) {
+            RQ_TICK(RQ_G_ISINSTANCE);
+        }
+        return r;
     }
-    else if (PyTuple_CheckExact(cls)) {
-        r = rq_isinstance_tuple(inst, cls);
+    if (PyTuple_CheckExact(cls)) {
+        return rq_isinstance_tuple(inst, cls);
     }
-    else {
-        return -2;
-    }
-    if (r != -2) {
-        RQ_HIT(RQ_G_ISINSTANCE);
-    }
-    return r;
+    RQ_TICK(RQ_G_ISINSTANCE);
+    return -2;
 }
 
 #endif

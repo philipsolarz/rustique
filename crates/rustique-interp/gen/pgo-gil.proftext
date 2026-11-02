@@ -70,7 +70,7 @@ rq_handlers.c:PyStackRef_AsPyObjectBorrow
 # Num Counters:
 1
 # Counter Values:
-1381005025
+1304870572
 
 rq_handlers.c:PyStackRef_CLOSE
 # Func Hash:
@@ -78,8 +78,8 @@ rq_handlers.c:PyStackRef_CLOSE
 # Num Counters:
 2
 # Counter Values:
-315264441
-123709227
+239130000
+77124451
 
 rq_handlers.c:PyStackRef_DUP
 # Func Hash:
@@ -112,7 +112,7 @@ rq_handlers.c:PyStackRef_RefcountOnObject
 # Num Counters:
 1
 # Counter Values:
-629780314
+553645873
 
 rq_handlers.c:PyStackRef_TYPE
 # Func Hash:
@@ -162,7 +162,7 @@ rq_handlers.c:PyTuple_GET_SIZE
 # Num Counters:
 1
 # Counter Values:
-3488581
+1990445
 
 rq_handlers.c:PyType_Check
 # Func Hash:
@@ -170,7 +170,7 @@ rq_handlers.c:PyType_Check
 # Num Counters:
 1
 # Counter Values:
-68950037
+59704085
 
 rq_handlers.c:PyType_HasFeature
 # Func Hash:
@@ -178,7 +178,7 @@ rq_handlers.c:PyType_HasFeature
 # Num Counters:
 1
 # Counter Values:
-121513747
+112267786
 
 rq_handlers.c:Py_DECREF_MORTAL
 # Func Hash:
@@ -186,8 +186,8 @@ rq_handlers.c:Py_DECREF_MORTAL
 # Num Counters:
 2
 # Counter Values:
-146645589
-6584399
+100060813
+5086263
 
 rq_handlers.c:Py_INCREF
 # Func Hash:
@@ -238,7 +238,7 @@ rq_handlers.c:_PyFrame_GetCode
 # Num Counters:
 1
 # Counter Values:
-61964250
+61964239
 
 rq_handlers.c:_PyFrame_GetFrameObject
 # Func Hash:
@@ -255,7 +255,7 @@ rq_handlers.c:_PyFrame_GetStackPointer
 # Num Counters:
 1
 # Counter Values:
-643438900
+541690228
 
 rq_handlers.c:_PyFrame_Initialize
 # Func Hash:
@@ -299,7 +299,7 @@ rq_handlers.c:_PyFrame_SetStackPointer
 # Num Counters:
 1
 # Counter Values:
-643438900
+541690228
 
 rq_handlers.c:_PyFrame_StackPop
 # Func Hash:
@@ -367,6 +367,14 @@ rq_handlers.c:_PyStackRef_FromPyObjectNew
 453327493
 77662756
 
+rq_handlers.c:_PyThreadState_GET
+# Func Hash:
+24
+# Num Counters:
+1
+# Counter Values:
+0
+
 rq_handlers.c:_PyThreadState_HasStackSpace
 # Func Hash:
 6350875
@@ -383,7 +391,7 @@ rq_handlers.c:_PyType_HasFeature
 # Num Counters:
 1
 # Counter Values:
-1350
+126510
 
 rq_handlers.c:_PyType_IsReady
 # Func Hash:
@@ -391,7 +399,7 @@ rq_handlers.c:_PyType_IsReady
 # Num Counters:
 1
 # Counter Values:
-1671
+126823
 
 rq_handlers.c:_PyVectorcall_FunctionInline
 # Func Hash:
@@ -442,7 +450,7 @@ rq_handlers.c:_Py_IsImmortal
 # Num Counters:
 1
 # Counter Values:
-460194255
+458241453
 
 rq_handlers.c:_Py_LeaveRecursiveCallPy
 # Func Hash:
@@ -466,7 +474,7 @@ rq_handlers.c:_Py_SIZE_impl
 # Num Counters:
 1
 # Counter Values:
-3635405
+2137269
 
 rq_handlers.c:_Py_TYPE_impl
 # Func Hash:
@@ -474,7 +482,7 @@ rq_handlers.c:_Py_TYPE_impl
 # Num Counters:
 1
 # Counter Values:
-944349889
+892210252
 
 rq_handlers.c:_Py_XNewRef
 # Func Hash:
@@ -530,15 +538,15 @@ rq_handlers.c:_TAIL_CALL_CALL_ISINSTANCE
 # Num Counters:
 11
 # Counter Values:
-26452738
+1074594
 0
 0
 0
 0
-236124
+48
 0
 0
-19385404
+286605
 0
 0
 
@@ -622,12 +630,12 @@ rq_handlers.c:_TAIL_CALL_LOAD_ATTR
 # Num Counters:
 12
 # Counter Values:
-60936482
-60936482
-353659
+60936471
+60936471
+353658
 0
 0
-6470594
+6470593
 0
 0
 146822
@@ -931,7 +939,7 @@ rq_handlers.c:advance_backoff_counter
 # Num Counters:
 1
 # Counter Values:
-60691343
+60691333
 
 rq_handlers.c:backoff_counter_triggers
 # Func Hash:
@@ -939,7 +947,7 @@ rq_handlers.c:backoff_counter_triggers
 # Num Counters:
 1
 # Counter Values:
-61047088
+61047077
 
 rq_handlers.c:check_periodics_at_end
 # Func Hash:
@@ -972,7 +980,7 @@ rq_handlers.c:forge_backoff_counter
 # Num Counters:
 1
 # Counter Values:
-61047088
+61047077
 
 rq_handlers.c:get_exception_handler
 # Func Hash:
@@ -1047,7 +1055,7 @@ rq_handlers.c:read_u16
 # Num Counters:
 1
 # Counter Values:
-357527771
+357527760
 
 rq_handlers.c:read_u32
 # Func Hash:
@@ -1063,8 +1071,8 @@ rq_handlers.c:rq_GetAttrStackRef
 # Num Counters:
 3
 # Counter Values:
-54112229
-33711478
+54112220
+33711469
 0
 
 rq_handlers.c:rq_GetAttrStackRef_core
@@ -1073,12 +1081,12 @@ rq_handlers.c:rq_GetAttrStackRef_core
 # Num Counters:
 7
 # Counter Values:
-33711478
-9845427
-33711478
+33711469
+9845418
+33711469
 23866051
-33711478
-33711478
+33711469
+33711469
 146812
 
 rq_handlers.c:rq_LoadAttr_StackRefSteal
@@ -1087,8 +1095,8 @@ rq_handlers.c:rq_LoadAttr_StackRefSteal
 # Num Counters:
 4
 # Counter Values:
-6470594
-3303882
+6470593
+3303881
 0
 3041836
 
@@ -1171,40 +1179,40 @@ rq_handlers.c:rq_ac_classify
 # Num Counters:
 34
 # Counter Values:
-1671
+126823
 0
 0
-546
-450
-450
-450
+63117
+451
+451
+451
 312
-293
-293
-293
-293
-293
+294
+294
+294
+294
+294
 312
-293
-602
+294
+617
 0
-60
-18
-675
-18
-968
-675
-1125
-968
+62625
+62584
+63255
+62584
+63549
+63255
+63706
+63549
 0
 0
-962
+126109
 0
-135
-44
-44
-530
-1671
+136
+45
+45
+533
+126823
 
 rq_handlers.c:rq_ac_fill
 # Func Hash:
@@ -1212,14 +1220,14 @@ rq_handlers.c:rq_ac_fill
 # Num Counters:
 10
 # Counter Values:
-750916
-749245
-1671
-1671
-1671
-1671
-1671
-1671
+876067
+749244
+126823
+126823
+126823
+126823
+126823
+126823
 0
 0
 
@@ -1229,11 +1237,11 @@ rq_handlers.c:rq_ac_get
 # Num Counters:
 5
 # Counter Values:
-29237109
+29237108
 17
-28486176
-28486183
-28486176
+28361024
+28361030
+28361024
 
 rq_handlers.c:rq_ac_slot
 # Func Hash:
@@ -1241,22 +1249,25 @@ rq_handlers.c:rq_ac_slot
 # Num Counters:
 1
 # Counter Values:
-29238763
+29363914
 
-rq_handlers.c:rq_attr_fast
+rq_handlers.c:rq_attr_resolve
 # Func Hash:
-10735992720919604453
+15158565131744848322
 # Num Counters:
-46
+52
 # Counter Values:
-60582823
+60582813
 0
 0
 924
-31345714
-3042607
+31345705
+60582813
+31345705
+3042606
 28487847
 26194502
+3042606
 0
 4070418
 4070418
@@ -1287,6 +1298,9 @@ rq_handlers.c:rq_attr_fast
 0
 0
 3481852
+0
+0
+0
 2627039
 6917548
 2627039
@@ -1318,10 +1332,10 @@ rq_handlers.c:rq_fact
 # Num Counters:
 4
 # Counter Values:
-5416708
-5416637
-5416707
-5416637
+120149
+120126
+120149
+120126
 
 rq_handlers.c:rq_fact_compute
 # Func Hash:
@@ -1329,10 +1343,19 @@ rq_handlers.c:rq_fact_compute
 # Num Counters:
 4
 # Counter Values:
-71
-70
-70
-70
+23
+23
+23
+23
+
+rq_handlers.c:rq_getattr_fast
+# Func Hash:
+715636966488
+# Num Counters:
+2
+# Counter Values:
+0
+0
 
 rq_handlers.c:rq_group_arm
 # Func Hash:
@@ -1340,13 +1363,13 @@ rq_handlers.c:rq_group_arm
 # Num Counters:
 7
 # Counter Values:
-4
+8
 0
-4
-4
-4
-4
-17
+8
+8
+8
+8
+34
 
 rq_handlers.c:rq_group_of
 # Func Hash:
@@ -1354,26 +1377,34 @@ rq_handlers.c:rq_group_of
 # Num Counters:
 20
 # Counter Values:
-2048
+3328
 0
+13
+13
+13
+13
+13
+13
+13
+13
+13
+13
+13
+13
+13
+13
+13
+13
+13
+3107
+
+rq_handlers.c:rq_group_reset
+# Func Hash:
+0
+# Num Counters:
+1
+# Counter Values:
 8
-8
-8
-8
-8
-8
-8
-8
-8
-8
-8
-8
-8
-8
-8
-8
-8
-1912
 
 rq_handlers.c:rq_group_stats
 # Func Hash:
@@ -1381,7 +1412,7 @@ rq_handlers.c:rq_group_stats
 # Num Counters:
 1
 # Counter Values:
-4
+5
 
 rq_handlers.c:rq_handler
 # Func Hash:
@@ -1389,25 +1420,25 @@ rq_handlers.c:rq_handler
 # Num Counters:
 20
 # Counter Values:
-51
+85
 0
-3
-3
-3
-3
-3
-3
-3
-3
-3
-3
-3
-3
-3
-3
-3
-3
-3
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
 0
 
 rq_handlers.c:rq_init
@@ -1431,15 +1462,20 @@ rq_handlers.c:rq_init
 
 rq_handlers.c:rq_isinstance_fast
 # Func Hash:
-842858584434262386
+5437087997440301608
 # Num Counters:
-5
+10
 # Counter Values:
-26452738
-17453210
+1074594
+203896
 0
-7311237
-1688291
+680543
+48
+0
+0
+190155
+0
+0
 
 rq_handlers.c:rq_isinstance_tuple
 # Func Hash:
@@ -1447,31 +1483,36 @@ rq_handlers.c:rq_isinstance_tuple
 # Num Counters:
 6
 # Counter Values:
-1688291
-2720883
-1234699
-1486184
+190155
+450695
+81633
+369062
 0
-122347
+22
 
 rq_handlers.c:rq_isinstance_type
 # Func Hash:
-9423020337364872087
+17117056892547554833
 # Num Counters:
-15
+20
 # Counter Values:
-8797421
-236124
-465607
-236124
-603814
-4951101
-3006382
+1049605
+48
+48
+48
+1028
 0
 0
 0
 0
-2810352
+16
+120101
+928428
+0
+0
+0
+0
+920449
 0
 0
 0
@@ -1519,25 +1560,25 @@ rq_handlers.c:rq_opname
 # Num Counters:
 20
 # Counter Values:
-17
+34
 0
-1
-1
-1
-1
-1
-1
-1
-1
-1
-1
-1
-1
-1
-1
-1
-1
-1
+2
+2
+2
+2
+2
+2
+2
+2
+2
+2
+2
+2
+2
+2
+2
+2
+2
 0
 
 rq_handlers.c:rq_plain_class
@@ -1546,8 +1587,8 @@ rq_handlers.c:rq_plain_class
 # Num Counters:
 2
 # Counter Values:
-7957483
-3006382
+1048529
+928428
 
 rq_handlers.c:rq_plain_meta
 # Func Hash:
@@ -1555,7 +1596,7 @@ rq_handlers.c:rq_plain_meta
 # Num Counters:
 1
 # Counter Values:
-465607
+48
 
 rq_handlers.c:rq_push_kw_init
 # Func Hash:
@@ -1574,7 +1615,7 @@ rq_handlers.c:rq_site_is_generic
 # Num Counters:
 1
 # Counter Values:
-63625413
+63625402
 
 rq_handlers.c:rq_site_mark
 # Func Hash:
@@ -1582,10 +1623,10 @@ rq_handlers.c:rq_site_mark
 # Num Counters:
 4
 # Counter Values:
-3042607
-790729
-3042590
-790729
+3042606
+790728
+3042589
+790728
 
 rq_handlers.c:rq_site_skip
 # Func Hash:
@@ -1593,27 +1634,29 @@ rq_handlers.c:rq_site_skip
 # Num Counters:
 4
 # Counter Values:
-60582823
-28447878
-44926017
-32134945
+60582813
+28447877
+44926007
+32134936
 
 rq_handlers.c:rq_window_end
 # Func Hash:
-8852033563653426334
+6489758881936568615
 # Num Counters:
-11
+13
 # Counter Values:
-1572
+1588
 0
-1572
-1572
-1569
-3
-3
-3
-3
+1588
+1588
 0
+1580
+1584
+1580
+4
+4
+7
+1
 0
 
 rq_handlers.c:scan_back_to_entry_start
