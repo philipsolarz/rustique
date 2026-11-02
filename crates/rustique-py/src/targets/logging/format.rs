@@ -558,17 +558,21 @@ impl Drop for Held {
 // ---------------------------------------------------------------------------------------
 
 /// A parsed `PercentStyle._fmt`: its pieces and one key object per directive.
-struct Parsed {
-    fmt: usize,
+pub struct Parsed {
     pieces: Vec<Piece>,
     keys: Vec<usize>,
+    /// Owns the key references (temporary plans); table entries live for the process.
+    owned: bool,
 }
 
 impl Drop for Parsed {
     fn drop(&mut self) {
-        // SAFETY: strong references taken in `parse_fmt`; dropped by an attached thread.
+        if !self.owned {
+            return;
+        }
+        // SAFETY: strong references taken in `parse_plan`; temporary plans are dropped by
+        // the attached thread that built them, inside the kernel.
         unsafe {
-            ffi::Py_DECREF(self.fmt as O);
             for &k in &self.keys {
                 ffi::Py_DECREF(k as O);
             }
@@ -576,47 +580,87 @@ impl Drop for Parsed {
     }
 }
 
-// SAFETY: plain addresses of objects whose references the entry owns.
+// SAFETY: plain addresses of objects whose references the entry owns (immortal for table
+// entries: never released); immutable after construction.
 unsafe impl Send for Parsed {}
 // SAFETY: immutable after construction.
 unsafe impl Sync for Parsed {}
 
-static FMT_CACHE: parking_lot::Mutex<Vec<std::sync::Arc<Parsed>>> = parking_lot::Mutex::new(Vec::new());
+/// Parsed formats keyed by the `_fmt` object: an insert-only, lock-free table (it keeps the
+/// key and the entry alive for the process), so concurrent `Formatter.format` calls share
+/// no written cache line (a mutex here cost the whole gain at 8 threads, w2-threads §3.1).
+static FMT_TABLE: crate::targets::datetime::fmtcache::Table<Parsed> = crate::targets::datetime::fmtcache::Table::new();
 
-/// Parse `fmt` (an exact str of kind 1) for a mapping: every directive keyed. Cached by
-/// identity (the entry holds `fmt`, so the address cannot be reused while cached).
-unsafe fn parse_fmt(fmt: O) -> Option<std::sync::Arc<Parsed>> {
+/// A plan from the table, or a temporary one (table full: parsed for this call).
+enum Plan {
+    Static(&'static Parsed),
+    Temp(Parsed),
+}
+
+impl std::ops::Deref for Plan {
+    type Target = Parsed;
+    fn deref(&self) -> &Parsed {
+        match self {
+            Plan::Static(p) => p,
+            Plan::Temp(p) => p,
+        }
+    }
+}
+
+/// Parse `fmt` (an exact str of kind 1) for a mapping: every directive keyed.
+unsafe fn parse_plan(fmt: O) -> Option<Parsed> {
     // SAFETY: attached thread.
     unsafe {
-        if let Some(c) = FMT_CACHE.try_lock()
-            && let Some(p) = c.iter().find(|p| p.fmt == fmt as usize)
-        {
-            return Some(p.clone());
-        }
         let b = latin1(fmt)?;
         let pieces = parse_format(b)?;
-        let mut keys = Vec::new();
+        let mut p = Parsed { pieces: Vec::new(), keys: Vec::new(), owned: true };
         for d in dirs(&pieces) {
             let (x, y) = d.key?;
             let k = ffi::PyUnicode_DecodeLatin1(b[x..].as_ptr().cast(), (y - x) as _, std::ptr::null());
             if k.is_null() {
                 ffi::PyErr_Clear();
-                for &k in &keys {
-                    ffi::Py_DECREF(k as O);
-                }
                 return None;
             }
-            keys.push(k as usize);
+            p.keys.push(k as usize);
         }
-        ffi::Py_INCREF(fmt);
-        let p = std::sync::Arc::new(Parsed { fmt: fmt as usize, pieces, keys });
-        if let Some(mut c) = FMT_CACHE.try_lock() {
-            if c.len() >= 16 {
-                c.remove(0);
-            }
-            c.push(p.clone());
-        }
+        p.pieces = pieces;
         Some(p)
+    }
+}
+
+/// The plan of `fmt`, looked up by identity (the table holds `fmt`, so the address cannot
+/// be reused while cached).
+#[inline(always)]
+unsafe fn parse_fmt(fmt: O) -> Option<Plan> {
+    if let Some(v) = FMT_TABLE.get(fmt) {
+        return v.as_ref().map(Plan::Static);
+    }
+    // SAFETY: per the caller.
+    unsafe { parse_fmt_miss(fmt) }
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn parse_fmt_miss(fmt: O) -> Option<Plan> {
+    // SAFETY: attached thread; `fmt` an exact str.
+    unsafe {
+        let p = parse_plan(fmt);
+        let Some(mut p) = p else {
+            FMT_TABLE.insert(fmt, None);
+            return None;
+        };
+        // A table entry keeps its key references for the process (never dropped).
+        p.owned = false;
+        let keys = p.keys.clone();
+        let pieces = p.pieces.clone();
+        match FMT_TABLE.insert(fmt, Some(p)) {
+            Some(v) => v.as_ref().map(Plan::Static),
+            None => {
+                // Full (or inserted by another thread meanwhile): this call's own plan; its
+                // references were moved into the table only if the insert succeeded.
+                Some(Plan::Temp(Parsed { pieces, keys, owned: true }))
+            }
+        }
     }
 }
 
@@ -876,10 +920,6 @@ unsafe fn format(fe: usize, me: O, record: O) -> Fmt {
             None => Fmt::Fallback(Reason::Deopt),
         }
     }
-}
-
-pub fn clear_fmt_cache() {
-    FMT_CACHE.lock().clear();
 }
 
 /// `Formatter.format(self, record)`.

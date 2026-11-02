@@ -344,6 +344,182 @@ unsafe fn key_index(keys: *const u8, name: O) -> i32 {
     }
 }
 
+/// Is the inline-values layout calibrated (GIL builds)?
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline(always)]
+pub fn inline_ok() -> bool {
+    INLINE_OK.load(Relaxed)
+}
+
+/// Stores of attributes into a fresh instance's inline values, as
+/// `_PyObject_StoreInstanceAttribute` (`store_instance_attr_lock_held`) makes them when the
+/// instance has no materialized `__dict__`, every name is already in the type's shared
+/// keys and its slot is empty: `values[ix] = value` (new reference) and `ix` appended to the
+/// insertion-order array (`_PyDictValues_AddToInsertionOrder`), so `__dict__` iterates in
+/// the same order. GIL builds only (the GIL serialises the stores; free-threaded builds lock
+/// the object). Verified once per process against `PyObject_GenericSetAttr` on a real
+/// object before it is used ([`InlineStores::verify`]).
+#[cfg(not(Py_GIL_DISABLED))]
+pub struct InlineStores<const N: usize> {
+    /// 0: not verified yet, 1: verified, 2: refused (layout differs).
+    state: std::sync::atomic::AtomicU8,
+    cell: std::cell::UnsafeCell<(usize, u32, usize, isize, [u8; N])>,
+}
+
+// SAFETY: GIL builds only; every access happens with the GIL held.
+#[cfg(not(Py_GIL_DISABLED))]
+unsafe impl<const N: usize> Sync for InlineStores<N> {}
+
+#[cfg(not(Py_GIL_DISABLED))]
+impl<const N: usize> Default for InlineStores<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The managed-dict pointer of an object with `Py_TPFLAGS_MANAGED_DICT` (pycore_object.h:
+/// `MANAGED_DICT_OFFSET` = -3 pointers on GIL builds); calibrated by [`InlineStores::verify`].
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline(always)]
+unsafe fn managed_dict(obj: O) -> O {
+    // SAFETY: a live object of a managed-dict type (pre-header present).
+    unsafe { *obj.cast::<O>().sub(3) }
+}
+
+#[cfg(not(Py_GIL_DISABLED))]
+impl<const N: usize> InlineStores<N> {
+    pub const fn new() -> Self {
+        InlineStores {
+            state: std::sync::atomic::AtomicU8::new(0),
+            cell: std::cell::UnsafeCell::new((0, 0, 0, -1, [0; N])),
+        }
+    }
+
+    /// The shared-keys indices of `names` for `obj`'s type, and the inline values, when the
+    /// fast store applies to `obj` (fresh, no dict, all names known, room in the order
+    /// array); `None` otherwise (the caller uses `PyObject_GenericSetAttr`).
+    ///
+    /// # Safety
+    /// GIL held; `obj` of a validated type (generic setattr, no descriptors for `names`).
+    #[inline(always)]
+    unsafe fn plan(&self, obj: O, names: &[usize; N]) -> Option<(*mut u8, [u8; N])> {
+        // SAFETY: per the caller.
+        unsafe {
+            if !INLINE_OK.load(Relaxed) {
+                return None;
+            }
+            let t = ffi::Py_TYPE(obj);
+            let vals = inline_values(obj, t)? as *mut u8;
+            if ffi::PyType_GetFlags(t) & ffi::Py_TPFLAGS_MANAGED_DICT == 0 || !managed_dict(obj).is_null() {
+                return None;
+            }
+            let keys = cached_keys(t)?;
+            let nent = keys_nentries(keys);
+            let tag = version_tag(t);
+            let c = &mut *self.cell.get();
+            if c.0 != t as usize || c.1 != tag || c.2 != keys as usize || c.3 != nent || tag == 0 {
+                let mut ix = [0u8; N];
+                for (i, &nm) in names.iter().enumerate() {
+                    let k = key_index(keys, nm as O);
+                    if !(0..=255).contains(&k) {
+                        return None;
+                    }
+                    ix[i] = k as u8;
+                }
+                *c = (t as usize, tag, keys as usize, nent, ix);
+            }
+            let ix = c.4;
+            let (cap, size) = (*vals as usize, *vals.add(1) as usize);
+            if size + N > cap {
+                return None;
+            }
+            let slots = vals.add(8).cast::<O>();
+            if ix.iter().any(|&k| k as usize >= cap || !(*slots.add(k as usize)).is_null()) {
+                return None;
+            }
+            Some((vals, ix))
+        }
+    }
+
+    /// Store `values[i]` as `names[i]`, in order, if the fast path applies and is
+    /// verified; `false`: nothing was stored (use `PyObject_GenericSetAttr`).
+    ///
+    /// # Safety
+    /// As [`Self::plan`]; `values` live objects.
+    #[inline(always)]
+    pub unsafe fn store(&self, obj: O, names: &[usize; N], values: &[O; N]) -> bool {
+        // SAFETY: per the caller.
+        unsafe {
+            if self.state.load(Relaxed) != 1 {
+                return false;
+            }
+            let Some((vals, ix)) = self.plan(obj, names) else { return false };
+            let cap = *vals as usize;
+            let size = *vals.add(1) as usize;
+            let slots = vals.add(8).cast::<O>();
+            let order = slots.add(cap).cast::<u8>();
+            for i in 0..N {
+                *slots.add(ix[i] as usize) = ffi::Py_NewRef(values[i]);
+                *order.add(size + i) = ix[i];
+            }
+            *vals.add(1) = (size + N) as u8;
+            true
+        }
+    }
+
+    /// Before the first fast store: `obj` is about to receive `names` through
+    /// `PyObject_GenericSetAttr` (the caller does it after this returns the prediction);
+    /// [`Self::check`] then compares CPython's result with the prediction.
+    ///
+    /// # Safety
+    /// As [`Self::plan`].
+    pub unsafe fn predict(&self, obj: O, names: &[usize; N]) -> Option<(*mut u8, [u8; N], usize)> {
+        // SAFETY: per the caller.
+        unsafe {
+            if self.state.load(Relaxed) != 0 {
+                return None;
+            }
+            let (vals, ix) = self.plan(obj, names)?;
+            Some((vals, ix, *vals.add(1) as usize))
+        }
+    }
+
+    /// After CPython's stores on the object [`Self::predict`] described: the values are in the
+    /// predicted slots and the insertion order is the predicted one → the fast path is on;
+    /// anything else turns it off for the process.
+    ///
+    /// # Safety
+    /// GIL held; the same live object, right after its stores.
+    pub unsafe fn check(&self, obj: O, p: (*mut u8, [u8; N], usize), values: &[O; N]) {
+        // SAFETY: per the caller.
+        unsafe {
+            let (vals, ix, size0) = p;
+            let t = ffi::Py_TYPE(obj);
+            let ok = inline_values(obj, t) == Some(vals.cast_const())
+                && managed_dict(obj).is_null()
+                && *vals.add(1) as usize == size0 + N
+                && {
+                    let cap = *vals as usize;
+                    let slots = vals.add(8).cast::<O>();
+                    let order = slots.add(cap).cast::<u8>();
+                    (0..N).all(|i| *slots.add(ix[i] as usize) == values[i] && *order.add(size0 + i) == ix[i])
+                }
+                && {
+                    // The managed-dict offset: materialising `__dict__` must publish it there.
+                    let d = ffi::PyObject_GenericGetDict(obj, std::ptr::null_mut());
+                    let same = !d.is_null() && managed_dict(obj) == d;
+                    if d.is_null() {
+                        ffi::PyErr_Clear();
+                    } else {
+                        ffi::Py_DECREF(d);
+                    }
+                    same
+                };
+            self.state.store(if ok { 1 } else { 2 }, Relaxed);
+        }
+    }
+}
+
 /// Check the inline-values layout on `obj` (an instance whose class has the generic
 /// attribute protocol and no descriptors for `names`): every name read through the inline
 /// values must give exactly what `PyObject_GenericGetAttr` gives.

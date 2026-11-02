@@ -201,7 +201,6 @@ fn prepare_shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     format::R_GET_MESSAGE.set_obj(&cx.type_attr(&lr, "getMessage")?);
     format::R_DICT.set_obj(&cx.type_attr(&lr, "__dict__")?);
     format::clear_type_caches();
-    format::clear_fmt_cache();
     Ok(())
 }
 

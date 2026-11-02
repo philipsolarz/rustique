@@ -65,6 +65,10 @@ pub static THREADS: TypeCache<2> = TypeCache::new(validate_thread);
 /// The record attributes `__init__` stores, in CPython's order.
 pub const ATTRS: usize = 21;
 
+/// Fast stores of the 21 attributes into a fresh record's inline values (GIL builds).
+#[cfg(not(Py_GIL_DISABLED))]
+static STORES: InlineStores<ATTRS> = InlineStores::new();
+
 /// A record class whose instances store every `__init__` attribute (and `message`,
 /// `asctime`) as plain instance attributes: generic get/set, no descriptors.
 unsafe fn validate_record(t: Tp) -> bool {
@@ -709,6 +713,14 @@ unsafe fn init(me: O, a: *const O, n_args: usize) -> Outcome {
             task,
         ];
         let names = attr_names(nm);
+        // GIL builds: straight into a fresh record's inline values (what
+        // `PyObject_GenericSetAttr` does there), once verified on a real record.
+        #[cfg(not(Py_GIL_DISABLED))]
+        if STORES.store(me, &names, &values) {
+            return Outcome::Done;
+        }
+        #[cfg(not(Py_GIL_DISABLED))]
+        let predicted = STORES.predict(me, &names);
         for i in 0..ATTRS {
             if ffi::PyObject_GenericSetAttr(me, o(names[i]), values[i]) < 0 {
                 // Nothing observable yet except stores into `self`, which the original
@@ -716,6 +728,10 @@ unsafe fn init(me: O, a: *const O, n_args: usize) -> Outcome {
                 ffi::PyErr_Clear();
                 return Outcome::Fallback(Reason::Deopt);
             }
+        }
+        #[cfg(not(Py_GIL_DISABLED))]
+        if let Some(p) = predicted {
+            STORES.check(me, p, &values);
         }
         Outcome::Done
     }
