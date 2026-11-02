@@ -69,8 +69,7 @@ API; its one test, FT `test_gc.test_tuple_untrack_counts`, passes with the polic
 Nothing else reads it.
 
 **Validated at install**, never armed for first-call validation (ACCELERATION §3.2): the
-policy acts from `enable()` on, without any call of its sites (in arming mode its `prepare`
-declares no site, so the registry validates it at once).
+policy acts from `enable()` on, without any call of its sites (`TargetSpec.eager`).
 
 **`disable()`** (`TargetSpec.on_disable`) and the exit hook restore at once: CPython's value in
 `long_lived_total`, the program's list in `gcstate->callbacks`. When `disable()` is called from
