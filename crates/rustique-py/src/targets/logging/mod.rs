@@ -585,7 +585,7 @@ fn prepare_handle(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> 
     }
     cx.pin_global_s(&g, intern!(py, "hasattr"), deps)?;
     let lr = get_s(cx, &g, intern!(py, "LogRecord"))?;
-    if !lr.get_type().is(&py.get_type::<pyo3::types::PyType>()) {
+    if !lr.get_type().is(py.get_type::<pyo3::types::PyType>()) {
         return Err(Refusal::new("LogRecord has a metaclass"));
     }
     handler::LOG_RECORD.set_obj(&lr);
@@ -612,7 +612,7 @@ fn prepare_handle(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> 
     // SAFETY: a live type object.
     let sio_t = sio.as_ptr().cast::<pyo3::ffi::PyTypeObject>();
     // SAFETY: field reads of a live type.
-    if unsafe { (*sio_t).tp_dictoffset } <= 0 || !handler::stringio_always_true(sio_t) {
+    if unsafe { (*sio_t).tp_dictoffset <= 0 || !handler::stringio_always_true(sio_t) } {
         return Err(Refusal::new("_io.StringIO layout"));
     }
     handler::RLOCK.set_obj(rlock.as_any());

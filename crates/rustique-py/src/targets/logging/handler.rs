@@ -100,8 +100,11 @@ unsafe fn always_true(t: Tp) -> bool {
 }
 
 /// Install-time check of the stream type: StringIO objects are always true.
-pub fn stringio_always_true(t: Tp) -> bool {
-    // SAFETY: a live type object.
+///
+/// # Safety
+/// `t` is a live type object.
+pub unsafe fn stringio_always_true(t: Tp) -> bool {
+    // SAFETY: per the caller.
     unsafe { always_true(t) }
 }
 
