@@ -25,14 +25,11 @@ from fractions import Fraction
 from typing import Any
 
 import pytest
-from _support import import_rustique_module_level
 from hypothesis import given
 from hypothesis import strategies as st
 
-rs = import_rustique_module_level()
-
-from rustique import _builtins  # noqa: E402
-from rustique._rustique import _builtins as _native  # noqa: E402
+from rustique import _builtins
+from rustique._rustique import _builtins as _native
 
 NAMES = ("sum", "min", "max", "sorted", "any", "all")
 ORIG: dict[str, Callable[..., Any]] = {name: getattr(builtins, name) for name in NAMES}
@@ -85,11 +82,10 @@ def outcome(f: Callable[..., Any], *args: Any, **kwargs: Any) -> tuple[str, Any]
 def check(name: str, *args: Any, identity: bool | None = None, **kwargs: Any) -> Any:
     """Call the original and the replacement with the same arguments and compare.
 
-    `identity`: returned elements must be the very objects the original returns (default:
-    unless an argument is a Rustique container, whose native storage creates new objects).
+    `identity`: returned elements must be the very objects the original returns (default).
     """
     if identity is None:
-        identity = not any(isinstance(a, (rs.List, rs.Tuple, rs.Set, rs.FrozenSet, rs.Dict)) for a in args)
+        identity = True
     expected = outcome(ORIG[name], *args, **kwargs)
     got = outcome(REPL[name], *args, **kwargs)
     assert got[0] == expected[0], (name, args, kwargs, expected, got)
@@ -113,14 +109,13 @@ def check_fresh(name: str, make: Callable[[], Any], **kwargs: Any) -> None:
 
 def containers(values: list[Any]) -> list[Any]:
     """The same values in every container kind that can hold them."""
-    out: list[Any] = [list(values), tuple(values), rs.List(values), rs.Tuple(values)]
+    out: list[Any] = [list(values), tuple(values)]
     try:
         hashed = set(values)
     except TypeError:
         return out
     if len(hashed) == len(values):  # duplicates would change sums
-        out += [hashed, frozenset(values), dict.fromkeys(values), rs.Set(values), rs.FrozenSet(values)]
-        out += [rs.Dict(dict.fromkeys(values))]
+        out += [hashed, frozenset(values), dict.fromkeys(values)]
     return out
 
 
@@ -220,25 +215,6 @@ def test_all_functions_match(values: list[Any]) -> None:
     check_all_functions(values)
 
 
-@pytest.mark.parametrize("values", INT_CASES + FLOAT_CASES + STR_CASES, ids=repr)
-def test_typed_lists(values: list[Any]) -> None:
-    for t in (int, float, str, bool, rs.u8, rs.i16, rs.f32):
-        try:
-            lst = rs.List[t](values)
-        except (TypeError, OverflowError):
-            continue
-        for start in ((), (0,), (3,), (0.25,), (2**70,)):
-            check("sum", lst, *start)
-        for name in ("min", "max"):
-            check(name, lst, identity=False)
-            check(name, lst, default=0, identity=False)
-        check("any", lst)
-        check("all", lst)
-        check("sorted", lst, identity=False)
-        check("sorted", lst, reverse=True, identity=False)
-        check("sorted", lst, key=lambda v: -v if not isinstance(v, str) else v, identity=False)
-
-
 def test_min_max_positional_forms() -> None:
     for a, b in [(1, 2), (2, 1), (1, 1.0), (1.0, 1), (NAN, 1), (1, NAN), ("a", "b"), ("a", 1), (-0.0, 0.0),
                  (0.0, -0.0), (2**80, 1), (1, 2**80), (True, 1), ((1,), (0,)), (None, None)]:
@@ -291,7 +267,7 @@ def test_tuple_comparisons() -> None:
         deep = (deep,)
     cases.append([deep, deep[0]])
     for values in cases:
-        for c in (values, tuple(values), rs.List(values)):
+        for c in (values, tuple(values)):
             for name in ("min", "max"):
                 check(name, c)
                 check(name, c, default=None)
@@ -326,7 +302,7 @@ def test_sum_argument_forms() -> None:
 
 
 def test_sorted_argument_forms() -> None:
-    for c in ([3, 1, 2], rs.List([3, 1, 2]), rs.List([3.0, NAN, 1.0]), rs.Set([3, 1, 2]), rs.List([(1,), (0,)])):
+    for c in ([3, 1, 2], [3.0, NAN, 1.0], {3, 1, 2}, [(1,), (0,)]):
         check("sorted", c, identity=False)
         check("sorted", c, key=None, reverse=False, identity=False)
         check("sorted", c, key=lambda v: v, identity=False)
@@ -492,17 +468,6 @@ def test_reentrant_mutation_matches(action: str, name: str, position: int) -> No
     assert got == expected
 
 
-def test_reentrant_mutation_sorted_rustique() -> None:
-    lst = rs.List([3, 1, 2])
-
-    def key(v: int) -> int:
-        lst.append(0)
-        return v
-
-    assert REPL["sorted"](lst, key=key) == [1, 2, 3]
-    assert len(lst) == 6
-
-
 # --------------------------------------------------------------------------------------
 # Property-based
 # --------------------------------------------------------------------------------------
@@ -522,7 +487,7 @@ orderables = st.one_of(
 
 @given(st.lists(scalars, max_size=60))
 def test_numeric_property(values: list[Any]) -> None:
-    for c in (values, tuple(values), rs.List(values)):
+    for c in (values, tuple(values)):
         for start in ((), (0,), (1.25,), (-7,)):
             check("sum", c, *start)
         check("any", c)
@@ -531,22 +496,21 @@ def test_numeric_property(values: list[Any]) -> None:
 
 @given(orderables)
 def test_order_property(values: list[Any]) -> None:
-    for c in (values, tuple(values), rs.List(values)):
-        ident = not isinstance(c, rs.List)
-        check("min", c, identity=ident)
-        check("max", c, identity=ident)
-        check("min", c, default=None, identity=ident)
-        check("sorted", c, identity=ident)
-        check("sorted", c, reverse=True, identity=ident)
+    for c in (values, tuple(values)):
+        check("min", c)
+        check("max", c)
+        check("min", c, default=None)
+        check("sorted", c)
+        check("sorted", c, reverse=True)
     if values and len(set(values)) == len(values):
-        for c in (set(values), frozenset(values), dict.fromkeys(values), rs.Set(values)):
+        for c in (set(values), frozenset(values), dict.fromkeys(values)):
             check("min", c)
             check("max", c)
 
 
 @given(st.lists(st.one_of(scalars, st.text(max_size=3), st.none(), st.tuples(st.integers())), max_size=30))
 def test_mixed_property(values: list[Any]) -> None:
-    for c in (values, tuple(values), rs.List(values)):
+    for c in (values, tuple(values)):
         check("any", c)
         check("all", c)
         check("sum", c)
@@ -560,18 +524,17 @@ def test_large_inputs() -> None:
     floats = [rng.uniform(-1e6, 1e6) for _ in range(100_000)]
     strs = [f"s{rng.randrange(10**6)}" for _ in range(20_000)]
     for values in (ints, floats, strs):
-        for c in (values, tuple(values), rs.List(values)):
-            ident = not isinstance(c, rs.List)
+        for c in (values, tuple(values)):
             if values is not strs:
                 check("sum", c)
-            check("min", c, identity=ident)
-            check("max", c, identity=ident)
+            check("min", c)
+            check("max", c)
             check("any", c)
             check("all", c)
-        check("sorted", rs.List(values), identity=False)
-        check("sorted", rs.List(values), reverse=True, identity=False)
+        check("sorted", values)
+        check("sorted", values, reverse=True)
     mixed = [0, 0.0, "", None, (), *range(1, 100), "x", (1,)]
-    for c in (rs.List(mixed), rs.List(mixed[::-1]), rs.Set(range(100)), rs.Set(range(1, 100)), rs.Set(["", *"abc" * 20])):
+    for c in (mixed, mixed[::-1], set(range(100)), set(range(1, 100)), {"", *"abc" * 20}):
         for name in ("any", "all"):
             check(name, c)
     big = ints + [2**100]

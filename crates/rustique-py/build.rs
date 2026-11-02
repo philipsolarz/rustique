@@ -1,5 +1,5 @@
-//! Exposes PyO3's interpreter cfgs (`Py_GIL_DISABLED`, `Py_3_15`, …) to this crate: the
-//! locking discipline differs between GIL and free-threaded builds (see `src/sync.rs`).
+//! Exposes PyO3's interpreter cfgs (`Py_GIL_DISABLED`, `Py_3_15`, …) to this crate: some
+//! kernels differ between GIL and free-threaded builds.
 //!
 //! On Windows it also names the Python DLL (`rq_pydll = "python315"`, …) for
 //! [`python_extern!`](src/lib.rs): PyO3 imports its own declarations with `raw-dylib`, and

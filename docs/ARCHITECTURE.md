@@ -1,3 +1,8 @@
+> **History.** This was the contract of Rustique's own containers (`List`, `Dict`, `Set`,
+> `Tuple`, `FrozenSet`, `X`, scalars, the C-API capsule and `rustique-api`), retired in 0.3
+> (docs/MIGRATION.md; code at tag `legacy-native-types`). The engine's contract is
+> docs/ACCELERATION.md.
+
 # Rustique — Architecture & API Contract
 
 > **Python's data model, Rust's memory.**
