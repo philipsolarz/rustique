@@ -898,9 +898,16 @@ unsafe extern "C" fn vc_dedent(func: O, args: *const O, nargsf: usize, kw: O) ->
             if !g.ready(func) {
                 return call_original(func, args, nargsf, kw);
             }
+            // `'\n'.join(lines)`: one line is that line's own slice (`l[margin:]`: the
+            // singleton for one character), several lines a new object.
             let r = with_scratch(|sc| {
-                let new = with_units!(pep393::units(text), t => tw::dedent_into(t, &Cls, &mut sc.out));
-                if new { pep393::str_from_cps(&sc.out) } else { ffi::Py_NewRef(text) }
+                let u = pep393::units(text);
+                let (new, many) = with_units!(u, t => (tw::dedent_into(t, &Cls, &mut sc.out), t.iter().any(|&c| u32::from(c) == 0x0a)));
+                match (new, many) {
+                    (false, _) => ffi::Py_NewRef(text),
+                    (true, false) => pep393::str_from_cps(&sc.out),
+                    (true, true) => pep393::fresh_from_cps(&sc.out),
+                }
             });
             if g.counters.hit_check_streak() {
                 return verify(g, &DEDENT, r, func, args, nargsf, kw);
@@ -929,8 +936,9 @@ unsafe extern "C" fn vc_indent(func: O, args: *const O, nargsf: usize, kw: O) ->
             }
             let r = with_scratch(|sc| {
                 pep393::units(prefix).push_to(&mut sc.src);
+                // `''.join(prefixed_lines)`: several parts (or none) unless CPython returns `text`.
                 let new = with_units!(pep393::units(text), t => tw::indent_into(t, &sc.src, &Cls, &mut sc.out));
-                if new { pep393::str_from_cps(&sc.out) } else { ffi::Py_NewRef(text) }
+                if new { pep393::fresh_from_cps(&sc.out) } else { ffi::Py_NewRef(text) }
             });
             if g.counters.hit_check_streak() {
                 return verify(g, &INDENT, r, func, args, nargsf, kw);

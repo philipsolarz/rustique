@@ -253,6 +253,22 @@ pub unsafe fn str_from_cps<T: Unit>(v: &[T]) -> O {
     }
 }
 
+/// A new `str` with the code points of `v` that is never a cached singleton (what CPython's
+/// `''.join` of several parts returns); NULL with an error set on failure.
+///
+/// # Safety
+/// Attached thread.
+pub unsafe fn fresh_from_cps<T: Unit>(v: &[T]) -> O {
+    // SAFETY: per the caller; exactly `v.len()` points of maximum `max_cp(v)` written.
+    unsafe {
+        let Some(mut w) = StrWriter::fresh(v.len(), max_cp(v)) else {
+            return ffi::PyUnicode_New(v.len() as ffi::Py_ssize_t, max_cp(v)); // re-raise the error
+        };
+        w.put(v);
+        w.finish()
+    }
+}
+
 /// A new `str` from ASCII bytes; NULL with an error set on failure.
 ///
 /// # Safety
