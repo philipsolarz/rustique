@@ -16,8 +16,6 @@
 //! - `interp.setattr`: CALL_NON_PY_GENERAL (`object.__setattr__` direct);
 //! - `interp.kwinit`: CALL_KW_NON_PY (keyword instantiation pushed inline; GIL builds only).
 
-use std::sync::atomic::Ordering;
-
 #[allow(dead_code)]
 mod getattr;
 

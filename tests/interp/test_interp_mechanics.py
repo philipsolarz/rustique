@@ -226,11 +226,12 @@ def test_attr_group_suspends_when_it_does_not_pay() -> None:
 
 
 @requires_tier
-def test_startup_switch_requests_the_tier() -> None:
-    """`RUSTIQUE=1 RUSTIQUE_TIERS=interp` installs the tier at startup; `RUSTIQUE=1` alone
-    does not."""
-    script = "import rustique; s = rustique._accel._t_interp.info(); print(sorted(s['groups']['interp.attr']['swapped'])[:1])"
-    env = {**__import__("os").environ, "RUSTIQUE": "1"}
+def test_switch_requests_the_tier() -> None:
+    """With `RUSTIQUE_TIERS=interp`, `rustique.enable()` (the switch, as the startup line uses
+    it) installs the tier; without it the tier stays off."""
+    script = ("import rustique; rustique.enable(); s = rustique._accel._t_interp.info(); "
+              "print(sorted(s['groups']['interp.attr']['swapped'])[:1])")
+    env = {k: v for k, v in __import__("os").environ.items() if not k.startswith("RUSTIQUE")}
     on = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
                         env={**env, "RUSTIQUE_TIERS": "interp"}, timeout=120)
     off = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env, timeout=120)
