@@ -31,7 +31,7 @@ use pyo3::types::{PyDict, PyList, PyModule};
 use super::guard;
 use super::prepare::{self, FingerprintRecord, Prepare};
 use super::site::{Kind, Site};
-use super::spec::{Category, GroupSpec, Refusal, TargetSpec};
+use super::spec::{Category, GroupSpec, KNOWN_TIERS, Refusal, TargetSpec};
 use super::stats;
 use super::version;
 
@@ -201,6 +201,8 @@ struct Registry {
     rt: Vec<Rt>,
     only: Option<Vec<String>>,
     exclude: Vec<String>,
+    /// Opt-in tiers requested (union of every `enable()` since the last full `disable()`).
+    tiers: Vec<String>,
     groups: Vec<Group>,
     /// Incremented at the start of each registry pass (a group's refusal is remembered for
     /// the pass only).
@@ -264,6 +266,7 @@ fn registry<'a>(g: &'a mut Guard<'_, Option<Registry>>) -> &'a mut Registry {
         pass: 0,
         only: None,
         exclude: Vec::new(),
+        tiers: Vec::new(),
     })
 }
 
@@ -951,12 +954,7 @@ fn release_sites(sites: impl Iterator<Item = Site>) {
 }
 
 fn site_label(name: &str, kind: Kind) -> String {
-    let kind = match kind {
-        Kind::MlMeth => "ml_meth",
-        Kind::Slot => "slot",
-        Kind::Vectorcall => "vectorcall",
-    };
-    format!("{name} ({kind})")
+    format!("{name} ({})", kind.label())
 }
 
 /// Restore target `i`'s sites and drop its pins. Returns whether an `ml_meth` site was
@@ -1027,11 +1025,17 @@ fn clear_internal_caches() {
 // Selection
 // ---------------------------------------------------------------------------------------
 
+/// `names` names this target, its group or its tier.
 fn matches(spec: &TargetSpec, names: &[String]) -> bool {
-    names.iter().any(|n| n == spec.name || n == spec.group)
+    names.iter().any(|n| n == spec.name || n == spec.group || spec.opt_in == Some(n.as_str()))
 }
 
-fn selected(spec: &TargetSpec, only: Option<&[String]>, exclude: &[String]) -> bool {
+fn selected(spec: &TargetSpec, only: Option<&[String]>, exclude: &[String], tiers: &[String]) -> bool {
+    if let Some(t) = spec.opt_in
+        && !tiers.iter().any(|x| x == t)
+    {
+        return false;
+    }
     let inc = match only {
         Some(o) => matches(spec, o),
         None => !spec.hidden(),
@@ -1039,9 +1043,31 @@ fn selected(spec: &TargetSpec, only: Option<&[String]>, exclude: &[String]) -> b
     inc && !matches(spec, exclude)
 }
 
+/// A known name: target, group or tier (including tiers with no target in this build).
+pub(crate) fn known_name(n: &str) -> bool {
+    all_specs().iter().any(|s| s.name == n || s.group == n || s.opt_in == Some(n)) || KNOWN_TIERS.contains(&n)
+}
+
+/// Every tier name known to this build (sorted).
+pub(crate) fn tier_names() -> Vec<&'static str> {
+    let mut t: Vec<&'static str> = KNOWN_TIERS.to_vec();
+    t.extend(all_specs().iter().filter_map(|s| s.opt_in));
+    t.sort_unstable();
+    t.dedup();
+    t
+}
+
+pub(crate) fn check_tiers(names: &[String]) -> PyResult<()> {
+    let known = tier_names();
+    let unknown: Vec<&str> = names.iter().map(String::as_str).filter(|n| !known.contains(n)).collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(PyValueError::new_err(format!("unknown rustique tier: {}; tiers: {}", unknown.join(", "), known.join(", "))))
+}
+
 pub(crate) fn check_names(names: &[String]) -> PyResult<()> {
-    let unknown: Vec<&String> =
-        names.iter().filter(|n| !all_specs().iter().any(|s| s.name == n.as_str() || s.group == n.as_str())).collect();
+    let unknown: Vec<&String> = names.iter().filter(|n| !known_name(n)).collect();
     if unknown.is_empty() {
         return Ok(());
     }
@@ -1063,12 +1089,29 @@ pub(crate) fn check_names(names: &[String]) -> PyResult<()> {
 /// stay; refused or disabled ones are retried). Module targets whose module is not
 /// imported yet become pending. Never imports anything.
 pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -> PyResult<()> {
+    enable_tiers(py, only, exclude, Vec::new())
+}
+
+/// [`enable`] with opt-in tiers requested too (added to the ones already requested).
+pub fn enable_tiers(
+    py: Python<'_>,
+    only: Option<Vec<String>>,
+    exclude: Vec<String>,
+    tiers: Vec<String>,
+) -> PyResult<()> {
     if let Some(o) = &only {
         check_names(o)?;
     }
     check_names(&exclude)?;
+    check_tiers(&tiers)?;
     let mut g = REG.lock(py)?;
     let reg = registry(&mut g);
+    for t in tiers {
+        if !reg.tiers.contains(&t) {
+            reg.tiers.push(t);
+        }
+    }
+    let tiers = reg.tiers.clone();
     prepare::clear_pass_caches();
     reg.pass += 1;
     JIT.store(jit_enabled(py), Ordering::Relaxed);
@@ -1080,7 +1123,7 @@ pub fn enable(py: Python<'_>, only: Option<Vec<String>>, exclude: Vec<String>) -
     // queued by the watcher (drained below).
     let mut check: Vec<usize> = Vec::new();
     for (i, spec) in all_specs().iter().enumerate() {
-        if !selected(spec, only.as_deref(), &exclude) {
+        if !selected(spec, only.as_deref(), &exclude, &tiers) {
             continue;
         }
         if reg.rt[i].suspended == Some(Suspended::Fallback) {
@@ -1154,6 +1197,7 @@ pub fn disable(py: Python<'_>, names: Option<Vec<String>>) -> PyResult<()> {
     if names.is_none() {
         reg.only = None;
         reg.exclude = Vec::new();
+        reg.tiers.clear();
     }
     refresh_pending(reg);
     drop(g);
@@ -1183,6 +1227,7 @@ pub fn teardown(py: Python<'_>) -> PyResult<()> {
     }
     reg.only = None;
     reg.exclude = Vec::new();
+    reg.tiers.clear();
     refresh_pending(reg);
     NEED_RESYNC.store(false, Ordering::Release);
     guard::unwatch_sys_modules();
@@ -1292,13 +1337,21 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         if spec.hidden() && rt.state == State::Disabled && rt.reason.is_none() {
             continue;
         }
+        // A target of a tier nobody requested: disabled, saying how to turn it on.
+        let tier_off = spec.opt_in.filter(|t| rt.state == State::Disabled && !reg.tiers.iter().any(|x| x == t));
         enabled |= matches!(rt.state, State::Installed | State::Pending);
         let d = PyDict::new(py);
         let fixed = &static_status(py)[i];
         d.set_item(intern!(py, "name"), fixed.name.bind(py))?;
         d.set_item(intern!(py, "group"), fixed.group.bind(py))?;
         d.set_item(intern!(py, "state"), rt.state.as_str())?;
-        d.set_item(intern!(py, "reason"), rt.reason.as_deref())?;
+        match tier_off {
+            Some(t) if rt.reason.is_none() => {
+                d.set_item(intern!(py, "reason"), format!("opt-in tier: RUSTIQUE_TIERS={t}"))?
+            }
+            _ => d.set_item(intern!(py, "reason"), rt.reason.as_deref())?,
+        }
+        d.set_item(intern!(py, "tier"), spec.opt_in)?;
         d.set_item(
             intern!(py, "refusal"),
             if rt.state == State::Refused { rt.refusal.map(Category::as_str) } else { None },
@@ -1349,6 +1402,7 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     process.set_item("check", stats::check_mode().map(|r| if r { "raise" } else { "warn" }))?;
     process.set_item("only", reg.only.clone())?;
     process.set_item("exclude", reg.exclude.clone())?;
+    process.set_item("tiers", reg.tiers.clone())?;
     let out = PyDict::new(py);
     out.set_item("targets", targets)?;
     out.set_item("process", process)?;

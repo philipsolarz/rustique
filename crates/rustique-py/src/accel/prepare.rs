@@ -389,6 +389,43 @@ impl<'py> Prepare<'py> {
         self.push_site(site, original)
     }
 
+    /// Declare an entry of the interpreter's opcode handler table (the `interp` tier): `cell`
+    /// is the address of the pointer-sized table entry, `expected` the handler the caller
+    /// verified it must hold (refuses with `conflict` when it holds anything else), `kernel`
+    /// the replacement. Installed and restored by compare-and-swap, like a slot; reported as
+    /// kind `"opcode-handler"`. The caller keeps its own record of `expected` (the kernel's
+    /// fallback) and is responsible for the handler ABI.
+    pub fn opcode_handler(&mut self, name: &str, cell: usize, expected: usize, kernel: usize) -> Result<(), Refusal> {
+        if cell == 0 || !cell.is_multiple_of(std::mem::align_of::<usize>()) {
+            return Err(Refusal::with(Category::Layout, format!("{name}: misaligned handler table entry")));
+        }
+        if !crate::patch::writable(cell, size_of::<usize>()) {
+            return Err(Refusal::with(Category::Layout, format!("{name}: handler table is read-only")));
+        }
+        if expected == 0 || kernel == 0 {
+            return Err(Refusal::from(format!("{name}: empty handler")));
+        }
+        // SAFETY: aligned, writable pointer-sized cell (checked above).
+        let current =
+            unsafe { (*(cell as *const std::sync::atomic::AtomicUsize)).load(std::sync::atomic::Ordering::Acquire) };
+        if current != expected {
+            return Err(Refusal::with(Category::Conflict, format!("{name}: handler differs from the verified one")));
+        }
+        if self.sites.iter().any(|d| d.site.addr == cell) {
+            return Err(Refusal::from(format!("{name}: site declared twice")));
+        }
+        let site = Site {
+            name: name.to_owned(),
+            kind: Kind::OpcodeHandler,
+            addr: cell,
+            original: current,
+            kernel,
+            installed: false,
+        };
+        self.sites.push(SiteDecl { site });
+        Ok(())
+    }
+
     /// Declare the vectorcall of an exact pure-Python function (found in a module or class
     /// `__dict__`). The function's current vectorcall must be `_PyFunction_Vectorcall`
     /// (nobody else replaced it); it is captured into `original` (use

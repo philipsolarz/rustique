@@ -32,7 +32,7 @@ const MODULE: &str = "_rustique_selftest";
 // Probe C functions with writable, static method tables.
 // ---------------------------------------------------------------------------------------
 
-struct Defs(UnsafeCell<[ffi::PyMethodDef; 4]>);
+struct Defs(UnsafeCell<[ffi::PyMethodDef; 5]>);
 // SAFETY: written only through atomic pointer stores of `ml_meth` (sites) at install.
 unsafe impl Sync for Defs {}
 
@@ -88,6 +88,12 @@ static DEFS: Defs = Defs(UnsafeCell::new([
     },
     ffi::PyMethodDef {
         ml_name: c"_probe_b".as_ptr(),
+        ml_meth: ffi::PyMethodDefPointer { PyCFunction: probe_orig },
+        ml_flags: ffi::METH_O,
+        ml_doc: std::ptr::null(),
+    },
+    ffi::PyMethodDef {
+        ml_name: c"_probe_t".as_ptr(),
         ml_meth: ffi::PyMethodDefPointer { PyCFunction: probe_orig },
         ml_flags: ffi::METH_O,
         ml_doc: std::ptr::null(),
@@ -276,7 +282,81 @@ target!(SNAPSHOT, "_selftest.snapshot", Some(MODULE), C_SNAP, prepare_snapshot);
 target!(SAME, "_selftest.same", Some(MODULE), C_SAME, prepare_same);
 
 pub static TARGETS: &[&TargetSpec] =
-    &[&METH, &VECTORCALL, &SLOT, &BADFP, &REFUSE, &CAS, &SNAPSHOT, &SAME, &SHARED_A, &SHARED_B];
+    &[&METH, &VECTORCALL, &SLOT, &BADFP, &REFUSE, &CAS, &SNAPSHOT, &SAME, &SHARED_A, &SHARED_B, &TIER, &OPCODE];
+
+// ---------------------------------------------------------------------------------------
+// _selftest.tier: an opt-in target (tier `_selftest_tier`), `ml_meth` on `_accel._probe_t`.
+// _selftest.opcode: an opcode-handler site on a private 4-entry "handler table".
+// ---------------------------------------------------------------------------------------
+
+static C_TIER: Counters = Counters::new();
+static ORIG_T: Original<ffi::PyCFunction> = Original::new();
+
+unsafe extern "C" fn k_tier(_m: O, x: O) -> O {
+    // SAFETY: METH_O call.
+    unsafe { tagged(&KERNEL_STR, x) }
+}
+
+fn prepare_tier(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    // SAFETY: a static, writable method table entry.
+    unsafe { cx.ml_meth_def("_accel._probe_t", def(3), k_tier as ffi::PyCFunction, &ORIG_T) }
+}
+
+pub static TIER: TargetSpec = TargetSpec {
+    name: "_selftest.tier",
+    group: "_selftest",
+    module: None,
+    versions: VERSIONS,
+    free_threaded: true,
+    opt_in: Some("_selftest_tier"),
+    counters: &C_TIER,
+    prepare: prepare_tier,
+    ..TargetSpec::DEFAULT
+};
+
+/// A fake handler table: entry 1 is the swapped cell.
+static TABLE: [std::sync::atomic::AtomicUsize; 4] = [const { std::sync::atomic::AtomicUsize::new(0) }; 4];
+const HANDLER_CORE: usize = 0x1000;
+const HANDLER_OURS: usize = 0x2000;
+
+fn prepare_opcode(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    let _ = TABLE[1].compare_exchange(0, HANDLER_CORE, Ordering::AcqRel, Ordering::Acquire);
+    cx.opcode_handler("_selftest.TABLE[1]", (&raw const TABLE[1]) as usize, HANDLER_CORE, HANDLER_OURS)
+}
+
+pub static OPCODE: TargetSpec = TargetSpec {
+    name: "_selftest.opcode",
+    group: "_selftest",
+    module: None,
+    versions: VERSIONS,
+    free_threaded: true,
+    counters: &C_NONE,
+    prepare: prepare_opcode,
+    ..TargetSpec::DEFAULT
+};
+
+/// The fake handler table entry: "core", "ours", or the raw value.
+#[pyfunction]
+fn _selftest_handler() -> String {
+    match TABLE[1].load(Ordering::Acquire) {
+        HANDLER_CORE => "core".into(),
+        HANDLER_OURS => "ours".into(),
+        v => format!("{v:#x}"),
+    }
+}
+
+/// Request a net-benefit suspension of a self-test target (any site kind), as a kernel's
+/// fallback would.
+#[pyfunction]
+fn _selftest_request_suspend(name: &str) -> PyResult<()> {
+    let spec = TARGETS
+        .iter()
+        .find(|t| t.name == name)
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("unknown self-test target"))?;
+    spec.counters.suspend_requested.store(true, Ordering::Release);
+    crate::accel::registry::suspend_from_kernel();
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------------------
 // _selftest.shared_a / shared_b: two targets with shared declarations (`GroupSpec`).
@@ -557,7 +637,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
             unsafe { ffi::Py_DECREF(new) };
         }
     }
-    for (i, name) in [(0, "_probe"), (1, "_probe_a"), (2, "_probe_b")] {
+    for (i, name) in [(0, "_probe"), (1, "_probe_a"), (2, "_probe_b"), (3, "_probe_t")] {
         // SAFETY: a static method def; module name string.
         let f = unsafe {
             Bound::from_owned_ptr_or_err(
@@ -580,5 +660,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_selftest_degrade, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_released, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_call_kernel, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_handler, m)?)?;
+    m.add_function(wrap_pyfunction!(_selftest_request_suspend, m)?)?;
     Ok(())
 }

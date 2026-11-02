@@ -200,8 +200,13 @@ impl Counters {
         }
     }
 
+    /// Ask the registry to suspend the target(s) using these counters (any site kind):
+    /// their sites get their originals back until the next `enable()`. Performed on this
+    /// thread when the registry is free (only pointer swaps happen: callable from a kernel or
+    /// handler about to fall back, attached, outside any watcher), else by the registry's
+    /// holder or a pending call. The net-benefit score calls it at its floor.
     #[cold]
-    fn request_suspend(&self) {
+    pub fn request_suspend(&self) {
         self.suspend_requested.store(true, Ordering::Release);
         super::registry::suspend_from_kernel();
     }

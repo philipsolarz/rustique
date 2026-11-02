@@ -46,6 +46,11 @@ pub struct TargetSpec {
     pub versions: &'static [(u8, u8)],
     /// Validated on free-threaded builds too.
     pub free_threaded: bool,
+    /// Opt-in tier (`Some("interp")`, `Some("gc")`): not in the default set; installed only
+    /// when the tier is requested (`RUSTIQUE_TIERS=interp,gc`, `rustique.enable(tiers=[...])`),
+    /// and then like any target (`only`/`exclude` still apply; a tier name works in both).
+    /// Default `None`.
+    pub opt_in: Option<&'static str>,
     /// Hit / fallback counters of the target's kernels.
     pub counters: &'static Counters,
     /// Validate and declare the sites.
@@ -114,6 +119,7 @@ impl TargetSpec {
         module: None,
         versions: &[],
         free_threaded: false,
+        opt_in: None,
         counters: &NO_COUNTERS,
         prepare: no_prepare,
         jit_safe: true,
@@ -130,6 +136,11 @@ impl TargetSpec {
         self.group.starts_with('_')
     }
 }
+
+/// Opt-in tiers known to this build even when none of their targets is compiled in
+/// (`enable(tiers=["interp"])` must not raise where the tier is unavailable: its targets
+/// would refuse anyway).
+pub const KNOWN_TIERS: &[&str] = &["interp", "gc"];
 
 /// Machine-readable class of a refusal (`status()["targets"][i]["refusal"]`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

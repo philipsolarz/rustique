@@ -33,6 +33,26 @@ pub enum Kind {
     MlMeth,
     Slot,
     Vectorcall,
+    /// An entry of the interpreter's opcode handler table (the `interp` tier, DECISIONS
+    /// §10.2): a pointer-sized cell swapped by CAS like a slot.
+    OpcodeHandler,
+}
+
+impl Kind {
+    /// The kind's name in `status()["targets"][i]["sites"]`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::MlMeth => "ml_meth",
+            Kind::Slot => "slot",
+            Kind::Vectorcall => "vectorcall",
+            Kind::OpcodeHandler => "opcode-handler",
+        }
+    }
+
+    /// Swapped by a compare-and-swap of a pointer-sized cell (not `PyFunction_SetVectorcall`).
+    pub fn is_cell(self) -> bool {
+        !matches!(self, Kind::Vectorcall)
+    }
 }
 
 /// One patch site.
@@ -323,7 +343,9 @@ impl Site {
         // SAFETY: field addresses validated at construction; function kept alive.
         unsafe {
             match self.kind {
-                Kind::MlMeth | Kind::Slot => (*(self.addr as *const AtomicUsize)).load(Ordering::Acquire),
+                Kind::MlMeth | Kind::Slot | Kind::OpcodeHandler => {
+                    (*(self.addr as *const AtomicUsize)).load(Ordering::Acquire)
+                }
                 Kind::Vectorcall => (*(self.addr as *mut ffi::PyFunctionObject)).vectorcall.map_or(0, |f| f as usize),
             }
         }
@@ -335,7 +357,7 @@ impl Site {
             return Ok(());
         }
         match self.kind {
-            Kind::MlMeth | Kind::Slot => {
+            Kind::MlMeth | Kind::Slot | Kind::OpcodeHandler => {
                 // SAFETY: validated writable aligned field.
                 let cell = unsafe { &*(self.addr as *const AtomicUsize) };
                 cell.compare_exchange(self.original, self.kernel, Ordering::AcqRel, Ordering::Acquire).map_err(
@@ -366,7 +388,7 @@ impl Site {
             return;
         }
         match self.kind {
-            Kind::MlMeth | Kind::Slot => {
+            Kind::MlMeth | Kind::Slot | Kind::OpcodeHandler => {
                 // SAFETY: validated writable aligned field.
                 let cell = unsafe { &*(self.addr as *const AtomicUsize) };
                 let _ = cell.compare_exchange(self.kernel, self.original, Ordering::AcqRel, Ordering::Acquire);
