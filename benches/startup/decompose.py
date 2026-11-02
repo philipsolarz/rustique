@@ -4,13 +4,17 @@
 
 PLAIN_VENV is a fresh venv without Rustique, RUSTIQUE_VENV the same with the wheel
 installed (`pip install` of a release wheel: the `.pth` startup line is only in wheels).
-Variant venvs are made next to RUSTIQUE_VENV (`<venv>.var-<name>`) that link its `rustique`
-package and carry a modified startup line:
+Variant venvs are made next to RUSTIQUE_VENV (`<venv>.var-<name>`) that link its installed
+files and carry a modified startup line:
 
     unset   shipped line, RUSTIQUE unset             (installed but off)
-    off     shipped line, RUSTIQUE=off               (gate + the exec'd loader string compiled)
+    off     shipped line, RUSTIQUE=off               (0.3: extension imported, then unregistered;
+                                                      wave 1: the exec'd loader string compiled)
     load    line without `.startup()`, RUSTIQUE=1    (extension loaded, nothing enabled)
     on      shipped line, RUSTIQUE=1
+
+Both line formats are understood: 0.3's `__import__('_rustique').startup()` (top-level
+extension) and wave 1's exec'd loader string ending in `._accel.startup()")`.
 
 Measured per variant: callgrind total Ir of the whole process (PYTHONHASHSEED=0), and with
 `perf stat -r N`: user/kernel instructions and cycles, page faults, task-clock and elapsed
@@ -18,8 +22,9 @@ time. On `on`, callgrind `--toggle-collect` gives the inclusive Ir of: `_imp_cre
 (dlopen, relocations, module object), `_imp_exec_dynamic` (module exec slot), `startup()`
 (the quiet enable) and the exit hook. The table attributes the RUSTIQUE=1 − unset delta:
 
-    loader string     off − unset
-    locate + _load    load − off − create − exec   (importlib's spec/_load, os.path.isfile)
+    loader string     off − unset (wave 1 only; 0.3 has no loader string: 0)
+    locate + import   load − unset − loader string − create − exec   (finder search or the
+                      wave-1 spec/_load, os.path.isfile)
     create / exec     toggles
     enable            toggle on startup()
     exit hook         toggle
@@ -39,7 +44,7 @@ import subprocess
 TOGGLES = {
     "create (dlopen + relocations + module object)": "_imp_create_dynamic",
     "exec (module exec slot)": "_imp_exec_dynamic",
-    "enable (_accel.startup())": "*__pyfunction_startup",
+    "enable (startup())": "*__pyfunction_startup",
     "exit hook": "*__pyfunction_exit_hook",
 }
 
@@ -67,7 +72,8 @@ def variant(rq_venv: str, name: str, line: str) -> str:
         subprocess.check_call([exe.group(1).strip() if exe else base, "-m", "venv", "--without-pip", path])
     src, dst = site_packages(os.path.join(rq_venv, "bin", "python")), site_packages(py)
     for entry in os.listdir(src):
-        if entry.startswith("rustique") and not os.path.exists(os.path.join(dst, entry)):
+        linked = entry.startswith("rustique") or (entry.startswith("_rustique") and entry != "_rustique_startup.pth")
+        if linked and not os.path.exists(os.path.join(dst, entry)):
             os.symlink(os.path.join(src, entry), os.path.join(dst, entry))
     with open(os.path.join(dst, "_rustique_startup.pth"), "w") as f:
         f.write(line)
@@ -126,9 +132,13 @@ def main() -> None:
     plain = os.path.join(args.plain, "bin", "python")
     rq = os.path.join(args.rustique, "bin", "python")
     shipped = open(os.path.join(site_packages(rq), "_rustique_startup.pth")).read()
-    assert shipped.rstrip().endswith('.startup()")'), shipped
-    # the same line without the final `.startup()` call (wave 1: `._accel.startup()`)
-    load_line = re.sub(r'(\._accel)?\.startup\(\)"\)\s*$', '")\n', shipped)
+    wave1 = shipped.rstrip().endswith('.startup()")')
+    assert wave1 or shipped.rstrip().endswith("__import__('_rustique').startup()"), shipped
+    # the same line without the final `.startup()` call (wave 1: `._accel.startup()` in the string)
+    if wave1:
+        load_line = re.sub(r'(\._accel)?\.startup\(\)"\)\s*$', '")\n', shipped)
+    else:
+        load_line = shipped.rstrip()[: -len(".startup()")] + "\n"
     load_py = variant(args.rustique, "load", load_line)
     e = env_for({})
     cells = {
@@ -143,14 +153,15 @@ def main() -> None:
     pf = {k: perf(py, env, args.perf_runs) for k, (py, env) in cells.items()}
     wl = wall(cells, args.wall_rounds)
     create, execm = tog["create (dlopen + relocations + module object)"], tog["exec (module exec slot)"]
-    enable, exit_hook = tog["enable (_accel.startup())"], tog["exit hook"]
+    enable, exit_hook = tog["enable (startup())"], tog["exit hook"]
+    loader = ir["off"] - ir["unset"] if wave1 else 0
     parts = [
         ("`.pth` with RUSTIQUE unset (vs plain venv)", ir["unset"] - ir["plain"]),
-        ("loader string compile + env test (off − unset)", ir["off"] - ir["unset"]),
-        ("locate + importlib `_load` (load − off − create − exec)", ir["load"] - ir["off"] - create - execm),
+        ("loader string compile + env test (off − unset)", loader),
+        ("locate + import (load − unset − loader − create − exec)", ir["load"] - ir["unset"] - loader - create - execm),
         ("create: dlopen + relocations + module object", create),
-        ("exec: module exec slot (`_accel` registration)", execm),
-        ("enable: `_accel.startup()`", enable),
+        ("exec: module exec slot", execm),
+        ("enable: `startup()`", enable),
         ("exit hook", exit_hook),
         ("rest: GC/teardown/watcher (on − load − enable − exit)", ir["on"] - ir["load"] - enable - exit_hook),
     ]
@@ -167,7 +178,7 @@ def main() -> None:
         print(f"{k:<8} {ir[k]:>12,} {p.get('instructions:u', 0):>12,.0f} {p.get('instructions:k', 0):>11,.0f} "
               f"{p.get('cycles:u', 0):>12,.0f} {p.get('cycles:k', 0):>11,.0f} {p.get('page-faults', 0):>7.0f} "
               f"{p.get('task-clock', 0):>8.3f} {wl[k]:>8.3f}")
-    for a, b in (("on", "unset"), ("unset", "plain"), ("on", "plain")):
+    for a, b in (("on", "unset"), ("unset", "plain"), ("on", "plain"), ("off", "unset")):
         print(f"{a} / {b}: Ir {ir[a] / ir[b]:.4f}, wall {wl[a] / wl[b]:.4f} (+{wl[a] - wl[b]:.3f} ms), "
               f"cycles {(pf[a]['cycles:u'] + pf[a]['cycles:k']) / (pf[b]['cycles:u'] + pf[b]['cycles:k']):.4f}")
     if args.output:

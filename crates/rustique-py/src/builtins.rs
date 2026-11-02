@@ -35,14 +35,6 @@
 //! - **Builtin `set`/`frozenset`/`dict`** (keys): the same scan over the hash table (under
 //!   the critical section); if an item needs Python code, the original builtin is called
 //!   from scratch (the scan had no side effects).
-//! - **`rustique.List`**: native storage runs the `rustique-core` kernels (`sum` with
-//!   CPython's compensated float summation, `min`/`max` with CPython's tie rules, `sort`) on
-//!   the column under the list's read lock; object storage is scanned like a builtin list
-//!   (on a snapshot); anything else calls the original builtin, which iterates the list.
-//! - **`rustique.Set`**: its elements are scanned like a builtin set.
-//! - `sorted(rustique.List / Set)` returns a new builtin `list`: native columns are sorted
-//!   natively and boxed; otherwise (a `key`, NaNs, object storage) the elements are copied
-//!   into a new builtin list and `list.sort` runs on it, as `sorted` does.
 //!
 //! `sum` follows `builtin_sum_impl` state by state (exact `int` accumulation in a C long,
 //! then compensated float summation, then complex, then generic `+`), so float results are
@@ -53,11 +45,9 @@
 //! Builtin lists, sets and dicts are read inside their per-object critical section; only
 //! exact-type reads and the creation of `int`/`float` results happen inside it (no Python
 //! code: no `__eq__`, no `__lt__`, no `__bool__`, no decref of objects with finalizers).
-//! Rustique containers are read under their own read lock with the same rule (§6 of
-//! ARCHITECTURE.md). Install and uninstall are thread-safe; a call racing with them sees
+//! Install and uninstall are thread-safe; a call racing with them sees
 //! either function.
 
-use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::ffi::{CStr, c_int};
 use std::panic::{self, AssertUnwindSafe};
@@ -67,34 +57,12 @@ use std::sync::atomic::{AtomicPtr, Ordering as Atomic};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::ffi;
-use pyo3::impl_::trampoline::{self, MethodDef};
 use pyo3::prelude::*;
 use pyo3::sync::critical_section::with_critical_section;
 use pyo3::types::PyString;
-use rustique_core::kernels::{self, Sum};
-use rustique_core::{Column, with_column};
 
 use crate::accel::{self, Counters, Original, Prepare, Reason, Refusal, TargetSpec};
-use crate::convert::{self, ToPython};
-use crate::dict::{Dict, DictKeysRef};
-use crate::frozenset::FrozenSet;
-use crate::list::List;
-use crate::objsort;
 use crate::refuse;
-use crate::set::{Set, SetElements};
-use crate::storage::Storage;
-use crate::tuple::Tuple;
-
-/// Native kernels on at least this many elements run detached from the interpreter.
-const DETACH_THRESHOLD: usize = 1 << 16;
-/// Native sorts of at least this many elements run detached (they use the rayon pool).
-const SORT_DETACH_THRESHOLD: usize = 1 << 14;
-/// `any`/`all` snapshot a Rustique container's elements (no lazy element access exists
-/// yet) only up to this size; larger ones are iterated lazily by the original builtin.
-const SNAPSHOT_TRUTH_MAX: usize = 32;
-/// `sorted` of a non-List Rustique container sorts a `str` column natively below this size
-/// (above it, sorting the boxed objects with `list.sort` is cheaper).
-const NATIVE_STR_SORT_MAX: usize = 32;
 
 // =======================================================================================
 // Raw object access (exact builtin types only)
@@ -835,27 +803,6 @@ unsafe fn sum_hashed(py: Python<'_>, kind: Hashed, obj: *mut ffi::PyObject, star
     }
 }
 
-/// `sum` over borrowed items that the caller keeps alive (a snapshot): `None` if an item
-/// needs Python code.
-///
-/// # Safety
-/// Live items.
-unsafe fn sum_items(
-    py: Python<'_>,
-    items: &[*mut ffi::PyObject],
-    start: *mut ffi::PyObject,
-) -> Option<*mut ffi::PyObject> {
-    // SAFETY: forwarded.
-    unsafe {
-        let mut state = SumState::new(py, start)?;
-        match state.scan_slice(py, items) {
-            Scan::Done(()) => Some(state.finish()),
-            Scan::Error => Some(ptr::null_mut()),
-            Scan::Bail(_) => None,
-        }
-    }
-}
-
 // =======================================================================================
 // min / max
 // =======================================================================================
@@ -1303,26 +1250,6 @@ unsafe fn minmax_hashed(
     }
 }
 
-/// `min`/`max` over items a snapshot keeps alive; `None` if an item needs Python code.
-///
-/// # Safety
-/// Live items and default.
-unsafe fn minmax_items(
-    items: &[*mut ffi::PyObject],
-    default: *mut ffi::PyObject,
-    op: c_int,
-) -> Option<*mut ffi::PyObject> {
-    // SAFETY: forwarded.
-    unsafe {
-        let mut best = None;
-        match minmax_scan_slice(items, op, &mut best) {
-            Scan::Done(()) => Some(minmax_result(best.map(|b| b.obj), default, op)),
-            Scan::Error => Some(ptr::null_mut()),
-            Scan::Bail(_) => None,
-        }
-    }
-}
-
 // =======================================================================================
 // any / all
 // =======================================================================================
@@ -1400,189 +1327,7 @@ unsafe fn truth_hashed(py: Python<'_>, kind: Hashed, obj: *mut ffi::PyObject, st
 }
 
 // =======================================================================================
-// Native columns (rustique.List)
-// =======================================================================================
-
-/// How `start` enters a native sum.
-#[derive(Clone, Copy)]
-enum NativeStart {
-    Default,
-    Int(i64),
-    Float(f64),
-}
-
-/// `sum(column, start)` with CPython's result; `None`: not handled natively (str data,
-/// unusual starts), use the original builtin.
-fn column_sum<'py>(py: Python<'py>, column: &Column, start: NativeStart) -> Option<PyResult<Bound<'py, PyAny>>> {
-    let big = column.len() >= DETACH_THRESHOLD;
-    if matches!(column, Column::Str(v) if !v.is_empty()) {
-        return None; // CPython raises at the first `int + str`: let it.
-    }
-    let int_result = |x: i128| -> PyResult<Bound<'py, PyAny>> {
-        match i64::try_from(x) {
-            Ok(v) => Ok(v.to_python(py)),
-            Err(_) => Ok(x.into_pyobject(py)?.into_any()),
-        }
-    };
-    let is_float = matches!(column, Column::F32(_) | Column::F64(_));
-    match start {
-        NativeStart::Default => {
-            let sum = if big { py.detach(|| kernels::sum(column)) } else { kernels::sum(column) };
-            Some(match sum {
-                Ok(Sum::Int(x)) => int_result(x),
-                Ok(Sum::Float(x)) => Ok(x.to_python(py)),
-                Err(_) => return None,
-            })
-        }
-        NativeStart::Int(s) if !is_float => {
-            let sum = if big { py.detach(|| kernels::sum(column)) } else { kernels::sum(column) };
-            match sum {
-                // |x| < 2^124, so adding an i64 cannot overflow i128.
-                Ok(Sum::Int(x)) => Some(int_result(x + i128::from(s))),
-                _ => None,
-            }
-        }
-        NativeStart::Int(s) => {
-            // Int path until the first float: `float(s) + x0`, then compensated summation.
-            let run = || {
-                let mut items = float_items(column);
-                items.next().map(|x0| {
-                    let mut cs = Cs::new(s as f64 + x0);
-                    items.for_each(|x| cs.add(x));
-                    cs.value()
-                })
-            };
-            let total = if big { py.detach(run) } else { run() };
-            Some(Ok(match total {
-                Some(f) => f.to_python(py),
-                None => s.to_python(py),
-            }))
-        }
-        NativeStart::Float(f) => {
-            // Compensated float path from the start: ints convert like `PyLong_AsDouble`.
-            let run = || {
-                let mut cs = Cs::new(f);
-                with_column!(column, v => v.iter().for_each(|x| cs.add(element_as_f64(x))));
-                cs.value()
-            };
-            let total = if big { py.detach(run) } else { run() };
-            Some(Ok(total.to_python(py)))
-        }
-    }
-}
-
-/// The elements of a float column as `f64`.
-fn float_items(column: &Column) -> Box<dyn Iterator<Item = f64> + '_> {
-    match column {
-        Column::F64(v) => Box::new(v.iter().copied()),
-        Column::F32(v) => Box::new(v.iter().map(|&x| f64::from(x))),
-        _ => Box::new(std::iter::empty()),
-    }
-}
-
-/// A native element as Python's `float(x)` (correctly rounded for integers).
-trait AsF64 {
-    fn as_f64(&self) -> f64;
-}
-macro_rules! impl_as_f64 {
-    ($($t:ty),*) => {$(
-        impl AsF64 for $t {
-            #[inline(always)]
-            fn as_f64(&self) -> f64 {
-                *self as f64
-            }
-        }
-    )*};
-}
-impl_as_f64!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
-impl AsF64 for bool {
-    #[inline(always)]
-    fn as_f64(&self) -> f64 {
-        f64::from(u8::from(*self))
-    }
-}
-impl AsF64 for compact_str::CompactString {
-    fn as_f64(&self) -> f64 {
-        f64::NAN // unreachable: str columns are rejected before summing
-    }
-}
-
-#[inline(always)]
-fn element_as_f64<T: AsF64>(x: &T) -> f64 {
-    x.as_f64()
-}
-
-/// Truthiness of every element of a column (`any`: some true; `all`: all true).
-fn column_truth(column: &Column, stop: bool) -> bool {
-    macro_rules! scan {
-        ($v:expr, $truth:expr) => {
-            $v.iter().any(|x| $truth(x) == stop)
-        };
-    }
-    match column {
-        Column::Bool(v) => scan!(v, |x: &bool| *x),
-        Column::I8(v) => scan!(v, |x: &i8| *x != 0),
-        Column::I16(v) => scan!(v, |x: &i16| *x != 0),
-        Column::I32(v) => scan!(v, |x: &i32| *x != 0),
-        Column::I64(v) => scan!(v, |x: &i64| *x != 0),
-        Column::U8(v) => scan!(v, |x: &u8| *x != 0),
-        Column::U16(v) => scan!(v, |x: &u16| *x != 0),
-        Column::U32(v) => scan!(v, |x: &u32| *x != 0),
-        Column::U64(v) => scan!(v, |x: &u64| *x != 0),
-        Column::F32(v) => scan!(v, |x: &f32| *x != 0.0),
-        Column::F64(v) => scan!(v, |x: &f64| *x != 0.0),
-        Column::Str(v) => scan!(v, |x: &compact_str::CompactString| !x.is_empty()),
-    }
-}
-
-/// Whether a float column holds a NaN (CPython's sort order with NaNs differs from the
-/// native kernel's, so such columns are sorted by `list.sort`).
-fn has_nan(column: &Column) -> bool {
-    match column {
-        Column::F64(v) => v.iter().any(|x| x.is_nan()),
-        Column::F32(v) => v.iter().any(|x| x.is_nan()),
-        _ => false,
-    }
-}
-
-/// A new builtin list holding the column's elements as Python objects.
-fn column_to_pylist<'py>(py: Python<'py>, column: &Column) -> PyResult<Bound<'py, PyAny>> {
-    let n = column.len();
-    // SAFETY: a fresh list of `n` NULL slots, each filled exactly once with a new reference
-    // before the list is visible to anyone.
-    unsafe {
-        let list = Bound::from_owned_ptr_or_err(py, ffi::PyList_New(n as ffi::Py_ssize_t))?;
-        let slots = (*list.as_ptr().cast::<ffi::PyListObject>()).ob_item;
-        with_column!(column, v => {
-            for (i, x) in v.iter().enumerate() {
-                *slots.add(i) = x.to_python(py).into_ptr();
-            }
-        });
-        Ok(list)
-    }
-}
-
-/// A new builtin list taking over owned references.
-fn objects_to_pylist(py: Python<'_>, objects: Vec<Py<PyAny>>) -> PyResult<Bound<'_, PyAny>> {
-    // SAFETY: as in `column_to_pylist`; `into_ptr` transfers each reference to the list.
-    unsafe {
-        let list = Bound::from_owned_ptr_or_err(py, ffi::PyList_New(objects.len() as ffi::Py_ssize_t))?;
-        let slots = (*list.as_ptr().cast::<ffi::PyListObject>()).ob_item;
-        for (i, obj) in objects.into_iter().enumerate() {
-            *slots.add(i) = obj.into_ptr();
-        }
-        Ok(list)
-    }
-}
-
-/// Raw pointers of owned objects (borrowed for the lifetime of `objects`).
-fn raw(objects: &[Py<PyAny>]) -> &[*mut ffi::PyObject] {
-    // SAFETY: `Py<PyAny>` is `repr(transparent)` over a non-null `PyObject*`.
-    unsafe { std::slice::from_raw_parts(objects.as_ptr().cast::<*mut ffi::PyObject>(), objects.len()) }
-}
-
-// =======================================================================================
-// Saved originals, keyword names, Rustique types
+// Saved originals, keyword names
 // =======================================================================================
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1627,18 +1372,11 @@ fn counters(which: Which) -> &'static Counters {
 }
 /// `self` of the builtins: the `builtins` module.
 static BUILTINS_MODULE: AtomicPtr<ffi::PyObject> = AtomicPtr::new(ptr::null_mut());
-/// Interned keyword names: `key`, `default`, `start`, `reverse`.
-static KW: [AtomicPtr<ffi::PyObject>; 4] = [const { AtomicPtr::new(ptr::null_mut()) }; 4];
+/// Interned keyword names: `key`, `default`, `start`.
+static KW: [AtomicPtr<ffi::PyObject>; 3] = [const { AtomicPtr::new(ptr::null_mut()) }; 3];
 const KW_KEY: usize = 0;
 const KW_DEFAULT: usize = 1;
 const KW_START: usize = 2;
-const KW_REVERSE: usize = 3;
-/// Type objects of the Rustique containers.
-static RS_LIST: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(ptr::null_mut());
-static RS_SET: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(ptr::null_mut());
-static RS_FROZENSET: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(ptr::null_mut());
-static RS_DICT: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(ptr::null_mut());
-static RS_TUPLE: AtomicPtr<ffi::PyTypeObject> = AtomicPtr::new(ptr::null_mut());
 
 /// Call the original METH_FASTCALL|METH_KEYWORDS builtin.
 ///
@@ -1738,151 +1476,6 @@ fn guarded(f: impl FnOnce() -> *mut ffi::PyObject) -> *mut ffi::PyObject {
     }
 }
 
-/// The `rustique.List` behind `obj`, if that is its type.
-///
-/// # Safety
-/// `obj` is a live object.
-#[inline(always)]
-unsafe fn as_rs_list<'a>(py: Python<'_>, obj: *mut ffi::PyObject) -> Option<&'a List> {
-    // SAFETY: exact type check; `List` is a frozen pyclass, so a shared reference to its
-    // Rust value is valid for as long as the (caller-owned) object lives.
-    unsafe {
-        (type_of(obj) == RS_LIST.load(Atomic::Relaxed))
-            .then(|| &*(Borrowed::from_ptr(py, obj).cast_unchecked::<List>().get() as *const List))
-    }
-}
-
-#[inline(always)]
-fn is_rustique(t: *mut ffi::PyTypeObject) -> bool {
-    t == RS_LIST.load(Atomic::Relaxed)
-        || t == RS_SET.load(Atomic::Relaxed)
-        || t == RS_TUPLE.load(Atomic::Relaxed)
-        || t == RS_DICT.load(Atomic::Relaxed)
-        || t == RS_FROZENSET.load(Atomic::Relaxed)
-}
-
-/// Rustique containers whose elements are only reachable by a full snapshot, which `any`
-/// (nearly always stopping at the first element) should not pay for.
-#[inline(always)]
-fn is_rustique_hashed(t: *mut ffi::PyTypeObject) -> bool {
-    t == RS_SET.load(Atomic::Relaxed) || t == RS_DICT.load(Atomic::Relaxed) || t == RS_FROZENSET.load(Atomic::Relaxed)
-}
-
-/// The native column of the `rustique.Tuple` behind `obj`, if its storage is native.
-/// Tuples are immutable, so the column is read without a lock.
-///
-/// # Safety
-/// `obj` is a live object that outlives the returned reference.
-#[inline(always)]
-unsafe fn rs_tuple_column<'a>(py: Python<'_>, obj: *mut ffi::PyObject) -> Option<&'a Column> {
-    // SAFETY: exact type check; `Tuple` is a frozen pyclass whose storage never changes.
-    unsafe {
-        if type_of(obj) != RS_TUPLE.load(Atomic::Relaxed) {
-            return None;
-        }
-        let tuple = &*(Borrowed::from_ptr(py, obj).cast_unchecked::<Tuple>().get() as *const Tuple);
-        match tuple.storage() {
-            Storage::Native(column) => Some(column),
-            _ => None,
-        }
-    }
-}
-
-/// `len()` of a Rustique container (raw slots: no Python code runs).
-///
-/// # Safety
-/// `obj` is a live Rustique container.
-#[inline(always)]
-unsafe fn rs_len(obj: *mut ffi::PyObject) -> usize {
-    // SAFETY: forwarded.
-    unsafe { ffi::PyObject_Size(obj).max(0) as usize }
-}
-
-/// The elements of a Rustique container other than `List` (the keys, for a `Dict`), read in
-/// one lock-scoped pass. Only `int`/`str` objects are created and references taken under the
-/// lock, so no Python code runs while it is held.
-fn rs_objects(py: Python<'_>, it: &Borrowed<'_, '_, PyAny>) -> PyResult<Vec<Py<PyAny>>> {
-    if let Ok(set) = it.cast::<Set>() {
-        return Ok(set.get().element_objects(py));
-    }
-    if let Ok(frozen) = it.cast::<FrozenSet>() {
-        return Ok(frozen.get().table().key_objects(py));
-    }
-    if let Ok(tuple) = it.cast::<Tuple>() {
-        return Ok(match tuple.get().storage() {
-            Storage::Empty => Vec::new(),
-            Storage::Native(column) => convert::column_objects(py, column, 0..column.len()),
-            Storage::Object(items) => items.iter().map(|o| o.clone_ref(py)).collect(),
-        });
-    }
-    let dict = it.cast::<Dict>()?;
-    Ok(dict.get().with_keys(py, |keys| match keys {
-        DictKeysRef::Empty => Vec::new(),
-        DictKeysRef::Int(ki) => ki.iter().map(|(_, k)| k.to_python(py).unbind()).collect(),
-        DictKeysRef::NativeStr(ki) => {
-            ki.iter().map(|(_, k)| PyString::new(py, k.as_str()).into_any().unbind()).collect()
-        }
-        DictKeysRef::Object(ki) => ki.iter().map(|(_, k)| k.clone_ref(py)).collect(),
-    }))
-}
-
-/// The keys of a Rustique `Dict`/`Set`/`FrozenSet` with native `int`/`str` keys, copied
-/// unboxed into a column under the container's lock (no Python objects are created), so
-/// the column kernels apply. `None` for any other key storage.
-fn rs_key_column(py: Python<'_>, it: &Borrowed<'_, '_, PyAny>) -> Option<Column> {
-    fn ints(ki: &rustique_core::index::KeyIndex<i64>) -> Column {
-        Column::I64(ki.iter().map(|(_, &k)| k).collect())
-    }
-    fn strs(ki: &rustique_core::index::KeyIndex<rustique_core::CompactString>) -> Column {
-        Column::Str(ki.iter().map(|(_, k)| k.clone()).collect())
-    }
-    fn of_elements(elements: SetElements<'_>) -> Option<Column> {
-        match elements {
-            SetElements::Int(ki) => Some(ints(ki)),
-            SetElements::Str(ki) => Some(strs(ki)),
-            SetElements::Empty | SetElements::Object(_) => None,
-        }
-    }
-    if let Ok(set) = it.cast::<Set>() {
-        return set.get().with_elements(py, of_elements);
-    }
-    if let Ok(frozen) = it.cast::<FrozenSet>() {
-        return of_elements(frozen.get().elements());
-    }
-    let dict = it.cast::<Dict>().ok()?;
-    dict.get().with_keys(py, |keys| match keys {
-        DictKeysRef::Int(ki) => Some(ints(ki)),
-        DictKeysRef::NativeStr(ki) => Some(strs(ki)),
-        DictKeysRef::Empty | DictKeysRef::Object(_) => None,
-    })
-}
-
-/// Sort a column copied out of a container and return it as a builtin list, parsing
-/// `reverse` (whose truthiness may run Python code) after the copy, like `list.sort`.
-///
-/// # Safety
-/// `reverse` is NULL or a live object.
-unsafe fn sorted_column(
-    py: Python<'_>,
-    mut column: Column,
-    reverse: *mut ffi::PyObject,
-) -> PyResult<*mut ffi::PyObject> {
-    let reverse = !reverse.is_null() && {
-        // SAFETY: a live object, per the caller.
-        let r = unsafe { ffi::PyObject_IsTrue(reverse) };
-        if r < 0 {
-            return Err(PyErr::fetch(py));
-        }
-        r == 1
-    };
-    if column.len() >= SORT_DETACH_THRESHOLD {
-        py.detach(|| kernels::sort(&mut column, reverse));
-    } else {
-        kernels::sort(&mut column, reverse);
-    }
-    column_to_pylist(py, &column).map(Bound::into_ptr)
-}
-
 // =======================================================================================
 // sum
 // =======================================================================================
@@ -1896,7 +1489,6 @@ fn candidate(t: *mut ffi::PyTypeObject) -> bool {
         || t == &raw mut ffi::PySet_Type
         || t == &raw mut ffi::PyFrozenSet_Type
         || t == &raw mut ffi::PyDict_Type
-        || is_rustique(t)
 }
 
 /// `sum(iterable, /, start=0)`.
@@ -1921,7 +1513,7 @@ unsafe extern "C" fn rq_sum(
 /// Vectorcall arguments from CPython.
 #[inline(never)]
 unsafe fn sum_entry(
-    slf: *mut ffi::PyObject,
+    _slf: *mut ffi::PyObject,
     args: *const *mut ffi::PyObject,
     nargs: ffi::Py_ssize_t,
     kwnames: *mut ffi::PyObject,
@@ -1955,27 +1547,6 @@ unsafe fn sum_entry(
                 Out::Obj(r) => r,
                 Out::Fallback => original_fastkw(Which::Sum, args, nargs, kwnames),
             }))
-        } else if is_rustique(t) {
-            // Native storage: the column kernel, without PyO3's trampoline (nothing here
-            // drops a `Py<T>`); everything else inside it.
-            let native = as_rs_list(py, it).and_then(|list| {
-                let ns = if start.is_null() {
-                    NativeStart::Default
-                } else if type_of(start) == float_type() {
-                    NativeStart::Float(float_value(start))
-                } else {
-                    NativeStart::Int(int_value(start)?)
-                };
-                list.with_column(py, |column| column_sum(py, column, ns))?
-            });
-            match native {
-                Some(Ok(result)) => Out::Obj(result.into_ptr()),
-                Some(Err(e)) => {
-                    e.restore(py);
-                    Out::Obj(ptr::null_mut())
-                }
-                None => Out::Obj(trampoline::fastcall_cfunction_with_keywords::<RsSum>(slf, args, nargs, kwnames)),
-            }
         } else if let Some(kind) = Hashed::of(t) {
             match guarded(|| match sum_hashed(py, kind, it, start) {
                 Out::Obj(r) => r,
@@ -1997,72 +1568,6 @@ unsafe fn sum_entry(
 /// A non-null marker returned through [`guarded`] meaning "call the original" (never a
 /// real object pointer: nothing lives at the lowest page).
 const FALLBACK_MARK: *mut ffi::PyObject = ptr::dangling_mut();
-
-struct RsSum;
-impl MethodDef<trampoline::fastcall_cfunction_with_keywords::Func> for RsSum {
-    const METH: trampoline::fastcall_cfunction_with_keywords::Func = rs_sum;
-}
-
-/// `sum` over a `rustique.List`/`Set` (inside PyO3's trampoline: attached, panic-safe).
-unsafe fn rs_sum(
-    py: Python<'_>,
-    _slf: *mut ffi::PyObject,
-    args: *const *mut ffi::PyObject,
-    nargs: ffi::Py_ssize_t,
-    kwnames: *mut ffi::PyObject,
-) -> PyResult<*mut ffi::PyObject> {
-    // SAFETY: vectorcall arguments already validated by `rq_sum` (one iterable, optional
-    // exact int/float start).
-    unsafe {
-        let it = Borrowed::from_ptr(py, *args);
-        let start = if nargs == 2 || !kwnames.is_null() { *args.add(1) } else { ptr::null_mut() };
-        let native_start = if start.is_null() {
-            Some(NativeStart::Default)
-        } else if type_of(start) == float_type() {
-            Some(NativeStart::Float(float_value(start)))
-        } else {
-            int_value(start).map(NativeStart::Int)
-        };
-        let fallback = || Ok(original_fastkw(Which::Sum, args, nargs, kwnames));
-        let objects = if let Ok(list) = it.cast::<List>() {
-            let list = list.get();
-            if let Some(ns) = native_start
-                && let Some(done) = list.with_column(py, |column| column_sum(py, column, ns))
-            {
-                return match done {
-                    Some(result) => result.map(Bound::into_ptr),
-                    None => fallback(),
-                };
-            }
-            match list.snapshot(py) {
-                Storage::Native(column) => {
-                    return match native_start.and_then(|ns| column_sum(py, &column, ns)) {
-                        Some(result) => result.map(Bound::into_ptr),
-                        None => fallback(),
-                    };
-                }
-                storage => storage.into_objects(py),
-            }
-        } else if let Some(column) = rs_tuple_column(py, it.as_ptr()) {
-            return match native_start.and_then(|ns| column_sum(py, column, ns)) {
-                Some(result) => result.map(Bound::into_ptr),
-                None => fallback(),
-            };
-        } else if let Some(column) = rs_key_column(py, &it) {
-            return match native_start.and_then(|ns| column_sum(py, &column, ns)) {
-                Some(result) => result.map(Bound::into_ptr),
-                None => fallback(),
-            };
-        } else {
-            rs_objects(py, &it)?
-        };
-        match sum_items(py, raw(&objects), start) {
-            Some(r) if r.is_null() => Err(PyErr::fetch(py)),
-            Some(r) => Ok(r),
-            None => fallback(),
-        }
-    }
-}
 
 // =======================================================================================
 // min / max
@@ -2140,7 +1645,7 @@ unsafe fn minmax_args(
 /// Vectorcall arguments from CPython.
 #[inline(never)]
 unsafe fn minmax_entry(
-    slf: *mut ffi::PyObject,
+    _slf: *mut ffi::PyObject,
     args: *const *mut ffi::PyObject,
     nargs: ffi::Py_ssize_t,
     kwnames: *mut ffi::PyObject,
@@ -2167,22 +1672,6 @@ unsafe fn minmax_entry(
             guarded(|| minmax_seq(py, Seq::List(it), default, op))
         } else if t == tuple_type() {
             guarded(|| minmax_seq(py, Seq::Tuple(it), default, op))
-        } else if is_rustique(t) {
-            // Native storage: the column kernel, without PyO3's trampoline.
-            let native = as_rs_list(py, it).and_then(|list| {
-                list.with_column(py, |column| {
-                    let run = || if op == ffi::Py_GT { kernels::max(column) } else { kernels::min(column) };
-                    if column.len() >= DETACH_THRESHOLD { py.detach(run) } else { run() }
-                })
-            });
-            match native {
-                Some(Some(value)) => convert::value_to_python(py, &value).into_ptr(),
-                Some(None) => minmax_result(None, default, op),
-                None if which == Which::Min => {
-                    trampoline::fastcall_cfunction_with_keywords::<RsMin>(slf, args, nargs, kwnames)
-                }
-                None => trampoline::fastcall_cfunction_with_keywords::<RsMax>(slf, args, nargs, kwnames),
-            }
         } else if let Some(kind) = Hashed::of(t) {
             match guarded(|| match minmax_hashed(py, kind, it, default, op) {
                 Out::Obj(r) => r,
@@ -2197,227 +1686,20 @@ unsafe fn minmax_entry(
     }
 }
 
-struct RsMin;
-impl MethodDef<trampoline::fastcall_cfunction_with_keywords::Func> for RsMin {
-    const METH: trampoline::fastcall_cfunction_with_keywords::Func = rs_min;
-}
-struct RsMax;
-impl MethodDef<trampoline::fastcall_cfunction_with_keywords::Func> for RsMax {
-    const METH: trampoline::fastcall_cfunction_with_keywords::Func = rs_max;
-}
-
-unsafe fn rs_min(
-    py: Python<'_>,
-    _slf: *mut ffi::PyObject,
-    args: *const *mut ffi::PyObject,
-    nargs: ffi::Py_ssize_t,
-    kwnames: *mut ffi::PyObject,
-) -> PyResult<*mut ffi::PyObject> {
-    // SAFETY: forwarded.
-    unsafe { rs_minmax(py, args, nargs, kwnames, Which::Min) }
-}
-
-unsafe fn rs_max(
-    py: Python<'_>,
-    _slf: *mut ffi::PyObject,
-    args: *const *mut ffi::PyObject,
-    nargs: ffi::Py_ssize_t,
-    kwnames: *mut ffi::PyObject,
-) -> PyResult<*mut ffi::PyObject> {
-    // SAFETY: forwarded.
-    unsafe { rs_minmax(py, args, nargs, kwnames, Which::Max) }
-}
-
-/// `min`/`max` of a `rustique.List`/`Set` (one positional argument, no key function).
-///
-/// # Safety
-/// Vectorcall arguments validated by [`minmax_entry`].
-unsafe fn rs_minmax(
-    py: Python<'_>,
-    args: *const *mut ffi::PyObject,
-    nargs: ffi::Py_ssize_t,
-    kwnames: *mut ffi::PyObject,
-    which: Which,
-) -> PyResult<*mut ffi::PyObject> {
-    let op = if which == Which::Min { ffi::Py_LT } else { ffi::Py_GT };
-    let max = which == Which::Max;
-    // SAFETY: validated arguments; kernels on live objects.
-    unsafe {
-        let default = minmax_args(args, nargs, kwnames).unwrap_or(ptr::null_mut());
-        let it = Borrowed::from_ptr(py, *args);
-        let native = |column: &Column| -> Option<rustique_core::Value> {
-            let run = || if max { kernels::max(column) } else { kernels::min(column) };
-            if column.len() >= DETACH_THRESHOLD { py.detach(run) } else { run() }
-        };
-        let objects = if let Ok(list) = it.cast::<List>() {
-            let list = list.get();
-            let found = match list.with_column(py, |column| native(column)) {
-                Some(found) => Some(found),
-                None => match list.snapshot(py) {
-                    Storage::Native(column) => Some(native(&column)),
-                    storage => {
-                        let objects = storage.into_objects(py);
-                        if objects.is_empty() {
-                            Some(None)
-                        } else {
-                            return finish_items(py, &objects, default, op, args, nargs, kwnames, which);
-                        }
-                    }
-                },
-            };
-            return match found {
-                Some(Some(value)) => Ok(convert::value_to_python(py, &value).into_ptr()),
-                // Empty.
-                _ => {
-                    let r = minmax_result(None, default, op);
-                    if r.is_null() { Err(PyErr::fetch(py)) } else { Ok(r) }
-                }
-            };
-        } else if let Some(column) =
-            rs_tuple_column(py, it.as_ptr()).map(Cow::Borrowed).or_else(|| rs_key_column(py, &it).map(Cow::Owned))
-        {
-            return match native(&column) {
-                Some(value) => Ok(convert::value_to_python(py, &value).into_ptr()),
-                None => {
-                    let r = minmax_result(None, default, op);
-                    if r.is_null() { Err(PyErr::fetch(py)) } else { Ok(r) }
-                }
-            };
-        } else {
-            rs_objects(py, &it)?
-        };
-        finish_items(py, &objects, default, op, args, nargs, kwnames, which)
-    }
-}
-
-/// `min`/`max` over a snapshot of objects, or the original builtin if one needs Python code.
-///
-/// # Safety
-/// Vectorcall arguments; live default.
-#[allow(clippy::too_many_arguments)]
-unsafe fn finish_items(
-    py: Python<'_>,
-    objects: &[Py<PyAny>],
-    default: *mut ffi::PyObject,
-    op: c_int,
-    args: *const *mut ffi::PyObject,
-    nargs: ffi::Py_ssize_t,
-    kwnames: *mut ffi::PyObject,
-    which: Which,
-) -> PyResult<*mut ffi::PyObject> {
-    // SAFETY: the snapshot keeps the items alive.
-    unsafe {
-        match minmax_items(raw(objects), default, op) {
-            Some(r) if r.is_null() => Err(PyErr::fetch(py)),
-            Some(r) => Ok(r),
-            None => Ok(original_fastkw(which, args, nargs, kwnames)),
-        }
-    }
-}
-
 // =======================================================================================
 // sorted
 // =======================================================================================
 
+/// `sorted`: builtin inputs go to the original, which copies and calls `list.sort` (itself
+/// accelerated by the `containers` group when enabled).
 unsafe extern "C" fn rq_sorted(
-    slf: *mut ffi::PyObject,
+    _slf: *mut ffi::PyObject,
     args: *const *mut ffi::PyObject,
     nargs: ffi::Py_ssize_t,
     kwnames: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
     // SAFETY: vectorcall arguments from CPython.
-    unsafe {
-        if nargs == 1 && is_rustique(type_of(*args)) {
-            C_SORTED.hit();
-            return trampoline::fastcall_cfunction_with_keywords::<RsSorted>(slf, args, nargs, kwnames);
-        }
-        // Builtin inputs: `sorted` copies and calls `list.sort` (itself accelerated by the
-        // `containers` group when enabled).
-        fallback_fastkw(Which::Sorted, args, nargs, kwnames)
-    }
-}
-
-struct RsSorted;
-impl MethodDef<trampoline::fastcall_cfunction_with_keywords::Func> for RsSorted {
-    const METH: trampoline::fastcall_cfunction_with_keywords::Func = rs_sorted;
-}
-
-/// `sorted(rustique.List / Set, *, key=None, reverse=False)`.
-unsafe fn rs_sorted(
-    py: Python<'_>,
-    _slf: *mut ffi::PyObject,
-    args: *const *mut ffi::PyObject,
-    nargs: ffi::Py_ssize_t,
-    kwnames: *mut ffi::PyObject,
-) -> PyResult<*mut ffi::PyObject> {
-    // SAFETY: vectorcall arguments (one positional, validated by `rq_sorted`).
-    unsafe {
-        let it = Borrowed::from_ptr(py, *args);
-        // Keyword arguments as `list.sort` will parse them; anything else goes to it as is.
-        let (mut key_none, mut reverse, mut plain) = (true, ptr::null_mut(), true);
-        for (name, value) in kwargs(args, nargs, kwnames) {
-            if kw_is(name, KW_KEY) {
-                key_none = value == ffi::Py_None();
-            } else if kw_is(name, KW_REVERSE) {
-                reverse = value;
-            } else {
-                plain = false;
-            }
-        }
-        let list = it.cast::<List>().ok();
-        if plain
-            && key_none
-            && let Some(list) = &list
-            // Copy the column under the read lock (like `list(x)`); NaNs: CPython's order.
-            && let Some(Some(mut column)) = list.get().with_column(py, |c| (!has_nan(c)).then(|| c.clone()))
-        {
-            // `list.sort` parses `reverse` (truthiness may run Python code) after the copy.
-            let reverse = !reverse.is_null() && {
-                let r = ffi::PyObject_IsTrue(reverse);
-                if r < 0 {
-                    return Err(PyErr::fetch(py));
-                }
-                r == 1
-            };
-            if column.len() >= SORT_DETACH_THRESHOLD {
-                py.detach(|| kernels::sort(&mut column, reverse));
-            } else {
-                kernels::sort(&mut column, reverse);
-            }
-            return column_to_pylist(py, &column).map(Bound::into_ptr);
-        }
-        // Native numeric keys of a Dict/Set/FrozenSet, or a native numeric Tuple: sorted
-        // natively (no NaNs in key columns; a Tuple column never holds one). Larger `str`
-        // columns take the object path below: boxing every string afresh costs more than
-        // sorting the existing objects with `list.sort` (measured, sorted ratio vs builtin:
-        // native 1.44 / 1.35, objects 1.78 / 1.12 at 8 / 100 elements).
-        if plain
-            && key_none
-            && list.is_none()
-            && let Some(column) = rs_tuple_column(py, it.as_ptr()).cloned().or_else(|| rs_key_column(py, &it))
-            && (!matches!(column, Column::Str(_)) || column.len() < NATIVE_STR_SORT_MAX)
-        {
-            return sorted_column(py, column, reverse);
-        }
-        // `list(x)` then `list.sort(**kwargs)`, like CPython's `sorted`, with the copy made
-        // in one read of the container instead of an iteration.
-        let objects = match list {
-            Some(list) => list.get().snapshot(py).into_objects(py),
-            None => rs_objects(py, &it)?,
-        };
-        let newlist = objects_to_pylist(py, objects)?;
-        let descriptor = objsort::list_sort_descriptor(py)?;
-        let nkw = if kwnames.is_null() { 0 } else { ffi::PyTuple_GET_SIZE(kwnames) as usize };
-        let mut call_args = Vec::with_capacity(1 + nkw);
-        call_args.push(newlist.as_ptr());
-        call_args.extend((0..nkw).map(|i| *args.add(nargs as usize + i)));
-        let r = ffi::PyObject_Vectorcall(descriptor.as_ptr(), call_args.as_ptr(), 1, kwnames);
-        if r.is_null() {
-            return Err(PyErr::fetch(py));
-        }
-        ffi::Py_DECREF(r);
-        Ok(newlist.into_ptr())
-    }
+    unsafe { fallback_fastkw(Which::Sorted, args, nargs, kwnames) }
 }
 
 // =======================================================================================
@@ -2426,12 +1708,12 @@ unsafe fn rs_sorted(
 
 unsafe extern "C" fn rq_any(slf: *mut ffi::PyObject, arg: *mut ffi::PyObject) -> *mut ffi::PyObject {
     // SAFETY: METH_O call from CPython.
-    // `any` over a dict or a Rustique Set/Dict/FrozenSet nearly always stops at its first
+    // `any` over a dict nearly always stops at its first
     // key: nothing to win, and any extra step before CPython's loop shows (measured: an
     // in-kernel fallback cost 1.07-1.12 on `any(dict)`). Those go straight to CPython.
     unsafe {
         let t = type_of(arg);
-        if candidate(t) && !is_rustique_hashed(t) && t != &raw mut ffi::PyDict_Type {
+        if candidate(t) && t != &raw mut ffi::PyDict_Type {
             C_ANY.hit();
             truth_entry(slf, arg, Which::Any)
         } else {
@@ -2455,7 +1737,7 @@ unsafe extern "C" fn rq_all(slf: *mut ffi::PyObject, arg: *mut ffi::PyObject) ->
 /// # Safety
 /// METH_O arguments from CPython.
 #[inline(never)]
-unsafe fn truth_entry(slf: *mut ffi::PyObject, it: *mut ffi::PyObject, which: Which) -> *mut ffi::PyObject {
+unsafe fn truth_entry(_slf: *mut ffi::PyObject, it: *mut ffi::PyObject, which: Which) -> *mut ffi::PyObject {
     let stop = which == Which::Any;
     // SAFETY: live argument; kernels' requirements hold.
     unsafe {
@@ -2465,31 +1747,6 @@ unsafe fn truth_entry(slf: *mut ffi::PyObject, it: *mut ffi::PyObject, which: Wh
             guarded(|| truth_seq(py, Seq::List(it), stop))
         } else if t == tuple_type() {
             guarded(|| truth_seq(py, Seq::Tuple(it), stop))
-        } else if is_rustique(t) {
-            match as_rs_list(py, it) {
-                Some(list) => {
-                    // Native storage: the column scan, without PyO3's trampoline.
-                    if let Some(found) = list.with_column(py, |c| column_truth(c, stop)) {
-                        return bool_result(found, stop);
-                    }
-                    // `any`/`all` usually stop early, but a snapshot costs every element.
-                    if list.len() > SNAPSHOT_TRUTH_MAX {
-                        return original_o(which, it);
-                    }
-                }
-                // Another Rustique container (`any` reaches here only for a Tuple): a native
-                // Tuple column is scanned in place, anything else snapshotted only when small.
-                None => {
-                    if let Some(column) = rs_tuple_column(py, it) {
-                        return bool_result(column_truth(column, stop), stop);
-                    }
-                    // Hashed containers may have native keys (copied unboxed in `rs_truth`).
-                    if rs_len(it) > SNAPSHOT_TRUTH_MAX && !is_rustique_hashed(t) {
-                        return original_o(which, it);
-                    }
-                }
-            }
-            if stop { trampoline::binaryfunc::<RsAny>(slf, it) } else { trampoline::binaryfunc::<RsAll>(slf, it) }
         } else if let Some(kind) = Hashed::of(t) {
             match guarded(|| match truth_hashed(py, kind, it, stop) {
                 Out::Obj(r) => r,
@@ -2500,68 +1757,6 @@ unsafe fn truth_entry(slf: *mut ffi::PyObject, it: *mut ffi::PyObject, which: Wh
             }
         } else {
             original_o(which, it)
-        }
-    }
-}
-
-struct RsAny;
-impl MethodDef<trampoline::binaryfunc::Func> for RsAny {
-    const METH: trampoline::binaryfunc::Func = rs_any;
-}
-struct RsAll;
-impl MethodDef<trampoline::binaryfunc::Func> for RsAll {
-    const METH: trampoline::binaryfunc::Func = rs_all;
-}
-
-unsafe fn rs_any(py: Python<'_>, _slf: *mut ffi::PyObject, it: *mut ffi::PyObject) -> PyResult<*mut ffi::PyObject> {
-    // SAFETY: forwarded.
-    unsafe { rs_truth(py, it, Which::Any) }
-}
-
-unsafe fn rs_all(py: Python<'_>, _slf: *mut ffi::PyObject, it: *mut ffi::PyObject) -> PyResult<*mut ffi::PyObject> {
-    // SAFETY: forwarded.
-    unsafe { rs_truth(py, it, Which::All) }
-}
-
-/// `any`/`all` of a `rustique.List`/`Set`.
-///
-/// # Safety
-/// `it` is a live `rustique.List` or `Set`.
-unsafe fn rs_truth(py: Python<'_>, it: *mut ffi::PyObject, which: Which) -> PyResult<*mut ffi::PyObject> {
-    let stop = which == Which::Any;
-    // SAFETY: live object; kernels on owned snapshots.
-    unsafe {
-        let obj = Borrowed::from_ptr(py, it);
-        // `any`/`all` usually stop early, but a snapshot costs every element: above
-        // `SNAPSHOT_TRUTH_MAX` elements, iterate lazily with the original instead.
-        let objects = if let Ok(list) = obj.cast::<List>() {
-            let list = list.get();
-            if let Some(found) = list.with_column(py, |c| column_truth(c, stop)) {
-                return Ok(bool_result(found, stop));
-            }
-            if list.len() > SNAPSHOT_TRUTH_MAX {
-                return Ok(original_o(which, it));
-            }
-            match list.snapshot(py) {
-                Storage::Native(column) => return Ok(bool_result(column_truth(&column, stop), stop)),
-                storage => storage.into_objects(py),
-            }
-        } else {
-            if let Some(column) = rs_tuple_column(py, it) {
-                return Ok(bool_result(column_truth(column, stop), stop));
-            }
-            if let Some(column) = rs_key_column(py, &obj) {
-                return Ok(bool_result(column_truth(&column, stop), stop));
-            }
-            if rs_len(it) > SNAPSHOT_TRUTH_MAX {
-                return Ok(original_o(which, it));
-            }
-            rs_objects(py, &obj)?
-        };
-        match truth_scan(raw(&objects).iter().copied(), stop) {
-            Scan::Done(found) => Ok(bool_result(found, stop)),
-            Scan::Error => Err(PyErr::fetch(py)),
-            Scan::Bail(_) => Ok(original_o(which, it)),
         }
     }
 }
@@ -2694,7 +1889,7 @@ fn make_replacement(py: Python<'_>, which: Which, def: usize, builtins: &Bound<'
 
 /// One-time initialisation of the statics the kernels read.
 fn init_statics(py: Python<'_>) -> PyResult<()> {
-    for (slot, name) in KW.iter().zip(["key", "default", "start", "reverse"]) {
+    for (slot, name) in KW.iter().zip(["key", "default", "start"]) {
         if slot.load(Atomic::Relaxed).is_null() {
             // Interned strings live as long as the interpreter; keep one reference forever.
             slot.store(PyString::intern(py, name).into_ptr(), Atomic::Relaxed);
@@ -2703,16 +1898,9 @@ fn init_statics(py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 
-/// The Rustique container types exist now (created lazily on first access to the opt-in
-/// API, `crate::ensure_core`): let the kernels recognise them. Until then no Rustique
-/// container can exist, so the null pointers the kernels compare against are correct.
-pub fn core_types_ready(py: Python<'_>) -> PyResult<()> {
-    objsort::list_sort_descriptor(py)?;
-    RS_LIST.store(py.get_type::<List>().as_type_ptr(), Atomic::Relaxed);
-    RS_SET.store(py.get_type::<Set>().as_type_ptr(), Atomic::Relaxed);
-    RS_FROZENSET.store(py.get_type::<FrozenSet>().as_type_ptr(), Atomic::Relaxed);
-    RS_DICT.store(py.get_type::<Dict>().as_type_ptr(), Atomic::Relaxed);
-    RS_TUPLE.store(py.get_type::<Tuple>().as_type_ptr(), Atomic::Relaxed);
+/// Kept for `lib.rs` until the native tier's call to it is removed (the Rustique
+/// container types it used to register are retired): nothing to do.
+pub fn core_types_ready(_py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 

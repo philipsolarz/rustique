@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rustique"
-description = "Python's data model, Rust's memory: typed native containers and zero-copy Rust/Python interop"
+description = "CPython with a Rust engine: the same objects and results, faster, with one switch"
 readme = "README.md"
 # The upper bound is deliberate (docs/targets/dx.md §5): PyO3 0.30 cannot build for 3.16, and an
 # unknown interpreter must be refused at install time with a clear message, not by a failed
@@ -38,7 +38,6 @@ dev = [
     "mypy",
     "pyright",
 ]
-bench = ["numpy>=2.5.4"]
 
 [tool.maturin]
 manifest-path = "crates/rustique-py/Cargo.toml"
@@ -55,6 +54,11 @@ include = [
     { path = "python/_rustique_startup.pth", format = ["sdist", "wheel"] },
     # The pytest plugin, top-level so that autoloading it does not import the package.
     { path = "python/_rustique_pytest.py", format = ["sdist", "wheel"] },
+    # Top-level `_rustique` for maturin's in-package layout (the extension stays in
+    # `rustique/`): the `.pth` line and `import rustique` import `_rustique` in every layout.
+    # Release wheels are repacked by tools/repack_wheel.py: the extension itself moves to the
+    # top level and this shim is dropped (docs/DECISIONS.md §10.7).
+    { path = "python/_rustique.py", format = ["sdist", "wheel"] },
 ]
 
 [tool.uv]
@@ -70,10 +74,10 @@ cache-keys = [
 [tool.mypy]
 mypy_path = "python"
 strict = true
-files = ["python/rustique/__init__.pyi", "examples/*.py"]
+files = ["python/rustique/__init__.pyi"]
 
 [tool.pyright]
-include = ["python/rustique/__init__.pyi", "examples/*.py"]
+include = ["python/rustique/__init__.pyi"]
 typeCheckingMode = "strict"
 extraPaths = ["python"]
 venvPath = "."
