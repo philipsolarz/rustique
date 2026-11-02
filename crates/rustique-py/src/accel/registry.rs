@@ -869,8 +869,11 @@ fn activate_inner(
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.prepare)(py, &mut cx)));
     // Labels are formatted by `status()` only (no `format!` per site at install).
     reg.rt[i].site_names = cx.sites.iter().map(|d| (d.site.name.clone(), d.site.kind)).collect();
-    let mut staged =
-        Staged { sites: Vec::with_capacity(cx.sites.len()), declared: cx.sites.drain(..).map(|d| d.site).collect(), owner: 0 };
+    let mut staged = Staged {
+        sites: Vec::with_capacity(cx.sites.len()),
+        declared: cx.sites.drain(..).map(|d| d.site).collect(),
+        owner: 0,
+    };
     match outcome {
         Ok(Ok(())) => {}
         Ok(Err(r)) => return refuse(reg, r),

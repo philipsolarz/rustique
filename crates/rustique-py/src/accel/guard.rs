@@ -124,7 +124,12 @@ impl Tools {
         let mut v = TOOLS_UNSET;
         // SAFETY: attached thread; private arrays of the declared length.
         unsafe {
-            PyMonitoring_EnterScope(states.as_mut_ptr(), &mut v, ALL_EVENTS.as_ptr(), UNGROUPED_EVENTS as ffi::Py_ssize_t)
+            PyMonitoring_EnterScope(
+                states.as_mut_ptr(),
+                &mut v,
+                ALL_EVENTS.as_ptr(),
+                UNGROUPED_EVENTS as ffi::Py_ssize_t,
+            )
         };
         let busy = states.iter().any(|s| s.active != 0);
         self.state.store((v << 1) | u64::from(busy), Ordering::Relaxed);
@@ -768,7 +773,7 @@ pub fn watcher_id() -> PyResult<c_int> {
 
 /// The dict's slot (created with a strong reference to the dict). The dict must already be
 /// watched ([`watch_locked`]). Runs under the tables lock: no CPython call but an incref.
-fn dict_slot<'t>(t: &'t mut Tables, dict: *mut ffi::PyObject) -> &'t mut DictSlot {
+fn dict_slot(t: &mut Tables, dict: *mut ffi::PyObject) -> &mut DictSlot {
     t.dicts.entry(dict as usize).or_insert_with(|| DictSlot {
         // SAFETY: a live dict (the caller holds a reference); an incref only.
         dict: unsafe { ffi::Py_NewRef(dict) } as usize,
@@ -921,7 +926,7 @@ fn activate_pins(py: Python<'_>, owner: u64, pins: Vec<PendingPin>) -> PyResult<
                             (
                                 ffi::Py_NewRef(tp.as_ptr()) as usize,
                                 ffi::Py_NewRef(m.as_ptr()) as usize,
-                                now as usize == m.as_ptr() as usize,
+                                std::ptr::eq(now, m.as_ptr()),
                             )
                         },
                         None => (0, 0, true),
@@ -936,7 +941,8 @@ fn activate_pins(py: Python<'_>, owner: u64, pins: Vec<PendingPin>) -> PyResult<
                         Some(i) => &mut bucket[i],
                         None => {
                             // SAFETY: an incref only.
-                            bucket.push(KeySlot { key: unsafe { ffi::Py_NewRef(key.as_ptr()) } as usize, deps: Vec::new() });
+                            let k = unsafe { ffi::Py_NewRef(key.as_ptr()) } as usize;
+                            bucket.push(KeySlot { key: k, deps: Vec::new() });
                             bucket.last_mut().expect("just pushed")
                         }
                     };
@@ -971,13 +977,12 @@ fn activate_pins(py: Python<'_>, owner: u64, pins: Vec<PendingPin>) -> PyResult<
                     let snap: Vec<(Key, usize)> = snap
                         .iter()
                         .map(|(k, v)| {
-                            // SAFETY: attached thread; live str.
-                            let h = unsafe { str_hash(k.as_ptr()) };
-                            (
-                                // SAFETY: increfs only (the snapshot's strong references).
-                                (unsafe { ffi::Py_NewRef(k.as_ptr()) } as usize, h),
-                                unsafe { ffi::Py_NewRef(v.as_ptr()) } as usize,
-                            )
+                            // SAFETY: attached thread; live str; increfs only (the snapshot's
+                            // strong references).
+                            unsafe {
+                                let h = str_hash(k.as_ptr());
+                                ((ffi::Py_NewRef(k.as_ptr()) as usize, h), ffi::Py_NewRef(v.as_ptr()) as usize)
+                            }
                         })
                         .collect();
                     // Deviations of the current contents from the snapshot. `PyDict_Next`
@@ -1237,7 +1242,12 @@ pub(crate) fn describe(py: Python<'_>, owner: u64) -> Vec<(String, bool, bool, b
             for ks in slot.keys.values().flatten() {
                 for d in ks.deps.iter().filter(|d| d.owner == owner) {
                     // SAFETY: an incref of the slot's live key.
-                    rows.push((unsafe { ffi::Py_NewRef(ks.key as *mut ffi::PyObject) } as usize, d.expected == 0, d.good, d.broken));
+                    rows.push((
+                        unsafe { ffi::Py_NewRef(ks.key as *mut ffi::PyObject) } as usize,
+                        d.expected == 0,
+                        d.good,
+                        d.broken,
+                    ));
                 }
             }
             for sn in slot.snaps.iter().filter(|s| s.owner == owner) {
