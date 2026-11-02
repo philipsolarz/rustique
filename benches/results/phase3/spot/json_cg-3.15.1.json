@@ -1,0 +1,217 @@
+{
+ "build": "3.15.1",
+ "jit": false,
+ "first64": false,
+ "rows": {
+  "float repr(1.23)": {
+   "plain": 2040.3,
+   "on": 740.3,
+   "ratio": 0.363
+  },
+  "float repr(123.456789)": {
+   "plain": 3248.3,
+   "on": 806.3,
+   "ratio": 0.248
+  },
+  "float repr(1.2345678901234567e300)": {
+   "plain": 20550.3,
+   "on": 716.3,
+   "ratio": 0.035
+  },
+  "float str(2.5e-07)": {
+   "plain": 2808.3,
+   "on": 672.3,
+   "ratio": 0.239
+  },
+  "float f'{x}'": {
+   "plain": 2430.2,
+   "on": 919.2,
+   "ratio": 0.378
+  },
+  "float f'{x:.2f}' [not reached]": {
+   "plain": 1805.2,
+   "on": 1832.2,
+   "ratio": 1.015
+  },
+  "float f'v={x} t={xs}ms'": {
+   "plain": 6850.3,
+   "on": 2672.3,
+   "ratio": 0.39
+  },
+  "float repr(inf) [fallback]": {
+   "plain": 775.3,
+   "on": 803.3,
+   "ratio": 1.036
+  },
+  "float repr(F(1.5)) [subclass]": {
+   "plain": 1895.3,
+   "on": 1895.3,
+   "ratio": 1.0
+  },
+  "float '%s' % x": {
+   "plain": 1957.2,
+   "on": 671.2,
+   "ratio": 0.343
+  },
+  "dumps record": {
+   "plain": 31002.1,
+   "on": 6304.5,
+   "ratio": 0.203
+  },
+  "dumps small list": {
+   "plain": 18078.1,
+   "on": 2164.5,
+   "ratio": 0.12
+  },
+  "dumps floats": {
+   "plain": 37717.1,
+   "on": 5983.5,
+   "ratio": 0.159
+  },
+  "dumps nested": {
+   "plain": 58407.1,
+   "on": 16216.5,
+   "ratio": 0.278
+  },
+  "dumps unicode": {
+   "plain": 18467.1,
+   "on": 3180.5,
+   "ratio": 0.172
+  },
+  "dumps unicode ensure_ascii=False": {
+   "plain": 23905.1,
+   "on": 4781.4,
+   "ratio": 0.2
+  },
+  "dumps str": {
+   "plain": 3290.1,
+   "on": 865.5,
+   "ratio": 0.263
+  },
+  "dumps int": {
+   "plain": 11272.1,
+   "on": 622.5,
+   "ratio": 0.055
+  },
+  "dumps record indent=2": {
+   "plain": 40211.7,
+   "on": 7618.4,
+   "ratio": 0.189
+  },
+  "dumps record sort_keys": {
+   "plain": 45852.1,
+   "on": 12540.4,
+   "ratio": 0.273
+  },
+  "dumps record separators": {
+   "plain": 36808.4,
+   "on": 6695.4,
+   "ratio": 0.182
+  },
+  "dumps record [json only]": {
+   "plain": 31002.1,
+   "on": 6297.5,
+   "ratio": 0.203
+  },
+  "dumps record default= [fallback]": {
+   "plain": 36644.6,
+   "on": 31130.6,
+   "ratio": 0.85
+  },
+  "dumps with Decimal default= [fallback]": {
+   "plain": 39815.6,
+   "on": 34282.6,
+   "ratio": 0.861
+  },
+  "dumps OrderedDict [fallback]": {
+   "plain": 36587.1,
+   "on": 30992.6,
+   "ratio": 0.847
+  },
+  "dumps IntEnum": {
+   "plain": 13098.1,
+   "on": 1331.5,
+   "ratio": 0.102
+  },
+  "dumps cls=JSONEncoder [fallback]": {
+   "plain": 36561.1,
+   "on": 31047.1,
+   "ratio": 0.849
+  },
+  "JSONEncoder().encode(record)": {
+   "plain": 28890.1,
+   "on": 23376.1,
+   "ratio": 0.809
+  },
+  "loads record": {
+   "plain": 27844.1,
+   "on": 12958.0,
+   "ratio": 0.465
+  },
+  "loads record bytes": {
+   "plain": 32524.6,
+   "on": 13020.5,
+   "ratio": 0.4
+  },
+  "loads small list": {
+   "plain": 13107.1,
+   "on": 2845.5,
+   "ratio": 0.217
+  },
+  "loads floats": {
+   "plain": 24443.1,
+   "on": 10396.5,
+   "ratio": 0.425
+  },
+  "loads nested": {
+   "plain": 57241.0,
+   "on": 32370.6,
+   "ratio": 0.566
+  },
+  "loads unicode": {
+   "plain": 16319.1,
+   "on": 6227.5,
+   "ratio": 0.382
+  },
+  "loads object_hook [fallback]": {
+   "plain": 40989.4,
+   "on": 41034.6,
+   "ratio": 1.001
+  },
+  "dumps Decimal no default [error fallback]": {
+   "plain": 40366.3,
+   "on": 34732.8,
+   "ratio": 0.86
+  },
+  "dumps circular [error fallback]": {
+   "plain": 19920.4,
+   "on": 19772.9,
+   "ratio": 0.993
+  },
+  "dumps circular, kernel declines at once [floor]": {
+   "plain": 20086.4,
+   "on": 19938.9,
+   "ratio": 0.993
+  },
+  "dumps Decimal, kernel declines at once [floor]": {
+   "plain": 40532.3,
+   "on": 34898.8,
+   "ratio": 0.861
+  },
+  "loads invalid [error fallback]": {
+   "plain": 26292.8,
+   "on": 26409.6,
+   "ratio": 1.004
+  },
+  "loads valid+invalid alternating [error fallback]": {
+   "plain": 54138.8,
+   "on": 41787.3,
+   "ratio": 0.772
+  },
+  "dumps valid+error alternating [error fallback]": {
+   "plain": 71359.7,
+   "on": 47318.5,
+   "ratio": 0.663
+  }
+ }
+}

@@ -1,0 +1,88 @@
+{
+ "cells": [
+  {
+   "variant": "plain: pass",
+   "python": "/home/ubuntu/phase3/su/3.14.9/plain-bare/bin/python",
+   "code": "pass",
+   "ir": 40589415,
+   "ir_runs": [
+    40589415,
+    40589415,
+    40589415
+   ],
+   "ms_median": 9.569514,
+   "ms_p10": 9.515445,
+   "ms_p90": 9.654716,
+   "ir_ratio": 1.0,
+   "ms_ratio": 1.0
+  },
+  {
+   "variant": "installed, unset: pass",
+   "python": "/home/ubuntu/phase3/su/3.14.9/rq-bare/bin/python",
+   "code": "pass",
+   "ir": 42504877,
+   "ir_runs": [
+    42504877,
+    42504877,
+    42504877
+   ],
+   "ms_median": 10.024608,
+   "ms_p10": 9.958038,
+   "ms_p90": 10.102889,
+   "ir_ratio": 1.0471911704073587,
+   "ms_ratio": 1.0475566470773752
+  },
+  {
+   "variant": "RUSTIQUE=1: pass",
+   "python": "/home/ubuntu/phase3/su/3.14.9/rq-bare/bin/python",
+   "code": "pass",
+   "ir": 45196342,
+   "ir_runs": [
+    45196342,
+    45196342,
+    45196342
+   ],
+   "ms_median": 11.108537,
+   "ms_p10": 11.044254,
+   "ms_p90": 11.21255,
+   "ir_ratio": 1.113500699628216,
+   "ms_ratio": 1.1608256176854959
+  },
+  {
+   "variant": "import rustique",
+   "python": "/home/ubuntu/phase3/su/3.14.9/rq-bare/bin/python",
+   "code": "import rustique",
+   "ir": 44030935,
+   "ir_runs": [
+    44030935,
+    44030935,
+    44030935
+   ],
+   "ms_median": 10.755667500000001,
+   "ms_p10": 10.676612,
+   "ms_p90": 10.848193,
+   "ir_ratio": 1.0847886080644424,
+   "ms_ratio": 1.1239512790304713
+  },
+  {
+   "variant": "import + enable()",
+   "python": "/home/ubuntu/phase3/su/3.14.9/rq-bare/bin/python",
+   "code": "import rustique; rustique.enable()",
+   "ir": 45605596,
+   "ir_runs": [
+    45605596,
+    45605596,
+    45605596
+   ],
+   "ms_median": 11.12226,
+   "ms_p10": 11.059484,
+   "ms_p90": 11.211515,
+   "ir_ratio": 1.1235834761353423,
+   "ms_ratio": 1.1622596508035832
+  }
+ ],
+ "marginal": {
+  "ir": 1.0633213219273638,
+  "ms": 1.1081268215176094
+ }
+}

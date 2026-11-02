@@ -1,0 +1,310 @@
+== json_cg
+float repr(1.23)                                       2040        740   0.363
+float repr(123.456789)                                 3248        806   0.248
+float repr(1.2345678901234567e300)                    20550        716   0.035
+float str(2.5e-07)                                     2808        672   0.239
+float f'{x}'                                           2430        919   0.378
+float f'{x:.2f}' [not reached]                         1805       1832   1.015
+float f'v={x} t={xs}ms'                                6850       2672   0.390
+float repr(inf) [fallback]                              775        803   1.036
+float repr(F(1.5)) [subclass]                          1895       1895   1.000
+float '%s' % x                                         1957        671   0.343
+dumps record                                          31002       6305   0.203
+dumps small list                                      18078       2165   0.120
+dumps floats                                          37717       5984   0.159
+dumps nested                                          58407      16217   0.278
+dumps unicode                                         18467       3181   0.172
+dumps unicode ensure_ascii=False                      23905       4781   0.200
+dumps str                                              3290        866   0.263
+dumps int                                             11272        623   0.055
+dumps record indent=2                                 40212       7618   0.189
+dumps record sort_keys                                45852      12540   0.273
+dumps record separators                               36808       6695   0.182
+dumps record [json only]                              31002       6298   0.203
+dumps record default= [fallback]                      36645      31131   0.850
+dumps with Decimal default= [fallback]                39816      34283   0.861
+dumps OrderedDict [fallback]                          36587      30993   0.847
+dumps IntEnum                                         13098       1332   0.102
+dumps cls=JSONEncoder [fallback]                      36561      31047   0.849
+JSONEncoder().encode(record)                          28890      23376   0.809
+loads record                                          27844      12958   0.465
+loads record bytes                                    32525      13021   0.400
+loads small list                                      13107       2846   0.217
+loads floats                                          24443      10397   0.425
+loads nested                                          57241      32371   0.566
+loads unicode                                         16319       6228   0.382
+loads object_hook [fallback]                          40989      41035   1.001
+dumps Decimal no default [error fallback]             40366      34733   0.860
+dumps circular [error fallback]                       19920      19773   0.993
+dumps circular, kernel declines at once [floor]       20086      19939   0.993
+dumps Decimal, kernel declines at once [floor]        40532      34899   0.861
+loads invalid [error fallback]                        26293      26410   1.004
+loads valid+invalid alternating [error fallback]      54139      41787   0.772
+dumps valid+error alternating [error fallback]        71360      47319   0.663
+# 3.15.1 jit=False first64=False: worst ratio 1.036
+== copy_cells
+deepcopy int                                         712        301   0.423
+deepcopy str                                         714        301   0.422
+deepcopy record (10 fields)                        24225       4241   0.175
+deepcopy list of 5 records                        119109      20113   0.169
+deepcopy cfg (3 keys, nested)                      25342       4610   0.182
+deepcopy tuple of immutables                       19329       2484   0.129
+deepcopy small dataclass                           29321       7641   0.261
+deepcopy dataclass tree                           141194      36627   0.259
+deepcopy plain object                              35430       8839   0.249
+deepcopy slotted object                            38175       8793   0.230
+deepcopy enum member                                3022       1379   0.456
+deepcopy frozenset                                 29080       5579   0.192
+deepcopy set                                       27957       5193   0.186
+deepcopy datetime                                  13114       4035   0.308
+deepcopy uuid                                      27250      23317   0.856
+deepcopy Decimal (C __deepcopy__)                   2816        997   0.354
+deepcopy __deepcopy__ hook (restart at the root)      14001       8959   0.640
+restart: 5 records then a hook                    131170      64198   0.489
+restart: 5 records then a uuid                    144309      79293   0.549
+restart: hook last, 4 levels deep                 150513      87289   0.580
+same without the hook, 4 levels deep              138314      23995   0.173
+deepcopy registered copier                         13255       8000   0.604
+deepcopy copyreg reductor                          18980      13892   0.732
+deepcopy dict subclass                             26057      22005   0.845
+deepcopy OrderedDict                               22431      23095   1.030
+deepcopy memo=OrderedDict (generic memo)           28358      26731   0.943
+deepcopy explicit {} memo                          25402       7548   0.297
+copy int                                             645        414   0.642
+copy list100                                        3123       2736   0.876
+copy dict100                                        5074       4671   0.921
+copy record                                         1688       1293   0.766
+copy plain object                                  12688       4729   0.373
+copy small dataclass                               12684       4714   0.372
+copy enum member                                    1911        838   0.438
+copy __copy__ hook                                  2780       2775   0.998
+copy set                                            1477       1068   0.723
+copy datetime                                       6644       2393   0.360
+copy (fallback args: kw)                            1840       1840   1.000
+asdict small dataclass                             12627       4882   0.387
+asdict dataclass tree                              76336      27436   0.359
+astuple small dataclass                            12494       4391   0.351
+asdict (fallback: dict_factory)                    16542      16465   0.995
+pair: deepcopy memo=OrderedDict + deepcopy int      29064      27030   0.930
+pair: copy kw + copy int                            2479       2479   1.000
+pair: restart (5 records then a hook) + deepcopy int     131874      64651   0.490
+pair: restart (hook at the root) + deepcopy int      14705       9229   0.628
+pair: restart (hook last, 4 levels deep) + deepcopy int     151224      87575   0.579
+pair: copy __copy__ hook + copy int                 3500       3441   0.983
+pair: deepcopy OrderedDict + deepcopy int          23135      23317   1.008
+policy: deepcopy 1 int per 3 OrderedDicts          68028      69347   1.019
+policy: copy 1 int per 3 hooks (suspends)           8996       8948   0.995
+pair: asdict factory + asdict                      29193      21681   0.743
+== datetime_cg
+strptime fallback: LC_TIME en_US               orig       56643 
+strptime fallback: LC_TIME en_US               rq         56913 1.005
+strptime fallback: dependency changed (deps)   orig       42785 
+strptime fallback: dependency changed (deps)   rq         42745 0.999
+strptime fallback: _regex_cache miss (deopt)   orig      103021 
+strptime fallback: _regex_cache miss (deopt)   rq        103882 1.008
+strptime fallback: tracing tool (tools)        orig       43743 
+strptime fallback: tracing tool (tools)        rq         44054 1.007
+strftime %Y-%m-%d %H:%M:%S                     orig       17051 
+strftime %Y-%m-%d %H:%M:%S                     rq          1768 0.104
+strftime %Y-%m (utc)                           orig       16816 
+strftime %Y-%m (utc)                           rq          1393 0.083
+strftime %Y-%m-%d %H:00 (fixed offset)         orig       17725 
+strftime %Y-%m-%d %H:00 (fixed offset)         rq          1654 0.093
+strftime %a %d %b %Y %H:%M %Z (ZoneInfo)       orig       21780 
+strftime %a %d %b %Y %H:%M %Z (ZoneInfo)       rq          4247 0.195
+strftime %A (ZoneInfo)                         orig       16497 
+strftime %A (ZoneInfo)                         rq          2319 0.141
+strftime %a, %d %b %Y %H:%M:%S GMT (utc)       orig       18978 
+strftime %a, %d %b %Y %H:%M:%S GMT (utc)       rq          2032 0.107
+date.strftime %Y-%m-%d                         orig       15783 
+date.strftime %Y-%m-%d                         rq          1310 0.083
+time.strftime method %H:%M:%S.%f               orig       11827 
+time.strftime method %H:%M:%S.%f               rq          1395 0.118
+f-string {dt:%Y-%m-%d}                         orig       16280 
+f-string {dt:%Y-%m-%d}                         rq          1797 0.110
+time.strftime(fmt, struct_time)                orig        5353 
+time.strftime(fmt, struct_time)                rq          1814 0.339
+time.strftime(fmt, tuple)                      orig        5274 
+time.strftime(fmt, tuple)                      rq          1787 0.339
+time.strftime fallback: year < 1000            orig        6161 
+time.strftime fallback: year < 1000            rq          6350 1.031
+strftime fallback: subclass                    orig       17087 
+strftime fallback: subclass                    rq         13707 0.802
+strftime fallback: unsupported %U              orig       15626 
+strftime fallback: unsupported %U              rq         16144 1.033
+strftime fallback: names in en_US              orig       15479 
+strftime fallback: names in en_US              rq         16067 1.038
+strftime numeric in en_US                      orig       17105 
+strftime numeric in en_US                      rq          1768 0.103
+isoformat()                                    orig        6350 
+isoformat()                                    rq           735 0.116
+isoformat() utc                                orig        8747 
+isoformat() utc                                rq          1233 0.141
+isoformat(timespec='minutes') ZoneInfo         orig        8593 
+isoformat(timespec='minutes') ZoneInfo         rq          2513 0.292
+str(dt)                                        orig        6663 
+str(dt)                                        rq          1063 0.160
+date.isoformat()                               orig        3079 
+date.isoformat()                               rq           521 0.169
+time.isoformat()                               orig        3908 
+time.isoformat()                               rq           672 0.172
+isoformat(sep=' ', timespec='seconds')         orig        6030 
+isoformat(sep=' ', timespec='seconds')         rq           904 0.150
+isoformat fallback: subclass                   orig        5616 
+isoformat fallback: subclass                   rq          5664 1.009
+isoformat fallback: unknown timespec (error)   orig        2704 
+isoformat fallback: unknown timespec (error)   rq          2772 1.025
+fromisoformat full tz                          orig        2172 
+fromisoformat full tz                          rq          2172 1.000
+== paths_cg
+posixpath: isabs(p)                                      1527      314 0.205
+posixpath: isabs(pb) bytes                               1389      298 0.214
+posixpath: isabs(ps) str subclass                        1670     1003 0.600
+posixpath: isabs(PathLike)                               2152     2152 1.000
+posixpath: isabs(p) os.fspath patched                    1764     1764 1.000
+posixpath: normcase(p)                                    517      517 1.000
+posixpath: normcase(PathLike)                            1142     1142 1.000
+posixpath: relpath(p, root)                             20897     6824 0.327
+posixpath: relpath(pb, rootb) bytes                     21495     5077 0.236
+posixpath: relpath(f) relative                          31031     7428 0.239
+posixpath: relpath(ps, root) str subclass               21228     7530 0.355
+posixpath: relpath(p, root) os.fspath patched           21850    21769 0.996
+posixpath: abspath(p)                                    3071     2185 0.711
+posixpath: abspath(f) relative                           7731     3672 0.475
+posixpath: abspath(ps) str subclass                      3211     2871 0.894
+posixpath: commonpath([p, d])                           23137    23075 0.997
+posixpath: commonpath((pb, db)) bytes                   24781    24700 0.997
+fnmatch: fnmatch(f, '*.py')                              4828      599 0.124
+fnmatch: fnmatch(f, 'coverage.*') miss                   4258      611 0.143
+fnmatch: fnmatch(f, '[!t]*_[0-9]*.py')                   4258      622 0.146
+fnmatch: fnmatch(fb, b'*.py') bytes                      4920      551 0.112
+fnmatch: fnmatch(fs, '*.py') str subclass                4714      619 0.131
+fnmatch: fnmatch(Path, '*.py')                           5348     2751 0.514
+fnmatch: fnmatch(f, '*.py') os.fspath patched            5300     5190 0.979
+fnmatch: fnmatch(f, '*.py') cProfile on                 15224    15219 1.000
+fnmatch: fnmatchcase(f, '*.py')                          3307      599 0.181
+fnmatch: fnmatchcase(fs, '*.py') str subclass            3305      619 0.187
+fnmatch: any(fnmatch(f, pat) for 12 pats)               58929    13099 0.222
+fnmatch: filter(32 names, '*.py')                       61975     5588 0.090
+fnmatch: filter(iter, '*.py')                           63373    61307 0.967
+pathlib: Path(p)                                         4528     1818 0.402
+pathlib: str(Path(p))                                   26263     6423 0.245
+pathlib: Path(d) / f                                    10647     3254 0.306
+pathlib: str(pp / f)                                    32549     8833 0.271
+pathlib: pp.name                                          715      388 0.542
+pathlib: pp.suffix                                       2094      689 0.329
+pathlib: pp.stem                                         2227      676 0.303
+pathlib: pp.parent                                       9215     2696 0.293
+pathlib: pp.parts                                        2488      694 0.279
+pathlib: pp.with_suffix('.txt')                         13462     9453 0.702
+pathlib: pp.relative_to(root)                          108448     4919 0.045
+pathlib: hash(Path(p))                                  38294     7160 0.187
+pathlib: Path(p) == pp                                  33090     6560 0.198
+pathlib: pp.as_posix()                                   1221     1012 0.829
+pathlib: pp.is_absolute()                                 912      912 1.000
+pathlib: PurePosixPath(d, f)                             5475     1885 0.344
+pathlib: MyP(p) subclass                                 4371     4385 1.003
+pathlib: str(pp)                                          609      400 0.657
+pathlib: os.fspath(pp)                                    895      686 0.767
+pathlib: pp == pq                                        1595      495 0.311
+pathlib: hash(pp)                                         830      605 0.729
+pathlib: PurePosixPath(p).name (fresh)                  18125     5223 0.288
+pathlib: pw.name PureWindowsPath                          715      715 1.000
+pathlib: pw.parent PureWindowsPath                       9156     9170 1.002
+pathlib: ms.name subclass                                 715      715 1.000
+pathlib: ms.suffix subclass                              2099     2094 0.998
+pathlib: ms.parent subclass                              9352     9371 1.002
+pathlib: str(ms / f) subclass                           30980    31018 1.001
+pathlib: pp.name cProfile on                             2817     2817 1.000
+pathlib: pp.relative_to(root) cProfile on              301261   301359 1.000
+== logging_cg
+info %(message)s                         orig     54426 on     27727 (0.509)
+info BASIC_FORMAT                        orig     57121 on     28732 (0.503)
+info asctime fmt                         orig     70795 on     31946 (0.451)
+info asctime fmt, child logger           orig     71142 on     32359 (0.455)
+info asctime fmt, 3 args                 orig     71205 on     35079 (0.493)
+info asctime fmt, no args                orig     66839 on     30261 (0.453)
+info asctime fmt, extra=                 orig     76820 on     36026 (0.469)
+info JSON formatter (subclass)           orig     83490 on     48288 (0.578)
+info JSON __dict__ formatter             orig    117818 on     82614 (0.701)
+info {-style                             orig     79282 on     44142 (0.557)
+info, time.strftime replaced [deps]      orig     71147 on     71592 (1.006)
+info Formatter subclass [fallback]       orig     70655 on     31909 (0.452)
+info obj arg [fallback]                  orig     70947 on     47095 (0.664)
+info %(message)s, obj arg [fallback]     orig     54688 on     40038 (0.732)
+info stack_info=True [fallback]          orig    349545 on    330050 (0.944)
+exception [fallback]                     orig    713914 on    678325 (0.950)
+adapter info                             orig     87222 on     43741 (0.501)
+logging.info root (disabled)             orig      3846 on      3131 (0.814)
+debug disabled                           orig      1343 on       816 (0.607)
+info disabled                            orig      1343 on       816 (0.607)
+debug disabled, no args                  orig      1172 on       783 (0.668)
+debug disabled, kwargs                   orig      1932 on       932 (0.482)
+isEnabledFor                             orig       612 on       612 (1.000)
+LogRecord()                              orig     19440 on      7652 (0.394)
+makeRecord                               orig     19806 on      8087 (0.408)
+findCaller                               orig     12491 on      4102 (0.328)
+getMessage                               orig      2063 on      2063 (1.000)
+getMessage obj arg                       orig      2267 on      2267 (1.000)
+format %(message)s                       orig      7450 on      5648 (0.758)
+format BASIC_FORMAT                      orig     10107 on      6633 (0.656)
+format asctime                           orig     23831 on      9402 (0.395)
+format datefmt                           orig     18830 on      7975 (0.424)
+format {-style [fallback]                orig     32303 on     22516 (0.697)
+format formatTime overridden [fallback, steady] orig     11936 on     11927 (0.999)
+format formatTime overridden + plain [fallback, alternating] orig     36763 on     22050 (0.600)
+formatTime custom converter [fallback, steady] orig     11855 on     11908 (1.004)
+formatTime custom converter + plain [fallback, alternating] orig     23908 on     14758 (0.617)
+debug disabled, isEnabledFor overridden [fallback] orig      1110 on      1110 (1.000)
+LogRecord(keywords) [fallback]           orig     19120 on     19162 (1.002)
+LogRecord(keywords) + plain [fallback, alternating] orig     35970 on     26224 (0.729)
+findCaller(stack_info=True) [fallback]   orig    286426 on    286767 (1.001)
+format subclass [fallback]               orig     23736 on      9392 (0.396)
+format obj arg [fallback]                orig     23947 on     14249 (0.595)
+format %(message)s, obj arg [fallback, steady] orig      7650 on      7636 (0.998)
+format %(message)s, obj arg + plain [fallback, alternating] orig     14211 on     13773 (0.969)
+formatTime                               orig     11886 on      2385 (0.201)
+formatTime datefmt                       orig      9388 on      1970 (0.210)
+formatTime subclass                      orig     11848 on      2384 (0.201)
+== utils_cg:random_cells
+randint(1, 6) [module]                                           2195        805   0.367
+rng.randint(3, 7)                                                2291        820   0.358
+rng.randint(0, 2**40)                                            4691       1064   0.227
+rng.randrange(10)                                                2212        783   0.354
+rng.randrange(0, 100, 5)                                         3212       1089   0.339
+rng.choice(L6)                                                   1770        548   0.310
+rng.choice(T4)                                                   2157        586   0.272
+rng.choices(W, k=40)                                            33643       6843   0.203
+rng.choices(T4, weights=[50,30,15,5])                            8336       2501   0.300
+rng.choices(L6)                                                  3894        884   0.227
+rng.sample(W, 5)                                                17249       2336   0.135
+rng.sample(range(10**6), 20)                                    59231      17968   0.303
+rng.shuffle(L100)                                              175741       8902   0.051
+sub.randint(1, 6) [subclass]                                     2153        805   0.374
+sub.choice(L6) [subclass]                                        1796        549   0.306
+own.randint(1, 6) [random() overridden]                          6330       6330   1.000
+own.choice(L6) [random() overridden]                             5974       5974   1.000
+own_bits.randint(1, 6) [Python getrandbits]                      3047       3047   1.000
+own_bits.choice(L6) [Python getrandbits]                         2691       2691   1.000
+own_bits.shuffle(L6) [Python getrandbits]                       17023      17023   1.000
+own_bits.choices(L6) [Python getrandbits]                        3899        884   0.227
+own.choices(L6) [Python random]                                  4616       4616   1.000
+own.sample(L100, 2) [Python random]                             17947      17947   1.000
+sysr.randint(1, 6) [SystemRandom]                                5059       4997   0.988
+sysr.choice(L6) [SystemRandom]                                   4750       4687   0.987
+mixed: rng.randint + own_bits.randint                            5608       4492   0.801
+mixed: rng.choice + sysr.choice                                  6815       5730   0.841
+mixed: 4x rng.randint + own_bits.randint                        12222       6899   0.565
+rng.randint(True, 6) [bool]                                      2168        809   0.373
+rng.randint(1, 2**70) [big]                                      4782       1813   0.379
+rng.choice('abcdef') [str]                                       1778        643   0.361
+rng.choice(range(10))                                            2887       1505   0.521
+rng.randint(a=1, b=6) [kwargs]                                   2354        985   0.418
+rng.randint(0, 2**64)                                            4791       1680   0.351
+rng.choice(deque6) [C sequence]                                  1906        780   0.409
+shadow.choice(L6) [instance attr shadows getrandbits]            1642       1642   1.000
+own_bits.sample(L6, 2) [Python getrandbits]                     11420      11420   1.000
+rng.choices(L6, k=3) [Fraction weights: fallback]              152315     152487   1.001
+rng.choice(UserList) [Python sequence: fallback]                 3629       3629   1.000
+rng.sample(L6, k=2, counts=[1]*6) [fallback]                    21338      12341   0.578
+rng.choices(L6, cum_weights=[1,2,3,4,5,6])                       6101       3270   0.536

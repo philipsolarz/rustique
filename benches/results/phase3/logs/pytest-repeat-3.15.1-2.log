@@ -1,0 +1,107 @@
+........................................................................ [  1%]
+........................................................................ [  2%]
+...............................s...............s........................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  6%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [ 11%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 19%]
+........................................................................ [ 21%]
+.................................Fatal Python error: Segmentation fault
+
+Current thread 0x00007d040d457b80 [python] (most recent call first):
+  File "/home/ubuntu/phase3/w/3.15.1/tests/targets/test_json_loads.py", line 94 in outcome
+  File "/home/ubuntu/phase3/w/3.15.1/tests/targets/test_json_loads.py", line 103 in check
+  File "/home/ubuntu/phase3/w/3.15.1/tests/targets/test_json_loads.py", line 234 in test_hypothesis_roundtrip_documents
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/hypothesis/core.py", line 1012 in test
+  File "/home/ubuntu/phase3/w/3.15.1/tests/targets/test_json_loads.py", line 231 in test_hypothesis_roundtrip_documents
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/hypothesis/core.py", line 1122 in run
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/hypothesis/core.py", line 827 in default_executor
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/hypothesis/core.py", line 1165 in execute_once
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/hypothesis/core.py", line 1227 in _execute_once_for_engine
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/hypothesis/internal/conjecture/engine.py", line 448 in __stoppable_test_function
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/hypothesis/internal/conjecture/engine.py", line 599 in test_function
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/hypothesis/internal/conjecture/engine.py", line 1361 in generate_new_test_cases
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/hypothesis/internal/conjecture/engine.py", line 1651 in _run
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/hypothesis/internal/conjecture/engine.py", line 1018 in run
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/hypothesis/core.py", line 1430 in run_engine
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/hypothesis/core.py", line 2247 in wrapped_test
+  File "/home/ubuntu/phase3/w/3.15.1/tests/targets/test_json_loads.py", line 231 in test_hypothesis_roundtrip_documents
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/_pytest/python.py", line 167 in pytest_pyfunc_call
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_execution.py", line 147 in _multicall
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_manager.py", line 183 in _hookexec
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_caller.py", line 197 in __call__
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/_pytest/python.py", line 1707 in runtest
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/_pytest/runner.py", line 184 in pytest_runtest_call
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_execution.py", line 147 in _multicall
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_manager.py", line 183 in _hookexec
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_caller.py", line 197 in __call__
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/_pytest/runner.py", line 250 in <lambda>
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/_pytest/runner.py", line 361 in from_call
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/_pytest/runner.py", line 249 in call_and_report
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/_pytest/runner.py", line 139 in runtestprotocol
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/_pytest/runner.py", line 118 in pytest_runtest_protocol
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_execution.py", line 147 in _multicall
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_manager.py", line 183 in _hookexec
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_caller.py", line 197 in __call__
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/_pytest/main.py", line 408 in pytest_runtestloop
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_execution.py", line 147 in _multicall
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_manager.py", line 183 in _hookexec
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_caller.py", line 197 in __call__
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/_pytest/main.py", line 384 in _main
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/_pytest/main.py", line 330 in wrap_session
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/_pytest/main.py", line 377 in pytest_cmdline_main
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_execution.py", line 147 in _multicall
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_manager.py", line 183 in _hookexec
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pluggy/_caller.py", line 197 in __call__
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/_pytest/config/__init__.py", line 229 in _main
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/_pytest/config/__init__.py", line 253 in _console_main
+  File "/home/ubuntu/phase3/venv/3.15.1/lib/python3.15/site-packages/pytest/__main__.py", line 9 in <module>
+  File "<frozen runpy>", line 87 in _run_code
+  File "<frozen runpy>", line 201 in _run_module_as_main
+
+Current thread's C stack trace (most recent call first):
+  Binary file "python", at _Py_DumpStack+0x30 [0x1367d80]
+  Binary file "python" [0x13fd2db]
+  Binary file "python" [0x13fd22e]
+  Binary file "/lib/x86_64-linux-gnu/libc.so.6", at +0x45330 [0x7d040d245330]
+  Binary file "python" [0x18023e3]
+  Binary file "python", at PyUnicode_New+0x89 [0x188a989]
+  Binary file "/home/ubuntu/phase3/w/3.15.1/python/rustique/_rustique.cpython-315-x86_64-linux-gnu.so", at +0x1b6242 [0x7d040b9b6242]
+  Binary file "/home/ubuntu/phase3/w/3.15.1/python/rustique/_rustique.cpython-315-x86_64-linux-gnu.so", at +0x1b745b [0x7d040b9b745b]
+  Binary file "/home/ubuntu/phase3/w/3.15.1/python/rustique/_rustique.cpython-315-x86_64-linux-gnu.so", at +0x1b606b [0x7d040b9b606b]
+  Binary file "/home/ubuntu/phase3/w/3.15.1/python/rustique/_rustique.cpython-315-x86_64-linux-gnu.so", at +0x1b59a8 [0x7d040b9b59a8]
+  Binary file "/home/ubuntu/phase3/w/3.15.1/python/rustique/_rustique.cpython-315-x86_64-linux-gnu.so", at +0x1b5d38 [0x7d040b9b5d38]
+  Binary file "/home/ubuntu/phase3/w/3.15.1/python/rustique/_rustique.cpython-315-x86_64-linux-gnu.so", at +0x1b745b [0x7d040b9b745b]
+  Binary file "/home/ubuntu/phase3/w/3.15.1/python/rustique/_rustique.cpython-315-x86_64-linux-gnu.so", at +0x1b606b [0x7d040b9b606b]
+  Binary file "/home/ubuntu/phase3/w/3.15.1/python/rustique/_rustique.cpython-315-x86_64-linux-gnu.so", at +0x1b7788 [0x7d040b9b7788]
+  Binary file "/home/ubuntu/phase3/w/3.15.1/python/rustique/_rustique.cpython-315-x86_64-linux-gnu.so", at +0x332fcc [0x7d040bb32fcc]
+  Binary file "/home/ubuntu/phase3/w/3.15.1/python/rustique/_rustique.cpython-315-x86_64-linux-gnu.so", at +0x333747 [0x7d040bb33747]
+  Binary file "/home/ubuntu/phase3/w/3.15.1/python/rustique/_rustique.cpython-315-x86_64-linux-gnu.so", at +0x333c7e [0x7d040bb33c7e]
+  Binary file "python" [0x183da8f]
+  Binary file "python", at _PyFunction_Vectorcall+0x30d [0x1813e4d]
+  Binary file "python" [0x192d9c2]
+  Binary file "python", at PyObject_Vectorcall+0x27d [0x181d495]
+  Binary file "python" [0x181cdc6]
+  Binary file "python", at _PyFunction_Vectorcall+0x30d [0x1813e4d]
+  Binary file "python" [0x192d9c2]
+  Binary file "python" [0x180f7c4]
+  Binary file "python", at _PyFunction_Vectorcall+0x30d [0x1813e4d]
+  Binary file "python" [0x192d9c2]
+  Binary file "python", at PyObject_Vectorcall+0x27d [0x181d495]
+  Binary file "python" [0x181cdc6]
+  Binary file "python", at _PyFunction_Vectorcall+0x30d [0x1813e4d]
+  Binary file "python" [0x192d9c2]
+  Binary file "python", at PyObject_Vectorcall+0x27d [0x181d495]
+  <truncated rest of calls>
+
+Extension modules: rustique._rustique, hypothesis._native.internal, hypothesis._native.internal.cathetus, hypothesis._native.internal.floats, hypothesis._native, numpy._core._multiarray_umath, numpy.linalg._umath_linalg, numpy.random._common, numpy.random.bit_generator, numpy.random._bounded_integers, numpy.random._pcg64, numpy.random._generator, numpy.random._mt19937, numpy.random._philox, numpy.random._sfc64, numpy.random.mtrand (total: 16)
+./run_phase3.sh: line 86: 1860478 Segmentation fault      (core dumped) ( cd "$(work "$b")" && VIRTUAL_ENV="$(venv "$b")" PATH="$(venv "$b")/bin:$PATH" CARGO_TARGET_DIR="$(tgt "$b")" "$@" )

@@ -1,0 +1,52 @@
+deepcopy int                                         712        301   0.423
+deepcopy str                                         714        301   0.422
+deepcopy record (10 fields)                        24225       4241   0.175
+deepcopy list of 5 records                        119109      20113   0.169
+deepcopy cfg (3 keys, nested)                      25342       4610   0.182
+deepcopy tuple of immutables                       19329       2484   0.129
+deepcopy small dataclass                           29321       7641   0.261
+deepcopy dataclass tree                           141194      36627   0.259
+deepcopy plain object                              35430       8839   0.249
+deepcopy slotted object                            38175       8793   0.230
+deepcopy enum member                                3022       1379   0.456
+deepcopy frozenset                                 29080       5579   0.192
+deepcopy set                                       27957       5193   0.186
+deepcopy datetime                                  13114       4035   0.308
+deepcopy uuid                                      27250      23317   0.856
+deepcopy Decimal (C __deepcopy__)                   2816        997   0.354
+deepcopy __deepcopy__ hook (restart at the root)      14001       8959   0.640
+restart: 5 records then a hook                    131170      64198   0.489
+restart: 5 records then a uuid                    144309      79293   0.549
+restart: hook last, 4 levels deep                 150513      87289   0.580
+same without the hook, 4 levels deep              138314      23995   0.173
+deepcopy registered copier                         13255       8000   0.604
+deepcopy copyreg reductor                          18980      13892   0.732
+deepcopy dict subclass                             26057      22005   0.845
+deepcopy OrderedDict                               22431      23095   1.030
+deepcopy memo=OrderedDict (generic memo)           28358      26731   0.943
+deepcopy explicit {} memo                          25402       7548   0.297
+copy int                                             645        414   0.642
+copy list100                                        3123       2736   0.876
+copy dict100                                        5074       4671   0.921
+copy record                                         1688       1293   0.766
+copy plain object                                  12688       4729   0.373
+copy small dataclass                               12684       4714   0.372
+copy enum member                                    1911        838   0.438
+copy __copy__ hook                                  2780       2775   0.998
+copy set                                            1477       1068   0.723
+copy datetime                                       6644       2393   0.360
+copy (fallback args: kw)                            1840       1840   1.000
+asdict small dataclass                             12627       4882   0.387
+asdict dataclass tree                              76336      27436   0.359
+astuple small dataclass                            12494       4391   0.351
+asdict (fallback: dict_factory)                    16542      16465   0.995
+pair: deepcopy memo=OrderedDict + deepcopy int      29064      27030   0.930
+pair: copy kw + copy int                            2479       2479   1.000
+pair: restart (5 records then a hook) + deepcopy int     131874      64651   0.490
+pair: restart (hook at the root) + deepcopy int      14705       9229   0.628
+pair: restart (hook last, 4 levels deep) + deepcopy int     151224      87575   0.579
+pair: copy __copy__ hook + copy int                 3500       3441   0.983
+pair: deepcopy OrderedDict + deepcopy int          23135      23317   1.008
+policy: deepcopy 1 int per 3 OrderedDicts          68028      69347   1.019
+policy: copy 1 int per 3 hooks (suspends)           8996       8948   0.995
+pair: asdict factory + asdict                      29193      21681   0.743

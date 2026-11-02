@@ -12,7 +12,7 @@ See `DECISIONS.md` §5–§9, `IMPACT_ATLAS.md`, `ACCELERATION.md` (the contract
 |---|---|
 | Framework (`accel`) | one contract for every target: `ml_meth`/slot/vectorcall sites installed all-or-nothing, version gate and code fingerprints per CPython minor (unknown interpreter → refuse), lazy install when a module finishes importing, dependency pins through one dict watcher and one type watcher, tools guard, net-benefit suspension, counters and status, check mode, JIT cache clearing, subinterpreter refusal, release at exit |
 | Targets | 84 targets in 15 groups: json (+ exact float→text), copy + dataclasses, datetime text, posixpath, fnmatch, pathlib, logging, random, textwrap, urllib.parse, statistics, plus the parity program's containers and builtins |
-| Results | 34 real workloads: geometric mean 0.880 (3.15.1) / 0.843 (3.15.1t), stdlib-heavy programs 1.2–2.3× faster, none slower than 1.013; CPython's own test modules of every group 0 differences with all groups on |
+| Results | 34 real workloads: geometric mean 0.880 (3.15.1) / 0.843 (3.15.1t), stdlib-heavy programs 1.2–2.3× faster, none slower than 1.013 (two replicates agree within 2% per workload); pyperformance 0.942 / 0.957; CPython's own test modules of every group 0 differences with all groups on |
 | DX | `RUSTIQUE=1` (no code change), `RUSTIQUE=0` kill switch, `RUSTIQUE_ONLY`/`EXCLUDE`, `RUSTIQUE_STATS`/`REPORT`/`CHECK`, `python -m rustique status|report|diff`, `pytest --rustique`, wheels for 8 platforms × 3.14/3.14t/3.15/3.15t, `docs/USAGE.md` |
 | Known exceedances | startup with `RUSTIQUE=1` 1.045–1.063× instructions; a few install costs over budget; first ~64 calls of all-fallback streams (DECISIONS §5) |
 

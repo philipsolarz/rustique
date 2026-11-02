@@ -1,0 +1,34 @@
+pip
+pip-26.2.2.dist-info
+_rustique_startup.pth
+pip
+pip-26.2.2.dist-info
+rustique
+rustique-0.2.0.dist-info
+
+startup cells (ratios vs plain `python -c pass`)
+variant                              Ir  Ir ratio      ms median (p10-p90)  ms ratio
+plain: pass                  40,589,415    1.0000      9.57 (9.52-9.65)    1.0000
+installed, unset: pass       42,504,877    1.0472     10.02 (9.96-10.10)    1.0476
+RUSTIQUE=1: pass             45,196,342    1.1135     11.11 (11.04-11.21)    1.1608
+import rustique              44,030,935    1.0848     10.76 (10.68-10.85)    1.1240
+import + enable()            45,605,596    1.1236     11.12 (11.06-11.21)    1.1623
+marginal cost of RUSTIQUE=1 in the same venv (vs unset): Ir 1.0633, wall 1.1081 (+1.08 ms)
+aaa_other.pth
+pip
+pip-26.2.2.dist-info
+_rustique_startup.pth
+aaa_other.pth
+pip
+pip-26.2.2.dist-info
+rustique
+rustique-0.2.0.dist-info
+
+startup cells (ratios vs plain `python -c pass`)
+variant                              Ir  Ir ratio      ms median (p10-p90)  ms ratio
+plain: pass                  42,011,008    1.0000      9.88 (9.81-9.97)    1.0000
+installed, unset: pass       42,594,518    1.0139     10.02 (9.94-10.12)    1.0143
+RUSTIQUE=1: pass             45,281,779    1.0779     11.11 (11.02-11.22)    1.1247
+import rustique              44,120,392    1.0502     10.75 (10.65-10.84)    1.0875
+import + enable()            45,695,096    1.0877     11.11 (11.02-11.22)    1.1241
+marginal cost of RUSTIQUE=1 in the same venv (vs unset): Ir 1.0631, wall 1.1089 (+1.09 ms)

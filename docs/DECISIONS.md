@@ -285,6 +285,13 @@ On 3.15.1t, `isort_stdlib` (0.196) and `state_snapshot` (0.476) gain more becaus
 own `copy.deepcopy` is 2–4× slower on the free-threaded build than on the GIL build, and
 the Rust kernel is not (cause in CPython not investigated; M).
 
+A second replicate, run after pyperformance, reproduces the first (M):
+
+- geometric mean 0.879 / 0.843;
+- every workload within 2% of its first ratio, 29 / 33 of 34 within 1%;
+- `config_merge` at 1.003, so its 1.013 was noise;
+- worst workloads, averaged over both replicates: 1.008 / 1.006.
+
 Whole processes, startup and imports included (`RUSTIQUE=1` through the shipped `.pth`,
 `pyperf command`, 6 representative workloads): geometric mean **0.756** (3.15.1) and
 **0.712** (3.15.1t); `log_analytics` 0.639, `report_render` 0.494, `state_snapshot` 0.749,
@@ -298,10 +305,12 @@ gain 1.3–2×" → measured 1.2–2.3×; "the mean workload spends ~10% less ti
 **pyperformance 1.14.0** (full default suite, ~120 benchmarks, plain vs `rustique.enable()`
 through `sitecustomize`, two replicate pairs per build): geometric mean **0.942 / 0.940**
 on 3.15.1 and **0.956 / 0.957** on 3.15.1t (Phase 0 at `5abd54c`: 1.002), median 0.998.
+Averaged per benchmark over both pairs (122 benchmarks, port benchmarks from their solo
+re-run): **0.942** and **0.957**, against Phase 0's 1.002 / 1.002 computed the same way.
 Gains: `deepcopy_memo` 0.13–0.18, `deepcopy` 0.23–0.28, `json_dumps` 0.25–0.33,
 `json_loads` 0.57–0.59, `logging_*` 0.61–0.79, `sympy_integrate` 0.83, `meteor_contest`,
 `hexiom`, `pathlib` 0.93–0.95. Above 1.05 in both replicates: only `python_startup`
-(1.08–1.10, the startup cost of `enable()`); `fannkuch` 1.114 in one replicate only
+(1.08–1.10, the startup cost of `enable()`; Phase 0: 1.18); `fannkuch` 1.114 in one replicate only
 (≤ 1.03 in the other: noise); 1.03–1.05 on 3.15.1t: `xdsl_constant_fold` 1.033 in both,
 others in one replicate only (M).
 
@@ -309,6 +318,16 @@ others in one replicate only (M).
 installed but off (`RUSTIQUE` unset) 1.027 instructions / 1.032 wall in a bare venv on
 3.15.1 (1.008 / 1.011 where another `.pth` exists), 1.047 / 1.048 on 3.14.9; `RUSTIQUE=1`
 against unset 1.045 / 1.078 on 3.15.1 and 1.063 / 1.108 on 3.14.9 (+0.76 ms and +1.09 ms).
+
+**Scoreboard at the integrated commit** (M, `docs/atlas/phase3.md` §7):
+
+- **0–100 elements:** 3811 / 3814 cells ≤ 1.05 after isolation re-runs (the other 3 are
+  fixed since, §5).
+- **10k/1M wall time:** kernel-path geometric mean 0.462 / 0.482, the same as Phase 0.
+  - Cells cross the 1.05 bar in both directions in equal numbers, which is noise at
+    3 processes.
+  - The 8 kernel-path cells that read above 1.05 measure 0.967–1.040 alone at
+    10 processes (twice per build, on both builds).
 
 **Correctness at the integrated commit** (M): CPython's own test modules of every group, all
 15 groups enabled at once: 8,125 test outcomes on 3.15.1 and 3.15.1t, 7,823 on 3.14.9, **0
@@ -321,8 +340,19 @@ use-after-free in the `json.loads` kernel for documents that repeat a key within
 (its key memo held borrowed pointers; the replaced value's keys were freed mid-parse). It
 crashed two CI jobs and was the "unreproduced crash" of Phase 2; memcheck located it, the
 memo now owns its keys, and Hypothesis now generates documents with repeated keys
-(`docs/targets/json.md`, open issues). Lesson for every target: per-call caches own what
-they hold, unless the input itself provably keeps it alive.
+(`docs/targets/json.md`, open issues).
+
+Phase 3's repeated test runs hit the same bug once in 9 runs (M, `docs/atlas/phase3.md`
+§2):
+
+- Where: a segfault in the json round-trip property test on 3.15.1.
+- How the key repeats: the strategy builds dicts with both `'😀'` (two lone
+  surrogates) and `'\U0001F600'` as keys. They are different keys in Python, but
+  `json.dumps` writes both as `"😀"`.
+- Memcheck shows an invalid read on the measured commit and is clean on the fix.
+
+Lesson for every target: per-call caches own what they hold, unless the input itself
+provably keeps it alive.
 
 ## 7. Per-target results
 

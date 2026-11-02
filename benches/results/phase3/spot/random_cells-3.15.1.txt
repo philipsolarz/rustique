@@ -1,0 +1,41 @@
+randint(1, 6) [module]                                           2195        805   0.367
+rng.randint(3, 7)                                                2291        820   0.358
+rng.randint(0, 2**40)                                            4691       1064   0.227
+rng.randrange(10)                                                2212        783   0.354
+rng.randrange(0, 100, 5)                                         3212       1089   0.339
+rng.choice(L6)                                                   1770        548   0.310
+rng.choice(T4)                                                   2157        586   0.272
+rng.choices(W, k=40)                                            33643       6843   0.203
+rng.choices(T4, weights=[50,30,15,5])                            8336       2501   0.300
+rng.choices(L6)                                                  3894        884   0.227
+rng.sample(W, 5)                                                17249       2336   0.135
+rng.sample(range(10**6), 20)                                    59231      17968   0.303
+rng.shuffle(L100)                                              175741       8902   0.051
+sub.randint(1, 6) [subclass]                                     2153        805   0.374
+sub.choice(L6) [subclass]                                        1796        549   0.306
+own.randint(1, 6) [random() overridden]                          6330       6330   1.000
+own.choice(L6) [random() overridden]                             5974       5974   1.000
+own_bits.randint(1, 6) [Python getrandbits]                      3047       3047   1.000
+own_bits.choice(L6) [Python getrandbits]                         2691       2691   1.000
+own_bits.shuffle(L6) [Python getrandbits]                       17023      17023   1.000
+own_bits.choices(L6) [Python getrandbits]                        3899        884   0.227
+own.choices(L6) [Python random]                                  4616       4616   1.000
+own.sample(L100, 2) [Python random]                             17947      17947   1.000
+sysr.randint(1, 6) [SystemRandom]                                5059       4997   0.988
+sysr.choice(L6) [SystemRandom]                                   4750       4687   0.987
+mixed: rng.randint + own_bits.randint                            5608       4492   0.801
+mixed: rng.choice + sysr.choice                                  6815       5730   0.841
+mixed: 4x rng.randint + own_bits.randint                        12222       6899   0.565
+rng.randint(True, 6) [bool]                                      2168        809   0.373
+rng.randint(1, 2**70) [big]                                      4782       1813   0.379
+rng.choice('abcdef') [str]                                       1778        643   0.361
+rng.choice(range(10))                                            2887       1505   0.521
+rng.randint(a=1, b=6) [kwargs]                                   2354        985   0.418
+rng.randint(0, 2**64)                                            4791       1680   0.351
+rng.choice(deque6) [C sequence]                                  1906        780   0.409
+shadow.choice(L6) [instance attr shadows getrandbits]            1642       1642   1.000
+own_bits.sample(L6, 2) [Python getrandbits]                     11420      11420   1.000
+rng.choices(L6, k=3) [Fraction weights: fallback]              152315     152487   1.001
+rng.choice(UserList) [Python sequence: fallback]                 3629       3629   1.000
+rng.sample(L6, k=2, counts=[1]*6) [fallback]                    21338      12341   0.578
+rng.choices(L6, cum_weights=[1,2,3,4,5,6])                       6101       3270   0.536

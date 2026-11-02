@@ -34,6 +34,7 @@ instrumented, plain vs `enable(only=[group])`).
 | | 3.15.1 | 3.15.1t |
 |---|---:|---:|
 | 34 workloads, geometric mean (enabled / plain) | **0.880** | **0.843** |
+| second replicate (every workload within 2% of the first) | 0.879 | 0.843 |
 | data (12) / devtools (12) / web (10) | 0.773 / 0.963 / 0.922 | 0.756 / 0.863 / 0.933 |
 | median; best; worst | 0.980; `report_render` 0.436; `config_merge` 1.013 | 0.986; `isort_stdlib` 0.196; `xml_feeds` 1.005 |
 | digest mismatches; workloads > 1.05 | 0; 0 | 0; 0 |
@@ -50,7 +51,8 @@ one L3 domain each:
 | geometric mean | **0.942 / 0.940** | **0.956 / 0.957** | 1.002 / 1.002 |
 | median | 0.998 / 0.998 | 0.999 / 1.000 | |
 | benchmarks < 0.95 | 13 / 12 | 9 / 10 | |
-| benchmarks > 1.05 | `python_startup` 1.098, `fannkuch` 1.114 (A only) / `python_startup` 1.078 | `python_startup` 1.092 / 1.098 | |
+| benchmarks > 1.05 | `python_startup` 1.098, `fannkuch` 1.114 (A only) / `python_startup` 1.078 | `python_startup` 1.092 / 1.098 | `python_startup` 1.18 |
+| per benchmark, A and B averaged (122 benchmarks) | **0.942** | **0.957** | 1.002 / 1.002 |
 
 Largest gains: `deepcopy_memo` 0.13 (3.15.1) / 0.18 (3.15.1t), `deepcopy` 0.23 / 0.28,
 `json_dumps` 0.25 / 0.33, `json_loads` 0.57 / 0.59, `logging_silent` 0.61–0.62,

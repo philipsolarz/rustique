@@ -1,0 +1,162 @@
+{
+ "python": "3.15.1 (main, Oct 21 2026, 17:48:50) [Clang 23.1.3 ]",
+ "jit": false,
+ "rows": {
+  "strptime log %d/%b/%Y:%H:%M:%S %z": {
+   "orig": 62600.729,
+   "rq": 4735.444
+  },
+  "strptime %Y-%m-%d %H:%M:%S": {
+   "orig": 42721.273,
+   "rq": 3113.444
+  },
+  "strptime iso %f%z": {
+   "orig": 66724.413,
+   "rq": 4495.444
+  },
+  "strptime %m/%d/%Y %I:%M %p": {
+   "orig": 45703.367,
+   "rq": 3273.444
+  },
+  "date.strptime %Y-%m-%d": {
+   "orig": 31385.273,
+   "rq": 2358.444
+  },
+  "time.strptime %Y-%m-%d %H:%M:%S": {
+   "orig": 43385.731,
+   "rq": 3752.244
+  },
+  "strptime fallback: subclass receiver": {
+   "orig": 42944.273,
+   "rq": 43024.273
+  },
+  "strptime fallback: unsupported %U": {
+   "orig": 39212.954,
+   "rq": 39665.954
+  },
+  "strptime fallback: no match (error)": {
+   "orig": 22597.1,
+   "rq": 23448.1
+  },
+  "strptime fallback: LC_TIME en_US": {
+   "orig": 56643.111,
+   "rq": 56912.611
+  },
+  "strptime fallback: dependency changed (deps)": {
+   "orig": 42785.352,
+   "rq": 42745.352
+  },
+  "strptime fallback: _regex_cache miss (deopt)": {
+   "orig": 103020.786,
+   "rq": 103881.786
+  },
+  "strptime fallback: tracing tool (tools)": {
+   "orig": 43743.273,
+   "rq": 44054.273
+  },
+  "strftime %Y-%m-%d %H:%M:%S": {
+   "orig": 17050.564,
+   "rq": 1767.564
+  },
+  "strftime %Y-%m (utc)": {
+   "orig": 16816.064,
+   "rq": 1392.564
+  },
+  "strftime %Y-%m-%d %H:00 (fixed offset)": {
+   "orig": 17724.564,
+   "rq": 1653.564
+  },
+  "strftime %a %d %b %Y %H:%M %Z (ZoneInfo)": {
+   "orig": 21779.564,
+   "rq": 4246.564
+  },
+  "strftime %A (ZoneInfo)": {
+   "orig": 16497.064,
+   "rq": 2318.564
+  },
+  "strftime %a, %d %b %Y %H:%M:%S GMT (utc)": {
+   "orig": 18977.564,
+   "rq": 2031.564
+  },
+  "date.strftime %Y-%m-%d": {
+   "orig": 15783.244,
+   "rq": 1310.244
+  },
+  "time.strftime method %H:%M:%S.%f": {
+   "orig": 11827.244,
+   "rq": 1395.244
+  },
+  "f-string {dt:%Y-%m-%d}": {
+   "orig": 16280.244,
+   "rq": 1797.244
+  },
+  "time.strftime(fmt, struct_time)": {
+   "orig": 5352.744,
+   "rq": 1814.244
+  },
+  "time.strftime(fmt, tuple)": {
+   "orig": 5273.744,
+   "rq": 1787.244
+  },
+  "time.strftime fallback: year < 1000": {
+   "orig": 6161.024,
+   "rq": 6350.024
+  },
+  "strftime fallback: subclass": {
+   "orig": 17086.564,
+   "rq": 13706.564
+  },
+  "strftime fallback: unsupported %U": {
+   "orig": 15625.564,
+   "rq": 16143.564
+  },
+  "strftime fallback: names in en_US": {
+   "orig": 15478.564,
+   "rq": 16066.564
+  },
+  "strftime numeric in en_US": {
+   "orig": 17104.564,
+   "rq": 1767.564
+  },
+  "isoformat()": {
+   "orig": 6350.244,
+   "rq": 735.244
+  },
+  "isoformat() utc": {
+   "orig": 8746.744,
+   "rq": 1233.244
+  },
+  "isoformat(timespec='minutes') ZoneInfo": {
+   "orig": 8593.244,
+   "rq": 2513.244
+  },
+  "str(dt)": {
+   "orig": 6663.344,
+   "rq": 1063.344
+  },
+  "date.isoformat()": {
+   "orig": 3079.244,
+   "rq": 521.244
+  },
+  "time.isoformat()": {
+   "orig": 3908.244,
+   "rq": 672.244
+  },
+  "isoformat(sep=' ', timespec='seconds')": {
+   "orig": 6030.244,
+   "rq": 904.244
+  },
+  "isoformat fallback: subclass": {
+   "orig": 5615.564,
+   "rq": 5663.564
+  },
+  "isoformat fallback: unknown timespec (error)": {
+   "orig": 2703.544,
+   "rq": 2771.544
+  },
+  "fromisoformat full tz": {
+   "orig": 2171.564,
+   "rq": 2171.564
+  }
+ }
+}

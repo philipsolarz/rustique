@@ -1,0 +1,99 @@
+posixpath: join(d, f)                                    3559      948 0.266
+posixpath: join(root, 'src', 'pkg', f)                   7367     1318 0.179
+posixpath: join(d, '/abs')                               2380      583 0.245
+posixpath: join(db, fb) bytes                            3601      719 0.200
+posixpath: join(latin1, f)                               3565      964 0.270
+posixpath: join(ucs2, ucs4)                              2366      571 0.241
+posixpath: join(ds, fs) str subclass                     3939     2281 0.579
+posixpath: join(PathLike, f)                             4184     4165 0.995
+posixpath: join(Path, f)                                 4196     4177 0.995
+posixpath: join(d, f) os.fspath patched                  4033     4014 0.995
+posixpath: join(d, f) _get_sep patched                   3622     3603 0.995
+posixpath: join(d, f) cProfile on                       13853    13853 1.000
+posixpath: split(p)                                      3970     1138 0.287
+posixpath: split(pb) bytes                               4065     1048 0.258
+posixpath: split(ps) str subclass                        4474     1823 0.407
+posixpath: split(PathLike)                               4595     4557 0.992
+posixpath: split(Path)                                   4602     4564 0.992
+posixpath: split(p) os.fspath patched                    4207     4169 0.991
+posixpath: split(p) cProfile on                         14482    14482 1.000
+posixpath: splitext(f)                                   3954     1108 0.280
+posixpath: splitext(p)                                   3886     1111 0.286
+posixpath: splitext(pb) bytes                            4154     1007 0.242
+posixpath: splitext(pw) ucs2                             4354     1317 0.302
+posixpath: splitext(ps) str subclass                     4705     1796 0.382
+posixpath: splitext(PathLike)                            4511     4511 1.000
+posixpath: splitext(Path)                                4518     4518 1.000
+posixpath: splitext(p) os.fspath patched                 4109     4109 1.000
+posixpath: basename(p)                                   2066      640 0.310
+posixpath: basename(pb) bytes                            2000      590 0.295
+posixpath: basename(ps) str subclass                     2394     1331 0.556
+posixpath: basename(PathLike)                            2691     2672 0.993
+posixpath: basename(Path)                                2698     2679 0.993
+posixpath: basename(p) os.fspath patched                 2303     2284 0.992
+posixpath: basename(p) cProfile on                       9400     9400 1.000
+posixpath: dirname(p)                                    3385      634 0.187
+posixpath: dirname(pb) bytes                             3389      574 0.169
+posixpath: dirname(ps) str subclass                      3704     1324 0.357
+posixpath: dirname(PathLike)                             4010     3991 0.995
+posixpath: dirname(p) os.fspath patched                  3622     3603 0.995
+posixpath: isabs(p)                                      1527      314 0.205
+posixpath: isabs(pb) bytes                               1389      298 0.214
+posixpath: isabs(ps) str subclass                        1670     1003 0.600
+posixpath: isabs(PathLike)                               2152     2152 1.000
+posixpath: isabs(p) os.fspath patched                    1764     1764 1.000
+posixpath: normcase(p)                                    517      517 1.000
+posixpath: normcase(PathLike)                            1142     1142 1.000
+posixpath: relpath(p, root)                             20897     6824 0.327
+posixpath: relpath(pb, rootb) bytes                     21495     5077 0.236
+posixpath: relpath(f) relative                          31031     7428 0.239
+posixpath: relpath(ps, root) str subclass               21228     7530 0.355
+posixpath: relpath(p, root) os.fspath patched           21850    21769 0.996
+posixpath: abspath(p)                                    3071     2185 0.711
+posixpath: abspath(f) relative                           7731     3672 0.475
+posixpath: abspath(ps) str subclass                      3211     2871 0.894
+posixpath: commonpath([p, d])                           23137    23075 0.997
+posixpath: commonpath((pb, db)) bytes                   24781    24700 0.997
+fnmatch: fnmatch(f, '*.py')                              4828      599 0.124
+fnmatch: fnmatch(f, 'coverage.*') miss                   4258      611 0.143
+fnmatch: fnmatch(f, '[!t]*_[0-9]*.py')                   4258      622 0.146
+fnmatch: fnmatch(fb, b'*.py') bytes                      4920      551 0.112
+fnmatch: fnmatch(fs, '*.py') str subclass                4714      619 0.131
+fnmatch: fnmatch(Path, '*.py')                           5348     2751 0.514
+fnmatch: fnmatch(f, '*.py') os.fspath patched            5300     5190 0.979
+fnmatch: fnmatch(f, '*.py') cProfile on                 15224    15219 1.000
+fnmatch: fnmatchcase(f, '*.py')                          3307      599 0.181
+fnmatch: fnmatchcase(fs, '*.py') str subclass            3305      619 0.187
+fnmatch: any(fnmatch(f, pat) for 12 pats)               58929    13099 0.222
+fnmatch: filter(32 names, '*.py')                       61975     5588 0.090
+fnmatch: filter(iter, '*.py')                           63373    61307 0.967
+pathlib: Path(p)                                         4528     1818 0.402
+pathlib: str(Path(p))                                   26263     6423 0.245
+pathlib: Path(d) / f                                    10647     3254 0.306
+pathlib: str(pp / f)                                    32549     8833 0.271
+pathlib: pp.name                                          715      388 0.542
+pathlib: pp.suffix                                       2094      689 0.329
+pathlib: pp.stem                                         2227      676 0.303
+pathlib: pp.parent                                       9215     2696 0.293
+pathlib: pp.parts                                        2488      694 0.279
+pathlib: pp.with_suffix('.txt')                         13462     9453 0.702
+pathlib: pp.relative_to(root)                          108448     4919 0.045
+pathlib: hash(Path(p))                                  38294     7160 0.187
+pathlib: Path(p) == pp                                  33090     6560 0.198
+pathlib: pp.as_posix()                                   1221     1012 0.829
+pathlib: pp.is_absolute()                                 912      912 1.000
+pathlib: PurePosixPath(d, f)                             5475     1885 0.344
+pathlib: MyP(p) subclass                                 4371     4385 1.003
+pathlib: str(pp)                                          609      400 0.657
+pathlib: os.fspath(pp)                                    895      686 0.767
+pathlib: pp == pq                                        1595      495 0.311
+pathlib: hash(pp)                                         830      605 0.729
+pathlib: PurePosixPath(p).name (fresh)                  18125     5223 0.288
+pathlib: pw.name PureWindowsPath                          715      715 1.000
+pathlib: pw.parent PureWindowsPath                       9156     9170 1.002
+pathlib: ms.name subclass                                 715      715 1.000
+pathlib: ms.suffix subclass                              2099     2094 0.998
+pathlib: ms.parent subclass                              9352     9371 1.002
+pathlib: str(ms / f) subclass                           30980    31018 1.001
+pathlib: pp.name cProfile on                             2817     2817 1.000
+pathlib: pp.relative_to(root) cProfile on              301261   301359 1.000

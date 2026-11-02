@@ -1,0 +1,18 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+🍹 Building a mixed python/rust project
+🐍 Found CPython 3.14 at /home/ubuntu/phase3/venv/3.14.9/bin/python
+🔗 Found pyo3 bindings
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `release` profile [optimized] target(s) in 0.03s
+📦 Including files matching "python/_rustique_startup.pth"
+📦 Built wheel for CPython 3.14 to /home/ubuntu/phase3/dist/3.14.9/rustique-0.2.0-cp314-cp314-manylinux_2_34_x86_64.whl
+total 2316
+drwxrwxr-x 2 ubuntu ubuntu    4096 Nov  1 19:23 .
+drwxrwxr-x 6 ubuntu ubuntu    4096 Nov  1 19:22 ..
+-rw-rw-r-- 1 ubuntu ubuntu 2362995 Nov  1 19:23 rustique-0.2.0-cp314-cp314-manylinux_2_34_x86_64.whl
+461 _rustique_startup.pth
+6840240 rustique/_rustique.cpython-314-x86_64-linux-gnu.so
