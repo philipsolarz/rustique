@@ -246,6 +246,28 @@ test_typing, test_contextlib, test_contextlib_async, test_functools, test_copy,
 test_inspect, test_weakref, test_pickle plain and enabled (all four groups enabled before
 the module is imported) and compares every test id's outcome.
 
+## 4.1 With the opt-in `interp` tier (`RUSTIQUE_TIERS=interp`)
+
+The tier's `interp.kwinit` (keyword instantiation pushed inline) and `interp.setattr`
+(`object.__setattr__` fast path) run CPython's own generated frozen `__init__` faster than
+the dataclass kernel, and a kernel would also keep `interp.kwinit` from taking the class
+(its vectorcall is not CPython's) and the positional routing would keep the inline
+`CALL_ALLOC_AND_ENTER_INIT`. So while both overrides are live, the dataclass hook leaves
+new classes to the tier; every other data-model kernel is unaffected (different entry
+points). `tests/targets/test_dm_interp_compose.py`: plain, data-model only, tier only and
+both give identical logs (values, errors and tracebacks, `__post_init__`/`__setattr__`
+side effects) and the data-model counters are identical with and without the tier (the
+dataclass ones are 0 with it). Cells (`benches/targets/datamodel_interp_cells.py`,
+callgrind, 3.15.1):
+
+| cell | tier only | data-model only | both |
+|---|---:|---:|---:|
+| `F(x=1, y=2)` frozen keywords | 0.456 | 0.636 | 0.456 |
+| `F(1, 2)` frozen positional | 0.603 | 0.643 | 0.603 |
+| `E(a=1, b='t')` slots kw_only | 0.449 | 0.640 | 0.449 |
+| `Post(x=1)` (`__post_init__`, no kernel) | 0.531 | 1.004 | 0.531 |
+| `Plain(1, b=2)` plain class | 0.523 | 1.000 | 0.523 |
+
 ## 5. Free-threading
 
 On 3.14t/3.15t this wave: `enum.EnumType.__call__`, `enum.Enum.__hash__`,
