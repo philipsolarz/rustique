@@ -26,7 +26,7 @@ use rustique_core::paths::posix::{self, JoinArg, Joined, Piece};
 
 use crate::accel::{self, DepFlag, Fingerprints, GroupSpec, Prepare, Refusal, TargetSpec};
 use crate::refuse;
-use crate::targets::posixpath::rt::{self, O, Rt, Text, exact_str, str_from_units, str_view};
+use crate::targets::posixpath::rt::{self, O, Rt, exact_str, str_from_units, str_view};
 
 // ---------------------------------------------------------------------------------------
 // Fingerprints
@@ -339,38 +339,61 @@ unsafe fn parse_raw(raw: O) -> Option<(O, O)> {
             return None;
         }
         let n = ffi::PyList_GET_SIZE(raw) as usize;
-        let mut items: Vec<O> = Vec::with_capacity(n);
-        for i in 0..n {
-            let it = ffi::PyList_GET_ITEM(raw, i as ffi::Py_ssize_t);
-            if !exact_str(it) {
-                return None;
-            }
-            items.push(it);
+        let item = |i: usize| ffi::PyList_GET_ITEM(raw, i as ffi::Py_ssize_t);
+        if !(0..n).all(|i| exact_str(item(i))) {
+            return None;
         }
-        let mut joined: Vec<u32> = Vec::new();
-        let text: Text<'_> = match n {
-            0 => Text::U1(&[]),
-            1 => str_view(items[0]).text,
-            _ => {
-                // `self.parser.join(*paths)`: only its value matters here.
-                let views: Vec<_> = items.iter().map(|&p| str_view(p)).collect();
-                let jargs: Vec<JoinArg> = views.iter().map(|v| crate::with_text!(v.text, |s| JoinArg::of(s))).collect();
-                let mut pieces = vec![Piece::default(); n];
-                match posix::join_plan(&jargs, &mut pieces) {
-                    Joined::Arg(k) => views[k].text,
-                    Joined::Build { npieces, .. } => {
-                        for p in &pieces[..npieces] {
-                            if p.sep_before {
-                                joined.push(b'/' as u32);
-                            }
-                            crate::with_text!(views[p.arg].text, |s| joined.extend(s.iter().map(|c| c.cp())));
-                        }
-                        Text::U4(&joined)
-                    }
-                }
-            }
+        if n == 0 {
+            return parse_units::<u8>(&[]);
+        }
+        if n == 1 {
+            return crate::with_text!(str_view(item(0)).text, |s| parse_units(s));
+        }
+        // `self.parser.join(*paths)`: only its value matters here. Joined as code points in
+        // a stack buffer (heap only beyond 512 units or 16 segments).
+        const STACK_ARGS: usize = 16;
+        let mut jargs_s = [JoinArg { len: 0, starts_sep: false, ends_sep: false }; STACK_ARGS];
+        let mut pieces_s = [Piece::default(); STACK_ARGS];
+        let (mut jargs_h, mut pieces_h);
+        let (jargs, pieces): (&mut [JoinArg], &mut [Piece]) = if n <= STACK_ARGS {
+            (&mut jargs_s[..n], &mut pieces_s[..n])
+        } else {
+            jargs_h = vec![JoinArg { len: 0, starts_sep: false, ends_sep: false }; n];
+            pieces_h = vec![Piece::default(); n];
+            (&mut jargs_h[..], &mut pieces_h[..])
         };
-        crate::with_text!(text, |s| parse_units(s))
+        for (i, j) in jargs.iter_mut().enumerate() {
+            *j = crate::with_text!(str_view(item(i)).text, |s| JoinArg::of(s));
+        }
+        let (npieces, len) = match posix::join_plan(jargs, pieces) {
+            Joined::Arg(k) => return crate::with_text!(str_view(item(k)).text, |s| parse_units(s)),
+            Joined::Build { npieces, len } => (npieces, len),
+        };
+        let mut stack = std::mem::MaybeUninit::<[u32; 512]>::uninit();
+        let mut heap: Vec<u32> = Vec::new();
+        let base: *mut u32 = if len <= 512 {
+            stack.as_mut_ptr().cast()
+        } else {
+            heap.reserve_exact(len);
+            heap.as_mut_ptr()
+        };
+        // Every one of the `len` units is written before the slice is formed.
+        let mut at = 0;
+        for p in &pieces[..npieces] {
+            if p.sep_before {
+                *base.add(at) = b'/' as u32;
+                at += 1;
+            }
+            crate::with_text!(str_view(item(p.arg)).text, |s| {
+                for (k, c) in s.iter().enumerate() {
+                    *base.add(at + k) = c.cp();
+                }
+                at += s.len();
+            });
+        }
+        debug_assert_eq!(at, len);
+        let buf = std::slice::from_raw_parts(base, at);
+        parse_units(buf)
     }
 }
 
@@ -426,19 +449,18 @@ unsafe fn format(root: O, tail: O) -> O {
         if n == 1 && !has_root {
             return ffi::Py_NewRef(ffi::PyList_GET_ITEM(tail, 0));
         }
-        let mut views = Vec::with_capacity(n + 1);
+        let item = |i: usize| ffi::PyList_GET_ITEM(tail, i as ffi::Py_ssize_t);
         let rv = str_view(root);
         let mut len = rv.len();
         let mut maxchar = rv.maxchar;
         for i in 0..n {
-            let it = ffi::PyList_GET_ITEM(tail, i as ffi::Py_ssize_t);
+            let it = item(i);
             if !exact_str(it) {
                 return std::ptr::null_mut();
             }
             let v = str_view(it);
             len += v.len() + usize::from(i > 0);
             maxchar = maxchar.max(v.maxchar);
-            views.push(v);
         }
         let (o, data, kind) = rt::new_str(len, maxchar.max(0x7f));
         if o.is_null() {
@@ -447,11 +469,13 @@ unsafe fn format(root: O, tail: O) -> O {
         let mut at = 0;
         rt::write_text(data, kind, at, rv.text);
         at += rv.len();
-        for (i, v) in views.iter().enumerate() {
+        for i in 0..n {
             if i > 0 {
                 rt::write_units(data, kind, at, b"/");
                 at += 1;
             }
+            // the list is not mutated in between (no Python code runs): same items
+            let v = str_view(item(i));
             rt::write_text(data, kind, at, v.text);
             at += v.len();
         }

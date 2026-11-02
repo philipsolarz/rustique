@@ -1,0 +1,402 @@
+{
+ "python": "3.15.1 (main, Oct 21 2026, 17:48:50) [Clang 23.1.3 ]",
+ "jit": false,
+ "rows": {
+  "posixpath: join(d, f)": {
+   "orig": "ERR ImportError: /home/ubuntu/.cache/rustique-paths-cg/_paths_cg_v1.cpython-315-x86_64-linux-gnu.so: file too short",
+   "rs": 972.507
+  },
+  "posixpath: join(root, 'src', 'pkg', f)": {
+   "rs": 1355.507,
+   "orig": 7310.172
+  },
+  "posixpath: join(d, '/abs')": {
+   "rs": "ERR ImportError: /home/ubuntu/.cache/rustique-paths-cg/_paths_cg_v1.cpython-315-x86_64-linux-gnu.so: file too short",
+   "orig": 2380.172
+  },
+  "posixpath: join(db, fb) bytes": {
+   "orig": 3582.1455,
+   "rs": 716.507
+  },
+  "posixpath: join(latin1, f)": {
+   "orig": 3565.172,
+   "rs": 988.507
+  },
+  "posixpath: join(ucs2, ucs4)": {
+   "orig": 2366.172,
+   "rs": 589.507
+  },
+  "posixpath: join(ds, fs) str subclass": {
+   "orig": 3920.3935,
+   "rs": 2304.507
+  },
+  "posixpath: join(PathLike, f)": {
+   "orig": 4165.172,
+   "rs": 4165.172
+  },
+  "posixpath: join(Path, f)": {
+   "orig": 4177.172,
+   "rs": 4177.172
+  },
+  "posixpath: join(d, f) os.fspath patched": {
+   "orig": 4014.172,
+   "rs": 4014.172
+  },
+  "posixpath: join(d, f) _get_sep patched": {
+   "orig": 3603.1325,
+   "rs": 3603.1325
+  },
+  "posixpath: join(d, f) cProfile on": {
+   "orig": 13852.5415,
+   "rs": 13852.5335
+  },
+  "posixpath: split(p)": {
+   "orig": 3951.172,
+   "rs": 1102.537
+  },
+  "posixpath: split(pb) bytes": {
+   "rs": 995.537,
+   "orig": 4051.123
+  },
+  "posixpath: split(ps) str subclass": {
+   "orig": 4455.4535,
+   "rs": 1778.537
+  },
+  "posixpath: split(PathLike)": {
+   "orig": 4576.172,
+   "rs": 4557.172
+  },
+  "posixpath: split(Path)": {
+   "orig": 4583.172,
+   "rs": 4564.172
+  },
+  "posixpath: split(p) os.fspath patched": {
+   "orig": 4188.172,
+   "rs": 4169.172
+  },
+  "posixpath: split(p) cProfile on": {
+   "orig": 14481.5225,
+   "rs": 14481.5715
+  },
+  "posixpath: splitext(f)": {
+   "orig": 3921.172,
+   "rs": 1071.537
+  },
+  "posixpath: splitext(p)": {
+   "orig": 3872.172,
+   "rs": 1072.537
+  },
+  "posixpath: splitext(pb) bytes": {
+   "orig": 4140.1495,
+   "rs": 966.537
+  },
+  "posixpath: splitext(pw) ucs2": {
+   "orig": 4321.172,
+   "rs": 1288.537
+  },
+  "posixpath: splitext(ps) str subclass": {
+   "orig": 4690.735,
+   "rs": 1748.537
+  },
+  "posixpath: splitext(PathLike)": {
+   "orig": 4497.172,
+   "rs": 4497.172
+  },
+  "posixpath: splitext(Path)": {
+   "orig": 4504.172,
+   "rs": 4504.172
+  },
+  "posixpath: splitext(p) os.fspath patched": {
+   "orig": 4109.172,
+   "rs": 4109.172
+  },
+  "posixpath: basename(p)": {
+   "orig": 2047.172,
+   "rs": 603.537
+  },
+  "posixpath: basename(pb) bytes": {
+   "orig": 1986.172,
+   "rs": 542.537
+  },
+  "posixpath: basename(ps) str subclass": {
+   "orig": 2375.4535,
+   "rs": 1278.537
+  },
+  "posixpath: basename(PathLike)": {
+   "orig": 2672.172,
+   "rs": 2672.172
+  },
+  "posixpath: basename(Path)": {
+   "orig": 2679.172,
+   "rs": 2679.172
+  },
+  "posixpath: basename(p) os.fspath patched": {
+   "orig": 2284.172,
+   "rs": 2284.172
+  },
+  "posixpath: basename(p) cProfile on": {
+   "orig": 9400.0625,
+   "rs": 9400.0565
+  },
+  "posixpath: dirname(p)": {
+   "orig": 3385.172,
+   "rs": 615.537
+  },
+  "posixpath: dirname(pb) bytes": {
+   "orig": 3389.123,
+   "rs": 551.537
+  },
+  "posixpath: dirname(ps) str subclass": {
+   "orig": 3704.4535,
+   "rs": 1290.537
+  },
+  "posixpath: dirname(PathLike)": {
+   "orig": 4010.172,
+   "rs": 3991.172
+  },
+  "posixpath: dirname(p) os.fspath patched": {
+   "orig": 3622.172,
+   "rs": 3603.172
+  },
+  "posixpath: isabs(p)": {
+   "orig": 1527.172,
+   "rs": 309.537
+  },
+  "posixpath: isabs(pb) bytes": {
+   "orig": 1389.172,
+   "rs": 293.537
+  },
+  "posixpath: isabs(ps) str subclass": {
+   "orig": 1670.4535,
+   "rs": 985.537
+  },
+  "posixpath: isabs(PathLike)": {
+   "orig": 2152.172,
+   "rs": 2152.172
+  },
+  "posixpath: isabs(p) os.fspath patched": {
+   "orig": 1764.172,
+   "rs": 1764.172
+  },
+  "posixpath: normcase(p)": {
+   "orig": 517.172,
+   "rs": 517.172
+  },
+  "posixpath: normcase(PathLike)": {
+   "orig": 1142.172,
+   "rs": 1142.172
+  },
+  "posixpath: relpath(p, root)": {
+   "rs": 6992.537,
+   "orig": 20849.028
+  },
+  "posixpath: relpath(pb, rootb) bytes": {
+   "rs": 5119.537,
+   "orig": 21427.9485
+  },
+  "posixpath: relpath(f) relative": {
+   "rs": 6511.203,
+   "orig": 28916.028
+  },
+  "posixpath: relpath(ps, root) str subclass": {
+   "rs": 7691.537,
+   "orig": 21180.3125
+  },
+  "posixpath: relpath(p, root) os.fspath patched": {
+   "orig": 21797.028,
+   "rs": 21773.028
+  },
+  "posixpath: abspath(p)": {
+   "orig": 3071.172,
+   "rs": 2193.537
+  },
+  "posixpath: abspath(f) relative": {
+   "orig": 7603.172,
+   "rs": 4141.537
+  },
+  "posixpath: abspath(ps) str subclass": {
+   "orig": 3211.4535,
+   "rs": 2869.537
+  },
+  "posixpath: commonpath([p, d])": {
+   "orig": 23085.1715,
+   "rs": 23061.1715
+  },
+  "posixpath: commonpath((pb, db)) bytes": {
+   "orig": 24710.39,
+   "rs": 24686.39
+  },
+  "fnmatch: fnmatch(f, '*.py')": {
+   "orig": 4828.066,
+   "rs": 628.537
+  },
+  "fnmatch: fnmatch(f, 'coverage.*') miss": {
+   "orig": 4258.066,
+   "rs": 667.537
+  },
+  "fnmatch: fnmatch(f, '[!t]*_[0-9]*.py')": {
+   "orig": 4258.066,
+   "rs": 659.537
+  },
+  "fnmatch: fnmatch(fb, b'*.py') bytes": {
+   "orig": 4920.066,
+   "rs": 589.537
+  },
+  "fnmatch: fnmatch(fs, '*.py') str subclass": {
+   "orig": 4714.066,
+   "rs": 647.537
+  },
+  "fnmatch: fnmatch(Path, '*.py')": {
+   "orig": 5348.066,
+   "rs": 2781.1355
+  },
+  "fnmatch: fnmatch(f, '*.py') os.fspath patched": {
+   "orig": 5300.066,
+   "rs": 5285.066
+  },
+  "fnmatch: fnmatch(f, '*.py') cProfile on": {
+   "orig": 15223.943,
+   "rs": 15223.936
+  },
+  "fnmatch: fnmatchcase(f, '*.py')": {
+   "orig": 3307.066,
+   "rs": 628.537
+  },
+  "fnmatch: fnmatchcase(fs, '*.py') str subclass": {
+   "orig": 3305.066,
+   "rs": 647.537
+  },
+  "fnmatch: any(fnmatch(f, pat) for 12 pats)": {
+   "rs": 13535.072,
+   "orig": 58933.966
+  },
+  "fnmatch: filter(32 names, '*.py')": {
+   "rs": 5286.537,
+   "orig": 61975.072
+  },
+  "fnmatch: filter(iter, '*.py')": {
+   "orig": 63373.256,
+   "rs": 64251.256
+  },
+  "pathlib: Path(p)": {
+   "orig": 4528.172,
+   "rs": 1813.172
+  },
+  "pathlib: str(Path(p))": {
+   "rs": 6421.272,
+   "orig": 26231.127
+  },
+  "pathlib: Path(d) / f": {
+   "rs": 3240.687,
+   "orig": 10646.581
+  },
+  "pathlib: str(pp / f)": {
+   "rs": 9102.787,
+   "orig": 32535.536
+  },
+  "pathlib: pp.name": {
+   "orig": 714.999,
+   "rs": 390.737
+  },
+  "pathlib: pp.suffix": {
+   "orig": 2079.999,
+   "rs": 693.702
+  },
+  "pathlib: pp.stem": {
+   "orig": 2207.999,
+   "rs": 674.702
+  },
+  "pathlib: pp.parent": {
+   "orig": 9234.028,
+   "rs": 2683.702
+  },
+  "pathlib: pp.parts": {
+   "orig": 2488.172,
+   "rs": 698.737
+  },
+  "pathlib: pp.with_suffix('.txt')": {
+   "orig": 13461.811,
+   "rs": 9431.831
+  },
+  "pathlib: pp.relative_to(root)": {
+   "rs": 4898.517,
+   "orig": 108511.591
+  },
+  "pathlib: hash(Path(p))": {
+   "rs": 7167.272,
+   "orig": 38282.27
+  },
+  "pathlib: Path(p) == pp": {
+   "rs": 6557.397,
+   "orig": 33067.8235
+  },
+  "pathlib: pp.as_posix()": {
+   "orig": 1221.172,
+   "rs": 1015.172
+  },
+  "pathlib: pp.is_absolute()": {
+   "orig": 912.172,
+   "rs": 912.172
+  },
+  "pathlib: PurePosixPath(d, f)": {
+   "orig": 5475.172,
+   "rs": 1877.172
+  },
+  "pathlib: MyP(p) subclass": {
+   "orig": 4376.172,
+   "rs": 4390.172
+  },
+  "pathlib: str(pp)": {
+   "orig": 609.272,
+   "rs": 403.272
+  },
+  "pathlib: os.fspath(pp)": {
+   "orig": 895.172,
+   "rs": 689.172
+  },
+  "pathlib: pp == pq": {
+   "orig": 1595.397,
+   "rs": 497.397
+  },
+  "pathlib: hash(pp)": {
+   "orig": 830.272,
+   "rs": 616.272
+  },
+  "pathlib: PurePosixPath(p).name (fresh)": {
+   "rs": 5229.737,
+   "orig": 18102.2315
+  },
+  "pathlib: pw.name PureWindowsPath": {
+   "orig": 714.999,
+   "rs": 714.999
+  },
+  "pathlib: pw.parent PureWindowsPath": {
+   "orig": 9170.028,
+   "rs": 9165.028
+  },
+  "pathlib: ms.name subclass": {
+   "orig": 714.999,
+   "rs": 714.999
+  },
+  "pathlib: ms.suffix subclass": {
+   "orig": 2093.999,
+   "rs": 2093.999
+  },
+  "pathlib: ms.parent subclass": {
+   "orig": 9357.0015,
+   "rs": 9371.0015
+  },
+  "pathlib: str(ms / f) subclass": {
+   "orig": 31004.745,
+   "rs": 31042.745
+  },
+  "pathlib: pp.name cProfile on": {
+   "orig": 2817.0325,
+   "rs": 2817.022
+  },
+  "pathlib: pp.relative_to(root) cProfile on": {
+   "orig": 301325.155,
+   "rs": 301409.092
+  }
+ }
+}
