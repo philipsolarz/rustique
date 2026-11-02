@@ -69,7 +69,28 @@ installs targets whose fingerprints match. `tests/test_accel_gate.py` (docstring
 independence, a split exception-table entry hashes equal, a moved handler differs, the gate's
 decisions).
 
-Recorded (conformance first, `benches/accel/record_patch.py`): see §6.
+Recorded with `benches/accel/record_patch.py` (CPython's test modules of every group, 33
+modules, with every target that installs there, before the hashes and the release are
+recorded), python-build-standalone interpreters on the dev box; then `benches/accel/reach.py`
+with the default settings (targets of the default selection; the `interp` tier off) (**M**):
+
+| release | installed | refused (category) |
+|---|---:|---|
+| 3.15.1, 3.15.2 | 100 / 101 | 1 `build` (`set.__reduce__`: free-threaded only) |
+| 3.15.1t, 3.15.2t | 94 / 101 | 7 `build` (targets not validated on free-threaded builds) |
+| 3.15.0 | 98 / 101 | 2 `fingerprint` (`copy.deepcopy`, `copy.copy`: real code changes, not reviewed), 1 `build` |
+| 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10 | 95 / 101 | 5 `version` (pathlib properties, by design on 3.14), 1 `build` |
+| 3.14.9t, 3.14.10t | 89 / 101 | 7 `build`, 5 `version` |
+| 3.14.0 | 0 / 101 | **not recorded**: every target refuses `unvalidated-patch` |
+
+T10 (≥ 80 on every recorded 3.15.x, ≥ 75 on every recorded 3.14.x; unvalidated patches refuse
+visibly) holds. Under v2, 3.15.0 installed 43 of 84, 3.14.1/3.14.5 50, 3.14.6 72 (w2-floors
+§5.1): docstrings and exception tables were the causes. **3.14.0 shows why conformance runs
+first**: with v3 its fingerprints match, but `test_textwrap`'s long-word tests differ
+(`LongWordTestCase.test_break_long`, `test_max_lines_long`): the long-word breaking changed in
+3.14.1 in a helper the textwrap kernel reimplements without fingerprinting it. The recorder
+refused to record 3.14.0, which therefore refuses as `unvalidated-patch` (the textwrap group
+should fingerprint that helper).
 
 ## 5. Platforms (DECISIONS §10.8)
 
