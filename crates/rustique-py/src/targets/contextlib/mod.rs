@@ -36,12 +36,16 @@ static DEPS: DepFlag = DepFlag::new();
 static TOOLS: Tools = Tools::new();
 static DYN: Dynamic = Dynamic::new();
 
+/// Not on free-threaded builds this wave (lead's ruling): giving each generated function its
+/// kernel calls `PyFunction_SetVectorcall`, which stops the world on 3.14t/3.15t; with busy
+/// threads each stop waits for every thread to reach a safe point (measured:
+/// `benches/datamodel/ft_create.py`). Static sites are installed at enable/import (§3.10).
 pub static TARGET: TargetSpec = TargetSpec {
     name: "contextlib.contextmanager",
     group: "contextlib",
     module: Some("contextlib"),
     versions: &[(3, 14), (3, 15)],
-    free_threaded: true,
+    free_threaded: false,
     counters: &COUNTERS,
     prepare,
     release: Some(release),

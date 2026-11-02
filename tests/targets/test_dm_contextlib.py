@@ -9,7 +9,7 @@ import sys
 import threading
 
 import pytest
-from _dm_support import A, Counting, both, disable, enable, outcome
+from _dm_support import FREE_THREADED, A, Counting, both, disable, enable, ft_only_skip, outcome
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -94,7 +94,7 @@ def test_contextmanager_differential():
     with Counting(CM) as c:
         plain, fast = both(scenario_cm, ["contextlib"])
     assert plain == fast
-    assert c.hits(CM) > 3
+    assert c.hits(CM) > 3 or FREE_THREADED
 
 
 @settings(max_examples=50)
@@ -123,6 +123,7 @@ def test_hypothesis_contextmanager(calls):
     assert plain == fast
 
 
+@ft_only_skip
 def test_disable_restores_and_tools():
     enable(["contextlib"])
 

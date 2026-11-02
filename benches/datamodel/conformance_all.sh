@@ -13,6 +13,17 @@ run() { # module expect
     --json "$out/${1#test.}.json" --timeout 3000 > "$out/${1#test.}.log" 2>&1
   echo "$1 exit=$?"
 }
+if ! python -c 'import sys; sys.exit(0 if sys._is_gil_enabled() else 1)'; then
+  # free-threaded: dynamic-site targets refuse this wave; expect the static ones only
+  GET=functools.singledispatchmethod.__get__
+  for m in test.test_dataclasses test.test_collections test.test_typing test.test_contextlib \
+           test.test_contextlib_async test.test_copy test.test_inspect test.test_weakref test.test_pickle; do
+    run $m $GET
+  done
+  run test.test_enum "$E_ENUM"
+  run test.test_functools $GET
+  exit 0
+fi
 run test.test_enum "$E_ENUM"
 run test.test_dataclasses dataclasses.__init__
 run test.test_collections collections.namedtuple

@@ -47,12 +47,16 @@ static DEPS: DepFlag = DepFlag::new();
 static TOOLS: Tools = Tools::new();
 pub(super) static DYN: Dynamic = Dynamic::new();
 
+/// Not on free-threaded builds this wave (lead's ruling): giving each generated function its
+/// kernel calls `PyFunction_SetVectorcall`, which stops the world on 3.14t/3.15t; with busy
+/// threads each stop waits for every thread to reach a safe point (measured:
+/// `benches/datamodel/ft_create.py`). Static sites are installed at enable/import (§3.10).
 pub static TARGET: TargetSpec = TargetSpec {
     name: "dataclasses.__init__",
     group: "generated",
     module: Some("dataclasses"),
     versions: &[(3, 14), (3, 15)],
-    free_threaded: true,
+    free_threaded: false,
     counters: &COUNTERS,
     prepare,
     release: Some(release),
@@ -63,12 +67,16 @@ static C_ROUTE: Counters = Counters::new();
 
 /// Routing of positional calls to the `__init__` kernel through `tp_alloc`
 /// (docs/targets/generated.md; a separate target so it can be excluded on its own).
+/// Not on free-threaded builds this wave (lead's ruling): giving each generated function its
+/// kernel calls `PyFunction_SetVectorcall`, which stops the world on 3.14t/3.15t; with busy
+/// threads each stop waits for every thread to reach a safe point (measured:
+/// `benches/datamodel/ft_create.py`). Static sites are installed at enable/import (§3.10).
 pub static ROUTE: TargetSpec = TargetSpec {
     name: "dataclasses.__init__.positional",
     group: "generated",
     module: Some("dataclasses"),
     versions: &[(3, 14), (3, 15)],
-    free_threaded: true,
+    free_threaded: false,
     counters: &C_ROUTE,
     prepare: prepare_route,
     on_disable: Some(on_disable),

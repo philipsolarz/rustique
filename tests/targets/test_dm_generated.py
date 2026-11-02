@@ -16,7 +16,7 @@ import typing
 from unittest import mock
 
 import pytest
-from _dm_support import A, Counting, both, disable, enable, outcome
+from _dm_support import FREE_THREADED, A, Counting, both, disable, enable, ft_only_skip, outcome
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -103,7 +103,7 @@ def test_namedtuple_differential():
     with Counting(NT) as c:
         plain, fast = both(scenario_namedtuple, ["generated"])
     assert plain == fast
-    assert c.hits(NT) > 10
+    assert c.hits(NT) > 10 or FREE_THREADED
 
 
 def test_namedtuple_mutated_defaults_and_globals():
@@ -266,7 +266,7 @@ def test_dataclass_differential():
     with Counting(DC) as c:
         plain, fast = both(scenario_dataclass, ["generated"])
     assert plain == fast
-    assert c.hits(DC) > 5
+    assert c.hits(DC) > 5 or FREE_THREADED
 
 
 def test_dataclass_class_changes():
@@ -360,6 +360,7 @@ def test_hypothesis_dataclass(spec, slots, frozen, calls):
 # ---------------------------------------------------------------------------------------
 
 
+@ft_only_skip
 def test_disable_restores_generated_functions():
     enable(["generated"])
     P = collections.namedtuple("P", "a b")
@@ -384,6 +385,7 @@ def test_disable_restores_generated_functions():
         assert A.vectorcall_is_original(f), f
 
 
+@ft_only_skip
 def test_positional_calls_routed_and_restored():
     enable(["generated"])
 
@@ -444,6 +446,7 @@ def test_adoption_of_classes_created_before_enable():
     assert c.hits(NT) == 3
 
 
+@ft_only_skip
 def test_tools_see_generated_frames():
     enable(["generated"])
 

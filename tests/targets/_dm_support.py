@@ -29,7 +29,16 @@ def group_targets(group: str) -> dict[str, dict[str, Any]]:
 
 FREE_THREADED = not getattr(sys, "_is_gil_enabled", lambda: True)()
 #: Targets not validated on free-threaded builds this wave (refused there by the gate).
-NOT_ON_FT = {"enum.property.__get__"}
+NOT_ON_FT = {
+    "enum.property.__get__",
+    # dynamic sites (PyFunction_SetVectorcall stops the world on free-threaded builds)
+    "collections.namedtuple",
+    "dataclasses.__init__",
+    "dataclasses.__init__.positional",
+    "contextlib.contextmanager",
+    "functools.singledispatch",
+}
+ft_only_skip = __import__("pytest").mark.skipif(FREE_THREADED, reason="target not validated on free-threaded builds this wave")
 
 
 def enable(groups: list[str] | None = None) -> None:
