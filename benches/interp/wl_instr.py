@@ -9,6 +9,12 @@ Each (workload, variant) runs in fresh processes under `perf stat -e instruction
 run must be identical across variants (a mismatch fails the run). Each family runs in its own
 venv (`--venvs DIR/<family>-<py>`, requirements of benches/workloads/<family>), where this
 build of rustique must be installed. Hardware counters: the dev box.
+
+Caveat (M, 3.15.1, 2026-11-02): on the shared dev box the (I_K - I_1) difference of single
+processes moved by up to ±0.5% on steady workloads and far more on workloads whose runs are
+not steady (pip_resolve 1.47, coverage_pyflakes_tests 1.077 for the interp tier alone, whose
+exact count is 0.975): the interp tier's whole-run claims use wl_cg.py (callgrind, exact Ir of
+one steady-state run) instead.
 """
 from __future__ import annotations
 
