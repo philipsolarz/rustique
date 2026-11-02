@@ -593,7 +593,7 @@ impl<'py> Prepare<'py> {
                 key: key.clone_ref(self.py),
                 expected: v.as_ref().map(|v| v.clone().unbind()),
                 flag,
-                ty: Some(ty.clone().unbind()),
+                ty: Some((ty.clone().unbind(), mro.clone().into_any().unbind())),
             });
             if let Some(v) = v {
                 return Ok(v);
@@ -610,12 +610,28 @@ impl<'py> Prepare<'py> {
     /// Every key must be an exact `str`; at most 64 simultaneous deviations are tracked
     /// (beyond that the pin breaks).
     pub fn pin_dict(&mut self, dict: &Bound<'_, PyDict>, flag: &'static DepFlag) -> Result<&'static DepFlag, Refusal> {
-        let mut snap = Vec::with_capacity(dict.len());
-        for (k, v) in dict.iter() {
-            let k =
-                k.cast_into_exact::<PyString>().map_err(|_| Refusal::with(Category::Deps, "pin_dict: non-str key"))?;
-            snap.push((k.unbind(), v.unbind()));
-        }
+        let py = self.py;
+        // One consistent view under the dict's critical section (`PyDict_Next`; another
+        // thread may be mutating the dict: never iterate it piecewise).
+        let snap = pyo3::sync::critical_section::with_critical_section(dict.as_any(), || {
+            let mut snap: Vec<(Py<PyString>, Py<PyAny>)> = Vec::with_capacity(dict.len());
+            let mut pos: ffi::Py_ssize_t = 0;
+            let mut k: *mut ffi::PyObject = std::ptr::null_mut();
+            let mut v: *mut ffi::PyObject = std::ptr::null_mut();
+            // SAFETY: attached thread; borrowed references valid under the section; increfs.
+            unsafe {
+                while ffi::PyDict_Next(dict.as_ptr(), &mut pos, &mut k, &mut v) != 0 {
+                    if ffi::PyUnicode_CheckExact(k) == 0 {
+                        return None;
+                    }
+                    let k = Bound::from_borrowed_ptr(py, k).cast_into_unchecked::<PyString>().unbind();
+                    snap.push((k, Bound::from_borrowed_ptr(py, v).unbind()));
+                }
+            }
+            Some(snap)
+        });
+        // Dropped outside the section when refused.
+        let snap = snap.ok_or_else(|| Refusal::with(Category::Deps, "pin_dict: non-str key"))?;
         self.pins.push(PendingPin::Dict { dict: dict.clone().unbind(), snap, flag });
         Ok(flag)
     }
@@ -646,6 +662,11 @@ impl<'py> Prepare<'py> {
     }
 }
 
+/// An exported symbol of the running interpreter, or 0.
+pub(crate) fn lookup_symbol(name: &CStr) -> usize {
+    dlsym_default(name)
+}
+
 #[cfg(unix)]
 fn dlsym_default(name: &CStr) -> usize {
     unsafe extern "C" {
@@ -671,12 +692,23 @@ static KEYS: std::sync::Mutex<Option<std::collections::HashMap<String, Py<PyStri
 
 /// The interned `str` for `key`, created once per process.
 pub(crate) fn interned<'py>(py: Python<'py>, key: &str) -> Bound<'py, PyString> {
+    {
+        let g = KEYS.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(k) = g.as_ref().and_then(|m| m.get(key)) {
+            // An incref only (the cache keeps its own reference).
+            return k.bind(py).clone();
+        }
+    }
+    // Interning takes the interpreter's interned-strings lock (free-threaded builds), which
+    // may park and detach: never while holding `KEYS` (a thread blocked on a plain mutex
+    // while attached would hold up a stop-the-world).
+    let k = PyString::intern(py, key);
     let mut g = KEYS.lock().unwrap_or_else(|p| p.into_inner());
     let m = g.get_or_insert_with(Default::default);
-    if let Some(k) = m.get(key) {
-        return k.bind(py).clone();
+    if let Some(prev) = m.get(key) {
+        // Another thread won the race: the same interned object.
+        return prev.bind(py).clone();
     }
-    let k = PyString::intern(py, key);
     m.insert(key.to_owned(), k.clone().unbind());
     k
 }
