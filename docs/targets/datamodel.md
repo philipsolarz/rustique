@@ -224,11 +224,20 @@ this workstream's effect. Custom family (k=3, r=2, spread ≤ ±0.0034):
 | mini_interp | 0.9994 | 1.0019 |
 | **geometric mean** | **0.929** | **0.944** |
 
-Others (all/base): json_api 0.963 (±0.003), strawberry_graphql 0.966, rich_render 0.966,
-pylint_stdlib 0.997, django_admin 0.996, drf_api 0.999, falcon_api 1.000,
-fastapi_sqlalchemy 0.991, flask_marshmallow 1.014 — the framework and devtools runs were
-noisy at k=3 (spread ±3–90% from full GC collections in the few measured runs); re-measured
-with more runs in the final report.
+mini_interp re-measured with 6 runs × 3 repeats: all/base 1.0001 (±0.0005; 1,984 namedtuple
+hits per run, no fallback: noise).
+
+Other families (all/base; k=8 runs × 2 repeats, spread ≤ ±0.0033; json_api k=3):
+
+| workload | all/base | | workload | all/base |
+|---|---:|---|---|---:|
+| strawberry_graphql | 0.9555 | | json_api | 0.9630 |
+| rich_render | 0.9759 | | fastapi_sqlalchemy | 0.9906 |
+| django_admin | 0.9972 | | pylint_stdlib | 0.9972 |
+| drf_api | 0.9992 | | flask_marshmallow | 0.9996 |
+| falcon_api | 1.0012 (±0.0018) | | | |
+
+Frameworks geometric mean 0.990.
 
 ## 4. Conformance
 
