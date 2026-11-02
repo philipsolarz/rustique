@@ -643,7 +643,7 @@ analysis in `scoreboard/analysis-enabled-*.txt` and `compare-phase0-enabled-*.tx
     at 1.40, has a relative standard deviation of 4.5%).
 - **The kernel-path geomeans equal Phase 0's** (0.462 vs 0.460, and 0.482 vs 0.477).
   `json.dumps`, `copy.deepcopy` and `repr(x)` account for everything else's 0.942.
-- **The 8 kernel-path cells above 1.05 were re-measured alone** (`scoreboard/isolated-time.txt`).
+- **The 8 kernel-path cells above 1.05 were re-measured alone** (`isolate_time.sh`, output `scoreboard/isolated-time.txt`).
   - The 8 cells (5 on 3.15.1 and 3 on 3.15.1t):
     - `frozenset/all(x)/{mixed,object}`, `frozenset/{min,max}(x)/str`;
     - `set/all(x)/{str,mixed,float}`, `dict/any(x)/mixed`;
@@ -789,7 +789,7 @@ merged branch (*inferred*; the scoreboard cells were re-measured).
 
 - `run_phase3.sh` — every stage, rerunnable (`./run_phase3.sh <stage> ...`; `all` = the
   schedule used, `stage_all` at the end); `whole.py` (one workload per process, for
-  `pyperf command`); `wlstats_run.py` (counters of one steady-state `run()`);
+  `pyperf command`); `wlstats_run.py` (counters of one steady-state `run()`); `isolate_time.sh` (the wall-time isolation re-runs of §7.2, run after the schedule);
   `analyze_phase3.py` (the tables of this document: `workloads`, `stats`, `whole`,
   `startup`, `conformance`, `junit`, `sbcompare`, `ppcompare`). Phase 0's `analyze_phase0.py` and
   `sitecustomize.py` were reused from `benches/results/phase0/`.
