@@ -1,14 +1,17 @@
 """Smoke test of an installed rustique wheel: CI (`.github/workflows/wheels.yml`) and the
 local proof in docs/targets/dx.md §5.
 
-    python .github/scripts/wheel_smoke.py [--expect-installed]
+    python .github/scripts/wheel_smoke.py [--expect-installed] [--interp installable|refused]
 
 Run it with the interpreter the wheel was installed into, from a directory that is not the
 source tree (so `import rustique` finds the installed package). Standard library only.
 Checks: import + enable + a battery of accelerated stdlib calls gives the same output as
-plain CPython; RUSTIQUE=1 enables at startup through the shipped .pth; RUSTIQUE unset
-imports nothing; RUSTIQUE=0 turns enable() into a no-op; `python -m rustique status` and
-`python -m rustique diff` work. Exit status 0 when every check passes.
+plain CPython; RUSTIQUE=1 enables at startup through the shipped .pth, loading only the extension
+(top-level `_rustique`, also registered as `rustique._rustique`); RUSTIQUE unset imports nothing;
+RUSTIQUE=0 turns enable() into a no-op; `python -m rustique status` and `python -m rustique diff`
+work. `--interp installable`: the opt-in `interp` tier is built in (its targets are `disabled`
+with the opt-in reason, never refused); `--interp refused`: it refuses ("built without
+handlers"). Exit status 0 when every check passes.
 """
 
 import json
@@ -59,6 +62,7 @@ def main() -> int:
     probe = ("import json, sys\nloaded = sorted(m for m in sys.modules if 'rustique' in m)\n"
              "out = {'loaded': loaded}\n"
              "ext = sys.modules.get('rustique._rustique')\n"
+             "out['one_module'] = sys.modules.get('_rustique', ext) is ext\n"
              "if ext is not None:  # the startup path loads only the extension\n"
              "    st = ext._accel.status()\n"
              "    out['source'] = st['process']['switch']['source']\n"
@@ -71,8 +75,12 @@ def main() -> int:
     check("RUSTIQUE=0 imports nothing at startup", zero["loaded"] == [], str(zero))
     on = py("-c", probe, RUSTIQUE="1")
     on_out = json.loads(on.stdout) if on.returncode == 0 else {}
+    # The extension only: top-level `_rustique` (repacked wheels; the shim of maturin-built ones)
+    # registered as `rustique._rustique` too, one module object; never the `rustique` package.
     check("RUSTIQUE=1 enables at startup (.pth), loading only the extension",
-          on_out.get("source") == "RUSTIQUE=1" and on_out.get("loaded") == ["rustique._rustique"], on.stdout + on.stderr)
+          on_out.get("source") == "RUSTIQUE=1" and "rustique._rustique" in on_out.get("loaded", [])
+          and set(on_out.get("loaded", [])) <= {"_rustique", "rustique._rustique"} and on_out.get("one_module"),
+          on.stdout + on.stderr)
     if expect_installed:
         check("targets installed on this interpreter", on_out.get("installed", 0) > 0, str(on_out))
     startup_battery = py("-c", BATTERY, RUSTIQUE="1")
@@ -94,6 +102,18 @@ def main() -> int:
                         "        print(f\"{t['name']:32} [{t.get('refusal')}] {t.get('reason')}\")\n")
     print("     refused here:" + ("" if refusals.stdout.strip() else " none"))
     print("\n".join("       " + ln for ln in refusals.stdout.splitlines()))
+
+    interp = sys.argv[sys.argv.index("--interp") + 1] if "--interp" in sys.argv else None
+    if interp:
+        tier = py("-c", "import json, rustique\nrustique.enable()\n"
+                        "print(json.dumps([t for t in rustique.status()['targets'] if t.get('tier') == 'interp']))")
+        ts = json.loads(tier.stdout) if tier.returncode == 0 else []
+        if interp == "installable":
+            ok = bool(ts) and all(t["state"] == "disabled" and "opt-in" in (t.get("reason") or "") for t in ts)
+        else:
+            ok = bool(ts) and all(t["state"] == "refused" and "built without handlers" in (t.get("reason") or "")
+                                  for t in ts)
+        check(f"interp tier {interp}", ok, tier.stdout[:800] + tier.stderr[-800:])
 
     status = py("-m", "rustique", "status")
     check("python -m rustique status", status.returncode == 0 and "targets in" in status.stdout, status.stderr)
