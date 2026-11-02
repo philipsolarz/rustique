@@ -46,7 +46,8 @@ def test_forked_child_starts_from_zero_and_names_its_parent():
     pid = os.fork()
     if pid == 0:  # child
         try:
-            before = A.stats()["_selftest.meth"]["hits"]
+            # (Hidden targets with zero counts are not listed.)
+            before = A.stats().get("_selftest.meth", {"hits": 0})["hits"]
             for _ in range(3):
                 A._probe(1)
             after = A.stats()["_selftest.meth"]["hits"]
