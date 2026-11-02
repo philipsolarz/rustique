@@ -164,7 +164,7 @@ unsafe fn safe_of(safe: O, extra: Option<u32>) -> Option<[bool; 256]> {
     // SAFETY: live object.
     unsafe {
         let mut t = if exact_str(safe) {
-            with_units!(pep393::units(safe), s => up::safe_table(s.iter().map(|&c| c.into())))
+            with_units!(pep393::units(safe), s => up::safe_table(s.iter().map(|&c| c.cp())))
         } else if is_type(safe, &raw mut ffi::PyBytes_Type) {
             up::safe_table(bytes_of(safe).iter().map(|&b| u32::from(b)))
         } else {
@@ -199,7 +199,7 @@ fn each_byte(input: QIn<'_>, mut f: impl FnMut(u8)) -> bool {
         QIn::Str(u) => with_units!(u, t => {
             let mut buf = [0u8; 4];
             for &c in t {
-                let c: u32 = c.into();
+                let c: u32 = c.cp();
                 if c < 128 {
                     f(c as u8);
                 } else {
@@ -245,7 +245,7 @@ unsafe fn quote_kernel(
                 }
                 let has_space = match input {
                     QIn::Bytes(b) => b.contains(&b' '),
-                    QIn::Str(u) => with_units!(u, t => t.iter().any(|&c| u32::from(c) == 0x20)),
+                    QIn::Str(u) => with_units!(u, t => t.iter().any(|&c| c.cp() == 0x20)),
                 };
                 let extra = (plus && has_space).then_some(0x20);
                 let table = if safe.is_null() {
@@ -610,7 +610,7 @@ unsafe fn parse_pairs(
                         return true; // empty field (not strict)
                     }
                     // name, has_eq, value = name_value.partition('=')
-                    let eq = t[a..z].iter().position(|&c| u32::from(c) == 0x3d).map(|p| a + p);
+                    let eq = t[a..z].iter().position(|&c| c.cp() == 0x3d).map(|p| a + p);
                     let (na, nb, va, vb) = match eq {
                         Some(e) => (a, e, e + 1, z),
                         None => (a, z, z, z),
@@ -744,24 +744,24 @@ unsafe fn cleaned(x: O, both: bool, b: &mut Bufs) -> Option<(O, usize, usize)> {
     unsafe {
         with_units!(pep393::units(x), t => {
             let mut a = 0;
-            while a < t.len() && up::is_c0_or_space(t[a].into()) {
+            while a < t.len() && up::is_c0_or_space(t[a].cp()) {
                 a += 1;
             }
             let mut z = t.len();
             if both {
-                while z > a && up::is_c0_or_space(t[z - 1].into()) {
+                while z > a && up::is_c0_or_space(t[z - 1].cp()) {
                     z -= 1;
                 }
             }
             let s = &t[a..z];
-            if !s.iter().any(|&c| up::is_unsafe_url_char(c.into())) {
+            if !s.iter().any(|&c| up::is_unsafe_url_char(c.cp())) {
                 return Some((ffi::Py_NewRef(x), a, z));
             }
             let v = &mut b.u[1];
             v.clear();
-            v.extend(s.iter().map(|&c| c.into()).filter(|&c| !up::is_unsafe_url_char(c)));
+            v.extend(s.iter().map(|&c| c.cp()).filter(|&c| !up::is_unsafe_url_char(c)));
             let o = fresh_str(v.as_slice());
-            (!o.is_null()).then(|| (o, 0, v.len()))
+            (!o.is_null()).then_some((o, 0, v.len()))
         })
     }
 }

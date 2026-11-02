@@ -23,10 +23,28 @@ pub enum Units<'a> {
 }
 
 /// A code unit of one of the three PEP 393 kinds.
-pub trait Unit: Copy + Ord + Into<u32> {}
-impl Unit for u8 {}
-impl Unit for u16 {}
-impl Unit for u32 {}
+pub trait Unit: Copy + Ord + Into<u32> {
+    /// The code point.
+    fn cp(self) -> u32;
+}
+impl Unit for u8 {
+    #[inline(always)]
+    fn cp(self) -> u32 {
+        u32::from(self)
+    }
+}
+impl Unit for u16 {
+    #[inline(always)]
+    fn cp(self) -> u32 {
+        u32::from(self)
+    }
+}
+impl Unit for u32 {
+    #[inline(always)]
+    fn cp(self) -> u32 {
+        self
+    }
+}
 
 /// Run `$body` with `$t` bound to the unit slice of `$u`, monomorphised per kind.
 macro_rules! with_units {
@@ -65,7 +83,7 @@ impl Units<'_> {
     /// Append the code points to `out`.
     #[inline]
     pub fn push_to(&self, out: &mut Vec<u32>) {
-        with_units!(*self, t => out.extend(t.iter().map(|&c| u32::from(c))))
+        with_units!(*self, t => out.extend(t.iter().map(|&c| c.cp())))
     }
 }
 
