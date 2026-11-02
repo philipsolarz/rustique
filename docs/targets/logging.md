@@ -256,6 +256,12 @@ flags, width and (for `%s`) precision, Latin-1 text — byte-for-byte
 - `func_version` of the patched functions (the specializer stops inlining calls to them;
   restored on `disable()`), and the kernels' own caches (validated types, parsed format
   strings, line numbers, ABC answers).
+- Wave 2: the format-plan table (≤ 64 `_fmt` strings kept for the process with their key
+  strings), the per-thread line-number table, the remembered `_decimal.Decimal` types, the
+  per-type cached class attributes and shared-keys indices. The first record of a process
+  gets its `__dict__` materialized once (verification of the inline-value stores: an
+  allocation, not a value). `Handler.handle` takes the handler's lock with `acquire(False)`
+  where CPython's `with` uses `acquire()` (same lock state; it never waits).
 - `PyFrame_GetLineNumber` is skipped on a line-number memo hit (for a frame whose
   `f_lineno` field is 0 it has no side effect); `Task.get_name()` is called when CPython
   calls it (it caches the generated `Task-N` name, as in CPython).
