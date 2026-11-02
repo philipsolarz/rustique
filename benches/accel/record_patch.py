@@ -11,7 +11,7 @@ Run it with the interpreter to record, the current build installed (on the dev b
 `RUSTIQUE_UNVALIDATED_PATCH=1` (the release is not recorded yet) and validates eagerly.
 
 1. `--check`: CPython's own test modules of every group (tests/conformance/
-   run_target_suites.py, the 27 modules of benches/floors/conformance_all.sh) with every
+   run_target_suites.py, the 27 modules of benches/floors/conformance_all.sh plus those of the wave-2 groups) with every
    target that installs on this release; any unexplained difference, crash or missing install
    aborts: nothing is recorded. `pytest tests/targets` runs too and is reported (it asserts
    installs, so on a release where some targets refuse it is informative only).
@@ -47,7 +47,8 @@ MODULES = (
     "test.test_dataclasses,test.test_strptime,test.test_datetime,test.test_time,test.test_posixpath,"
     "test.test_genericpath,test.test_fnmatch,test.test_glob,test.test_pathlib,test.test_os,"
     "test.test_logging,test.test_random,test.test_textwrap,test.test_urlparse,test.test_urllib,"
-    "test.test_statistics"
+    "test.test_statistics,test.test_set,test.test_pickle,test.test_enum,test.test_collections,"
+    "test.test_contextlib,test.test_functools"
 )
 PROBE = r"""
 import importlib, json, sys
