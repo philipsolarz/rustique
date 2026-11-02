@@ -34,10 +34,13 @@ PYTEST_DONT_REWRITE (pytest would warn that this package, imported at startup un
 
 # The extension: top-level `_rustique` in every installed layout (a release wheel's
 # extension itself, or the `_rustique.py` shim of the in-package layout); the
-# package-relative import is the last resort, for a tree without the shim.
+# package-relative import is the last resort, for a tree without the shim. Any other
+# ImportError (a refused subinterpreter, a broken build) propagates as it is.
 try:
     import _rustique
-except ImportError:
+except ModuleNotFoundError as e:
+    if e.name != "_rustique":
+        raise
     from rustique import _rustique
 
 __version__ = _rustique.__version__
@@ -80,24 +83,28 @@ def _killed() -> bool:
     return _accel.killed()
 
 
-def _enable(only=None, exclude=None, native=None, builtins=True, source="rustique.enable()") -> None:
+def _enable(
+    only=None, exclude=None, native=None, builtins=True, source="rustique.enable()", tiers=None
+) -> None:
     """``enable()`` without building the status: the environment semantics (kill switch,
     ``RUSTIQUE_ONLY``/``_EXCLUDE`` narrowing, ``_STATS``, ``_CHECK``, ``_REPORT``) run in the
     extension. ``native`` must be empty (removed in 0.3; the parameter goes in 0.4)."""
     if native:
         raise TypeError(f"rustique: native= was removed in Rustique 0.3; see {_MIGRATION}")
-    _accel.switch_enable(only, exclude, builtins, source)
+    _accel.switch_enable(only, exclude, builtins, source, tiers)
 
 
-def enable(*, only=None, exclude=None, builtins: bool = True, native=None) -> dict:
+def enable(*, only=None, exclude=None, tiers=None, builtins: bool = True, native=None) -> dict:
     """Turn acceleration on for this process (idempotent, additive); returns :func:`status`.
 
     ``only``/``exclude``: group or target names (a list, or a comma-separated string);
     unknown names raise ``ValueError``. ``builtins=False`` is ``exclude=["builtins"]``. A
     no-op under ``RUSTIQUE=0``; the other ``RUSTIQUE*`` variables apply (module docstring).
+    ``tiers``: opt-in tiers to turn on as well (``["interp", "gc"]``), in union with
+    ``RUSTIQUE_TIERS``; ``RUSTIQUE_TIERS=none`` turns every tier off even when code asks.
     ``native=`` was removed in 0.3 (``TypeError``).
     """
-    _enable(only, exclude, native, builtins)
+    _enable(only, exclude, native, builtins, tiers=tiers)
     return _accel.status()
 
 

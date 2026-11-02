@@ -46,6 +46,11 @@ pub struct TargetSpec {
     pub versions: &'static [(u8, u8)],
     /// Validated on free-threaded builds too.
     pub free_threaded: bool,
+    /// Opt-in tier (`Some("interp")`, `Some("gc")`): not in the default set; installed only
+    /// when the tier is requested (`RUSTIQUE_TIERS=interp,gc`, `rustique.enable(tiers=[...])`),
+    /// and then like any target (`only`/`exclude` still apply; a tier name works in both).
+    /// Default `None`.
+    pub opt_in: Option<&'static str>,
     /// Hit / fallback counters of the target's kernels.
     pub counters: &'static Counters,
     /// Validate and declare the sites.
@@ -85,6 +90,12 @@ pub struct TargetSpec {
     /// target changed that is not a site (calibrated internal state, dynamic sites, caches).
     /// Must tolerate running more than once. Default `None`.
     pub on_disable: Option<fn(Python<'_>)>,
+    /// Called after the target was installed (at `enable()`, or after a lazy activation on
+    /// the importing path), outside the registry lock and every watcher, on an attached
+    /// thread, once per install: e.g. adopt objects created before `enable()` with
+    /// `accel::dynamic::install`. The target may have been disabled again meanwhile (the
+    /// hook is skipped then). Default `None`.
+    pub on_install: Option<fn(Python<'_>)>,
 }
 
 /// Declarations shared by several targets: dependency pins (with the group's own
@@ -114,6 +125,7 @@ impl TargetSpec {
         module: None,
         versions: &[],
         free_threaded: false,
+        opt_in: None,
         counters: &NO_COUNTERS,
         prepare: no_prepare,
         jit_safe: true,
@@ -123,6 +135,7 @@ impl TargetSpec {
         fallback_debit: crate::accel::stats::FALLBACK_DEBIT,
         release: None,
         on_disable: None,
+        on_install: None,
     };
 
     /// Hidden targets (group starting with `_`): only selected when named explicitly.
@@ -130,6 +143,11 @@ impl TargetSpec {
         self.group.starts_with('_')
     }
 }
+
+/// Opt-in tiers known to this build even when none of their targets is compiled in
+/// (`enable(tiers=["interp"])` must not raise where the tier is unavailable: its targets
+/// would refuse anyway).
+pub const KNOWN_TIERS: &[&str] = &["interp", "gc"];
 
 /// Machine-readable class of a refusal (`status()["targets"][i]["refusal"]`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

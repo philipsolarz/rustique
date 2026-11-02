@@ -49,6 +49,7 @@
 //! ```
 
 pub mod check;
+pub mod dynamic;
 pub mod exit;
 pub mod fingerprint;
 pub mod guard;
@@ -62,12 +63,13 @@ pub mod switch;
 pub mod version;
 
 pub use fingerprint::Fingerprints;
-pub use guard::{DepFlag, Tools, code_locally_quiet, in_main_interpreter, tools_quiet};
+pub use guard::{ClassCache, DepFlag, Invalidate, Tools, code_locally_quiet, in_main_interpreter, tools_quiet};
 pub use prepare::Prepare;
 pub use registry::degrade;
 pub use site::SlotName;
 pub use spec::{Category, FnPtr, GroupSpec, Original, Refusal, TargetSpec};
 pub use stats::{Counters, Reason};
+pub use version::FREE_THREADED;
 
 /// `_PyFunction_Vectorcall`, shared by every vectorcall site: pass it to
 /// [`Prepare::vectorcall`] and fall back through `FUNCTION_VECTORCALL.get()`.
