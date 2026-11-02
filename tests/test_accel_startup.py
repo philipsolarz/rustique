@@ -38,7 +38,7 @@ def run(body: str, env: dict[str, str | None], *flags: str, sitedir: str = SITED
         f"    exec({PTH_LINE!r})\n"
         f"_site({sitedir!r})\n"
     )
-    e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
+    e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE") or k == "RUSTIQUE_VALIDATE"}
     e.update({k: v for k, v in env.items() if v is not None})
     return subprocess.run(
         [sys.executable, *flags, "-c", prologue + textwrap.dedent(body)],
@@ -206,7 +206,7 @@ def same(x):
 def _exit_run(tmp_path, body):
     (tmp_path / "_rustique_selftest.py").write_text(EXIT_MODULE)
     code = f"import sys; sys.path.insert(0, {str(tmp_path)!r})\n" + textwrap.dedent(body)
-    e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
+    e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE") or k == "RUSTIQUE_VALIDATE"}
     return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=e, timeout=120)
 
 

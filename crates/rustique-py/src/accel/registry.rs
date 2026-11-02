@@ -33,6 +33,7 @@ use super::prepare::{self, FingerprintRecord, Prepare};
 use super::site::{Kind, Site};
 use super::spec::{Category, GroupSpec, KNOWN_TIERS, Refusal, TargetSpec};
 use super::stats;
+use super::stubs;
 use super::version;
 
 // ---------------------------------------------------------------------------------------
@@ -121,6 +122,8 @@ pub enum State {
     Pending,
     Installed,
     Refused,
+    /// Sites hold first-call stubs; the target validates (prepare in full) at its first call.
+    Armed,
 }
 
 impl State {
@@ -130,6 +133,7 @@ impl State {
             State::Pending => "pending-import",
             State::Installed => "installed",
             State::Refused => "refused",
+            State::Armed => "armed",
         }
     }
 }
@@ -158,6 +162,9 @@ struct Rt {
     group: Option<usize>,
     /// Flags of the target's own pins (status: `deps_intact`).
     flags: Vec<&'static guard::DepFlag>,
+    /// Armed: the stub indices of its cell sites, and its module (validation needs it).
+    stubs: Vec<usize>,
+    armed_module: Option<Py<PyModule>>,
 }
 
 impl Rt {
@@ -174,6 +181,8 @@ impl Rt {
             suspensions: 0,
             group: None,
             flags: Vec::new(),
+            stubs: Vec::new(),
+            armed_module: None,
         }
     }
 }
@@ -216,6 +225,8 @@ struct Group {
     users: u32,
     flags: Vec<&'static guard::DepFlag>,
     refused: Option<(u64, Refusal)>,
+    /// The pass in which the group's prepare last ran in arming mode.
+    armed: u64,
 }
 
 static REG: PyLock<Option<Registry>> = PyLock::new(None);
@@ -405,7 +416,7 @@ fn activate_module(
     let mut ml = false;
     for (i, spec) in all_specs().iter().enumerate() {
         if spec.module == Some(name) && reg.rt[i].state == State::Pending {
-            ml |= activate(py, reg, i, Some(module.clone()), definitive);
+            ml |= install(py, reg, i, Some(module.clone()), definitive);
         }
     }
     refresh_pending(reg);
@@ -741,7 +752,7 @@ fn ensure_group(
     let gi = match reg.groups.iter().position(|x| std::ptr::eq(x.spec, g)) {
         Some(gi) => gi,
         None => {
-            reg.groups.push(Group { spec: g, owner: 0, users: 0, flags: Vec::new(), refused: None });
+            reg.groups.push(Group { spec: g, owner: 0, users: 0, flags: Vec::new(), refused: None, armed: 0 });
             reg.groups.len() - 1
         }
     };
@@ -995,6 +1006,369 @@ fn run_hooks(py: Python<'_>) {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// Validate on first call (docs/ACCELERATION.md §3.2)
+// ---------------------------------------------------------------------------------------
+//
+// By default a target is *armed* at `enable()` or at its module's import: its `prepare` runs
+// in arming mode (sites resolved and declared; fingerprints, self-tests, pins and layout
+// calibrations skipped) and its sites get first-call stubs that forward to the originals.
+// The first call of any of its sites validates it in full (`prepare` again, pins, the
+// kernels swapped in by compare-and-swap, or a refusal that restores the originals) and is
+// then dispatched to whatever the site holds. A program pays validation only for targets it
+// calls. Free-threaded builds validate eagerly (a vectorcall swap at a first call would
+// stop the world in steady state); targets with opcode-handler sites, or sites of an
+// arity no stub covers, too. `RUSTIQUE_VALIDATE=eager` / `_accel._set_validation("eager")`
+// validate everything at install (CI, the test-suite); `_accel.validate()` validates armed
+// targets now.
+
+static EAGER: AtomicBool = AtomicBool::new(false);
+/// The policy was taken from `RUSTIQUE_VALIDATE` or set explicitly.
+static POLICY: std::sync::Once = std::sync::Once::new();
+
+/// Validate at install (`true`) or at first call (`false`, the default; always eager on
+/// free-threaded builds).
+pub fn set_eager(on: bool) {
+    POLICY.call_once(|| {});
+    store_eager(on);
+}
+
+/// [`set_eager`] without marking the policy explicit (the environment's value).
+pub(crate) fn store_eager(on: bool) {
+    EAGER.store(on, Ordering::Relaxed);
+}
+
+/// The first registry operation reads `RUSTIQUE_VALIDATE` (unless set explicitly before).
+fn init_policy(py: Python<'_>) {
+    POLICY.call_once(|| super::switch::apply_validate_env(py));
+}
+
+pub fn eager() -> bool {
+    cfg!(Py_GIL_DISABLED) || EAGER.load(Ordering::Relaxed)
+}
+
+/// An armed cell site, as its stub sees it.
+struct ArmedCell {
+    cell: std::sync::atomic::AtomicUsize,
+    /// Target index + 1 (0: free).
+    target: std::sync::atomic::AtomicUsize,
+    original: std::sync::atomic::AtomicUsize,
+}
+
+static CELLS: [ArmedCell; stubs::POOL * stubs::ARITIES] = [const {
+    ArmedCell {
+        cell: std::sync::atomic::AtomicUsize::new(0),
+        target: std::sync::atomic::AtomicUsize::new(0),
+        original: std::sync::atomic::AtomicUsize::new(0),
+    }
+}; stubs::POOL * stubs::ARITIES];
+
+/// Free stub indices per arity (lazily filled).
+static FREE: Mutex<Vec<Vec<usize>>> = Mutex::new(Vec::new());
+
+fn alloc_stub(arity: u8) -> Option<usize> {
+    let a = usize::from(arity);
+    if !(1..=stubs::ARITIES).contains(&a) {
+        return None;
+    }
+    let mut f = FREE.lock().unwrap_or_else(|p| p.into_inner());
+    if f.is_empty() {
+        *f = (0..stubs::ARITIES).map(|ar| (ar * stubs::POOL..(ar + 1) * stubs::POOL).rev().collect()).collect();
+    }
+    f[a - 1].pop()
+}
+
+fn free_stub(k: usize) {
+    CELLS[k].target.store(0, Ordering::Release);
+    FREE.lock().unwrap_or_else(|p| p.into_inner())[k / stubs::POOL].push(k);
+}
+
+/// Armed vectorcall sites: (function, target index).
+static VC_ARMED: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+
+/// What stub `k` calls: the site's current entry point once it no longer holds the stub,
+/// else (after trying to validate the target) the original.
+pub(crate) fn cell_dispatch(k: usize) -> usize {
+    let e = &CELLS[k];
+    let cell = e.cell.load(Ordering::Acquire);
+    let stub = stubs::addr(k);
+    // SAFETY: the address of a validated, aligned pointer-sized entry point (kept alive
+    // while its target is armed, and never freed for static tables).
+    let current = || unsafe { (*(cell as *const std::sync::atomic::AtomicUsize)).load(Ordering::Acquire) };
+    let cur = current();
+    if cur != stub {
+        return cur;
+    }
+    let t = e.target.load(Ordering::Acquire);
+    if t != 0 {
+        first_call(t - 1);
+    }
+    let cur = current();
+    if cur == stub { e.original.load(Ordering::Acquire) } else { cur }
+}
+
+/// The vectorcall of armed Python functions.
+///
+/// # Safety
+/// Called by CPython as a function's vectorcall.
+pub(crate) unsafe extern "C" fn stub_vectorcall(
+    f: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargsf: usize,
+    kw: *mut ffi::PyObject,
+) -> *mut ffi::PyObject {
+    let target = VC_ARMED.lock().unwrap_or_else(|p| p.into_inner()).iter().find(|e| e.0 == f as usize).map(|e| e.1);
+    if let Some(i) = target {
+        first_call(i);
+    }
+    // SAFETY: a live function object (the callee); its current vectorcall.
+    unsafe {
+        let vc = (*f.cast::<ffi::PyFunctionObject>()).vectorcall.map_or(0, |v| v as usize);
+        let vc =
+            if vc == stub_vectorcall as *const () as usize || vc == 0 { prepare::function_vectorcall() } else { vc };
+        std::mem::transmute::<usize, ffi::vectorcallfunc>(vc)(f, args, nargsf, kw)
+    }
+}
+
+/// Validate armed target `i` now, if the registry is free (else its call runs the
+/// original and a later call tries again).
+fn first_call(i: usize) {
+    let Some(mut g) = REG.try_lock() else { return };
+    // SAFETY: stubs run on attached threads.
+    let py = unsafe { Python::assume_attached() };
+    let reg = registry(&mut g);
+    let mut ml = false;
+    if reg.rt[i].state == State::Armed {
+        prepare::clear_pass_caches();
+        reg.pass += 1;
+        ml = validate_armed(py, reg, i);
+        prepare::clear_pass_caches();
+    }
+    drop(g);
+    if ml {
+        clear_internal_caches();
+    }
+}
+
+/// Install target `i` by the current policy: armed (validated at first call) or validated
+/// now.
+fn install(
+    py: Python<'_>,
+    reg: &mut Registry,
+    i: usize,
+    module: Option<Bound<'_, PyModule>>,
+    definitive: bool,
+) -> bool {
+    if eager() {
+        return activate(py, reg, i, module, definitive);
+    }
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| arm(py, reg, i, module.clone(), definitive)));
+    match outcome {
+        Ok(Some(ml)) => ml,
+        // Not armable (or arming failed): validate now.
+        Ok(None) | Err(_) => activate(py, reg, i, module, definitive),
+    }
+}
+
+/// Arm target `i`: `Some(ml)` when armed or refused, `None` to validate it now instead.
+fn arm(
+    py: Python<'_>,
+    reg: &mut Registry,
+    i: usize,
+    module: Option<Bound<'_, PyModule>>,
+    definitive: bool,
+) -> Option<bool> {
+    let spec = all_specs()[i];
+    if version::target_gate(spec.versions, spec.free_threaded).is_err()
+        || (!spec.jit_safe && JIT.load(Ordering::Relaxed))
+    {
+        return None; // `activate` refuses with the reason
+    }
+    let refuse_now = |reg: &mut Registry, r: Refusal| {
+        let rt = &mut reg.rt[i];
+        if definitive {
+            rt.state = State::Refused;
+        }
+        rt.reason = Some(r.reason().to_owned());
+        rt.refusal = Some(r.category());
+    };
+    // Shared declarations run in arming mode too (once per pass): targets read what their
+    // group's prepare resolved (classes, helpers).
+    if let Some(g) = spec.shared
+        && let Err(r) = arm_group(py, reg, g, spec, module.clone())
+    {
+        refuse_now(reg, r);
+        return Some(false);
+    }
+    let mut cx = Prepare::new(py, spec, module.clone(), false);
+    cx.arming = true;
+    let outcome = (spec.prepare)(py, &mut cx);
+    let decls = std::mem::take(&mut cx.sites);
+    drop(cx);
+    if let Err(r) = outcome {
+        release_sites(decls.into_iter().map(|d| d.site));
+        refuse_now(reg, r);
+        return Some(false);
+    }
+    if decls.is_empty() || decls.iter().any(|d| d.site.kind.is_cell() && d.arity == 0) {
+        release_sites(decls.into_iter().map(|d| d.site));
+        return None;
+    }
+    reg.rt[i].site_names = decls.iter().map(|d| (d.site.name.clone(), d.site.kind)).collect();
+    // Stubs for every site, then swap them in all-or-nothing.
+    let mut stubs_used: Vec<usize> = Vec::new();
+    let mut sites: Vec<Site> = Vec::with_capacity(decls.len());
+    let mut ok = true;
+    for d in decls {
+        let mut site = d.site;
+        if !ok {
+            site.release();
+            continue;
+        }
+        if site.kind.is_cell() {
+            match alloc_stub(d.arity) {
+                Some(k) => {
+                    CELLS[k].cell.store(site.addr, Ordering::Release);
+                    CELLS[k].original.store(site.original, Ordering::Release);
+                    CELLS[k].target.store(i + 1, Ordering::Release);
+                    site.kernel = stubs::addr(k);
+                    stubs_used.push(k);
+                }
+                None => {
+                    ok = false;
+                    site.release();
+                    continue;
+                }
+            }
+        } else {
+            site.kernel = stub_vectorcall as *const () as usize;
+            VC_ARMED.lock().unwrap_or_else(|p| p.into_inner()).push((site.addr, i));
+        }
+        match site.install() {
+            Ok(()) => sites.push(site),
+            Err(_) => {
+                ok = false;
+                site.release();
+            }
+        }
+    }
+    if !ok {
+        for mut s in sites.into_iter().rev() {
+            s.uninstall(true);
+            s.release();
+        }
+        for k in stubs_used {
+            free_stub(k);
+        }
+        VC_ARMED.lock().unwrap_or_else(|p| p.into_inner()).retain(|e| e.1 != i);
+        return None;
+    }
+    let ml = sites.iter().any(|s| s.kind == Kind::MlMeth);
+    let rt = &mut reg.rt[i];
+    rt.sites = sites;
+    rt.stubs = stubs_used;
+    rt.armed_module = module.map(Bound::unbind);
+    rt.state = State::Armed;
+    rt.reason = None;
+    rt.refusal = None;
+    Some(ml)
+}
+
+/// Run group `g`'s prepare in arming mode (no pins, no validation), once per registry pass,
+/// unless it is already active in full.
+fn arm_group(
+    py: Python<'_>,
+    reg: &mut Registry,
+    g: &'static GroupSpec,
+    spec: &'static TargetSpec,
+    module: Option<Bound<'_, PyModule>>,
+) -> Result<(), Refusal> {
+    let gi = match reg.groups.iter().position(|x| std::ptr::eq(x.spec, g)) {
+        Some(gi) => gi,
+        None => {
+            reg.groups.push(Group { spec: g, owner: 0, users: 0, flags: Vec::new(), refused: None, armed: 0 });
+            reg.groups.len() - 1
+        }
+    };
+    let pass = reg.pass;
+    let st = &reg.groups[gi];
+    if st.owner != 0 || st.armed == pass {
+        return Ok(());
+    }
+    if let Some((p, r)) = &st.refused
+        && *p == pass
+    {
+        return Err(r.clone());
+    }
+    let mut cx = Prepare::new(py, spec, module, false);
+    cx.arming = true;
+    let r = (g.prepare)(py, &mut cx);
+    release_sites(cx.sites.drain(..).map(|d| d.site));
+    drop(cx);
+    let st = &mut reg.groups[gi];
+    match r {
+        Ok(()) => {
+            st.armed = pass;
+            Ok(())
+        }
+        Err(r) => {
+            st.refused = Some((pass, r.clone()));
+            Err(r)
+        }
+    }
+}
+
+/// Put the originals back over an armed target's stubs.
+fn disarm(reg: &mut Registry, i: usize) -> bool {
+    let rt = &mut reg.rt[i];
+    let ml = rt.sites.iter().any(|s| s.kind == Kind::MlMeth);
+    for mut s in rt.sites.drain(..).rev() {
+        s.uninstall(true);
+        s.release();
+    }
+    for k in rt.stubs.drain(..) {
+        free_stub(k);
+    }
+    rt.armed_module = None;
+    VC_ARMED.lock().unwrap_or_else(|p| p.into_inner()).retain(|e| e.1 != i);
+    ml
+}
+
+/// Validate armed target `i` in full: the originals come back over the stubs, then the
+/// normal activation (prepare, pins, compare-and-swap of the kernels) runs.
+fn validate_armed(py: Python<'_>, reg: &mut Registry, i: usize) -> bool {
+    let module = reg.rt[i].armed_module.take().map(|m| m.into_bound(py));
+    let ml = disarm(reg, i);
+    reg.rt[i].state = State::Disabled;
+    ml | activate(py, reg, i, module, true)
+}
+
+/// `_accel.validate(names)`: validate every armed target among `names` (all if `None`) now.
+pub fn validate(py: Python<'_>, names: Option<Vec<String>>) -> PyResult<()> {
+    if let Some(n) = &names {
+        check_names(n)?;
+    }
+    let mut g = REG.lock(py)?;
+    let reg = registry(&mut g);
+    let mut ml = drain_deferred(py, reg);
+    prepare::clear_pass_caches();
+    reg.pass += 1;
+    for (i, spec) in all_specs().iter().enumerate() {
+        if reg.rt[i].state == State::Armed && names.as_deref().is_none_or(|n| matches(spec, n)) {
+            ml |= validate_armed(py, reg, i);
+        }
+    }
+    prepare::clear_pass_caches();
+    drop(g);
+    if ml {
+        clear_internal_caches();
+    }
+    after_unlock(py);
+    run_hooks(py);
+    Ok(())
+}
+
 fn release_sites(sites: impl Iterator<Item = Site>) {
     for s in sites {
         s.release();
@@ -1008,6 +1382,14 @@ fn site_label(name: &str, kind: Kind) -> String {
 /// Restore target `i`'s sites and drop its pins. Returns whether an `ml_meth` site was
 /// restored.
 fn deactivate(reg: &mut Registry, i: usize) -> bool {
+    if reg.rt[i].state == State::Armed {
+        let ml = disarm(reg, i);
+        let rt = &mut reg.rt[i];
+        rt.state = State::Disabled;
+        rt.reason = None;
+        rt.refusal = None;
+        return ml;
+    }
     let rt = &mut reg.rt[i];
     let was_installed = rt.state == State::Installed;
     all_specs()[i].counters.set_live(false);
@@ -1153,6 +1535,7 @@ pub fn enable_tiers(
     }
     check_names(&exclude)?;
     check_tiers(&tiers)?;
+    init_policy(py);
     let mut g = REG.lock(py)?;
     let reg = registry(&mut g);
     for t in tiers {
@@ -1183,11 +1566,15 @@ pub fn enable_tiers(
             // An entry point was rewritten over the kernel: validate afresh.
             ml |= deactivate(reg, i);
         }
-        if matches!(reg.rt[i].state, State::Installed | State::Pending) {
+        if reg.rt[i].state == State::Armed && eager() {
+            ml |= validate_armed(py, reg, i);
+            continue;
+        }
+        if matches!(reg.rt[i].state, State::Installed | State::Pending | State::Armed) {
             continue;
         }
         match spec.module {
-            None => ml |= activate(py, reg, i, None, true),
+            None => ml |= install(py, reg, i, None, true),
             Some(_) => {
                 reg.rt[i].state = State::Pending;
                 reg.rt[i].reason = None;
@@ -1209,7 +1596,7 @@ pub fn enable_tiers(
         if let Some(m) = m
             && !prepare::module_initializing(&m)
         {
-            ml |= activate(py, reg, i, Some(m), true);
+            ml |= install(py, reg, i, Some(m), true);
         }
     }
     reg.only = only;
@@ -1311,7 +1698,8 @@ pub fn teardown(py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 
-/// Names of the installed targets among `names` (groups or target names; all if `None`).
+/// Names of the installed targets among `names` (groups or target names; all if `None`), armed
+/// ones included (their sites are swapped; they validate at their first call).
 pub fn installed(py: Python<'_>, names: Option<&[String]>) -> PyResult<Vec<&'static str>> {
     let mut g = REG.lock(py)?;
     let reg = registry(&mut g);
@@ -1319,7 +1707,9 @@ pub fn installed(py: Python<'_>, names: Option<&[String]>) -> PyResult<Vec<&'sta
     let out = all_specs()
         .iter()
         .enumerate()
-        .filter(|(i, s)| reg.rt[*i].state == State::Installed && names.is_none_or(|n| matches(s, n)))
+        .filter(|(i, s)| {
+            matches!(reg.rt[*i].state, State::Installed | State::Armed) && names.is_none_or(|n| matches(s, n))
+        })
         .map(|(_, s)| s.name)
         .collect();
     drop(g);
@@ -1394,7 +1784,7 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         }
         // A target of a tier nobody requested: disabled, saying how to turn it on.
         let tier_off = spec.opt_in.filter(|t| rt.state == State::Disabled && !reg.tiers.iter().any(|x| x == t));
-        enabled |= matches!(rt.state, State::Installed | State::Pending);
+        enabled |= matches!(rt.state, State::Installed | State::Pending | State::Armed);
         let d = PyDict::new(py);
         let fixed = &static_status(py)[i];
         d.set_item(intern!(py, "name"), fixed.name.bind(py))?;
@@ -1470,6 +1860,7 @@ pub fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     process.set_item("only", reg.only.clone())?;
     process.set_item("exclude", reg.exclude.clone())?;
     process.set_item("tiers", reg.tiers.clone())?;
+    process.set_item("validation", if eager() { "eager" } else { "first-call" })?;
     let out = PyDict::new(py);
     out.set_item("targets", targets)?;
     out.set_item("process", process)?;
