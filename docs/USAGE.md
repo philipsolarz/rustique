@@ -128,13 +128,19 @@ installed when that module is first imported; Rustique never imports a module it
 Turning it on twice is harmless. Turn it on as early as possible. The order does not matter
 for correctness, but more calls are accelerated.
 
-Startup: `RUSTIQUE=1` loads one extension module and installs the targets of the modules
-already imported. Measured costs are in the README and [`targets/dx.md` §1](targets/dx.md).
+Startup: `RUSTIQUE=1` loads one extension module (2.3 MB) and installs the targets of the
+modules already imported. Against the same venv with `RUSTIQUE` unset, it costs 2.8% more
+instructions for `python -c pass` on 3.15.1 and 2.9% on 3.14.9
+([`targets/engine.md`](targets/engine.md)).
 
 ## Turn it off, or turn parts of it off
 
-- **`RUSTIQUE=0` is the kill switch** (so are `off`, `false`, `no` and an empty value). Every
-  way of turning Rustique on becomes a no-op, opt-in tiers included: the startup switch,
+- **`RUSTIQUE=0` is the kill switch.** `off`, `false`, `no` and an empty value work too, but
+  `0` is the one to use. With `0` (or `RUSTIQUE` unset) the startup line stops at its first
+  test and costs nothing more. The other spellings, and `-E`/`-I`, briefly load the
+  extension and unregister it again (about 0.5M instructions per process); nothing stays
+  loaded and nothing is enabled. Every way of turning Rustique on becomes a no-op, opt-in
+  tiers included: the startup switch,
   `python -m rustique`, `pytest --rustique`, and a `rustique.enable()` written in the
   program. The process runs as plain CPython. If you suspect Rustique, set `RUSTIQUE=0` and
   rerun. No deploy is needed.
@@ -440,7 +446,7 @@ rustique:
 | variable | values | effect |
 |---|---|---|
 | `RUSTIQUE` | `1`/`true`/`yes`/`on` | enable at interpreter startup (through `_rustique_startup.pth`) |
-| | `0`/`false`/`no`/`off`/empty | kill switch: every enable path is a no-op, tiers included, and nothing is loaded at startup |
+| | `0` (also `false`/`no`/`off`/empty) | kill switch: every enable path is a no-op, tiers included, and nothing stays loaded. `0` costs nothing at startup; the other spellings briefly load the extension (~0.5M instructions) |
 | | unset | nothing at startup; explicit `enable()` works |
 | `RUSTIQUE_ONLY` | `json,copy` (groups or targets) | narrow every enable path to these |
 | `RUSTIQUE_EXCLUDE` | `re,json.loads` | leave these out of every enable path (also tier names) |

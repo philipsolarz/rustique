@@ -495,7 +495,9 @@ def test_startup_survives_a_broken_install(sitedir, tmp_path):
     broken.mkdir()
     (broken / "_rustique.py").write_text("raise ImportError('no wheel for this interpreter')\n")
     code = f"import sys; sys.path.insert(0, {str(broken)!r})\n" + PROBE
-    r = py(code, sitedir, env=clean_env(RUSTIQUE="1"))
+    # -S: an interpreter with the wheel installed would have loaded the real extension through
+    # its own startup line already (the platform job runs this suite against installed wheels)
+    r = py(code, sitedir, env=clean_env(RUSTIQUE="1"), flags=("-S",))
     assert r.returncode == 0  # site reports the failing line and carries on
     assert "ImportError: no wheel for this interpreter" in r.stderr
 
