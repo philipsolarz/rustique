@@ -35,10 +35,11 @@ use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::PyType;
 
+use crate::accel::ClassCache;
 use crate::accel::{
     self, Counters, DepFlag, GroupSpec, Original, Prepare, Reason, Refusal, SlotName, TargetSpec, Tools,
 };
-use crate::targets::generated::adapter::{ClassCache, watch_dict_invalidates};
+use crate::targets::generated::adapter::watch_dict_invalidates;
 use crate::targets::generated::common::*;
 
 const VERSIONS: &[(u8, u8)] = &[(3, 14), (3, 15)];
@@ -216,8 +217,8 @@ fn release(_py: Python<'_>) {
     for s in [&PROP_TYPE, &VALUE_PROP, &NAME_PROP, &ENUM_TYPE, &NEW_SM, &OBJ_CLASS] {
         s.release();
     }
-    CLASS_FACTS.clear_all();
-    META_FACTS.clear_all();
+    CLASS_FACTS.clear();
+    META_FACTS.clear();
     PROP_TAG.store(0, Relaxed);
 }
 
@@ -340,7 +341,7 @@ unsafe fn compute_class(cls: Tp) -> u32 {
                 ffi::Py_DECREF(o);
             }
         }
-        CLASS_FACTS.put(cls, tag, bits, epoch);
+        CLASS_FACTS.put(cls, tag, epoch, bits);
         bits
     }
 }
@@ -407,7 +408,7 @@ unsafe fn compute_meta(meta: Tp) -> bool {
     unsafe {
         let (tag, epoch) = META_FACTS.begin(meta);
         let ok = meta_facts(meta);
-        META_FACTS.put(meta, tag, u32::from(ok), epoch);
+        META_FACTS.put(meta, tag, epoch, u32::from(ok));
         ok
     }
 }
@@ -903,8 +904,8 @@ fn prepare_shared<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Ref
     ] {
         s.name(py, n);
     }
-    CLASS_FACTS.clear_all();
-    META_FACTS.clear_all();
+    CLASS_FACTS.clear();
+    META_FACTS.clear();
     ENUM_TYPE_TAG.store(0, Relaxed);
     PROP_TAG.store(0, Relaxed);
     // The code-object layout the tools guard reads (calibrated by any vectorcall site).
@@ -927,13 +928,18 @@ fn group_state<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusa
 fn prepare_prop<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
     group_state(py, cx)?;
     let t = cx.module_attr("property")?.cast_into::<PyType>().map_err(PyErr::from)?;
-    cx.slot(&t, SlotName::TpDescrGet, k_prop_descr_get as ffi::descrgetfunc, &ORIG_DESCR_GET)
+    // A reference class with a Python `__get__`: its slot is CPython's dispatcher too.
+    let types = cx.loaded_module("types")?;
+    let dca = cx.get(&types.dict(), "DynamicClassAttribute")?.cast_into::<PyType>().map_err(PyErr::from)?;
+    cx.heap_slot(&t, SlotName::TpDescrGet, k_prop_descr_get as ffi::descrgetfunc, &ORIG_DESCR_GET, Some(&dca))
 }
 
 fn prepare_call<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
     group_state(py, cx)?;
     let t = cx.module_attr("EnumType")?.cast_into::<PyType>().map_err(PyErr::from)?;
-    cx.slot(&t, SlotName::TpCall, k_enumtype_call as ffi::ternaryfunc, &ORIG_TP_CALL)?;
+    // A reference class with a Python `__call__` (enum.verify): the same dispatcher.
+    let verify = cx.module_attr("verify")?.cast_into::<PyType>().map_err(PyErr::from)?;
+    cx.heap_slot(&t, SlotName::TpCall, k_enumtype_call as ffi::ternaryfunc, &ORIG_TP_CALL, Some(&verify))?;
     let call = CALL_FN.func.get_bound(cx.py());
     cx.vectorcall(&call, k_enum_call_vc, &accel::FUNCTION_VECTORCALL)
 }

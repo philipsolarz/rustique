@@ -41,7 +41,7 @@ sits between the caller and `__post_init__`), non-frozen dataclass `__init__` (p
 ## 1. Mechanisms
 
 **Slots of stdlib heap types** (`enum.property.tp_descr_get`, `EnumType.tp_call`): declared
-with `Prepare::slot` (accel's `heap_slot` lands in its merge C; same semantics). The kernel
+with `Prepare::heap_slot` (reference classes with Python dunders: `types.DynamicClassAttribute`, `enum.verify`). The kernel
 handles the exact type only (`enum.property` instances `Enum.__dict__['value'/'name']`,
 classes whose metaclass is exactly `EnumType`); everything else calls the saved
 `slot_tp_*` dispatcher, which resolves subclasses' own methods. Assigning

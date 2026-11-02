@@ -31,7 +31,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyCode, PyTuple, PyType};
 
 use crate::accel::{self, Counters, DepFlag, Prepare, Reason, Refusal, TargetSpec, Tools};
-use crate::targets::generated::adapter::{ClassCache, Dynamic, watch_dict_invalidates};
+use crate::targets::generated::adapter::{AddrCache, Dynamic, watch_dict_invalidates};
 use crate::targets::generated::common::*;
 
 python_extern! {
@@ -106,7 +106,7 @@ static WR_DICT: Slot = Slot::new();
 static WR_REF: Slot = Slot::new();
 static WKD_TAG: AtomicU32 = AtomicU32::new(0);
 /// Verdicts per `data` dict: keys compare in C only (watched: any change clears).
-static DATA_OK: ClassCache<64> = ClassCache::new();
+static DATA_OK: AddrCache<64> = AddrCache::new();
 
 // singledispatchmethod.__get__
 static SDM: Slot = Slot::new();
