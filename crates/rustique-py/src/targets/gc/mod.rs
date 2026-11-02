@@ -63,6 +63,43 @@ hook!(k_freeze, ORIG_FREEZE, 4);
 hook!(k_unfreeze, ORIG_UNFREEZE, 5);
 hook!(k_set_debug, ORIG_SET_DEBUG, 6);
 
+static ORIG_COLLECT: Original<ffi::PyCFunctionFastWithKeywords> = Original::new();
+
+/// `gc.collect(...)`: CPython's function, run with the program's own list in
+/// `gcstate->callbacks` (the observer detached for its duration, `observer::detach`), then the
+/// policy's value re-applied if the collection reset it. Never steps aside.
+unsafe extern "C" fn k_collect(
+    m: *mut ffi::PyObject,
+    args: *const *mut ffi::PyObject,
+    nargs: ffi::Py_ssize_t,
+    kwnames: *mut ffi::PyObject,
+) -> *mut ffi::PyObject {
+    let orig = ORIG_COLLECT.get();
+    // SAFETY: attached thread (a C function called by CPython).
+    if !unsafe { crate::accel::in_main_interpreter() } {
+        // SAFETY: the original with the caller's arguments.
+        return unsafe { orig(m, args, nargs, kwnames) };
+    }
+    let Some(l) = layout::get() else {
+        // SAFETY: as above.
+        return unsafe { orig(m, args, nargs, kwnames) };
+    };
+    let detached = observer::detach(l);
+    // SAFETY: as above.
+    let r = unsafe { orig(m, args, nargs, kwnames) };
+    if detached {
+        // SAFETY: attached thread.
+        let py = unsafe { Python::assume_attached() };
+        // Keep the original's result or error across the reattachment (no Python code runs).
+        observer::reattach(py, l);
+        policy::after_explicit(l);
+    }
+    r
+}
+
+/// `gc.collect` (`ml_name`/`ml_flags`/`ml_doc` per minor).
+const COLLECT_FINGERPRINT: crate::accel::Fingerprints = &[(3, 14, "0e23988d8df032ab"), (3, 15, "0e23988d8df032ab")];
+
 type Hook = (&'static str, ffi::PyCFunction, &'static Original<ffi::PyCFunction>, crate::accel::Fingerprints);
 
 /// `ml_name`/`ml_flags`/`ml_doc` fingerprints per minor
@@ -200,13 +237,6 @@ fn tuned_at_install(l: &layout::Layout) -> Option<u8> {
 }
 
 fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    if cx.arming() {
-        // The policy acts from install on, not at a call of its sites (the hooks only hand
-        // control back): validated on first call it would stay passive until the program
-        // tunes the GC. A prepare that declares no site in arming mode is validated at once
-        // (registry `arm` → `activate`).
-        return Ok(());
-    }
     let l = layout::calibrate(py).map_err(layout_refusal)?;
     let table = gc_method_table(py, cx)?;
     validate(py, l, table)?;
@@ -223,6 +253,13 @@ fn prepare(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
                 set_threshold_def = def;
             }
         }
+    }
+    // SAFETY: the gc module's static table (process lifetime).
+    unsafe {
+        let def = method_entry(table, "collect")
+            .ok_or_else(|| Refusal::with(Category::Fingerprint, "gc.collect not found"))?;
+        cx.fingerprint_def("gc.collect", def, COLLECT_FINGERPRINT)?;
+        cx.ml_meth_def("gc.collect", def, k_collect as ffi::PyCFunctionFastWithKeywords, &ORIG_COLLECT)?;
     }
     if cx.record {
         // The dev tool's fingerprint report: declare, change nothing.
@@ -255,6 +292,10 @@ pub static ADAPTIVE: TargetSpec = TargetSpec {
     versions: VERSIONS,
     free_threaded: true,
     opt_in: Some("gc"),
+    // The policy acts from install on, not at a call of its sites (the hooks only hand
+    // control back): validated on first call it would stay passive until the program tunes
+    // the GC.
+    eager: true,
     counters: &COUNTERS,
     prepare,
     on_disable: Some(restore),

@@ -437,3 +437,33 @@ def test_installs_without_importing_gc():
         if info["refused"] in EXPECTED:
             pytest.skip(f"gc tier refused here: {info['reason']}")
     assert r.returncode == 0, r.stderr[-3000:]
+
+
+def test_explicit_collections_run_with_the_programs_list():
+    run("""
+        seen = []
+        def cb(p, i):
+            rep = R()
+            seen.append((p, rep["detached"], rep["callbacks_ptr"] == id(gc.callbacks)))
+        gc.callbacks.append(cb)
+        gc.collect(0)   # explicit: CPython iterates the program's own list, no observer
+        assert seen == [("start", True, True), ("stop", True, True)], seen
+        rep = R()
+        assert not rep["detached"] and rep["callbacks_ptr"] == rep["private_list"], rep
+        seen.clear()
+        keep = []
+        for _ in range(400):            # automatic collections: through the observer
+            keep.append([[] for _ in range(5000)])
+            if seen:
+                break
+        got = list(seen)
+        assert got and all(not d and not same for _, d, same in got), got
+        def nested(p, i):
+            if p == "start":
+                seen.append(("nested", gc.collect()))   # a collection is running: 0
+        gc.callbacks.append(nested)
+        seen.clear()
+        gc.collect(1)
+        assert ("nested", 0) in seen, seen
+        assert not R()["detached"] and R()["callbacks_ptr"] == R()["private_list"], R()
+    """)
