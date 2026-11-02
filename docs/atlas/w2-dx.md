@@ -183,7 +183,17 @@ Reading:
   - `copy.deepcopy` restarts on 49% in sqlglot, 57% in marshmallow and 21% in Django.
   - `builtins.min` restarts on 44% in attrs and **49% of 886k in dateutil**.
   - Every restart pays for the kernel's partial work and then the original.
-- **sqlglot A/B** (plain / on / on without copy, interleaved, 3 rounds): ⟨SQLGLOT-AB⟩
+- **sqlglot A/B** (the lead asked: does the 49% `deepcopy` restart rate cost time?). Whole
+  suite, `RUSTIQUE=0` / `RUSTIQUE=1` / `RUSTIQUE=1 RUSTIQUE_EXCLUDE=copy`, 3 interleaved rounds,
+  cores 0–23 of the shared box (M, `~/rustique-research/w2/dx/sqlglot_ab.{sh,log}`):
+  - plain 105.7 / 101.3 / 88.8 s, on 104.3 / 101.9 / 87.8 s, on-without-copy
+    98.5 / 85.0 / 95.4 s.
+  - Paired on/plain is 0.987 / 1.006 / 0.988, median **0.99**: no slowdown. The first pass's
+    1.076 was noise.
+  - Without copy: 0.84–1.07 against plain. Inconclusive at this noise (the box load fell
+    during the rounds, and that mode always ran last).
+  - What can be said: the restarts do not make the suite slower overall. Whether they cancel
+    a gain is for callgrind on `sqlglot_transpile` (floors).
 
 ## 5. "Will this help my program?": `python -m rustique estimate`
 
