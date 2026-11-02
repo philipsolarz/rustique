@@ -104,8 +104,10 @@ C_RATIO = {
 # docs/targets/logging.md (callgrind, one record through a handler).
 NO_REPLAY_RATIO = {"logging.Logger.level": 0.60, "logging.Logger.findCaller": 0.45, "logging.LogRecord.__init__": 0.50,
                    "logging.Formatter.formatTime": 0.30, "logging.Formatter.format": 0.50}
-# Slot targets (no call event at all): time saved per accelerated call, ns (benches/dx/c_ratios.py).
-SLOT_SAVING_NS = {"tuple.__contains__": 12.0, "list.__contains__": 79.0, "float.repr": 188.0}
+# Slot targets (no call event at all): time saved per accelerated call, ns (benches/dx/c_ratios.py:
+# `in` on a 4-element tuple 7-16 ns, on a 20-element list 51-106 ns; operands of `in` in real
+# code are mostly short, so both use the short-container value).
+SLOT_SAVING_NS = {"tuple.__contains__": 12.0, "list.__contains__": 12.0, "float.repr": 188.0}
 
 
 def _lookup(modname: str, qual: str):
@@ -700,8 +702,9 @@ def predict(profile: dict, replayed: dict, counters: dict | None, total_ns: floa
 
 
 def render(pred: dict, limit: int = 12) -> str:
+    rng = f", range {pred['range'][0]:.2f}-{pred['range'][1]:.2f}" if pred.get("range") else ""
     lines = [f"predicted time with Rustique: {pred['ratio']:.3f} x plain "
-             f"({(1 / pred['ratio'] if pred['ratio'] else 0):.2f}x faster)",
+             f"({(1 / pred['ratio'] if pred['ratio'] else 0):.2f}x faster{rng})",
              f"  {pred['under_targets'] * 100:.1f}% of the run is under accelerated entry points; "
              f"the other {100 - pred['under_targets'] * 100:.1f}% is unchanged by Rustique",
              "",
@@ -770,7 +773,7 @@ def main(argv: list[str]) -> int:
                                 description="Predict what Rustique does for a command's run time, from the command itself.")
     p.add_argument("--json", action="store_true", help="print the prediction as JSON")
     p.add_argument("--limit", type=int, default=12)
-    p.add_argument("--mode", default="hybrid", choices=("samples", "hybrid", "profile"))
+    p.add_argument("--mode", default="samples", choices=("samples", "hybrid", "profile"))
     opts = p.parse_args(opts_argv)
     if not cmd:
         p.error("missing command (python -m rustique estimate -- <command...>)")
@@ -824,7 +827,12 @@ def main(argv: list[str]) -> int:
     for r in replayed.values():
         r["ratio"] = r["kernel_ns"] / r["plain_ns"] if r["plain_ns"] else 1.0
     counters = _report.merge(records)["stats"] if records else {}
-    pred = predict(merged, replayed, counters, total_ns, {"samples": nsamp, "shares": shares}, mode=opts.mode)
+    sampled = {"samples": nsamp, "shares": shares}
+    pred = predict(merged, replayed, counters, total_ns, sampled, mode=opts.mode)
+    # the other time source gives the range: stack samples under-see compute in programs that
+    # mostly wait in GIL-releasing calls (I/O), per-call times over-count in nested calls
+    alt = predict(merged, replayed, counters, total_ns, sampled, mode="hybrid" if opts.mode != "hybrid" else "samples")
+    pred["range"] = (min(pred["ratio"], alt["ratio"]), max(pred["ratio"], alt["ratio"]))
     if opts.json:
         print(json.dumps({"prediction": pred, "runs_s": walls, "processes": len(samples)}, indent=1, default=str))
     else:
