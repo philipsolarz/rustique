@@ -345,6 +345,10 @@ static DYN_TOOLS: Tools = Tools::new();
 unsafe extern "C" fn k_dyn(f: O, args: *const O, nargsf: usize, kw: O) -> O {
     // SAFETY: vectorcall arguments from CPython; attached thread.
     unsafe {
+        if !C_DYN.live() {
+            accel::dynamic::retire(f, k_dyn, &accel::FUNCTION_VECTORCALL, &C_DYN);
+            return accel::FUNCTION_VECTORCALL.get()(f, args, nargsf, kw);
+        }
         if kw.is_null() && nargsf & !ffi::PY_VECTORCALL_ARGUMENTS_OFFSET == 1 && accel::tools_quiet(&DYN_TOOLS, f) {
             C_DYN.hit();
             return tagged(&KERNEL_STR, *args);

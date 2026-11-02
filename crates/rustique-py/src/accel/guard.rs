@@ -1444,16 +1444,17 @@ impl std::fmt::Debug for OverrideCache {
 /// A cache of one 32-bit fact per class, keyed by the class's `tp_version_tag`. CPython
 /// assigns every class version a tag that is never reused in the process and resets it on
 /// any modification of the class or a base (`PyType_Modified`), so an entry can never
-/// outlive what it was computed from. Direct-mapped (`N` slots, indexed by the type's
-/// address), one `AtomicU64` per slot packing `tag << 32 | payload`: lock-free and exact on
+/// outlive what it was computed from. `N` slots in 2-way sets (`N / 2` sets, indexed by a
+/// multiplicative hash of the type's address: heap types a few KB apart do not collide),
+/// one `AtomicU64` per slot packing `tag << 32 | payload`: lock-free and exact on
 /// free-threaded builds. A tag of 0 (none assigned, or exhausted) never matches.
 ///
 /// Facts that also depend on a dict that does not belong to the class (an enum's
 /// `_value2member_map_`) register it with [`watch_dict_invalidates`]: any change of that
-/// dict clears the slot and bumps the cache's epoch. Protocol:
+/// dict clears the class's set and bumps the cache's epoch. Protocol:
 ///
 /// ```ignore
-/// static FACTS: ClassCache<64> = ClassCache::new();
+/// static FACTS: ClassCache<128> = ClassCache::new();
 /// if let Some(p) = unsafe { FACTS.get(tp) } { /* use p */ }
 /// else {
 ///     let (tag, epoch) = unsafe { FACTS.begin(tp) };
@@ -1467,13 +1468,20 @@ pub struct ClassCache<const N: usize> {
 }
 
 impl<const N: usize> ClassCache<N> {
+    const SETS: usize = {
+        assert!(N >= 2 && N.is_multiple_of(2), "ClassCache: an even number of slots");
+        N / 2
+    };
+
     pub const fn new() -> Self {
         ClassCache { slots: [const { AtomicU64::new(0) }; N], epoch: AtomicU64::new(0) }
     }
 
+    /// The first slot of `tp`'s set.
     #[inline(always)]
-    fn index(tp: *mut ffi::PyTypeObject) -> usize {
-        (tp as usize >> 4) % N
+    fn set(tp: usize) -> usize {
+        let h = ((tp as u64) >> 4).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32;
+        (h as usize % Self::SETS) * 2
     }
 
     /// The class's current version tag (0: none).
@@ -1487,19 +1495,24 @@ impl<const N: usize> ClassCache<N> {
         unsafe { (*(&raw const (*tp).tp_version_tag).cast::<std::sync::atomic::AtomicU32>()).load(Ordering::Acquire) }
     }
 
-    /// The cached fact of `tp`'s current version, if any (~5 loads and compares).
+    /// The cached fact of `tp`'s current version, if any (a few loads and compares).
     ///
     /// # Safety
     /// `tp` is a live type object.
     #[inline(always)]
     pub unsafe fn get(&self, tp: *mut ffi::PyTypeObject) -> Option<u32> {
         // SAFETY: per the caller.
-        let tag = unsafe { Self::tag(tp) };
+        let tag = u64::from(unsafe { Self::tag(tp) });
         if tag == 0 {
             return None;
         }
-        let v = self.slots[Self::index(tp)].load(Ordering::Acquire);
-        (v >> 32 == u64::from(tag)).then_some(v as u32)
+        let i = Self::set(tp as usize);
+        let a = self.slots[i].load(Ordering::Acquire);
+        if a >> 32 == tag {
+            return Some(a as u32);
+        }
+        let b = self.slots[i + 1].load(Ordering::Acquire);
+        (b >> 32 == tag).then_some(b as u32)
     }
 
     /// Start computing a fact: assigns `tp` a version tag if it has none (no Python code)
@@ -1519,7 +1532,8 @@ impl<const N: usize> ClassCache<N> {
     }
 
     /// Store `payload` for `tp` at the version `begin` returned, unless the class changed
-    /// meanwhile; withdrawn when an invalidation raced the computation.
+    /// meanwhile; withdrawn when an invalidation raced the computation. Replaces an entry
+    /// of the same tag, else an empty way, else the way the tag's low bit picks.
     ///
     /// # Safety
     /// `tp` is a live type object.
@@ -1529,17 +1543,28 @@ impl<const N: usize> ClassCache<N> {
             return;
         }
         let v = u64::from(tag) << 32 | u64::from(payload);
-        let slot = &self.slots[Self::index(tp)];
+        let i = Self::set(tp as usize);
+        let (a, b) = (self.slots[i].load(Ordering::Acquire), self.slots[i + 1].load(Ordering::Acquire));
+        let way = if a >> 32 == u64::from(tag) || a == 0 {
+            0
+        } else if b >> 32 == u64::from(tag) || b == 0 {
+            1
+        } else {
+            (tag & 1) as usize
+        };
+        let slot = &self.slots[i + way];
         slot.store(v, Ordering::SeqCst);
         if self.epoch.load(Ordering::SeqCst) != epoch {
             let _ = slot.compare_exchange(v, 0, Ordering::SeqCst, Ordering::Relaxed);
         }
     }
 
-    /// Forget `tp`'s entry (whatever class shares its slot loses its entry too: a miss).
+    /// Forget `tp`'s entry (the other class sharing its set loses its entry too: a miss).
     pub fn invalidate(&self, tp: usize) {
         self.epoch.fetch_add(1, Ordering::SeqCst);
-        self.slots[(tp >> 4) % N].store(0, Ordering::SeqCst);
+        let i = Self::set(tp);
+        self.slots[i].store(0, Ordering::SeqCst);
+        self.slots[i + 1].store(0, Ordering::SeqCst);
     }
 
     /// Forget everything.

@@ -87,11 +87,14 @@ def test_dynamic_sites_adopt_install_count_and_restore(m):
     assert f(2) == ("kernel", 2) and f(x=2) == ("orig", 2)
     assert target("_selftest.dyn")["dynamic_sites"] == 2
     del ns, f
-    gc.collect()
-    assert target("_selftest.dyn")["dynamic_sites"] == 1  # held weakly
+    gc.collect()  # no reference is held: the function goes
     A.disable(["_selftest.dyn"])
+    # Retired lazily: the next call gives the function CPython's vectorcall back.
+    assert A._selftest_vectorcall(m.made_before) == "other"
     assert m.made_before(1) == ("orig", 1)
+    assert A._selftest_vectorcall(m.made_before) == "original"
     assert A.func_version(m.made_before) >= 2  # specializable again
+    assert target("_selftest.dyn") is None or target("_selftest.dyn").get("dynamic_sites", 0) == 1
     g = lambda x: ("orig", x)  # noqa: E731
     assert A._selftest_dyn_install(g) is False  # target not installed
 
