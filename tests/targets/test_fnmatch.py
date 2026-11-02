@@ -225,6 +225,34 @@ def test_tools_see_the_original():
     assert calls == [1]
 
 
+def test_many_patterns_and_threads():
+    """More distinct patterns than the kernel's pattern table holds (256 slots, 4 probes):
+    patterns that find no free slot are compiled per call; results stay CPython's, also
+    with threads compiling the same new patterns at once."""
+    rearm()
+    pats = [f"*{i}.p?" for i in range(700)] + [f"x{i}*" for i in range(300)] + ["[!a]*.py", "*.py", "coverage.*"]
+    names_ = ["7.py", "x12y", "b.py", "a.py", "coverage.txt", "699.pz"]
+    want = [[REF["fnmatch"](n, p) for n in names_] for p in pats]
+    errors = []
+
+    def work():
+        try:
+            for _ in range(2):
+                got = [[fnmatch.fnmatch(n, p) for n in names_] for p in pats]
+                if got != want:
+                    errors.append("mismatch")
+        except Exception as e:  # noqa: BLE001
+            errors.append(repr(e))
+
+    ts = [threading.Thread(target=work) for _ in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert not errors
+    assert hits("fnmatch.fnmatch") > 0
+
+
 def test_filter_concurrent_mutation_is_safe():
     pool = [f"f{i}.py" if i % 2 else f"f{i}.txt" for i in range(64)]
     names_ = list(pool)
@@ -254,6 +282,9 @@ def test_filter_concurrent_mutation_is_safe():
 
 
 def test_shared_mechanics():
+    import cProfile  # noqa: F401  (imported outside the counted windows: their import
+    import pstats  # noqa: F401   code calls the patched functions, which would count as hits)
+
     import _mechanics as M
 
     A.disable(["fnmatch"])

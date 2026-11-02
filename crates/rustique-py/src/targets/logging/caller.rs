@@ -47,7 +47,6 @@ unsafe fn internal(f: *mut ffi::PyFrameObject) -> Option<bool> {
 }
 
 /// `PyFrameObject` prefix (pycore_frame.h, identical in 3.14 and 3.15).
-#[cfg(not(Py_GIL_DISABLED))]
 #[repr(C)]
 struct RawFrame {
     ob_base: ffi::PyObject,
@@ -57,49 +56,50 @@ struct RawFrame {
     f_lineno: std::ffi::c_int,
 }
 
-#[cfg(not(Py_GIL_DISABLED))]
 unsafe extern "C" {
     fn PyFrame_GetLasti(f: *mut ffi::PyFrameObject) -> std::ffi::c_int;
 }
 
 /// `f.f_lineno` (`PyFrame_GetLineNumber`). For a frame whose `f_lineno` field is unset (0:
 /// not being traced) the line is `PyCode_Addr2Line(code, lasti)`, a pure function of the
-/// code object and the instruction offset; GIL builds memoise it per `(code, co_version,
-/// lasti)` (`co_version` is unique per code object, so a reused address cannot alias).
+/// code object and the instruction offset (CPython decodes the line table on every call:
+/// 79% of findCaller's time). The kernels memoise it per `(code, co_version, lasti)` in a
+/// per-thread table (`co_version` is unique per code object, so a reused address cannot
+/// alias; per thread: no shared line written under threads, free-threaded builds too).
 unsafe fn line_number(f: *mut ffi::PyFrameObject, code: O) -> std::ffi::c_int {
-    #[cfg(Py_GIL_DISABLED)]
-    let _ = code;
     // SAFETY: live frame of this thread and its code object.
     unsafe {
-        #[cfg(not(Py_GIL_DISABLED))]
         if (*f.cast::<RawFrame>()).f_lineno == 0 {
             let version = (*code.cast::<RawCode>()).co_version;
             let lasti = PyFrame_GetLasti(f);
             if version != 0 && lasti >= 0 {
-                let h = ((code as usize >> 4) ^ (lasti as usize).wrapping_mul(0x9e37_79b9)) % LINES;
-                let e = &mut *LINE_CACHE.0[h].get();
-                if e.0 == code as usize && e.1 == version && e.2 == lasti {
-                    return e.3;
-                }
-                let line = ffi::PyFrame_GetLineNumber(f);
-                *e = (code as usize, version, lasti, line);
-                return line;
+                let key = (code as u64) ^ ((lasti as u64) << 48) ^ ((version as u64) << 20);
+                let h = (key.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> (64 - LINE_BITS)) as usize;
+                return LINE_CACHE.with(|c| {
+                    let e = &mut (*c.get())[h];
+                    if e.0 == code as usize && e.1 == version && e.2 == lasti {
+                        return e.3;
+                    }
+                    let line = ffi::PyFrame_GetLineNumber(f);
+                    *e = (code as usize, version, lasti, line);
+                    line
+                });
             }
         }
         ffi::PyFrame_GetLineNumber(f)
     }
 }
 
-#[cfg(not(Py_GIL_DISABLED))]
-const LINES: usize = 256;
+const LINE_BITS: u32 = 8;
+const LINES: usize = 1 << LINE_BITS;
 
-#[cfg(not(Py_GIL_DISABLED))]
-struct LineCache([std::cell::UnsafeCell<(usize, u32, std::ffi::c_int, std::ffi::c_int)>; LINES]);
-// SAFETY: only used on GIL builds, where the GIL serialises the kernels.
-#[cfg(not(Py_GIL_DISABLED))]
-unsafe impl Sync for LineCache {}
-#[cfg(not(Py_GIL_DISABLED))]
-static LINE_CACHE: LineCache = LineCache([const { std::cell::UnsafeCell::new((0, 0, -1, 0)) }; LINES]);
+type LineEntry = (usize, u32, std::ffi::c_int, std::ffi::c_int);
+
+thread_local! {
+    /// `(code address, co_version, lasti) -> line`, per thread (no Drop: a plain TLS slot).
+    static LINE_CACHE: std::cell::UnsafeCell<[LineEntry; LINES]> =
+        const { std::cell::UnsafeCell::new([(0, 0, -1, 0); LINES]) };
+}
 
 unsafe fn find(mut level: i64) -> Option<O> {
     // SAFETY: attached thread; frames of this thread.

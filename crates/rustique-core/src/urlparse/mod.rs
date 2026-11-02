@@ -118,31 +118,32 @@ pub enum SplitDefer {
 }
 
 /// `_urlsplit(url, scheme, allow_fragments)` on an already cleaned url (`url.lstrip(C0)`
-/// with tab/CR/LF removed): the component ranges.
-pub fn urlsplit(url: &[u32], allow_fragments: bool) -> Result<Split, SplitDefer> {
+/// with tab/CR/LF removed), given as code units of any PEP 393 width: the component ranges.
+pub fn urlsplit<T: Copy + Into<u32>>(url: &[T], allow_fragments: bool) -> Result<Split, SplitDefer> {
     let n = url.len();
+    let at = |i: usize| -> u32 { url[i].into() };
     let mut start = 0;
     let mut scheme_from_url = None;
     // i = url.find(':'); if i > 0 and url[0].isascii() and url[0].isalpha(): all scheme_chars?
-    if let Some(i) = url.iter().position(|&c| c == 0x3a)
+    if let Some(i) = url.iter().position(|&c| c.into() == 0x3a)
         && i > 0
-        && url[0] < 128
-        && (url[0] as u8).is_ascii_alphabetic()
-        && url[..i].iter().all(|&c| is_scheme_char(c))
+        && at(0) < 128
+        && (at(0) as u8).is_ascii_alphabetic()
+        && url[..i].iter().all(|&c| is_scheme_char(c.into()))
     {
         scheme_from_url = Some((0, i));
         start = i + 1;
     }
     let mut netloc = None;
-    if n >= start + 2 && url[start] == 0x2f && url[start + 1] == 0x2f {
+    if n >= start + 2 && at(start) == 0x2f && at(start + 1) == 0x2f {
         // _splitnetloc(url, 2): the earliest of '/', '?', '#' after the '//'.
         let s = start + 2;
-        let delim = url[s..].iter().position(|&c| matches!(c, 0x2f | 0x3f | 0x23)).map_or(n, |p| s + p);
+        let delim = url[s..].iter().position(|&c| matches!(c.into(), 0x2f | 0x3f | 0x23)).map_or(n, |p| s + p);
         let net = &url[s..delim];
-        if net.iter().any(|&c| c == 0x5b || c == 0x5d) {
+        if net.iter().any(|&c| matches!(c.into(), 0x5b | 0x5d)) {
             return Err(SplitDefer::Brackets);
         }
-        if net.iter().any(|&c| c >= 128) {
+        if net.iter().any(|&c| c.into() >= 128) {
             return Err(SplitDefer::NonAsciiNetloc);
         }
         netloc = Some((s, delim));
@@ -150,12 +151,12 @@ pub fn urlsplit(url: &[u32], allow_fragments: bool) -> Result<Split, SplitDefer>
     }
     let mut end = n;
     let mut fragment = None;
-    if allow_fragments && let Some(p) = url[start..].iter().position(|&c| c == 0x23) {
+    if allow_fragments && let Some(p) = url[start..].iter().position(|&c| c.into() == 0x23) {
         fragment = Some((start + p + 1, n));
         end = start + p;
     }
     let mut query = None;
-    if let Some(p) = url[start..end].iter().position(|&c| c == 0x3f) {
+    if let Some(p) = url[start..end].iter().position(|&c| c.into() == 0x3f) {
         query = Some((start + p + 1, end));
         end = start + p;
     }
@@ -202,5 +203,9 @@ mod tests {
         assert_eq!(s.fragment, None);
         assert_eq!(part(&url, s.query).as_deref(), Some("x#y?z"));
         assert_eq!(urlsplit(&u("http://[::1]/"), true), Err(SplitDefer::Brackets));
+        // any code-unit width gives the same ranges
+        let b = b"https://h.example/p?q#f";
+        let w: Vec<u16> = b.iter().map(|&x| u16::from(x)).collect();
+        assert_eq!(urlsplit(&b[..], true), urlsplit(&w, true));
     }
 }

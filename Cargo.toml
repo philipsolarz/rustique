@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rustique-core", "crates/rustique-py"]
+members = ["crates/rustique-core", "crates/rustique-py", "crates/rustique-interp"]
 # A bare `cargo test` exercises the pure-Rust core; use `--workspace` for everything.
 default-members = ["crates/rustique-core"]
 
@@ -12,6 +12,7 @@ repository = "https://github.com/philipsolarz/rustique"
 
 [workspace.dependencies]
 rustique-core = { path = "crates/rustique-core" }
+rustique-interp = { path = "crates/rustique-interp" }
 pyo3 = "0.30.1"
 hashbrown = "0.17.1"
 foldhash = "0.2.0"

@@ -77,6 +77,32 @@ pub(crate) fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     Ok(st)
 }
 
+/// Validate armed targets now (all, or the named groups/targets): CI, conformance runs.
+#[pyfunction]
+#[pyo3(signature = (names=None))]
+fn validate(py: Python<'_>, names: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
+    registry::validate(py, self::names(names)?)
+}
+
+/// The validation policy: `"eager"` (validate at install) or `"first-call"` (the default
+/// on GIL builds; free-threaded builds are always eager). Returns the previous one.
+#[pyfunction]
+#[pyo3(signature = (mode=None))]
+fn _set_validation(mode: Option<&str>) -> PyResult<&'static str> {
+    let prev = if registry::eager() { "eager" } else { "first-call" };
+    match mode {
+        None => {}
+        Some("eager") => registry::set_eager(true),
+        Some("first-call") => registry::set_eager(false),
+        Some(m) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "validation must be 'eager' or 'first-call', not {m:?}"
+            )));
+        }
+    }
+    Ok(prev)
+}
+
 #[pyfunction]
 #[pyo3(signature = (enabled=None, reset=false))]
 fn stats(py: Python<'_>, enabled: Option<bool>, reset: bool) -> PyResult<Bound<'_, PyDict>> {
@@ -252,6 +278,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     set!("status", status);
     set!("stats", stats);
     set!("installed", installed);
+    set!("validate", validate);
+    set!("_set_validation", _set_validation);
     set!("check", check);
     set!("check_mode", check_mode);
     set!("__getattr__", accel_getattr);
