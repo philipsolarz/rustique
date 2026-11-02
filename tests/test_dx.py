@@ -388,7 +388,7 @@ def test_startup_survives_a_broken_install(sitedir, tmp_path):
     broken.mkdir()
     (broken / "_rustique.py").write_text("raise ImportError('no wheel for this interpreter')\n")
     code = f"import sys; sys.path.insert(0, {str(broken)!r})\n" + PROBE
-    r = py(code, sitedir, env=clean_env(RUSTIQUE="1"))
+    r = py(code, sitedir, env=clean_env(RUSTIQUE="1"), flags=("-S",))  # -S: no installed .pth runs first
     assert r.returncode == 0  # site reports the failing line and carries on
     assert "ImportError: no wheel for this interpreter" in r.stderr
 

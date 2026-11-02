@@ -32,8 +32,11 @@ SITEDIR = os.path.dirname(os.path.dirname(importlib.util.find_spec("rustique").o
 
 
 def run(body: str, env: dict[str, str | None], *flags: str, sitedir: str = SITEDIR) -> subprocess.CompletedProcess[str]:
-    """Run the `.pth` line as site would, then `body`, in a fresh interpreter."""
+    """Run the `.pth` line as site would, then `body`, in a fresh interpreter. Without `site`
+    (`-S`; the package's directory is put on sys.path instead), so that a `.pth` installed in
+    the venv (a wheel's) does not run the line first."""
     prologue = (
+        f"import sys; sys.path.insert(0, {SITEDIR!r})\n"
         "def _site(sitedir):\n"
         f"    exec({PTH_LINE!r})\n"
         f"_site({sitedir!r})\n"
@@ -41,7 +44,7 @@ def run(body: str, env: dict[str, str | None], *flags: str, sitedir: str = SITED
     e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
     e.update({k: v for k, v in env.items() if v is not None})
     return subprocess.run(
-        [sys.executable, *flags, "-c", prologue + textwrap.dedent(body)],
+        [sys.executable, "-S", *flags, "-c", prologue + textwrap.dedent(body)],
         capture_output=True,
         text=True,
         env=e,
