@@ -5,7 +5,6 @@ for each data-model kernel's hot operation (free-threaded builds; also runs on G
 """
 import argparse
 import json
-import statistics
 import subprocess
 import sys
 import threading
@@ -99,13 +98,14 @@ def main():
     for op in OPS:
         if a.only not in op:
             continue
-        r = {}
-        for on in ("0", "1"):
-            vals = []
-            for _ in range(a.reps):
+        # Plain and enabled interleaved; the minimum over repeats (a shared, loaded box
+        # only ever adds time).
+        vals = {"0": [], "1": []}
+        for _ in range(a.reps):
+            for on in ("0", "1"):
                 p = subprocess.run([sys.executable, __file__, "--child", op, str(a.threads), str(a.iters), on], capture_output=True, text=True, check=True)
-                vals.append(json.loads(p.stdout.strip().splitlines()[-1])["cpu_per_call_ns"])
-            r[on] = statistics.median(vals)
+                vals[on].append(json.loads(p.stdout.strip().splitlines()[-1])["cpu_per_call_ns"])
+        r = {k: min(v) for k, v in vals.items()}
         ratio = r["1"] / r["0"]
         worst = max(worst, ratio)
         print(f"{op:16s} plain {r['0']:8.1f} ns  on {r['1']:8.1f} ns  ({ratio:.3f})", flush=True)
