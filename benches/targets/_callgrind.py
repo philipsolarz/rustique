@@ -85,8 +85,9 @@ def _setup_ns(setup: str, enable: list[str] | None) -> dict[str, Any]:
     ns: dict[str, Any] = {"__name__": "__bench__"}
     exec(setup, ns)
     if enable is not None:
-        from rustique import _takeover
+        from rustique import _rustique, _takeover
 
+        _rustique._accel._set_validation(os.environ.get("RUSTIQUE_VALIDATE", "eager"))
         _takeover.enable(only=enable)
     return ns
 
@@ -124,7 +125,10 @@ def _worker(spec: dict[str, Any]) -> None:
 def _run(spec: dict[str, Any], env: dict[str, str] | None, python: str | None) -> dict[str, int]:
     with tempfile.TemporaryDirectory() as d:
         out = os.path.join(d, "cg.out")
+        # Targets validate at enable (not at their first call, DECISIONS §10.5 item 4), so
+        # a cell's warm-up never includes a validation and states read after enable are final.
         e = {**os.environ, "PYTHONHASHSEED": "0", **(env or {})}
+        e.setdefault("RUSTIQUE_VALIDATE", "eager")
         cmd = ["valgrind", "--tool=callgrind", "--instr-atstart=no", "--dump-instr=no", "--dump-line=no",
                "--compress-strings=no", "-q", f"--callgrind-out-file={out}", python or sys.executable,
                os.path.abspath(__file__), "_worker", json.dumps(spec)]

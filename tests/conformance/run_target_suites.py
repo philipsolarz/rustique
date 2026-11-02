@@ -106,8 +106,11 @@ def run_child(module_name: str, targets: list[str] | None, verbose: bool) -> dic
     """Runs in the subprocess: optionally enable, then import and run one test module."""
     status_before = None
     if targets is not None:
-        from rustique import _takeover
+        from rustique import _rustique, _takeover
 
+        # Validate at install (not at each target's first call): the states reported are
+        # final, for modules imported later too.
+        _rustique._accel._set_validation("eager")
         _takeover.enable(only=targets)
         status_before = _takeover.status()
     import importlib

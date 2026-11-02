@@ -187,7 +187,7 @@ def test_class_attribute_pins_against_class_writers(tmp_path):
 
 def test_worker_fallbacks_suspend_while_main_thread_waits(selftest_module):
     """The main thread blocks in join(): it runs no pending call. The worker's 64th
-    consecutive fallback must suspend the target itself."""
+    consecutive fallback (no hit since armed: the early exit) must suspend the target itself."""
     m = selftest_module
     A.enable(["_selftest.vectorcall"])
     seen: list[str] = []
@@ -220,7 +220,7 @@ def test_changed_dependency_swaps_nothing_until_net_benefit(selftest_module):
     m.DEP = dep  # re-armed: hits again, no swap happened
     assert m.ident(1) == ("kernel", 1)
     m.DEP = object()
-    for _ in range(80):
+    for _ in range(300):
         m.ident(1)
     assert A._selftest_vectorcall(m.ident) == "original"
     assert target("_selftest.vectorcall")["suspended"] == "fallback"

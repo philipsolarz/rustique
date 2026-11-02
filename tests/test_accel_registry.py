@@ -365,7 +365,7 @@ def test_persistent_fallback_suspends_until_next_enable(selftest_module):
         assert m.ident(x=1) == ("orig", 1)  # keyword argument: outside the subset
     settle()
     assert A._selftest_vectorcall(m.ident) == "kernel"
-    m.ident(x=1)  # the 64th consecutive fallback from a fresh install
+    m.ident(x=1)  # the 64th consecutive fallback, no hit since armed: the early exit
     settle()
     assert A._selftest_vectorcall(m.ident) == "original"
     assert A.func_version(m.ident) >= 2
@@ -384,6 +384,23 @@ def test_persistent_fallback_suspends_until_next_enable(selftest_module):
         m.ident(x=1)
     settle()
     assert A._selftest_vectorcall(m.ident) == "kernel"
+
+
+def test_startup_burst_of_fallbacks_does_not_suspend(selftest_module):
+    """Credits v2: a few hits, then 100 fallbacks (a program constructing subclasses at
+    startup: w2-floors §3, pytest_networkx), then traffic that pays off: the score reaches
+    its floor inside the decision window (256 scored calls), so no suspension."""
+    m = importlib.import_module(MOD)
+    rt.enable(only=["_selftest.vectorcall"])
+    for _ in range(8):
+        m.ident(1)
+    for _ in range(100):
+        m.ident(x=1)
+    for _ in range(300):
+        m.ident(1)
+    settle()
+    assert A._selftest_vectorcall(m.ident) == "kernel"
+    assert "suspended" not in target("_selftest.vectorcall")
 
 
 def _mixed(m, every, calls):

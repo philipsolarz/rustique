@@ -77,6 +77,14 @@ pub(crate) fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     Ok(st)
 }
 
+/// The process-level refusal: `(category, reason)` when every target refuses on this
+/// interpreter (platform, version, build, layout, unvalidated patch release), else `None`.
+/// For test suites that skip when nothing can install.
+#[pyfunction]
+fn process_refusal() -> Option<(&'static str, String)> {
+    super::version::process_refusal().map(|r| (r.category().as_str(), r.reason().to_owned()))
+}
+
 /// Validate armed targets now (all, or the named groups/targets): CI, conformance runs.
 #[pyfunction]
 #[pyo3(signature = (names=None))]
@@ -133,6 +141,51 @@ fn fingerprint(obj: &Bound<'_, PyAny>) -> PyResult<String> {
 #[pyo3(signature = (only=None))]
 fn fingerprint_report(py: Python<'_>, only: Option<Vec<String>>) -> PyResult<Vec<registry::FingerprintRow>> {
     registry::fingerprint_report(py, only)
+}
+
+/// Dev tool (the patch-release recorder): every fingerprint the selected targets and their
+/// shared groups check, in record mode: `[{"owner", "id", "v3", "accepted": [hex] | None,
+/// "v2", "v2_expected"}]` (`id` holds a note when a prepare refused or its module is not
+/// imported; `v3` is then empty).
+#[pyfunction]
+#[pyo3(signature = (only=None))]
+fn fingerprint_records(py: Python<'_>, only: Option<Vec<String>>) -> PyResult<Vec<Bound<'_, PyDict>>> {
+    registry::fingerprint_records(py, only)?
+        .into_iter()
+        .map(|(owner, r)| {
+            let d = PyDict::new(py);
+            d.set_item("owner", owner)?;
+            d.set_item("id", r.what)?;
+            d.set_item("v3", r.observed)?;
+            d.set_item("accepted", r.expected.map(|e| e.split(',').map(str::to_owned).collect::<Vec<_>>()))?;
+            d.set_item("v2", r.v2)?;
+            d.set_item("v2_expected", r.v2_expected)?;
+            Ok(d)
+        })
+        .collect()
+}
+
+/// Tests: the patch-release decision for `release` (`("recorded" | "unvalidated", None)` or
+/// `(None, (category, reason))`).
+#[pyfunction]
+fn _patch_decision(release: &str, opt_in: bool) -> (Option<&'static str>, Option<(&'static str, String)>) {
+    match super::version::patch_decision(release, opt_in) {
+        Ok(v) => (Some(v.as_str()), None),
+        Err(r) => (None, Some((r.category().as_str(), r.reason().to_owned()))),
+    }
+}
+
+/// Fingerprint format v3 of an original: `(id, hex)`.
+#[pyfunction]
+fn fingerprint3(obj: &Bound<'_, PyAny>) -> PyResult<(String, String)> {
+    let (id, v) = fp::any_v3(obj)?;
+    Ok((id, fp::hex(v)))
+}
+
+/// The recorded patch releases and the running one: `(recorded, running)`.
+#[pyfunction]
+fn patch_releases() -> (Vec<String>, String) {
+    (super::fingerprint::patches().map(str::to_owned).collect(), super::version::patch_release())
 }
 
 /// Pins of an installed target: `[(key, absent, intact, broken)]`.
@@ -233,6 +286,10 @@ fn add_extras(sub: &Bound<'_, PyModule>) -> PyResult<()> {
         sub.add_function(wrap_pyfunction!(targets, sub)?)?;
         sub.add_function(wrap_pyfunction!(fingerprint, sub)?)?;
         sub.add_function(wrap_pyfunction!(fingerprint_report, sub)?)?;
+        sub.add_function(wrap_pyfunction!(fingerprint_records, sub)?)?;
+        sub.add_function(wrap_pyfunction!(patch_releases, sub)?)?;
+        sub.add_function(wrap_pyfunction!(_patch_decision, sub)?)?;
+        sub.add_function(wrap_pyfunction!(fingerprint3, sub)?)?;
         sub.add_function(wrap_pyfunction!(pins, sub)?)?;
         sub.add_function(wrap_pyfunction!(func_version, sub)?)?;
         sub.add_function(wrap_pyfunction!(_bench, sub)?)?;
@@ -279,6 +336,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     set!("stats", stats);
     set!("installed", installed);
     set!("validate", validate);
+    set!("process_refusal", process_refusal);
     set!("_set_validation", _set_validation);
     set!("check", check);
     set!("check_mode", check_mode);

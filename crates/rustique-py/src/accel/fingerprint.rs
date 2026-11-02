@@ -49,6 +49,14 @@ impl Fast {
             self.word(u64::from_le_bytes(w));
         }
     }
+    fn finish_u64(&self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        x ^= x >> 33;
+        x
+    }
+
     fn finish(&self) -> String {
         let mut x = self.0;
         x ^= x >> 33;
@@ -254,11 +262,12 @@ fn cache_put(code: &Bound<'_, PyAny>, fp: &str) {
     }
 }
 
-/// Forget cached fingerprints (diagnostics only).
+/// Forget cached fingerprints (diagnostics only; the exit hook).
 pub(crate) fn clear_cache() {
-    if let Ok(mut c) = CACHE.lock() {
-        *c = None;
-    }
+    let old = CACHE.lock().ok().and_then(|mut c| c.take());
+    drop(old);
+    let old3 = CACHE3.lock().ok().and_then(|mut c| c.take());
+    drop(old3);
 }
 
 /// Canonical fingerprint of a pure-Python function's code.
@@ -306,7 +315,448 @@ pub fn any(obj: &Bound<'_, PyAny>) -> PyResult<String> {
     }
 }
 
-/// The expected fingerprint for the running `(major, minor)`, if recorded.
+/// The expected fingerprint for the running `(major, minor)`, if recorded (format v2,
+/// inline in a target's code; superseded by the v3 data, [`accepted`]).
 pub fn expected_for(expected: Fingerprints, major: u8, minor: u8) -> Option<&'static str> {
     expected.iter().find(|(a, b, _)| *a == major && *b == minor).map(|(_, _, h)| *h)
+}
+
+// ---------------------------------------------------------------------------------------
+// Format v3 (DECISIONS §10.5, docs/atlas/w2-floors.md §5.3)
+// ---------------------------------------------------------------------------------------
+//
+// v2 minus docstrings (`co_consts[0]` when `CO_HAS_DOCSTRING`; `ml_doc` of C originals), and
+// with the exception table canonicalized: the handler (target, depth, lasti) of each
+// instruction that can raise a *synchronous* exception (opcode metadata `HAS_ERROR` /
+// `HAS_ERROR_NO_POP`), instead of the table's byte encoding. Two code objects with equal v3
+// send every synchronous exception to the same handler; asynchronous ones (signals,
+// `PyThreadState_SetAsyncExc` at `JUMP_BACKWARD`'s eval breaker) are outside the contract
+// (ACCELERATION §5.8). The accepted v3 hashes of every original live in `fingerprints.txt`
+// (per target, original and minor; a set: a patch release whose code changed in a way the
+// kernel still covers adds its hash after review), with the list of recorded patch releases
+// (`benches/accel/record_patch.py` runs the conformance suites first).
+
+const CO_HAS_DOCSTRING: i32 = 0x0400_0000;
+
+/// Raising opcodes, cache sizes and `EXTENDED_ARG` of the running minor.
+fn opcode_tables() -> Option<(&'static [u64; 4], &'static [u8; 256])> {
+    use super::opcodes::*;
+    match super::version::running() {
+        (3, 14) => Some((&RAISES_3_14, &CACHES_3_14)),
+        (3, 15) => Some((&RAISES_3_15, &CACHES_3_15)),
+        _ => None,
+    }
+}
+
+/// One exception-table varint (6 bits per byte, bit 6: more).
+fn varint(t: &[u8], i: &mut usize) -> Option<u32> {
+    let mut b = *t.get(*i)?;
+    *i += 1;
+    let mut v = u32::from(b & 63);
+    while b & 64 != 0 {
+        b = *t.get(*i)?;
+        *i += 1;
+        v = (v << 6) | u32::from(b & 63);
+    }
+    Some(v)
+}
+
+/// The canonical exception table: for each raising instruction (code-unit index), its
+/// handler or none.
+fn canonical_exceptions(h: &mut Fast, code: &[u8], table: &[u8]) -> PyResult<()> {
+    let (raises, caches) =
+        opcode_tables().ok_or_else(|| PyTypeError::new_err("no opcode tables for this CPython minor"))?;
+    let mut entries: Vec<(u32, u32, u32, u32)> = Vec::new();
+    let mut i = 0;
+    while i < table.len() {
+        let parsed = (|| {
+            Some((varint(table, &mut i)?, varint(table, &mut i)?, varint(table, &mut i)?, varint(table, &mut i)?))
+        })();
+        let Some((start, len, target, dl)) = parsed else {
+            return Err(PyTypeError::new_err("malformed exception table"));
+        };
+        entries.push((start, start + len, target, dl));
+    }
+    let units = code.len() / 2;
+    let mut n = 0u64;
+    let mut u = 0usize;
+    while u < units {
+        let op = code[2 * u];
+        if raises[usize::from(op) / 64] >> (op % 64) & 1 != 0 {
+            let at = u as u32;
+            match entries.iter().find(|e| e.0 <= at && at < e.1) {
+                Some(&(_, _, target, dl)) => {
+                    h.word(u64::from(at) | 1 << 32);
+                    h.word(u64::from(target) | u64::from(dl) << 32);
+                }
+                None => h.word(u64::from(at)),
+            }
+            n += 1;
+        }
+        u += 1 + usize::from(caches[usize::from(op)]);
+    }
+    h.word(n);
+    Ok(())
+}
+
+/// # Safety
+/// Attached thread; `code` a live code object; `RawCode` layout calibrated.
+unsafe fn code3(h: &mut Fast, code: *mut ffi::PyObject, depth: u32) -> PyResult<()> {
+    // SAFETY: per the caller.
+    unsafe {
+        let raw = &*code.cast::<super::version::RawCode>();
+        let co = Bound::from_owned_ptr_or_err(Python::assume_attached(), PyCode_GetCode(code))?;
+        let bytecode = bytes_of(co.as_ptr());
+        h.bytes(bytecode);
+        h.word(raw.co_argcount as u32 as u64 | (raw.co_posonlyargcount as u32 as u64) << 32);
+        h.word(raw.co_kwonlyargcount as u32 as u64 | (raw.co_flags as u32 as u64) << 32);
+        str_tuple(h, raw.co_names)?;
+        str_tuple(h, raw.co_localsplusnames)?;
+        h.bytes(bytes_of(raw.co_localspluskinds));
+        let consts = raw.co_consts;
+        let n = ffi::PyTuple_GET_SIZE(consts);
+        h.word(n as u64);
+        let skip_doc = raw.co_flags & CO_HAS_DOCSTRING != 0;
+        for i in 0..n {
+            if i == 0 && skip_doc {
+                h.word(15); // a docstring: its text is not part of the behaviour
+                continue;
+            }
+            let c = ffi::PyTuple_GET_ITEM(consts, i);
+            if ffi::Py_TYPE(c) == &raw mut ffi::PyCode_Type {
+                h.word(13);
+                code3(h, c, depth + 1)?;
+            } else {
+                const2(h, c, depth)?;
+            }
+        }
+        canonical_exceptions(h, bytecode, bytes_of(raw.co_exceptiontable))?;
+    }
+    Ok(())
+}
+
+/// Canonical fingerprint of a code object, format v3 (cached per code object).
+pub fn code_v3(code: &Bound<'_, PyAny>) -> PyResult<u64> {
+    if code.cast::<PyCode>().is_err() {
+        return Err(PyTypeError::new_err("not a code object"));
+    }
+    if !super::version::code_layout_cached(code)? {
+        return Err(PyTypeError::new_err("PyCodeObject layout differs"));
+    }
+    if let Some(hit) = cache3_get(code.as_ptr() as usize) {
+        return Ok(hit);
+    }
+    let mut h = Fast(0x3c0d_e3c0_de3c_0de3);
+    // SAFETY: attached thread; a live code object; layout calibrated just above.
+    unsafe { code3(&mut h, code.as_ptr(), 0)? };
+    let out = h.finish_u64();
+    cache3_put(code, out);
+    Ok(out)
+}
+
+/// Format v3 of a C original: `ml_name` and `ml_flags` (no `ml_doc`).
+///
+/// # Safety
+/// `def` is a live method table entry.
+pub unsafe fn method_def_v3(def: *const ffi::PyMethodDef) -> u64 {
+    let mut h = Fast(0x3c0f_f3e5_c3ff_3e53);
+    // SAFETY: per the caller; NUL-terminated strings or NULL.
+    unsafe {
+        let name = if (*def).ml_name.is_null() { &[][..] } else { CStr::from_ptr((*def).ml_name).to_bytes() };
+        h.bytes(name);
+        h.word((*def).ml_flags as u32 as u64);
+    }
+    h.finish_u64()
+}
+
+/// v3 of any original (function, code object, C function or method descriptor) and its
+/// stable id (`module.qualname` of a function, `qualname` of a code object, `Type.name` /
+/// `module.name` of a C original).
+pub fn any_v3(obj: &Bound<'_, PyAny>) -> PyResult<(String, u64)> {
+    let py = obj.py();
+    if obj.cast_exact::<PyFunction>().is_ok() {
+        // SAFETY: an exact function object: live code and module fields.
+        let (code, module) = unsafe {
+            let f = obj.as_ptr().cast::<ffi::PyFunctionObject>();
+            (Bound::from_borrowed_ptr(py, (*f).func_code), (*f).func_module)
+        };
+        let q: String = code.getattr(pyo3::intern!(py, "co_qualname"))?.extract()?;
+        let m = if module.is_null() {
+            None
+        } else {
+            // SAFETY: a live object (the function's module name).
+            unsafe { Bound::from_borrowed_ptr(py, module) }.extract::<String>().ok()
+        };
+        let id = match m {
+            Some(m) => format!("{m}.{q}"),
+            None => q,
+        };
+        return Ok((id, code_v3(&code)?));
+    }
+    if obj.cast::<PyCode>().is_ok() {
+        let q: String = obj.getattr(pyo3::intern!(py, "co_qualname"))?.extract()?;
+        return Ok((q, code_v3(obj)?));
+    }
+    // SAFETY: attached thread.
+    let def = unsafe { super::site::method_def(obj.as_ptr()) }
+        .ok_or_else(|| PyTypeError::new_err("not a function, code object or C function"))?;
+    // SAFETY: a live method def.
+    Ok((super::prepare::c_name_of(obj, def), unsafe { method_def_v3(def) }))
+}
+
+/// 16 lowercase hex digits.
+pub fn hex(x: u64) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digits: Vec<u8> = (0..16).rev().map(|i| HEX[((x >> (4 * i)) & 15) as usize]).collect();
+    String::from_utf8(digits).expect("ASCII hex digits")
+}
+
+#[allow(clippy::type_complexity)]
+static CACHE3: std::sync::Mutex<
+    Option<std::collections::HashMap<usize, (Py<PyAny>, u64), foldhash::fast::FixedState>>,
+> = std::sync::Mutex::new(None);
+
+fn cache3_get(code: usize) -> Option<u64> {
+    CACHE3.lock().ok()?.as_ref()?.get(&code).map(|(_, f)| *f)
+}
+
+fn cache3_put(code: &Bound<'_, PyAny>, fp: u64) {
+    let old = CACHE3.lock().ok().and_then(|mut c| {
+        c.get_or_insert_with(Default::default).insert(code.as_ptr() as usize, (code.clone().unbind(), fp))
+    });
+    drop(old);
+}
+
+// The recorded data (`fingerprints.txt`), indexed at compile time: no parsing at run time
+// (a run-time parse of the file cost ~1.2M instructions at the first gate, on every
+// `RUSTIQUE=1` start). The file's entries must be sorted by (minor, owner, id): checked at
+// compile time (the recorder writes them sorted).
+
+const TEXT: &str = include_str!("fingerprints.txt");
+
+/// One accepted-hashes line: minor and byte ranges of owner, id and the hashes in [`TEXT`].
+#[derive(Clone, Copy)]
+struct Entry {
+    minor: u8,
+    owner: (u32, u32),
+    id: (u32, u32),
+    hashes: (u32, u32),
+}
+
+const fn is_space(b: u8) -> bool {
+    b == b' ' || b == b'\t' || b == b'\r'
+}
+
+/// Byte range of the next token of `t` in `[i, end)`, or `None`.
+const fn token(t: &[u8], mut i: usize, end: usize) -> Option<(usize, usize)> {
+    while i < end && is_space(t[i]) {
+        i += 1;
+    }
+    if i >= end {
+        return None;
+    }
+    let s = i;
+    while i < end && !is_space(t[i]) {
+        i += 1;
+    }
+    Some((s, i))
+}
+
+/// The end of the line starting at `i` (excluding a `#` comment) and the next line's start.
+const fn line(t: &[u8], i: usize) -> (usize, usize) {
+    let mut j = i;
+    while j < t.len() && t[j] != b'\n' {
+        j += 1;
+    }
+    let next = if j < t.len() { j + 1 } else { j };
+    let mut k = i;
+    while k < j && t[k] != b'#' {
+        k += 1;
+    }
+    (k, next)
+}
+
+const fn starts_with(t: &[u8], s: usize, e: usize, p: &[u8]) -> bool {
+    if e - s != p.len() {
+        return false;
+    }
+    let mut k = 0;
+    while k < p.len() {
+        if t[s + k] != p[k] {
+            return false;
+        }
+        k += 1;
+    }
+    true
+}
+
+/// `"3.15"` → 15.
+const fn minor_of(t: &[u8], s: usize, e: usize) -> u8 {
+    if e - s < 3 || t[s] != b'3' || t[s + 1] != b'.' {
+        panic!("fingerprints.txt: a line must start with `patch` or a minor version `3.N`");
+    }
+    let mut v: u32 = 0;
+    let mut k = s + 2;
+    while k < e {
+        v = v * 10 + (t[k] - b'0') as u32;
+        k += 1;
+    }
+    v as u8
+}
+
+/// Counts (entries, patch releases).
+const fn counts(t: &[u8]) -> (usize, usize) {
+    let (mut n, mut p, mut i) = (0, 0, 0);
+    while i < t.len() {
+        let (end, next) = line(t, i);
+        if let Some((s, e)) = token(t, i, end) {
+            if starts_with(t, s, e, b"patch") {
+                let mut j = e;
+                while let Some((_, e2)) = token(t, j, end) {
+                    p += 1;
+                    j = e2;
+                }
+            } else {
+                n += 1;
+            }
+        }
+        i = next;
+    }
+    (n, p)
+}
+
+const COUNTS: (usize, usize) = counts(TEXT.as_bytes());
+
+const fn cmp_bytes(t: &[u8], a: (usize, usize), b: (usize, usize)) -> i32 {
+    let (la, lb) = (a.1 - a.0, b.1 - b.0);
+    let mut k = 0;
+    while k < la && k < lb {
+        if t[a.0 + k] != t[b.0 + k] {
+            return if t[a.0 + k] < t[b.0 + k] { -1 } else { 1 };
+        }
+        k += 1;
+    }
+    if la < lb {
+        -1
+    } else if la > lb {
+        1
+    } else {
+        0
+    }
+}
+
+const fn index_entries<const N: usize>(t: &[u8]) -> [Entry; N] {
+    let mut out = [Entry { minor: 0, owner: (0, 0), id: (0, 0), hashes: (0, 0) }; N];
+    let (mut n, mut i) = (0, 0);
+    while i < t.len() {
+        let (end, next) = line(t, i);
+        if let Some((s, e)) = token(t, i, end)
+            && !starts_with(t, s, e, b"patch")
+        {
+            let minor = minor_of(t, s, e);
+            let Some(owner) = token(t, e, end) else { panic!("fingerprints.txt: owner missing") };
+            let Some(id) = token(t, owner.1, end) else { panic!("fingerprints.txt: id missing") };
+            let hs = match token(t, id.1, end) {
+                Some((h0, _)) => h0,
+                None => panic!("fingerprints.txt: hashes missing"),
+            };
+            let mut he = end;
+            while he > hs && is_space(t[he - 1]) {
+                he -= 1;
+            }
+            out[n] = Entry {
+                minor,
+                owner: (owner.0 as u32, owner.1 as u32),
+                id: (id.0 as u32, id.1 as u32),
+                hashes: (hs as u32, he as u32),
+            };
+            if n > 0 {
+                let p = out[n - 1];
+                let c = if p.minor != minor {
+                    if p.minor < minor { -1 } else { 1 }
+                } else {
+                    let co = cmp_bytes(t, (p.owner.0 as usize, p.owner.1 as usize), owner);
+                    if co != 0 { co } else { cmp_bytes(t, (p.id.0 as usize, p.id.1 as usize), id) }
+                };
+                if c >= 0 {
+                    panic!("fingerprints.txt: entries must be sorted by (minor, owner, id), without duplicates");
+                }
+            }
+            n += 1;
+        }
+        i = next;
+    }
+    out
+}
+
+const fn index_patches<const P: usize>(t: &[u8]) -> [(u32, u32); P] {
+    let mut out = [(0u32, 0u32); P];
+    let (mut n, mut i) = (0, 0);
+    while i < t.len() {
+        let (end, next) = line(t, i);
+        if let Some((s, e)) = token(t, i, end)
+            && starts_with(t, s, e, b"patch")
+        {
+            let mut j = e;
+            while let Some((s2, e2)) = token(t, j, end) {
+                out[n] = (s2 as u32, e2 as u32);
+                n += 1;
+                j = e2;
+            }
+        }
+        i = next;
+    }
+    out
+}
+
+static ENTRIES: [Entry; COUNTS.0] = index_entries::<{ COUNTS.0 }>(TEXT.as_bytes());
+static PATCHES: [(u32, u32); COUNTS.1] = index_patches::<{ COUNTS.1 }>(TEXT.as_bytes());
+
+fn slice(r: (u32, u32)) -> &'static str {
+    &TEXT[r.0 as usize..r.1 as usize]
+}
+
+/// The recorded (validated) patch releases (`"3.15.1"`, `"3.15.1t"`).
+pub fn patches() -> impl Iterator<Item = &'static str> {
+    PATCHES.iter().map(|r| slice(*r))
+}
+
+/// The accepted v3 hashes of one original (space-separated hex in the data).
+#[derive(Clone, Copy, Debug)]
+pub struct Accepted(&'static str);
+
+impl Accepted {
+    pub fn iter(self) -> impl Iterator<Item = u64> {
+        self.0.split_whitespace().filter_map(|h| u64::from_str_radix(h, 16).ok())
+    }
+    pub fn contains(self, v: u64) -> bool {
+        self.iter().any(|h| h == v)
+    }
+}
+
+/// The accepted v3 hashes of `owner`'s (target or group) original `id` on the running
+/// minor, if recorded (binary search: no allocation).
+pub fn accepted(owner: &str, id: &str) -> Option<Accepted> {
+    let (_, minor) = super::version::running();
+    let key = (minor, owner, id);
+    ENTRIES
+        .binary_search_by(|e| (e.minor, slice(e.owner), slice(e.id)).cmp(&key))
+        .ok()
+        .map(|i| Accepted(slice(ENTRIES[i].hashes)))
+}
+
+/// For targets that check an original themselves (outside `Prepare`): is `obj` an original
+/// recorded for `target` (v3 data), or, when the data has no entry for it, does its v2
+/// fingerprint equal the inline `expected` one?
+pub fn check(target: &str, obj: &Bound<'_, PyAny>, expected: Fingerprints) -> bool {
+    match any_v3(obj) {
+        Ok((id, v3)) => match accepted(target, &id) {
+            Some(set) => set.contains(v3),
+            None => {
+                let (major, minor) = super::version::running();
+                expected_for(expected, major, minor).is_some_and(|w| any(obj).is_ok_and(|f| f == w))
+            }
+        },
+        Err(_) => false,
+    }
 }
