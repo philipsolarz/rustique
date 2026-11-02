@@ -287,10 +287,14 @@ Modules: `test_gc`, `test_weakref`, `test_finalization`, `test_gc_stats` (3.15),
 `test_gc`, `test_weakref`, `test_sys` and `test_exceptions` on 3.15.1 fails identically
 without Rustique (environment).
 
-Rustique's own suites: `tests/test_gc_tier.py` (26), `tests/test_gc_tier_callbacks.py` (8,
+Rustique's own suites: `tests/test_gc_tier.py` (27), `tests/test_gc_tier_callbacks.py` (8,
 one of them 50 Hypothesis programs by default, `RQ_GC_EXAMPLES`), `tests/test_gc_tier_threads.py`
-(3) pass on the four primary builds; the whole `pytest -q tests` is green on all four
-(PENDING-PYTEST).
+(3): 38 pass on the four primary builds, alone and with the `interp` tier on too
+(`RQ_GC_TIERS=gc,interp RQ_GC_ONLY=gc,interp`), and on 3.15.2, 3.15.2t, 3.14.10. The whole
+`pytest -q tests` at the merged head (wave2 f127702): 3.15.1 2,533 passed + 1 failure of
+`test_dx_estimate.py::test_signal_sampler_samples_cpu_not_waiting` under box load (passes
+alone), 3.15.1t 2,548, 3.14.9 2,517, 3.14.9t 2,532 passed; `cargo clippy --workspace
+--all-targets -D warnings` and `cargo fmt --check` clean.
 
 ## 7. Cost of the mechanism (callgrind)
 
