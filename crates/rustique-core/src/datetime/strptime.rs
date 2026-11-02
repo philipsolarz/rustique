@@ -90,6 +90,62 @@ pub struct Program {
     items: Vec<Item>,
     fields: Vec<Dir>,
     version: Version,
+    /// Every item's end is unique given the next item (see [`separated`]): when the greedy
+    /// pass fails, sre finds no match either, and the backtracking matcher is skipped.
+    separated: bool,
+}
+
+/// Can byte `c` occur in a match of `dir` at an index >= 1? (Numbers: digits; names:
+/// letters; `%z`: digits, `:` and `.`; the leading space of `%d %H %I` and the sign/`Z` of
+/// `%z` only at index 0.)
+fn inner(dir: Dir, c: u8) -> bool {
+    match dir {
+        Dir::MonthAbbr | Dir::MonthFull | Dir::WeekdayAbbr | Dir::WeekdayFull | Dir::AmPm => c.is_ascii_alphabetic(),
+        Dir::Z | Dir::ColonZ => c.is_ascii_digit() || c == b':' || c == b'.',
+        _ => c.is_ascii_digit(),
+    }
+}
+
+/// Can a match of `dir` start with byte `c`?
+fn first(dir: Dir, c: u8) -> bool {
+    match dir {
+        Dir::Day | Dir::Hour24 | Dir::Hour12 => c.is_ascii_digit() || c == b' ',
+        Dir::Z | Dir::ColonZ => matches!(c, b'+' | b'-' | b'Z'),
+        _ => inner(dir, c),
+    }
+}
+
+/// A program where sre's backtracking can never reach an end the greedy pass did not try:
+/// two ends of a directive both followed by the next literal would put that literal's
+/// character inside the longer match (excluded by `inner`); a shorter whitespace run can
+/// only help a directive that starts with one space (`%d %H %I`), whose " d" match ends
+/// where its one-digit match after the full run ends; `%z` (which may be empty on 3.15) is
+/// excluded after whitespace and before a literal that could start it. Directives directly
+/// followed by directives are not separated.
+fn separated(items: &[Item]) -> bool {
+    items.iter().enumerate().all(|(i, &it)| {
+        let next = items.get(i + 1).copied();
+        match it {
+            Item::Lit(_) => true,
+            Item::Ws => match next {
+                None | Some(Item::Lit(_)) => !matches!(next, Some(Item::Lit(c)) if is_space(c)),
+                // A shorter run leaves one space for `%d %H %I`'s " d" form, which ends where
+                // their one-digit form after the full run ends: the same continuations.
+                Some(Item::Field(d, _)) => !matches!(d, Dir::Z | Dir::ColonZ),
+                Some(Item::Ws) => false,
+            },
+            Item::Field(d, _) => match next {
+                None | Some(Item::Ws) => true,
+                Some(Item::Lit(c)) => {
+                    let (lo, up) = (c.to_ascii_lowercase(), c.to_ascii_uppercase());
+                    !inner(d, lo)
+                        && !inner(d, up)
+                        && !(matches!(d, Dir::Z | Dir::ColonZ) && (first(d, lo) || first(d, up)))
+                }
+                Some(Item::Field(..)) => false,
+            },
+        }
+    })
 }
 
 /// Longest format / input handled (longer ones fall back; real ones are ≤ 30 chars).
@@ -170,7 +226,8 @@ pub fn compile(fmt: &[u8], version: Version) -> Option<Program> {
     if seen & Dir::Day.bit() != 0 && !has_year {
         return None; // 3.14: DeprecationWarning; 3.15: ValueError
     }
-    Some(Program { items, fields, version })
+    let separated = separated(&items);
+    Some(Program { items, fields, version, separated })
 }
 
 /// End positions of one item, in sre's order, without duplicates.
@@ -622,6 +679,7 @@ impl Program {
         let mut caps = [(0u8, 0u8); 24];
         let end = match self.first_match_greedy(s, &mut caps) {
             Some(e) => e,
+            None if self.separated => return None,
             None => {
                 let mut steps = 0;
                 self.first_match(0, 0, s, &mut caps, &mut steps).ok()??
@@ -884,7 +942,13 @@ mod tests {
         let mut checked = 0;
         let mut check = |prog: &Program, s: &[u8], f: &str| {
             let mut c1 = [(0u8, 0u8); 24];
-            if let Some(e1) = prog.first_match_greedy(s, &mut c1) {
+            let greedy = prog.first_match_greedy(s, &mut c1);
+            if greedy.is_none() && prog.separated {
+                let mut c2 = [(0u8, 0u8); 24];
+                let mut steps = 0;
+                assert_eq!(prog.first_match(0, 0, s, &mut c2, &mut steps), Ok(None), "separated {f} {s:?}");
+            }
+            if let Some(e1) = greedy {
                 let mut c2 = [(0u8, 0u8); 24];
                 let mut steps = 0;
                 let e2 = prog.first_match(0, 0, s, &mut c2, &mut steps).unwrap().unwrap();
@@ -930,6 +994,15 @@ mod tests {
             }
         }
         assert!(checked > 10_000, "{checked}");
+        for (f, sep) in [
+            ("%Y-%m-%d %H:%M:%S", true),
+            ("%m/%d/%Y %I:%M %p", true),
+            ("%d/%b/%Y:%H:%M:%S %z", false),
+            ("%Y%m%d", false),
+            ("%d.%m.%Y %H:%M", true),
+        ] {
+            assert_eq!(compile(f.as_bytes(), Version::V3_15).unwrap().separated, sep, "{f}");
+        }
     }
 
     #[test]
