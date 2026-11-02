@@ -15,6 +15,8 @@ MW = MyWrapper(width=60)
 class S(str):
     pass
 SS = S('subclass text that must fall back to CPython')
+DESC1 = DESC.replace('alpha', 'caf\u00e9')
+DESC2 = DESC.replace('alpha', '\u0161\u010d\u0107')
 """
 
 INSTALL = """
@@ -34,7 +36,11 @@ CELLS = {
     "indent('x', '> ')": "textwrap.indent('x', '> ')",
     "TextWrapper.wrap(540)": "TW.wrap(T540)",
     "TextWrapper.fill(desc)": "TW.fill(DESC)",
+    "fill(desc, Latin-1)": "textwrap.fill(DESC1, width=88)",
+    "fill(desc, UCS-2)": "textwrap.fill(DESC2, width=88)",
+    "shorten(title, 12) [max_lines cut]": "textwrap.shorten(TITLE, 12)",
     # fallbacks
+    "fill(max_lines, empty placeholder) [fallback]": "textwrap.fill(TITLE, 12, max_lines=1, placeholder='')",
     "wrap(str subclass) [fallback]": "textwrap.wrap(SS, 20)",
     "subclass with _split [fallback]": "MW.wrap(T540)",
     "indent(predicate) [fallback]": "textwrap.indent(LINES, '> ', str.strip)",

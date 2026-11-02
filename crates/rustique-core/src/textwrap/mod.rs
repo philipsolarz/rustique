@@ -21,7 +21,7 @@ pub trait Classes {
 /// `textwrap._whitespace`: the six ASCII whitespace characters of the regexes.
 #[inline]
 pub fn is_ws(c: u32) -> bool {
-    matches!(c, 0x09..=0x0d | 0x20)
+    c == 0x20 || c.wrapping_sub(0x09) < 5
 }
 
 /// One chunk: a range of the munged text, or the literal two spaces that
@@ -145,10 +145,7 @@ pub fn split_words_into(text: &[u32], cls: &impl Classes, out: &mut Vec<Chunk>) 
     let mut p = 0;
     while p < n {
         if is_ws(text[p]) {
-            let mut q = p + 1;
-            while q < n && is_ws(text[q]) {
-                q += 1;
-            }
+            let q = p + 1 + text[p + 1..].iter().position(|&c| !is_ws(c)).unwrap_or(n - p - 1);
             out.push(Chunk::Text(p, q));
             p = q;
             continue;
@@ -165,9 +162,7 @@ pub fn split_words_into(text: &[u32], cls: &impl Classes, out: &mut Vec<Chunk>) 
         let end = loop {
             // text[p..q] is non-whitespace (q - p >= 1). No tail can match at a q whose
             // character is neither '-' nor whitespace: skip to the next candidate.
-            while q < n && text[q] != 0x2d && !is_ws(text[q]) {
-                q += 1;
-            }
+            q += text[q..].iter().position(|&c| c == 0x2d || is_ws(c)).unwrap_or(n - q);
             // (b) end of word.
             if q == n || is_ws(text[q]) {
                 break q;
@@ -576,18 +571,23 @@ pub fn wrap_chunks(
     Ok((0..w.len()).map(|i| w.line_cps(i, text, o)).collect())
 }
 
-/// `textwrap.dedent(text)` into `out` (cleared first): `false` when the result is `text`
-/// itself (CPython returns the same object: one line, nothing removed) and `out` is unused.
-pub fn dedent_into<T: Copy + Ord + Into<u32>>(text: &[T], cls: &impl Classes, out: &mut Vec<u32>) -> bool {
+/// `textwrap.dedent(text)` as ranges of `text`: the kept part of each line, in order (to be
+/// joined with `\n`; blank lines give empty ranges), in `out` (cleared first). `false` when
+/// the result is `text` itself (CPython returns the same object: one line, nothing
+/// removed) and `out` is unused.
+pub fn dedent_ranges<T: Copy + Ord + Into<u32>>(text: &[T], cls: &impl Classes, out: &mut Vec<(usize, usize)>) -> bool {
     out.clear();
     let nl = |c: &T| (*c).into() == 0x0a;
     let blank = |l: &[T]| !l.is_empty() && l.iter().all(|&c| cls.is_space(c.into()));
     let mut l1: Option<&[T]> = None;
     let mut l2: Option<&[T]> = None;
-    let mut nlines = 0usize;
+    // One pass: line ranges (with a blank flag) and the min/max non-blank lines.
+    let mut start = 0;
     for l in text.split(nl) {
-        nlines += 1;
-        if l.is_empty() || blank(l) {
+        let b = blank(l);
+        out.push((start, if b { start } else { start + l.len() }));
+        start += l.len() + 1;
+        if l.is_empty() || b {
             continue;
         }
         if l1.is_none_or(|m| l < m) {
@@ -607,16 +607,12 @@ pub fn dedent_into<T: Copy + Ord + Into<u32>>(text: &[T], cls: &impl Classes, ou
             }
         }
     }
-    if nlines == 1 && margin == 0 && !blank(text) {
+    if out.len() == 1 && margin == 0 && !blank(text) {
         return false;
     }
-    out.reserve(text.len());
-    for (i, l) in text.split(nl).enumerate() {
-        if i > 0 {
-            out.push(0x0a);
-        }
-        if !blank(l) {
-            out.extend(l[margin.min(l.len())..].iter().map(|&c| c.into()));
+    for r in out.iter_mut() {
+        if r.1 > r.0 {
+            r.0 += margin.min(r.1 - r.0);
         }
     }
     true
@@ -624,13 +620,24 @@ pub fn dedent_into<T: Copy + Ord + Into<u32>>(text: &[T], cls: &impl Classes, ou
 
 /// `textwrap.dedent(text)`: `None` when the result is `text` itself.
 pub fn dedent(text: &[u32], cls: &impl Classes) -> Option<Vec<u32>> {
+    let mut r = Vec::new();
+    if !dedent_ranges(text, cls, &mut r) {
+        return None;
+    }
     let mut out = Vec::new();
-    dedent_into(text, cls, &mut out).then_some(out)
+    for (i, &(a, b)) in r.iter().enumerate() {
+        if i > 0 {
+            out.push(0x0a);
+        }
+        out.extend_from_slice(&text[a..b]);
+    }
+    Some(out)
 }
 
 /// `str.splitlines(True)` boundaries: `\n \r \r\n \x0b \x0c \x1c \x1d \x1e \x85    `.
+#[inline]
 pub fn is_line_break(c: u32) -> bool {
-    matches!(c, 0x0a | 0x0b | 0x0c | 0x0d | 0x1c | 0x1d | 0x1e | 0x85 | 0x2028 | 0x2029)
+    if c > 0x1e { c == 0x85 || c == 0x2028 || c == 0x2029 } else { c >= 0x0a && (c <= 0x0d || c >= 0x1c) }
 }
 
 /// The lines of `str.splitlines(True)` as ranges, one at a time.
@@ -661,35 +668,33 @@ pub fn splitlines_keepends(text: &[u32]) -> Vec<(usize, usize)> {
     lines_keepends(text).collect()
 }
 
-/// `textwrap.indent(text, prefix)` (no predicate) into `out` (cleared first): `false` when
+/// `textwrap.indent(text, prefix)` (no predicate) as the lines of `str.splitlines(True)`
+/// with a flag "prefixed" (`not line.isspace()`), in `out` (cleared first). `false` when
 /// CPython returns `text` itself (a single line that is all whitespace: nothing to prefix,
 /// `''.join([text])`) and `out` is unused.
-pub fn indent_into<T: Copy + Into<u32>>(text: &[T], prefix: &[u32], cls: &impl Classes, out: &mut Vec<u32>) -> bool {
+pub fn indent_ranges<T: Copy + Into<u32>>(text: &[T], cls: &impl Classes, out: &mut Vec<(usize, usize, bool)>) -> bool {
     out.clear();
     let space = |l: &[T]| !l.is_empty() && l.iter().all(|&c| cls.is_space(c.into()));
-    let mut it = lines_keepends(text);
-    if let Some((a, b)) = it.next()
-        && b == text.len()
-        && a == 0
-        && space(text)
-    {
-        return false;
-    }
-    out.reserve(text.len() + 2 * prefix.len());
     for (a, b) in lines_keepends(text) {
-        let l = &text[a..b];
-        if !space(l) {
-            out.extend_from_slice(prefix);
-        }
-        out.extend(l.iter().map(|&c| c.into()));
+        out.push((a, b, !space(&text[a..b])));
     }
-    true
+    !(out.len() == 1 && !out[0].2)
 }
 
 /// `textwrap.indent(text, prefix)` (no predicate): `None` when CPython returns `text`.
 pub fn indent(text: &[u32], prefix: &[u32], cls: &impl Classes) -> Option<Vec<u32>> {
+    let mut r = Vec::new();
+    if !indent_ranges(text, cls, &mut r) {
+        return None;
+    }
     let mut out = Vec::new();
-    indent_into(text, prefix, cls, &mut out).then_some(out)
+    for (a, b, p) in r {
+        if p {
+            out.extend_from_slice(prefix);
+        }
+        out.extend_from_slice(&text[a..b]);
+    }
+    Some(out)
 }
 
 #[cfg(test)]

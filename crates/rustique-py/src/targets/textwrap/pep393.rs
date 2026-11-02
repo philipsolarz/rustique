@@ -174,11 +174,17 @@ impl StrWriter {
                         self.single = c.into();
                     }
                 }
+                ffi::PyUnicode_1BYTE_KIND if std::mem::size_of::<T>() == 1 && s.len() >= 32 => {
+                    std::ptr::copy_nonoverlapping(s.as_ptr().cast::<u8>(), self.data.add(self.pos), s.len());
+                }
                 ffi::PyUnicode_1BYTE_KIND => {
                     let d = self.data.add(self.pos);
                     for (i, &c) in s.iter().enumerate() {
                         *d.add(i) = c.into() as u8;
                     }
+                }
+                ffi::PyUnicode_2BYTE_KIND if std::mem::size_of::<T>() == 2 => {
+                    std::ptr::copy_nonoverlapping(s.as_ptr().cast::<u8>(), self.data.add(2 * self.pos), 2 * s.len());
                 }
                 ffi::PyUnicode_2BYTE_KIND => {
                     let d = self.data.cast::<u16>().add(self.pos);
@@ -232,9 +238,18 @@ impl StrWriter {
     }
 }
 
-/// The largest code point of `s` (0 when empty).
+/// The largest code point of `s` (0 when empty), or for one-byte units a value of the same
+/// PEP 393 class (127 when ASCII, else 255): what `PyUnicode_New` needs.
 #[inline]
 pub fn max_cp<T: Unit>(s: &[T]) -> u32 {
+    if std::mem::size_of::<T>() == 1 {
+        // SAFETY: T is u8 (the only one-byte Unit).
+        let b = unsafe { std::slice::from_raw_parts(s.as_ptr().cast::<u8>(), s.len()) };
+        if b.is_empty() {
+            return 0;
+        }
+        return if b.is_ascii() { 127 } else { 255 };
+    }
     s.iter().fold(0u32, |m, &c| m.max(c.into()))
 }
 

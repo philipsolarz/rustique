@@ -122,8 +122,9 @@ struct Scratch {
     initial: Vec<u32>,
     subsequent: Vec<u32>,
     placeholder: Vec<u32>,
-    /// dedent / indent output
-    out: Vec<u32>,
+    /// dedent / indent line ranges
+    ranges: Vec<(usize, usize)>,
+    ranges3: Vec<(usize, usize, bool)>,
 }
 
 impl Scratch {
@@ -136,13 +137,13 @@ impl Scratch {
             initial: Vec::new(),
             subsequent: Vec::new(),
             placeholder: Vec::new(),
-            out: Vec::new(),
+            ranges: Vec::new(),
+            ranges3: Vec::new(),
         }
     }
     fn trim(&mut self) {
         const K: usize = pep393::KEEP;
-        for v in [&mut self.munged, &mut self.src, &mut self.initial, &mut self.subsequent, &mut self.placeholder, &mut self.out]
-        {
+        for v in [&mut self.munged, &mut self.src, &mut self.initial, &mut self.subsequent, &mut self.placeholder] {
             v.clear();
             if v.capacity() > K {
                 v.shrink_to(K);
@@ -151,6 +152,14 @@ impl Scratch {
         self.chunks.clear();
         if self.chunks.capacity() > K {
             self.chunks.shrink_to(K);
+        }
+        self.ranges.clear();
+        if self.ranges.capacity() > K {
+            self.ranges.shrink_to(K);
+        }
+        self.ranges3.clear();
+        if self.ranges3.capacity() > K {
+            self.ranges3.shrink_to(K);
         }
         self.wrapped.trim(K);
     }
@@ -899,15 +908,26 @@ unsafe extern "C" fn vc_dedent(func: O, args: *const O, nargsf: usize, kw: O) ->
                 return call_original(func, args, nargsf, kw);
             }
             // `'\n'.join(lines)`: one line is that line's own slice (`l[margin:]`: the
-            // singleton for one character), several lines a new object.
+            // singleton for one character), several lines a new object. Written straight
+            // from the argument's buffer.
             let r = with_scratch(|sc| {
-                let u = pep393::units(text);
-                let (new, many) = with_units!(u, t => (tw::dedent_into(t, &Cls, &mut sc.out), t.iter().any(|&c| u32::from(c) == 0x0a)));
-                match (new, many) {
-                    (false, _) => ffi::Py_NewRef(text),
-                    (true, false) => pep393::str_from_cps(&sc.out),
-                    (true, true) => pep393::fresh_from_cps(&sc.out),
-                }
+                with_units!(pep393::units(text), t => {
+                    if !tw::dedent_ranges(t, &Cls, &mut sc.ranges) {
+                        return ffi::Py_NewRef(text);
+                    }
+                    let r = &sc.ranges;
+                    let len = r.iter().map(|&(a, b)| b - a).sum::<usize>() + r.len() - 1;
+                    let max = r.iter().fold(if r.len() > 1 { 0x0a } else { 0 }, |m, &(a, b)| m.max(pep393::max_cp(&t[a..b])));
+                    let w = if r.len() > 1 { StrWriter::fresh(len, max) } else { StrWriter::new(len, max) };
+                    let Some(mut w) = w else { return ffi::PyUnicode_New(len as ffi::Py_ssize_t, max) };
+                    for (i, &(a, b)) in r.iter().enumerate() {
+                        if i > 0 {
+                            w.put1(0x0a);
+                        }
+                        w.put(&t[a..b]);
+                    }
+                    w.finish()
+                })
             });
             if g.counters.hit_check_streak() {
                 return verify(g, &DEDENT, r, func, args, nargsf, kw);
@@ -934,11 +954,31 @@ unsafe extern "C" fn vc_indent(func: O, args: *const O, nargsf: usize, kw: O) ->
             if !g.ready(func) {
                 return call_original(func, args, nargsf, kw);
             }
+            // `''.join(prefixed_lines)`: several parts (or none) unless CPython returns `text`:
+            // a new object, written straight from the arguments' buffers. Every character of
+            // `text` is kept, so its kind decides the class (Latin-1: one scan).
             let r = with_scratch(|sc| {
-                pep393::units(prefix).push_to(&mut sc.src);
-                // `''.join(prefixed_lines)`: several parts (or none) unless CPython returns `text`.
-                let new = with_units!(pep393::units(text), t => tw::indent_into(t, &sc.src, &Cls, &mut sc.out));
-                if new { pep393::fresh_from_cps(&sc.out) } else { ffi::Py_NewRef(text) }
+                let pu = pep393::units(prefix);
+                with_units!(pep393::units(text), t => {
+                    if !tw::indent_ranges(t, &Cls, &mut sc.ranges3) {
+                        return ffi::Py_NewRef(text);
+                    }
+                    let r = &sc.ranges3;
+                    let np = r.iter().filter(|x| x.2).count();
+                    let len = t.len() + np * pu.len();
+                    let pmax = if np > 0 { with_units!(pu, p => pep393::max_cp(p)) } else { 0 };
+                    let max = pep393::max_cp(t).max(pmax);
+                    let Some(mut w) = StrWriter::fresh(len, max) else {
+                        return ffi::PyUnicode_New(len as ffi::Py_ssize_t, max);
+                    };
+                    for &(a, b, p) in r {
+                        if p {
+                            with_units!(pu, ps => w.put(ps));
+                        }
+                        w.put(&t[a..b]);
+                    }
+                    w.finish()
+                })
             });
             if g.counters.hit_check_streak() {
                 return verify(g, &INDENT, r, func, args, nargsf, kw);
