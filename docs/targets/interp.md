@@ -7,9 +7,10 @@ is **M** (measured; tool named) or **I** (inferred; source named).
 
 # The `interp` tier: opcode-handler overrides
 
-Turned on with `RUSTIQUE_TIERS=interp` or `rustique.enable(tiers=["interp"])` (accel's opt-in
-tiers; until they are merged the targets are the hidden group `_interp`, named in
-`enable(only=[...])`). Never on by default.
+An opt-in tier (`TargetSpec.opt_in = Some("interp")`, group `interp`): turned on with
+`RUSTIQUE_TIERS=interp` (with `RUSTIQUE=1` or `rustique.enable()`) or
+`_accel.enable(tiers=["interp"])`; never on by default. Sites are accel's opcode-handler kind
+(`Prepare::opcode_handler`); suspensions go through `Counters::request_suspend`.
 
 | target | handlers swapped | what is faster | validated | free-threaded |
 |---|---|---|---|---|
@@ -153,12 +154,18 @@ reject non-generic owners and negative entries before the probe in the kernel it
 
 ### 2.6 Net-benefit suspension (ACCELERATION §5.6 per override group)
 
-Each group counts executions of its overridden path and fast-path hits. After 16 windows of
-65,536 executions (~1M) a group whose cumulative hits are below 1/ratio of its steady
-executions (cache fills excluded) restores the core's handlers for the process: attribute
-family 5, `object.__setattr__` 64, keyword instantiation 64; `isinstance` never (every path is
-at most the core's cost). One decision per install, on a horizon long enough to average out
-start-up phases. `_accel._t_interp.info()["groups"]` shows executions, hits, fills and
+Each group counts executions of its overridden path and fast-path hits (attribute-cache
+fills excluded) and decides twice: **early**, after the first 65,536 executions, when its hits
+are below a quarter of break-even (its cost is visible already); **final**, after 16 windows
+(~1M executions), at break-even, a horizon long enough to average out start-up phases for
+borderline groups. Break-even ratios: attribute family 5, `object.__setattr__` 64, keyword
+instantiation 64; `isinstance` never suspends (every path is at most the core's cost). A
+suspension asks the registry (`Counters::request_suspend`), which restores the core's handlers
+for the process and reports the target `suspended`; a later `enable()` reinstalls it and the
+group counts afresh. The early decision fixed the T1 misses of the first measurement
+(task_planner 1.0008, email_mime 1.0023, billing_engine 1.0013, pandas_etl 1.0016 with the
+tier alone): groups that never hit there (no frozen dataclasses, few keyword
+instantiations) kept their handler copies until ~1M executions. `_accel._t_interp.info()["groups"]` shows executions, hits, fills and
 `suspended`; the registry records the suspension in `status()` once accel's merge B handles
 every site kind. `rustique.stats()` shows no per-call counts for these targets (the handlers
 count in C, always on, for the suspension rule): reporting tools read
@@ -271,6 +278,8 @@ without swapping anything (the harness's own footprint), `tier` also enables the
 | 3.15.1 | tier | 47,182 | 64 | 3,000 | 23 | 3,804 | **0 differences** (files and 47,041 per-test outcomes) |
 | 3.15.1t | noop | 47,230 | 64 | 2,968 | 23 | 3,804 | – |
 | 3.15.1t | tier | 47,230 | 64 | 2,968 | 23 | 3,812 | **0 differences** (files and 47,091 per-test outcomes) |
+| 3.15.2 | noop / tier | 47,274 | 65 / 65 | 2,998 / 3,000 | 23 / 23 | 3,813 / 3,817 | 0 file differences; per-test: `test_os` `test_closerange` ×2 skipped with the tier (it skips when no range of free file descriptors is available; on 3.15.2t it went the other way) |
+| 3.15.2t | noop / tier | 47,323 | 66 / 65 | 2,968 / 2,966 | 24 / 23 | 3,819 / 3,812 | 0 failing only with the tier; per-test: the same two `test_closerange` (skipped in noop) and `test_multiprocessing_fork` `test_put` (failed in noop) |
 | 3.15.1, `PYTHON_JIT=1` | 20 files (isinstance, descr, class, dataclasses, functools, inspect, opcache, monitoring, sys_settrace, generators, coroutines, typing, enum, abc, property, super, types, unittest, json, ast) | 5,551 | 49 | 71 | 3 | 123 | **0 differences** (5,510 outcomes) |
 
 The plain failures are environmental (python-build-standalone ships no `_testcapi`, no `Lib/test`
