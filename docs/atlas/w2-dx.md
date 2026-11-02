@@ -416,6 +416,19 @@ only once this passes there.
   non-ASCII text is then read as ASCII. **Must fix (patch A's accessor) or refuse** (the
   containers on Windows t). It disappears if the opt-in containers are retired (w2-startup).
 
+### 6.4 Packaging: a top-level `_rustique` extension (lead's question)
+
+w2-startup measured that a top-level `_rustique` extension saves 0.46M Ir at startup on 3.15
+and 1.16M on 3.14. maturin's mixed layout puts the extension inside the package. Three ways
+out, seen from `wheels.yml` and the platforms:
+
+| option | what changes | cost / risk | verdict |
+|---|---|---|---|
+| **repack in CI** | after `maturin build`: `python -m wheel unpack`, move `rustique/_rustique.<abi>.{so,pyd}` to the root, `python -m wheel pack` (rewrites RECORD hashes); one stdlib script for all 32 wheels; tags, manylinux/musllinux repair and the sdist untouched | S. Two layouts in the field: sdist and editable builds keep the in-package one, so the `.pth` loader and `rustique/__init__` try `_rustique` and fall back to `rustique._rustique` (the loader already has a fallback). The smoke test must assert the top-level layout on the 32 wheels, and `ci.yml` keeps testing the in-package one | **do this now** |
+| setuptools-rust (+ cibuildwheel) | the whole build: 8 platforms × cp314/cp314t/cp315/cp315t, zig/manylinux containers, free-threaded selection, the sdist toolchain pin, uv cache keys, `maturin develop` for every developer | M–L, and it re-opens what wave 1 just proved on 33 CI cells, for 0.46M Ir | no |
+| keep it in the package | nothing | +0.34M Ir per `RUSTIQUE=1` start (w2-startup) | fallback if the repack meets a problem |
+| (later) **two distributions**: `rustique` (pure Python, `py3-none-any`: CLI, report, diff, estimate, pytest plugin, `.pth`) + `rustique-engine` (maturin, top-level `_rustique`, cp314/cp315 wheels), joined by a marker dependency `rustique-engine; implementation_name == "cpython" and python_version < "3.16"` | maturin builds a top-level module natively; no repack | M (two releases in lockstep, a version pin between them). It also **solves §7 item 9**: `pip install rustique` succeeds on 3.16, PyPy or any interpreter without an engine. There `import rustique` works and every target refuses as `version`/`platform`, so a requirements file never blocks a Python upgrade | **recommend for Phase 2 once w2-startup decides the containers' fate** (a pure-Python front package only makes sense if `rustique.List` & co. leave or move to the engine) |
+
 ## 7. Ranked DX work list for Phase 2
 
 Ranked by how many developers a break stops × how early in the journey × effort.
@@ -431,7 +444,8 @@ Ranked by how many developers a break stops × how early in the journey × effor
 | 6 | **The runner fixes on this branch** (absolute `__file__`, traceback, SIGINT, `RUSTIQUE=1` exported) | turn it on | medium | done (2 tests) | §2 | dx |
 | 7 | **Report readability**: only targets that ran, a `saved ≈` column, suspensions rendered, pending as a count, status wording | visibility | medium | S | §3.1 | dx |
 | 8 | **Per-site fallback attribution** (`RUSTIQUE_STATS=sites`) | "why did it fall back, and what can I do?" | medium | M | §3.1 | accel (shared with floors) |
-| 9 | **The 3.16 upgrade path**: a 3.16 wheel at 3.16.0rc1. With the opt-in containers retired, a `py3-none-any` fallback wheel for every unvalidated interpreter (installs, refuses every target as `version`), so a requirements file never blocks a Python upgrade; or drop the upper cap again | keep it on | high on 3.16 day | S–M | §1 | dx (after w2-startup's containers decision) |
+| 9 | **The 3.16 upgrade path**: a 3.16 wheel at 3.16.0rc1. With the opt-in containers retired, split `rustique` (pure Python) and `rustique-engine` (§6.4): installs everywhere, refuses every target as `version` where the engine is missing, so a requirements file never blocks a Python upgrade | keep it on | high on 3.16 day | M | §1, §6.4 | dx (after w2-startup's containers decision) |
+| 9b | **Top-level `_rustique` by repacking the wheels in CI** (`wheel unpack` / move / `wheel pack`; the loader tries `_rustique`, then `rustique._rustique`) | startup (w2-startup's 0.46M / 1.16M Ir) | medium | S | §6.4 | dx/CI |
 | 10 | `diff --from-ci`, confirmation re-runs, pytest-randomly seed | CI cost | medium | S–M | §3.2 | dx |
 | 11 | Docs: `-S`, coverage in CI, zipapps, `--only-binary`; a `python:3.15-slim` CI cell | install, CI | low | S | §1, §2 | dx |
 | 12 | Credit for `deopt` restarts weighted by their cost (sqlglot deepcopy 49%) | never slower | medium | S | §3.1, §4 | floors |
