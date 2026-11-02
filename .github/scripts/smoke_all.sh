@@ -3,6 +3,7 @@
 # run wheel_smoke.py there (outside the source tree).
 #
 #   smoke_all.sh DIST PY [PY...]      PY: an interpreter command or path
+#   SMOKE_INTERP=installable|refused  also assert the opt-in interp tier's state (wheel_smoke.py --interp)
 #
 # An interpreter that is not available is skipped with a warning; a missing wheel, a failed
 # install or a failed check fails the run.
@@ -30,6 +31,6 @@ for py in "$@"; do
     # pytest too (from the index, when reachable): the smoke test then checks the plugin and
     # that RUSTIQUE=1 adds no pytest warning.
     "$vpy" -m pip install --disable-pip-version-check -q pytest 2>/dev/null || echo "smoke $tag: no pytest (offline)"
-    (cd "$work" && "$vpy" "$here/wheel_smoke.py" --expect-installed) || { echo "::error::smoke $tag failed"; status=1; }
+    (cd "$work" && "$vpy" "$here/wheel_smoke.py" --expect-installed ${SMOKE_INTERP:+--interp "$SMOKE_INTERP"}) || { echo "::error::smoke $tag failed"; status=1; }
 done
 exit $status

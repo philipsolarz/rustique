@@ -6,11 +6,18 @@ with counters, and compare with the measured ratios (docs/atlas/w2-dx.md §5).
     python benches/dx/estimate_workloads.py plain data/csv_etl       # one side, JSON on stdout
     python benches/dx/estimate_workloads.py counters data/csv_etl
 
-``plain``: setup(), warm-up run(), then 3 timed run()s (median: the total time), then one
-run() under the profiler, then the replay of the sampled calls. ``counters``: enable() before
-the workload is imported, setup(), warm-up, counters reset, one run(), stats(). Measured
-ratios: Phase 3 (docs/atlas/phase3.md §4, first replicate, run.py compare -n 5 -p 5, 3.15.1
-and 3.15.1t), or ``--measured file.json`` from ``run.py compare -o``.
+Same order as the CLI: ``counters`` first (enable() before the workload is imported, setup(),
+warm-up, counters reset, one run(), stats(), and the manifest of entry points from status());
+then ``plain`` with that manifest: setup(), warm-up run(), 3 timed run()s (median: the total
+time), 3 run()s under the stack sampler, one run() under the profiler, then the replay of the
+sampled calls. Measured ratios: Phase 3 (docs/atlas/phase3.md §4, first replicate, run.py
+compare -n 5 -p 5, 3.15.1 and 3.15.1t), or ``--measured file.json`` (``run.py compare -o``, or
+``measure`` below).
+
+    python benches/dx/estimate_workloads.py measure <family|workload ...> -o m.json [-p 5 -n 5]
+
+``measure``: interleaved plain/enabled pairs in fresh processes like ``run.py compare``,
+recording wall and process CPU time per run (the dev box is shared: CPU time is steadier).
 """
 
 import argparse
@@ -42,10 +49,11 @@ PHASE3 = {  # workload: (3.15.1 ratio, 3.15.1t ratio)
 }
 
 
-def side_plain(name: str) -> dict:
+def side_plain(name: str, manifest_path: str | None = None) -> dict:
     import run as runner
     from rustique import _estimate
 
+    manifest = json.load(open(manifest_path)) if manifest_path else None
     mod = runner.load(name)
     state = mod.setup()
     mod.run(state)
@@ -54,11 +62,11 @@ def side_plain(name: str) -> dict:
         t0 = time.perf_counter_ns()
         mod.run(state)
         times.append(time.perf_counter_ns() - t0)
-    sampler = _estimate.Sampler().start()
+    sampler = _estimate.Sampler(manifest=manifest).start()
     for _ in range(3):
         mod.run(state)
     sampler.stop()
-    prof = _estimate.Profiler().start()
+    prof = _estimate.Profiler(manifest=manifest).start()
     mod.run(state)
     prof.stop()
     res = prof.result(plain_ns=statistics.median(times))
@@ -85,11 +93,14 @@ def side_counters(name: str) -> dict:
     t0 = time.perf_counter_ns()
     mod.run(state)
     t = time.perf_counter_ns() - t0
-    return {"stats": rustique.stats(), "enabled_ns_one_run": t}
+    from rustique import _estimate
+
+    return {"stats": rustique.stats(), "enabled_ns_one_run": t,
+            "manifest": _estimate.manifest_from_status(rustique.status())}
 
 
-def one(side: str, name: str, py: str) -> dict:
-    r = subprocess.run([py, __file__, side, name], capture_output=True, text=True, timeout=1800)
+def one(side: str, name: str, py: str, *extra: str) -> dict:
+    r = subprocess.run([py, __file__, side, name, *extra], capture_output=True, text=True, timeout=3600)
     if r.returncode:
         raise RuntimeError(f"{side} {name}: {r.stderr[-1500:]}")
     return json.loads(r.stdout.strip().splitlines()[-1])
@@ -97,16 +108,22 @@ def one(side: str, name: str, py: str) -> dict:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("cmd", choices=("all", "plain", "counters", "repredict"))
+    p.add_argument("cmd", choices=("all", "plain", "counters", "repredict", "measure"))
     p.add_argument("workloads", nargs="*")
     p.add_argument("-o", "--output")
     p.add_argument("--measured", help="run.py compare -o JSON to compare against (default: Phase 3)")
     p.add_argument("--build", default="3.15.1", choices=("3.15.1", "3.15.1t"))
     p.add_argument("--mode", default="samples", choices=("samples", "hybrid", "profile"),
                    help="repredict: where Python-level targets' time comes from (see _estimate.predict)")
+    p.add_argument("--manifest", help="plain: the entry points to watch (JSON from the counters side)")
+    p.add_argument("-p", type=int, default=5, help="measure: pairs")
+    p.add_argument("-n", type=int, default=5, help="measure: timed run()s per process")
     a = p.parse_args()
     if a.cmd == "plain":
-        print(json.dumps(side_plain(a.workloads[0]), default=str))
+        print(json.dumps(side_plain(a.workloads[0], a.manifest), default=str))
+        return
+    if a.cmd == "measure":
+        measure(a)
         return
     if a.cmd == "counters":
         print(json.dumps(side_counters(a.workloads[0]), default=str))
@@ -137,10 +154,15 @@ def main() -> None:
     if a.measured:
         measured = {r["workload"]: r["ratio"] for r in json.load(open(a.measured))}
     rows = []
+    import tempfile
+
     for w in names:
         try:
-            pl = one("plain", w, sys.executable)
             co = one("counters", w, sys.executable)
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump(co["manifest"], f)
+            pl = one("plain", w, sys.executable, "--manifest", f.name)
+            os.unlink(f.name)
         except Exception as exc:  # noqa: BLE001
             print(f"{w}: FAILED {exc}", flush=True)
             continue
@@ -161,6 +183,65 @@ def main() -> None:
               f"within 0.02: {sum(abs(e) <= 0.02 for e in errs)}, within 0.05: {sum(abs(e) <= 0.05 for e in errs)}")
     if a.output:
         json.dump(rows, open(a.output, "w"), indent=1, default=str)
+
+
+MEASURE_ONE = r"""
+import json, sys, time
+sys.path.insert(0, sys.argv[1])
+enable = sys.argv[3] == "1"
+if enable:
+    import rustique
+    rustique.enable()
+import run as runner
+mod = runner.load(sys.argv[2])
+state = mod.setup()
+mod.run(state)
+wall, cpu = [], []
+for _ in range(int(sys.argv[4])):
+    t0, c0 = time.perf_counter_ns(), time.process_time_ns()
+    res = mod.run(state)
+    cpu.append(time.process_time_ns() - c0)
+    wall.append(time.perf_counter_ns() - t0)
+print(json.dumps({"wall": wall, "cpu": cpu, "digest": mod.digest(res)}))
+"""
+
+
+def measure(a) -> None:
+    """Interleaved plain/enabled pairs in fresh processes (like run.py compare), wall and CPU."""
+    import run as runner
+
+    rows = []
+    wdir = os.path.join(HERE, "..", "workloads")
+    for w in runner.select(a.workloads):
+        side = {False: {"wall": [], "cpu": []}, True: {"wall": [], "cpu": []}}
+        digests = set()
+        ok = True
+        for _ in range(a.p):
+            for en in (False, True):
+                r = subprocess.run([sys.executable, "-c", MEASURE_ONE, wdir, w, "1" if en else "0", str(a.n)],
+                                   capture_output=True, text=True, timeout=3600,
+                                   env={k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")})
+                if r.returncode:
+                    print(f"{w} enabled={en}: FAILED {r.stderr[-800:]}", flush=True)
+                    ok = False
+                    break
+                d = json.loads(r.stdout.strip().splitlines()[-1])
+                side[en]["wall"] += d["wall"]
+                side[en]["cpu"] += d["cpu"]
+                digests.add(d["digest"])
+            if not ok:
+                break
+        if not ok:
+            continue
+        med = {en: {k: statistics.median(v) for k, v in side[en].items()} for en in side}
+        row = {"workload": w, "ratio": med[True]["wall"] / med[False]["wall"],
+               "ratio_cpu": med[True]["cpu"] / med[False]["cpu"], "plain_ms": med[False]["wall"] / 1e6,
+               "cpu_frac": med[False]["cpu"] / med[False]["wall"], "same_result": len(digests) == 1}
+        rows.append(row)
+        print(f"{w:36s} wall {row['ratio']:.3f} cpu {row['ratio_cpu']:.3f} plain {row['plain_ms']:8.1f} ms "
+              f"cpu/wall {row['cpu_frac']:.2f} {'same' if row['same_result'] else 'DIGEST MISMATCH'}", flush=True)
+    if a.output:
+        json.dump(rows, open(a.output, "w"), indent=1)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,8 @@ import pytest
 
 from rustique import _diff
 
-VARS = ("RUSTIQUE", "RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_STATS", "RUSTIQUE_REPORT", "RUSTIQUE_CHECK")
+VARS = ("RUSTIQUE", "RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_STATS", "RUSTIQUE_REPORT", "RUSTIQUE_CHECK",
+        "RUSTIQUE_TIERS", "RUSTIQUE_UNVALIDATED_PATCH")
 
 
 def clean_env(**extra: str) -> dict[str, str]:
@@ -80,6 +81,21 @@ def test_run_reaches_spawned_children(tmp_path):
     assert r.stdout.strip() == "1"
 
 
+def test_run_native_flag_points_to_the_migration_note():
+    r = rq("--native", "app", "-c", "print(1)")
+    assert r.returncode == 2 and "docs/MIGRATION.md" in r.stderr and r.stdout == ""
+    r = rq("-c", "import sys; print(sys.argv[1:])", "--native")  # the program's own argument
+    assert r.stdout.strip() == "['--native']", r.stderr
+
+
+def test_run_tiers_flag_opts_in_for_children():
+    show = "import os; print(os.environ.get('RUSTIQUE_TIERS'))"
+    assert rq("--tiers", "gc", "-c", show).stdout.strip() == "gc"
+    assert rq("--tiers", "gc", "-c", show, env=clean_env(RUSTIQUE_TIERS="interp")).stdout.strip() == "interp,gc"
+    r = rq("--tiers", "gc", "-c", show, env=clean_env(RUSTIQUE_TIERS="none"))
+    assert r.stdout.strip() == "none" and "turns every tier off" in r.stderr  # the environment wins
+
+
 def test_run_report_flag():
     r = rq("--report", "-c", "sorted([2, 1])")
     assert "enabled by python -m rustique" in r.stderr
@@ -129,6 +145,45 @@ def test_report_script_shorthand(tmp_path):
     assert r.stdout == "5\n" and r.returncode == 0
     rec = json.loads(r.stderr)
     assert rec["status"]["targets"] and rec["status"]["process"]["switch"]["stats"]
+
+
+def test_report_from_file(tmp_path):
+    path = tmp_path / "prod.json"
+    for n in (2, 3):
+        r = subprocess.run([sys.executable, "-c", f"import rustique; rustique.enable(); [sorted([2, 1]) for _ in range({n})]"],
+                           env=clean_env(RUSTIQUE_REPORT=str(path)), capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+    r = rq("report", "--from", str(path))
+    assert r.returncode == 0 and r.stdout.splitlines()[0].endswith("2 processes: enabled by rustique.enable()"), r.stdout
+    row = next(ln for ln in r.stdout.splitlines() if ln.startswith("  builtins.sorted"))
+    assert row.split()[2] == "5"
+    assert rq("report", "--from", str(tmp_path / "none.json")).returncode == 2
+
+
+FORK_POOL = """
+import multiprocessing as mp, rustique
+def work(i):
+    return sorted([3, 2, 1]) and sorted([i, 0])[0]
+if __name__ == "__main__":
+    rustique.enable()
+    with mp.get_context("fork").Pool(2) as pool:   # workers end in os._exit or SIGTERM
+        print(sum(pool.map(work, range(40))))
+    print(sorted([2, 1]))
+"""
+
+
+def test_report_counts_fork_pool_workers_once(tmp_path):
+    import rustique
+
+    if "ppid" not in rustique.status()["process"]:
+        pytest.skip("this extension has no per-process counters yet (accel)")
+    (tmp_path / "pool.py").write_text(FORK_POOL)
+    r = rq("report", "--json", "--", str(tmp_path / "pool.py"), cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    rec = json.loads(r.stderr)
+    # 80 calls in the workers, 1 in the parent: each counted once, none lost to os._exit
+    assert rec["stats"]["builtins.sorted"]["hits"] == 81, rec["stats"].get("builtins.sorted")
+    assert rec["processes"] == 3 and rec["forked"] == 2
 
 
 def test_report_without_python():
@@ -261,7 +316,38 @@ def test_diff_pytest_outcome_change(suite):
            env=clean_env(FLIP="1"))
     assert r.returncode == 1
     assert "test outcomes differ (1 changed" in r.stdout
-    assert "test_a::test_differs: plain failed, rustique passed" in r.stdout
+    assert "test_a.py::test_differs: plain failed, rustique passed" in r.stdout  # confirmed: not flaky
+    assert "flaky" not in r.stdout
+
+
+def test_diff_flaky_test_is_not_a_difference(tmp_path):
+    # fails on every third run, plain or not: the re-runs show it varies without Rustique
+    (tmp_path / "test_f.py").write_text(textwrap.dedent("""
+        import os
+        import rustique
+        rustique.enable()
+
+        def test_ok():
+            assert sorted([2, 1]) == [1, 2]
+
+        def test_flaky():
+            p = os.path.join(os.path.dirname(__file__), "count")
+            n = int(open(p).read()) if os.path.exists(p) else 0
+            open(p, "w").write(str(n + 1))
+            assert n % 3 != 1
+    """))
+    r = rq("diff", "--", sys.executable, "-m", "pytest", "-q", "-p", "no:randomly", str(tmp_path), cwd=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "identical" in r.stdout and "1 test(s) changed outcome, but also without Rustique" in r.stdout
+    assert "test_f.py::test_flaky: plain passed/passed/failed, rustique failed/passed/passed" in r.stdout
+
+
+def test_rerun_command():
+    cmd = ["python", "-X", "dev", "-m", "pytest", "-q", "-p", "no:randomly", "-x", "tests", "-o", "a=b",
+           "--rootdir=.", "-k", "foo"]
+    assert _diff.rerun_command(cmd, ["t.py::x"]) == ["python", "-X", "dev", "-m", "pytest", "-p", "no:randomly",
+                                                     "-o", "a=b", "--rootdir=.", "t.py::x"]
+    assert _diff.rerun_command(["pytest", "-pno:x", "tests"], ["t.py::y"]) == ["pytest", "-pno:x", "t.py::y"]
 
 
 def test_diff_pytest_verbose_junit_path(suite):
@@ -401,6 +487,7 @@ rustique._accel = Accel(rustique._accel)
     ("build", (), False),
     ("jit", (), False),
     ("platform", (), False),
+    ("unvalidated-patch", (), False),
 ])
 def test_plugin_unexpected_refusal_fails_the_session(plain_suite, refusal, args, fails):
     (plain_suite / "conftest.py").write_text(REFUSE.format(refusal=refusal))
@@ -408,6 +495,20 @@ def test_plugin_unexpected_refusal_fails_the_session(plain_suite, refusal, args,
     assert (r.returncode == 1) == fails, r.stdout
     assert ("refused unexpectedly" in r.stdout) == fails
     assert "fake.target" in r.stdout
+
+
+def test_plugin_tiers_option(plain_suite):
+    (plain_suite / "test_t.py").write_text("import os\n\ndef test_t():\n    assert os.environ['RUSTIQUE_TIERS'] == 'gc'\n")
+    r = pytest_run(plain_suite, "--rustique", "--rustique-tiers", "gc")
+    assert r.returncode == 0, r.stdout
+
+
+def test_plugin_outcomes_by_node_id(plain_suite, tmp_path):
+    out = tmp_path / "o.json"
+    r = pytest_run(plain_suite, f"--rustique-outcomes={out}")
+    assert r.returncode == 0, r.stdout
+    got = json.loads(out.read_text())
+    assert got and all("::" in k for k in got) and set(got.values()) == {"passed"}
 
 
 def test_plugin_check_mode(plain_suite):

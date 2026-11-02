@@ -1,31 +1,36 @@
-"""Will Rustique help this program? Measure it on the program itself (prototype).
+"""Will Rustique help this program? Measure it on the program itself.
 
-``python -m rustique estimate -- <command>`` (see :func:`main`) runs the command twice:
+``python -m rustique estimate -- <command>`` (:func:`main`) runs the command three times:
 
-1. **plain**, with a ``sys.monitoring`` profiler that times every call of every accelerated
-   entry point (outermost calls only; the profiler's own cost per event is calibrated and
-   subtracted) and keeps a small uniform sample of the arguments of the Python-level ones.
-   At exit, each sampled call is *replayed* twice: with CPython's original, then with the
-   Rust kernel (``rustique.enable(only=<target>)``), timed in a loop. That gives, on the
-   program's own data, the per-call ratio and how often the kernel would fall back.
-2. **enabled with counters** (what ``report`` does): hits and fallbacks of the targets that
-   cannot be replayed (C-level methods, operators, logging calls that emit records).
+1. **enabled, with counters** (what ``report`` does): which targets the program reaches, how
+   often each takes the fast path or falls back, and the entry points to watch (from
+   ``status()``: targets added by later releases are found without a table here);
+2. **plain, sampled** (:class:`Sampler`): the run time, and the share of CPU time spent under
+   each Python-level target (stack samples on a CPU-time timer: no per-call cost, waiting is
+   not sampled, safe on free-threaded builds);
+3. **plain, profiled** (:class:`Profiler`, ``sys.monitoring``): calls and time of every target
+   (C-level ones included), and a small systematic sample of the arguments of Python-level
+   ones. At exit each kept call is *replayed* twice, with CPython's original and then with
+   the kernel (``rustique.enable(only=<target>)``), timed in a loop: the per-call ratio and
+   the fallback rate on the program's own data.
 
-The prediction: ``ratio = 1 - sum(time under target t x (1 - r_t)) / total time``, where
-``r_t`` is the replayed ratio (Python-level targets), or the per-call ratio of the target's
-docs x its hit rate (C-level targets), or hits x the measured saving per hit (``in`` on
-tuples/lists, ``float.__repr__``). Everything outside accelerated entry points is assumed
-unchanged: the out-of-reach share is printed too.
+The prediction: ``ratio = 1 - sum(time under target t x (1 - r_t)) / run time``, where
+``r_t`` is the replayed ratio (Python-level targets), the measured per-call ratio of the
+target x its hit rate (C-level targets, ``C_RATIO``), or hits x the measured saving per hit
+(``in`` on tuples/lists, ``float.__repr__``). Everything outside accelerated entry points is
+unchanged: the out-of-reach share is printed too. Opt-in tiers (``interp``, ``gc``) have no
+entry point to time: they are counted, not predicted (measure them with ``diff``).
 
-Replays only call targets that have no side effects on these inputs (they are run after the
-program finished, on copies where state matters: ``random`` replays on a clone of the
-generator). ``logging`` calls are never replayed.
+Replays call only targets without side effects on these inputs, after the program finished,
+on copies where state matters (``random`` replays on a clone of the generator); ``logging``
+calls are never replayed (they emit records).
 
 In-process use (the validation harness, ``benches/dx/estimate_workloads.py``)::
 
-    prof = Profiler(); prof.start(); work(); prof.stop()
-    data = prof.result()          # per target: calls, ns (corrected), samples
-    data["replay"] = replay(prof)  # per target: plain ns, kernel ns, hits, fallbacks
+    sampler = Sampler(manifest=m).start(); work(); sampler.stop()
+    prof = Profiler(manifest=m).start(); work(); prof.stop()
+    data = prof.result(); data["replay"] = replay(prof)
+    predict(data, data["replay"], counters, plain_ns, sampler.shares())
 """
 
 import _thread
@@ -35,6 +40,7 @@ import sys
 import time
 
 TOOL_ID = 4  # 0 debugger, 1 coverage, 2 profiler, 5 optimizer: 3 and 4 are free by convention
+FREE_THREADED = not getattr(sys, "_is_gil_enabled", lambda: True)()
 NS = time.perf_counter_ns
 SAMPLES = 24  # argument samples kept per target (reservoir)
 
@@ -110,6 +116,65 @@ NO_REPLAY_RATIO = {"logging.Logger.level": 0.60, "logging.Logger.findCaller": 0.
 SLOT_SAVING_NS = {"tuple.__contains__": 12.0, "list.__contains__": 12.0, "float.repr": 188.0}
 
 
+# Groups whose calls are never replayed: they write (log records) or are not calls at all.
+NO_REPLAY_GROUPS = ("logging", "interp", "gc")
+
+
+def manifest_from_status(status: dict | None) -> dict:
+    """Entry points to watch, from ``rustique.status()`` of an enabled run (each target's
+    ``sites`` and ``module``), so that targets added after this file was written are found
+    too. Known targets keep the tables above (``strptime`` is timed through its Python
+    helper; ``logging`` never replays). ``{"py": {name: (module, [qualnames])}, "c": {name:
+    (owners, [methods])}, "slots": [names], "other": [names], "no_replay": [names]}``."""
+    py: dict = {}
+    c: dict = {}
+    slots: list = []
+    other: list = []
+    no_replay = set(NO_REPLAY_RATIO)
+    for t in (status or {}).get("targets", []):
+        name = t["name"]
+        if t.get("group") in NO_REPLAY_GROUPS or t.get("tier"):
+            no_replay.add(name)
+        if name in PY_SITES:
+            py[name] = PY_SITES[name]
+            continue
+        if name in C_SITES:
+            c[name] = C_SITES[name]
+            continue
+        quals, meths, owners = [], [], []
+        kinds = set()
+        for site in t.get("sites") or []:
+            label, _, kind = site.rpartition(" (")
+            kind = kind.rstrip(")")
+            kinds.add(kind)
+            if kind == "vectorcall" and t.get("module"):
+                quals.append(label)
+            elif kind == "ml_meth" and "." in label:
+                owner, _, meth = label.rpartition(".")
+                head, _, rest = owner.partition(".")
+                own = f"builtins:{owner}" if not rest and owner in _builtin_type_names() else (
+                    f"{head}:{rest}" if rest else head)
+                owners.append(own)
+                meths.append(meth)
+        if quals:
+            py[name] = (t["module"], quals)
+        elif meths:
+            c[name] = (" ".join(dict.fromkeys(owners)), list(dict.fromkeys(meths)))
+        elif "slot" in kinds:
+            slots.append(name)
+        else:
+            other.append(name)
+    if not py and not c:  # no status (an interpreter without Rustique?): the built-in tables
+        py, c = dict(PY_SITES), dict(C_SITES)
+    return {"py": py, "c": c, "slots": slots, "other": other, "no_replay": sorted(no_replay)}
+
+
+def _builtin_type_names() -> set:
+    import builtins
+
+    return {n for n, v in vars(builtins).items() if isinstance(v, type)}
+
+
 def _lookup(modname: str, qual: str):
     mod = sys.modules.get(modname)
     if mod is None:
@@ -138,8 +203,11 @@ class Profiler:
     """Times calls of the targets' entry points with ``sys.monitoring`` (plain runs only:
     Rustique's Python-level kernels step aside while a tool listens)."""
 
-    def __init__(self, samples: int = SAMPLES) -> None:
+    def __init__(self, samples: int = SAMPLES, manifest: dict | None = None) -> None:
         self.samples = samples
+        self.py_sites = (manifest or {}).get("py", PY_SITES)
+        self.c_sites = (manifest or {}).get("c", C_SITES)
+        self.no_replay = set((manifest or {}).get("no_replay", NO_REPLAY_RATIO))
         self.codes: dict = {}  # code object -> target name
         self.funcs: dict = {}  # code object -> function (for replay)
         self.cfuncs: dict = {}  # (owner, name) -> target name
@@ -167,7 +235,7 @@ class Profiler:
     def _resolve(self) -> None:
         E = sys.monitoring.events
         pending = False
-        for name, (modname, quals) in PY_SITES.items():
+        for name, (modname, quals) in self.py_sites.items():
             for q in quals:
                 obj = _lookup(modname, q)
                 code = _code_of(obj) if obj is not None else None
@@ -180,7 +248,7 @@ class Profiler:
                     self.funcs[code] = obj.fget if isinstance(obj, property) else obj
                     sys.monitoring.set_local_events(TOOL_ID, code, E.PY_START | E.PY_RETURN)
         self.retry_at = self.total_events + 2000 if pending else None
-        for name, (owners, meths) in C_SITES.items():
+        for name, (owners, meths) in self.c_sites.items():
             for owner in owners.split():
                 modname, _, cls = owner.partition(":")
                 o = _lookup(modname, cls) if cls else sys.modules.get(modname)
@@ -297,7 +365,7 @@ class Profiler:
             return
         n = self.seen.get(name, 0) + 1
         self.seen[name] = n
-        replay = name not in NO_REPLAY_RATIO
+        replay = name not in self.no_replay
         if replay and n % self.stride.get(name, 1) == 0:
             self._keep(name, code, sys._getframe(1), n)
         big = None
@@ -396,7 +464,7 @@ class Profiler:
         k["scale"] = scale
         out = {}
         for name, ns in self.ns.items():
-            kind = "c" if name in C_SITES else "py"
+            kind = "c" if name in self.c_sites else "py"
             per_call = k.get("c" if kind == "c" else "py", 0.0) * scale
             corrected = ns - self.calls[name] * per_call - self.events.get(name, 0) * k.get("event", 0.0) * scale
             co = self.calls_outer.get(name, 0)
@@ -409,27 +477,52 @@ class Profiler:
 
 
 class Sampler:
-    """Share of wall time under each Python-level target, by sampling the stack of one thread
-    (``sys._current_frames``) every ``interval`` seconds: no per-call cost, so nested and
-    recursive targets (``deepcopy``) are measured as accurately as flat ones. The outermost
-    target frame on the stack gets the sample."""
+    """Share of CPU time under each Python-level target, from stack samples: no per-call cost,
+    so nested and recursive targets (``deepcopy``) are measured as accurately as flat ones.
+    The outermost target frame on a stack gets the sample.
 
-    def __init__(self, interval: float = 0.0005, thread_id: int | None = None) -> None:
+    ``signal`` mode (POSIX): a CPU-time timer (``setitimer(ITIMER_PROF)``) fires every
+    ``interval`` seconds of process CPU time; the handler runs in the main thread and walks
+    the main thread's *own* frames, which is safe on free-threaded builds too. Samples are
+    uniform in CPU time, so time a program spends waiting (I/O, sleeps, locks) is not
+    sampled, and samples do not cluster at the points where the interpreter releases the GIL
+    (which biased a sampler thread toward system calls). With several threads, each sample is
+    split by every thread's CPU time since the previous one; other threads' stacks come from
+    ``sys._current_frames()`` on GIL builds (consistent: they are parked) and are counted as
+    unattributed on free-threaded builds, where walking a running thread's frames is a data
+    race (it segfaulted 3.15.1t).
+
+    ``thread`` mode (no ``setitimer``: Windows): a sampler thread reads the main thread's
+    stack every ``interval`` seconds of wall time (GIL builds only). Otherwise: no samples,
+    and the profiler's per-call times are used."""
+
+    def __init__(self, interval: float = 0.0005, thread_id: int | None = None, manifest: dict | None = None) -> None:
         self.interval = interval
         self.tid = thread_id
+        self.py_sites = (manifest or {}).get("py", PY_SITES)
         self.codes: dict = {}
-        self.counts: dict[str, int] = {}
-        self.total = 0
+        self.weights: dict[str, float] = {}
+        self.total = 0.0
+        self.samples = 0
+        self.unattributed = 0.0
         self.nmods = -1
         self.pending = False
+        self.mode = None
+        self.disabled = None
         self._stop = False
         self._thread = None
         self._switch = None
-        self.disabled = None
+        self._old = None
+        self._busy = False
+        self._clocks: dict[int, int] = {}
+        self._cpu_last: dict[int, int] = {}
+        self.cpu_ns = 0
+        self.wall_ns = 0
+        self._t0 = (0, 0)
 
     def _resolve(self) -> None:
         pending = False
-        for name, (modname, quals) in PY_SITES.items():
+        for name, (modname, quals) in self.py_sites.items():
             for q in quals:
                 obj = _lookup(modname, q)
                 code = _code_of(obj) if obj is not None else None
@@ -440,37 +533,111 @@ class Sampler:
         self.pending = pending
         self.nmods = len(sys.modules)
 
-    def _loop(self) -> None:
+    def _outer(self, f) -> str | None:
         codes = self.codes
-        get = sys._current_frames
-        loops = 0
+        outer = None
+        while f is not None:
+            n = codes.get(f.f_code)
+            if n is not None:
+                outer = n
+            f = f.f_back
+        return outer
+
+    def _add(self, name: str | None, w: float) -> None:
+        self.total += w
+        if name is not None:
+            self.weights[name] = self.weights.get(name, 0.0) + w
+
+    # signal mode ---------------------------------------------------------------------------
+    def _thread_cpu(self) -> dict[int, int]:
+        """CPU ns of every live thread since the previous sample."""
+        import threading
+
+        out = {}
+        for ident in list(threading._active):  # noqa: SLF001 (no lock: a racy snapshot is fine)
+            clk = self._clocks.get(ident)
+            try:
+                if clk is None:
+                    clk = self._clocks[ident] = time.pthread_getcpuclockid(ident)
+                now = time.clock_gettime_ns(clk)
+            except (OSError, AttributeError, ValueError):
+                continue
+            out[ident] = now - self._cpu_last.get(ident, now)
+            self._cpu_last[ident] = now
+        return out
+
+    def _on_signal(self, signum, frame) -> None:
+        if self._busy:  # a timer signal while the handler runs: drop it
+            return
+        self._busy = True
+        try:
+            self._sample(frame)
+        finally:
+            self._busy = False
+
+    def _sample(self, frame) -> None:
+        self.samples += 1
+        if len(sys.modules) != self.nmods or (self.pending and self.samples % 64 == 0):
+            self._resolve()
+        import threading
+
+        if len(threading._active) <= 1:  # noqa: SLF001
+            self._add(self._outer(frame), 1.0)
+            return
+        deltas = self._thread_cpu()
+        total = sum(d for d in deltas.values() if d > 0)
+        main = threading.main_thread().ident
+        if total <= 0:
+            self._add(self._outer(frame), 1.0)
+            return
+        others = None
+        for ident, d in deltas.items():
+            if d <= 0:
+                continue
+            w = d / total
+            if ident == main:
+                self._add(self._outer(frame), w)
+            elif FREE_THREADED:
+                self.total += w
+                self.unattributed += w
+            else:
+                if others is None:
+                    others = sys._current_frames()  # noqa: SLF001 (GIL build: the other threads are parked)
+                self._add(self._outer(others.get(ident)), w)
+
+    # thread mode ---------------------------------------------------------------------------
+    def _loop(self) -> None:
+        get = sys._current_frames  # noqa: SLF001
         while not self._stop:
             time.sleep(self.interval)
-            loops += 1
-            if len(sys.modules) != self.nmods or (self.pending and loops % 64 == 0):
+            self.samples += 1
+            if len(sys.modules) != self.nmods or (self.pending and self.samples % 64 == 0):
                 self._resolve()
-            f = get().get(self.tid)
-            outer = None
-            while f is not None:
-                n = codes.get(f.f_code)
-                if n is not None:
-                    outer = n
-                f = f.f_back
-            self.total += 1
-            if outer is not None:
-                self.counts[outer] = self.counts.get(outer, 0) + 1
+            self._add(self._outer(get().get(self.tid)), 1.0)
 
     def start(self) -> "Sampler":
         import threading
 
-        if not getattr(sys, "_is_gil_enabled", lambda: True)():
-            # Free-threaded build: the frames sys._current_frames() returns keep running after
-            # it restarts the world, and walking another running thread's f_back segfaults
-            # (measured: 1 in 3 runs of data/xml_feeds on 3.15.1t). No stack samples there.
-            self.disabled = "free-threaded build"
-            return self
-        self.tid = self.tid or threading.get_ident()
         self._resolve()
+        self._t0 = (time.process_time_ns(), time.perf_counter_ns())
+        signal = None
+        try:
+            import signal
+        except ImportError:
+            pass
+        if (signal is not None and hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread()
+                and signal.getsignal(signal.SIGPROF) in (signal.SIG_DFL, None)):
+            self.mode = "signal"
+            self._thread_cpu()
+            self._old = signal.signal(signal.SIGPROF, self._on_signal)
+            signal.setitimer(signal.ITIMER_PROF, self.interval, self.interval)
+            return self
+        if FREE_THREADED:
+            # No CPU timer and no safe way to read another running thread's frames.
+            self.disabled = "free-threaded build without setitimer"
+            return self
+        self.mode = "thread"
+        self.tid = self.tid or threading.get_ident()
         self._switch = sys.getswitchinterval()
         sys.setswitchinterval(min(self._switch, self.interval / 5))
         self._thread = threading.Thread(target=self._loop, name="rustique-estimate-sampler", daemon=True)
@@ -478,15 +645,24 @@ class Sampler:
         return self
 
     def stop(self) -> "Sampler":
+        if self.mode == "signal":
+            import signal
+
+            signal.setitimer(signal.ITIMER_PROF, 0, 0)
+            signal.signal(signal.SIGPROF, self._old if self._old is not None else signal.SIG_DFL)
         self._stop = True
         if self._thread is not None:
             self._thread.join()
         if self._switch is not None:
             sys.setswitchinterval(self._switch)
+        self.cpu_ns += time.process_time_ns() - self._t0[0]
+        self.wall_ns += time.perf_counter_ns() - self._t0[1]
         return self
 
     def shares(self) -> dict:
-        out = {"samples": self.total, "shares": {n: c / self.total for n, c in self.counts.items()} if self.total else {}}
+        out = {"samples": self.samples, "mode": self.mode, "cpu_ns": self.cpu_ns, "wall_ns": self.wall_ns,
+               "shares": {n: w / self.total for n, w in self.weights.items()} if self.total else {},
+               "unattributed": self.unattributed / self.total if self.total else 0.0}
         if self.disabled:
             out["disabled"] = self.disabled
         return out
@@ -553,7 +729,9 @@ def _clone_args(name, args, kwargs):
     return args, kwargs
 
 
-def _replayable(name):
+def _replayable(name, prof=None):
+    if prof is not None:
+        return name not in prof.no_replay and name not in prof.c_sites
     return name not in NO_REPLAY_RATIO and name not in C_SITES
 
 
@@ -595,7 +773,7 @@ def replay(prof: Profiler, *, budget_ns: int = 40_000) -> dict:
     import rustique
 
     out: dict = {}
-    names = [n for n in set(prof.kept) | set(prof.longest) if _replayable(n)]
+    names = [n for n in set(prof.kept) | set(prof.longest) if _replayable(n, prof)]
     if not names:
         return out
     plan = []
@@ -654,32 +832,39 @@ def predict(profile: dict, replayed: dict, counters: dict | None, total_ns: floa
             sampled: dict | None = None, mode: str = "samples") -> dict:
     """Per target: time under it (ns), the ratio used and where it comes from, ns saved;
     the predicted end-to-end ratio and the share of time under accelerated entry points.
-    ``sampled`` (:meth:`Sampler.shares`): time of Python-level targets from stack samples
-    instead of the profiler's corrected per-call times."""
+
+    ``total_ns``: wall time of one plain run. ``sampled`` (:meth:`Sampler.shares`): time of
+    Python-level targets from stack samples instead of the profiler's corrected per-call
+    times. Samples in ``signal`` mode are shares of CPU time: a target's time is its share of
+    the run's CPU time (``total_ns`` x CPU/wall of the sampled runs), and the saving is
+    divided by ``max(wall, CPU)``, so waiting (I/O) dilutes it and parallel threads share it.
+    ``mode``: ``samples`` (every Python-level target from samples), ``hybrid`` (samples only
+    where the profiler's own events are a large part of a call: recursion), ``profile``."""
     rows = []
     saved = 0.0
     under = 0.0
     counters = counters or {}
     targets = {n: dict(p) for n, p in profile["targets"].items()}
     if sampled is not None and not sampled.get("samples"):
-        sampled = None  # no stack samples (free-threaded build): the profiler's times only
+        sampled = None  # no stack samples: the profiler's times only
+    if mode == "profile":
+        sampled = None
+    basis = total_ns  # what Python-level shares are shares of
+    denom = total_ns  # what the saving is divided by
+    if sampled is not None and sampled.get("mode") == "signal" and sampled.get("wall_ns"):
+        cpu_frac = sampled.get("cpu_ns", 0) / sampled["wall_ns"]
+        basis = total_ns * cpu_frac
+        denom = max(total_ns, basis)
     if sampled is not None:
-        # The profiler's per-call correction is exact enough where its own events are few;
-        # where a call contains many of them (recursion: deepcopy, asdict) the stack sample
-        # is used instead.
-        # mode "samples": every Python-level target's time from the stack samples (no per-call
-        # cost; biased against compute when the program mostly waits in GIL-releasing calls),
-        # C-level targets from the profiler outside Python-level ones. Mode "hybrid": samples
-        # only where the profiler's own events are a large part of a call (recursion).
         shares = sampled.get("shares", {})
         for n, p in targets.items():
             if p["kind"] == "py" and (mode == "samples" or p.get("nested_events", 0) > 4 * max(p["calls"], 1)):
-                p["ns"] = shares.get(n, 0.0) * total_ns
+                p["ns"] = shares.get(n, 0.0) * basis
                 p["from_samples"] = True
             elif mode == "samples" and "ns_outer" in p:
                 p["ns"] = p["ns_outer"]
         for n, sh in shares.items():  # seen by the sampler only (imported after the profiler looked)
-            targets.setdefault(n, {"calls": 0, "ns": sh * total_ns, "kind": "py", "from_samples": True})
+            targets.setdefault(n, {"calls": 0, "ns": sh * basis, "kind": "py", "from_samples": True})
     for name, p in targets.items():
         t = p["ns"]
         under += t
@@ -692,14 +877,14 @@ def predict(profile: dict, replayed: dict, counters: dict | None, total_ns: floa
             fb = sum((c.get("fallback") or {}).values())
             h = hits / (hits + fb) if hits + fb else (1.0 if not counters else 0.0)
             if base is None:
-                r, src = 1.0, "no model"
+                r, src = 1.0, "no model (counted, not timed)"
             else:
                 r, src = 1 - h * (1 - base), f"table {base:.2f} x hit rate {h:.2f}"
         s = t * (1 - r)
         saved += s
         if p.get("from_samples"):
             src += "; time from stack samples"
-        rows.append({"target": name, "calls": p["calls"], "ns": t, "share": t / total_ns, "ratio": r,
+        rows.append({"target": name, "calls": p["calls"], "ns": t, "share": t / denom if denom else 0.0, "ratio": r,
                      "source": src, "saved_ns": s})
     for name, per_hit in SLOT_SAVING_NS.items():
         c = counters.get(name) or {}
@@ -709,35 +894,65 @@ def predict(profile: dict, replayed: dict, counters: dict | None, total_ns: floa
             rows.append({"target": name, "calls": c["hits"], "ns": None, "share": None, "ratio": None,
                          "source": f"{per_hit:g} ns saved per hit x hits", "saved_ns": s})
     rows.sort(key=lambda r: -r["saved_ns"])
-    return {"ratio": (total_ns - saved) / total_ns if total_ns else 1.0, "under_targets": under / total_ns if total_ns
-            else 0.0, "saved_ns": saved, "total_ns": total_ns, "rows": rows}
+    return {"ratio": (denom - saved) / denom if denom else 1.0, "under_targets": under / denom if denom else 0.0,
+            "saved_ns": saved, "total_ns": denom, "wall_ns": total_ns, "cpu_ns": basis, "rows": rows}
 
 
-def render(pred: dict, limit: int = 12) -> str:
-    rng = f", range {pred['range'][0]:.2f}-{pred['range'][1]:.2f}" if pred.get("range") else ""
-    lines = [f"predicted time with Rustique: {pred['ratio']:.3f} x plain "
-             f"({(1 / pred['ratio'] if pred['ratio'] else 0):.2f}x faster{rng})",
-             f"  {pred['under_targets'] * 100:.1f}% of the run is under accelerated entry points; "
-             f"the other {100 - pred['under_targets'] * 100:.1f}% is unchanged by Rustique",
-             "",
-             f"  {'target':30} {'calls':>9} {'share':>7} {'ratio':>6} {'saves':>7}  from"]
-    for r in pred["rows"][:limit]:
-        share = f"{r['share'] * 100:6.1f}%" if r["share"] is not None else "      -"
-        ratio = f"{r['ratio']:6.2f}" if r["ratio"] is not None else "     -"
-        lines.append(f"  {r['target']:30} {r['calls']:>9,} {share} {ratio} {r['saved_ns'] / pred['total_ns'] * 100:6.1f}%"
-                     f"  {r['source']}")
+def render(pred: dict, limit: int = 12, notes: list[str] | None = None) -> str:
+    """The prediction for a developer: the ratio and its range, how much of the run Rustique
+    can reach at all, the targets that save the most and how each number was obtained."""
+    ratio = pred["ratio"]
+    rng = f"; range {pred['range'][0]:.2f}-{pred['range'][1]:.2f} by the other time source" if pred.get("range") else ""
+    under = pred["under_targets"] * 100
+    lines = [f"  predicted: {ratio:.3f} x the plain run time ({(1 / ratio if ratio else 0):.2f}x faster){rng}"]
+    if ratio > 0.98:
+        lines.append(f"  verdict: no noticeable change. {100 - under:.0f}% of the run is outside the entry points Rustique "
+                     "accelerates (your code, third-party code, the interpreter itself).")
+    else:
+        lines.append(f"  {under:.1f}% of the run is under accelerated entry points; the other {100 - under:.1f}% is "
+                     "unchanged by Rustique.")
+    shown = [r for r in pred["rows"] if r["saved_ns"] > 0][:limit]
+    if shown:
+        lines += ["", f"  {'target':32} {'calls':>11} {'share':>7} {'ratio':>6} {'saves':>7}  from"]
+        for r in shown:
+            share = f"{r['share'] * 100:6.1f}%" if r["share"] is not None else "      -"
+            rr = f"{r['ratio']:6.2f}" if r["ratio"] is not None else "     -"
+            lines.append(f"  {r['target']:32} {r['calls']:>11,} {share} {rr} "
+                         f"{r['saved_ns'] / pred['total_ns'] * 100:6.1f}%  {r['source']}")
+        rest = [r for r in pred["rows"] if r["saved_ns"] > 0][limit:]
+        if rest:
+            lines.append(f"  ... {len(rest)} more targets save {sum(r['saved_ns'] for r in rest) / pred['total_ns'] * 100:.1f}%")
+        lines += ["", "  share: of the run's time under the target; ratio: kernel / CPython's original on your program's "
+                  "calls (fallbacks included); saves: of the whole run"]
+    for n in notes or []:
+        lines.append(f"  note: {n}")
     return "\n".join(lines) + "\n"
 
 
 # --- the command ------------------------------------------------------------------------------
 
-_HOOK = '''\
+_HOOK = """\
 import atexit, json, os, sys, time
 _mode = os.environ.get("RUSTIQUE_ESTIMATE_MODE")
 _p = None
+if _mode == "enabled":  # like RUSTIQUE=1, also where no startup file is installed (dev installs)
+    try:
+        import rustique
+        rustique._enable(source="python -m rustique estimate")
+    except Exception as exc:
+        sys.stderr.write(f"rustique estimate: enable failed: {exc}\\n")
+    _mode = None
 try:
+    if _mode is None:
+        raise StopIteration
     from rustique import _estimate as _e
-    _p = (_e.Sampler() if _mode == "sample" else _e.Profiler()).start()
+    _man = None
+    if os.environ.get("RUSTIQUE_ESTIMATE_MANIFEST"):
+        with open(os.environ["RUSTIQUE_ESTIMATE_MANIFEST"]) as _f:
+            _man = json.load(_f)
+    _p = (_e.Sampler(manifest=_man) if _mode == "sample" else _e.Profiler(manifest=_man)).start()
+except StopIteration:
+    pass
 except Exception as exc:
     sys.stderr.write(f"rustique estimate: profiler not started: {exc}\\n")
 _t0 = time.perf_counter_ns()
@@ -750,6 +965,7 @@ def _finish():
         rec.update(_p.shares())
     else:
         rec.update(_p.result())
+        os.environ.pop("RUSTIQUE", None)  # the program ran plain (kill switch); the replay enables
         try:
             rec["replay"] = _e.replay(_p)
         except Exception as exc:
@@ -764,63 +980,27 @@ _spec = importlib.machinery.PathFinder.find_spec(
 if _spec is not None:
     _m = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_m)
-'''
+"""
 
 
-def main(argv: list[str]) -> int:
-    """``python -m rustique estimate [--json] -- <command...>``: three runs of the command
-    (plain with the stack sampler: total time and shares; plain with the profiler and the
-    replay; enabled with counters), then the prediction. Only the main thread of each Python
-    process is sampled; every process the command starts through this interpreter reports."""
-    import argparse
-    import json
-    import subprocess
-    import tempfile
-
+def combine(samples: list[dict], profiles: list[dict], records: list[dict]) -> tuple:
+    """The inputs of :func:`predict` from the records of every process of the three runs:
+    ``(profile, replayed, counters, total_ns, sampled)``."""
     from rustique import _report
-    from rustique._cli import read_records, resolve_command, split_command
 
-    opts_argv, cmd = split_command(argv)
-    p = argparse.ArgumentParser(prog="python -m rustique estimate",
-                                description="Predict what Rustique does for a command's run time, from the command itself.")
-    p.add_argument("--json", action="store_true", help="print the prediction as JSON")
-    p.add_argument("--limit", type=int, default=12)
-    p.add_argument("--mode", default="samples", choices=("samples", "hybrid", "profile"))
-    opts = p.parse_args(opts_argv)
-    if not cmd:
-        p.error("missing command (python -m rustique estimate -- <command...>)")
-    cmd = resolve_command(cmd)
-    base = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
-    walls = {}
-    with tempfile.TemporaryDirectory(prefix="rustique-estimate-") as tmp:
-        with open(os.path.join(tmp, "sitecustomize.py"), "w") as f:
-            f.write(_HOOK)
-        pypath = os.pathsep.join([tmp, *filter(None, [base.get("PYTHONPATH")])])
-        outs = {}
-        for mode in ("sample", "profile"):
-            outs[mode] = os.path.join(tmp, f"{mode}.json")
-            env = dict(base, RUSTIQUE_ESTIMATE_OUT=outs[mode], RUSTIQUE_ESTIMATE_MODE=mode, PYTHONPATH=pypath)
-            t0 = time.perf_counter()
-            subprocess.call(cmd, env=env, stdout=subprocess.DEVNULL)
-            walls[mode] = time.perf_counter() - t0
-        rep = os.path.join(tmp, "report.json")
-        t0 = time.perf_counter()
-        subprocess.call(cmd, env=dict(base, RUSTIQUE="1", RUSTIQUE_STATS="1", RUSTIQUE_REPORT=rep),
-                        stdout=subprocess.DEVNULL)
-        walls["enabled"] = time.perf_counter() - t0
-        samples = read_records(outs["sample"])
-        profiles = read_records(outs["profile"])
-        records = read_records(rep)
-    if not profiles or not samples:
-        sys.stderr.write("rustique estimate: no Python process reported a profile (is rustique installed in the "
-                         "interpreter the command runs?)\n")
-        return 2
-    total_ns = sum(r["wall_ns"] for r in samples)  # CPU-serial sum over the processes
+    total_ns = sum(r["wall_ns"] for r in samples)  # serial sum over the processes
     shares: dict = {}
-    nsamp = sum(r.get("samples", 0) for r in samples)
-    for r in samples:  # weight each process's shares by its wall time
+    cpu = sum(r.get("cpu_ns", 0) for r in samples)
+    sampled_wall = sum(r.get("wall_ns", 0) for r in samples)
+    for r in samples:  # weight each process's shares by its CPU (signal mode) or wall time
+        w = (r.get("cpu_ns", 0) / cpu) if cpu and r.get("mode") == "signal" else (
+            r["wall_ns"] / total_ns if total_ns else 0)
         for n, sh in r.get("shares", {}).items():
-            shares[n] = shares.get(n, 0.0) + sh * r["wall_ns"] / total_ns
+            shares[n] = shares.get(n, 0.0) + sh * w
+    modes = {r.get("mode") for r in samples if r.get("samples")}
+    sampled = {"samples": sum(r.get("samples", 0) for r in samples), "shares": shares,
+               "mode": "signal" if modes == {"signal"} else ("thread" if modes else None),
+               "cpu_ns": cpu, "wall_ns": sampled_wall}
     merged = {"targets": {}}
     replayed: dict = {}
     for pr in profiles:
@@ -839,18 +1019,123 @@ def main(argv: list[str]) -> int:
     for r in replayed.values():
         r["ratio"] = r["kernel_ns"] / r["plain_ns"] if r["plain_ns"] else 1.0
     counters = _report.merge(records)["stats"] if records else {}
-    sampled = {"samples": nsamp, "shares": shares}
+    return merged, replayed, counters, total_ns, sampled
+
+
+def main(argv: list[str]) -> int:
+    """``python -m rustique estimate [--json] -- <command...>``: three runs of the command,
+    then the prediction.
+
+    1. **enabled, with counters** (``report``): which targets the program reaches, their hit
+       and fallback counts, and the entry points to watch (``status()``'s sites);
+    2. **plain, sampled**: run time, and the share of CPU time under each Python-level target;
+    3. **plain, profiled**: calls and time of every target, a sample of their arguments,
+       replayed at exit with CPython's original and with the kernel.
+
+    Every Python process the command starts (through an interpreter with Rustique) reports."""
+    import argparse
+    import json
+    import subprocess
+    import tempfile
+
+    from rustique import _report
+    from rustique._cli import add_tiers, read_records, resolve_command, split_command
+
+    opts_argv, cmd = split_command(argv)
+    p = argparse.ArgumentParser(prog="python -m rustique estimate",
+                                description="Predict what Rustique does for a command's run time, from the command itself.")
+    p.add_argument("--json", action="store_true", help="print the prediction as JSON")
+    p.add_argument("--limit", type=int, default=12, help="targets shown")
+    p.add_argument("--mode", default="samples", choices=("samples", "hybrid", "profile"),
+                   help="time source for Python-level targets (default: stack samples)")
+    p.add_argument("--tiers", metavar="T,..", help="opt-in tiers to count in (their targets are counted, not timed)")
+    opts = p.parse_args(opts_argv)
+    if not cmd:
+        p.error("missing command (python -m rustique estimate -- <command...>)")
+    cmd = resolve_command(cmd)
+    add_tiers(opts.tiers)
+    base = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
+    walls = {}
+    notes = []
+    with tempfile.TemporaryDirectory(prefix="rustique-estimate-") as tmp:
+        with open(os.path.join(tmp, "sitecustomize.py"), "w") as f:
+            f.write(_HOOK)
+        pypath = os.pathsep.join([tmp, *filter(None, [base.get("PYTHONPATH")])])
+        rep = os.path.join(tmp, "report.json")
+        env = dict(base, RUSTIQUE="1", RUSTIQUE_STATS="1", RUSTIQUE_REPORT=rep, RUSTIQUE_ESTIMATE_MODE="enabled",
+                   PYTHONPATH=pypath)
+        for k in ("RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_TIERS", "RUSTIQUE_UNVALIDATED_PATCH"):
+            if k in os.environ:
+                env[k] = os.environ[k]
+        t0 = time.perf_counter()
+        try:
+            subprocess.call(cmd, env=env, stdout=subprocess.DEVNULL)
+        except FileNotFoundError as exc:
+            sys.stderr.write(f"rustique estimate: {exc}\n")
+            return 2
+        walls["enabled"] = time.perf_counter() - t0
+        records = _report.collect(rep)
+        full = [r for r in records if r.get("status")]
+        if not full:
+            sys.stderr.write("rustique estimate: the command reported nothing: is rustique installed in the "
+                             "interpreter it runs? (python -m rustique status with that interpreter)\n")
+            return 2
+        manifest = manifest_from_status(_report.merge(full)["status"])
+        man_path = os.path.join(tmp, "manifest.json")
+        with open(man_path, "w") as f:
+            json.dump(manifest, f)
+        outs = {}
+        for mode in ("sample", "profile"):
+            outs[mode] = os.path.join(tmp, f"{mode}.json")
+            # RUSTIQUE=0: a rustique.enable() in the program is a no-op, so these runs are plain
+            env = dict(base, RUSTIQUE="0", RUSTIQUE_ESTIMATE_OUT=outs[mode], RUSTIQUE_ESTIMATE_MODE=mode,
+                       PYTHONPATH=pypath, RUSTIQUE_ESTIMATE_MANIFEST=man_path)
+            t0 = time.perf_counter()
+            subprocess.call(cmd, env=env, stdout=subprocess.DEVNULL)
+            walls[mode] = time.perf_counter() - t0
+        samples = read_records(outs["sample"])
+        profiles = read_records(outs["profile"])
+    if not profiles or not samples:
+        sys.stderr.write("rustique estimate: no Python process reported a profile (the command's interpreter "
+                         "must be able to import rustique)\n")
+        return 2
+    merged, replayed, counters, total_ns, sampled = combine(samples, profiles, records)
     pred = predict(merged, replayed, counters, total_ns, sampled, mode=opts.mode)
-    # the other time source gives the range: stack samples under-see compute in programs that
-    # mostly wait in GIL-releasing calls (I/O), per-call times over-count in nested calls
+    # The other time source gives the range: per-call times over-count nested calls, samples
+    # can under-see short programs.
     alt = predict(merged, replayed, counters, total_ns, sampled, mode="hybrid" if opts.mode != "hybrid" else "samples")
     pred["range"] = (min(pred["ratio"], alt["ratio"]), max(pred["ratio"], alt["ratio"]))
+    if sampled["mode"] is None:
+        why = next((r.get("disabled") for r in samples if r.get("disabled")), "no samples")
+        notes.append(f"no stack samples ({why}): Python-level targets are timed per call, which over-counts "
+                     "recursive targets")
+    elif sampled["mode"] == "signal" and sampled["wall_ns"] and sampled["cpu_ns"] < 0.7 * sampled["wall_ns"]:
+        notes.append(f"the program waited {100 - 100 * sampled['cpu_ns'] / sampled['wall_ns']:.0f}% of its run time "
+                     "(I/O, sleeps, locks): Rustique only shortens the rest")
+    unattr = sum(r.get("unattributed", 0) * r.get("cpu_ns", 0) for r in samples) / (sampled["cpu_ns"] or 1)
+    if unattr > 0.05:
+        notes.append(f"{unattr * 100:.0f}% of the CPU time ran in threads whose stacks cannot be sampled safely on "
+                     "this free-threaded build: not counted (the prediction under-promises)")
+    tiered = [t for t in _report.merge(full)["status"].get("targets", []) if t.get("tier")]
+    if tiered and not os.environ.get("RUSTIQUE_TIERS"):
+        names = sorted({t["tier"] for t in tiered})
+        notes.append(f"opt-in tiers not included ({', '.join(names)}): their effect is measured, not predicted: "
+                     f"python -m rustique diff --repeat 5 --tiers {','.join(names)} -- <command>")
+    fb = sorted(((sum((c.get("fallback") or {}).values()), n, c) for n, c in counters.items()), reverse=True)
+    for n_fb, name, c in fb[:3]:
+        tot = n_fb + c.get("hits", 0)
+        if tot and n_fb / tot >= 0.3 and n_fb >= 100:
+            top = max((c.get("fallback") or {}).items(), key=lambda kv: kv[1])[0]
+            notes.append(f"{name} fell back on {100 * n_fb / tot:.0f}% of {tot:,} calls (mostly {top}: "
+                         f"{_report.FALLBACK_ADVICE.get(top, top).split(':')[0]})")
     if opts.json:
-        print(json.dumps({"prediction": pred, "runs_s": walls, "processes": len(samples)}, indent=1, default=str))
+        print(json.dumps({"prediction": pred, "notes": notes, "runs_s": walls, "processes": len(samples),
+                          "sampler": {k: sampled[k] for k in ("mode", "samples", "cpu_ns", "wall_ns")}},
+                         indent=1, default=str))
     else:
         sys.stdout.write(f"rustique estimate: {' '.join(cmd)}\n")
-        sys.stdout.write(render(pred, opts.limit))
-        sys.stdout.write(f"\n  {len(samples)} Python process(es); runs: sampled {walls['sample']:.2f} s, profiled "
-                         f"{walls['profile']:.2f} s, enabled {walls['enabled']:.2f} s. To measure instead of predict: "
+        sys.stdout.write(render(pred, opts.limit, notes))
+        sys.stdout.write(f"\n  {len(samples)} Python process(es); runs: enabled {walls['enabled']:.2f} s, sampled "
+                         f"{walls['sample']:.2f} s, profiled {walls['profile']:.2f} s. To measure instead of predict: "
                          f"python -m rustique diff --repeat 5 -- <command>\n")
     return 0
