@@ -451,8 +451,13 @@ def test_explicit_collections_run_with_the_programs_list():
         rep = R()
         assert not rep["detached"] and rep["callbacks_ptr"] == rep["private_list"], rep
         seen.clear()
-        x = [[] for _ in range(5000)]   # automatic: through the observer
-        assert seen and all(not d and not same for _, d, same in seen), seen
+        keep = []
+        for _ in range(400):            # automatic collections: through the observer
+            keep.append([[] for _ in range(5000)])
+            if seen:
+                break
+        got = list(seen)
+        assert got and all(not d and not same for _, d, same in got), got
         def nested(p, i):
             if p == "start":
                 seen.append(("nested", gc.collect()))   # a collection is running: 0
