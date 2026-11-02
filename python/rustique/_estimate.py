@@ -230,6 +230,11 @@ class Profiler:
         self.total_events = 0
         self.kappa = None
         self.rng = _random_mod.Random(1234)
+        self.mt = False
+        self.clock = NS
+        self.kappa_t = None
+        self.c_child: dict[str, int] = {}
+        self.c_child_calls: dict[str, int] = {}
 
     # resolution (repeated whenever sys.modules grows: targets of modules imported later)
     def _resolve(self) -> None:
@@ -292,11 +297,18 @@ class Profiler:
         return None
 
     # Stack entries: [name, key, events inside, t0 (None: a recursive call, folded into the
-    # enclosing call of the same target), time of timed children]. Time is exclusive: a nested
-    # call of *another* target is timed on its own and subtracted from its parent (``any`` or
-    # ``sorted`` with a key calling ``fnmatch``); a recursive call of the same target stays in
-    # the outermost one (``deepcopy``: the kernel replaces the whole recursion).
+    # enclosing call of the same target), time of timed children, clock, (longest-call args)].
+    # Time is exclusive: a nested call of *another* target is timed on its own and subtracted
+    # from its parent (``any`` or ``sorted`` with a key calling ``fnmatch``); a recursive call of
+    # the same target stays in the outermost one (``deepcopy``: the kernel replaces the whole
+    # recursion). Once the program has several threads, calls are timed in thread CPU time:
+    # wall intervals would include the time a thread waits for the GIL.
     def _push(self, st, name, key):
+        if not self.mt:
+            thr = sys.modules.get("threading")
+            if thr is not None and len(thr._active) > 1:  # noqa: SLF001
+                self.mt = True
+                self.clock = time.thread_time_ns
         timed = None
         for e in reversed(st):
             if e[3] is not None:
@@ -306,15 +318,17 @@ class Profiler:
             timed[2] += 1  # this callback ran inside the innermost timed call
             for e in st:
                 if e[0] == name:
-                    st.append([name, key, 0, None, 0])
+                    st.append([name, key, 0, None, 0, None])
                     return False
-        st.append([name, key, 0, NS(), 0])
+        clock = self.clock
+        st.append([name, key, 0, clock(), 0, clock])
         return True
 
-    def _pop(self, st, key, t):
+    def _pop(self, st, key):
         for i in range(len(st) - 1, -1, -1):
             if st[i][1] is key:
                 e = st[i]
+                t = e[5]() if e[5] is not None else 0
                 del st[i:]
                 parent = None
                 for p in reversed(st):
@@ -327,8 +341,8 @@ class Profiler:
                     return
                 interval = t - e[3]
                 name = e[0]
-                if len(e) > 5 and e[5] is not None and interval > self.longest.get(name, (0,))[0]:
-                    self.longest[name] = (interval, e[5])
+                if len(e) > 6 and e[6] is not None and interval > self.longest.get(name, (0,))[0]:
+                    self.longest[name] = (interval, e[6])
                 self.ns[name] = self.ns.get(name, 0) + interval - e[4]
                 self.calls[name] = self.calls.get(name, 0) + 1
                 self.events[name] = self.events.get(name, 0) + e[2]
@@ -339,6 +353,11 @@ class Profiler:
                 if parent is not None:
                     parent[4] += interval
                     parent[2] += 2  # the child's own start/end callbacks, outside its interval
+                    if name in self.c_sites and parent[0] not in self.c_sites:
+                        # a C-level target inside a Python-level one: stack samples see this
+                        # time under the Python-level target
+                        self.c_child[parent[0]] = self.c_child.get(parent[0], 0) + interval
+                        self.c_child_calls[parent[0]] = self.c_child_calls.get(parent[0], 0) + 1
                 return
 
     def _creturn(self, code, off, c, arg0):
@@ -347,7 +366,7 @@ class Profiler:
             self._resolve()
         st = self.stacks.get(_thread.get_ident())
         if st:
-            self._pop(st, c, NS())
+            self._pop(st, c)
 
     def _start(self, code, off):
         self.total_events += 1
@@ -418,7 +437,7 @@ class Profiler:
         self.total_events += 1
         st = self.stacks.get(_thread.get_ident())
         if st and code in self.codes:
-            self._pop(st, code, NS())
+            self._pop(st, code)
 
     # control
     def start(self) -> "Profiler":
@@ -457,7 +476,9 @@ class Profiler:
         event is calibrated on a loop (:func:`calibrate`); with ``plain_ns`` (the same work
         timed without the profiler) it is rescaled so that all events together explain the
         measured slowdown of this run."""
-        k = dict(self.kappa or {})
+        if self.mt and self.kappa_t is None:
+            self.kappa_t = calibrate(thread_clock=True)
+        k = dict((self.kappa_t if self.mt else self.kappa) or {})
         scale = 1.0
         if plain_ns and self.total_events and k.get("event"):
             k["observed_scale"] = (self.wall - plain_ns) / self.total_events / k["event"]
@@ -469,17 +490,20 @@ class Profiler:
             corrected = ns - self.calls[name] * per_call - self.events.get(name, 0) * k.get("event", 0.0) * scale
             co = self.calls_outer.get(name, 0)
             outer = self.ns_outer.get(name, 0) - co * per_call - self.events_outer.get(name, 0) * k.get("event", 0.0) * scale
+            cc = self.c_child_calls.get(name, 0)
+            c_child = self.c_child.get(name, 0) - cc * k.get("c", 0.0) * scale
             out[name] = {"calls": self.calls[name], "ns_raw": ns, "ns": max(corrected, 0.0), "kind": kind,
-                         "ns_outer": max(outer, 0.0), "calls_outer": co,
+                         "ns_outer": max(outer, 0.0), "calls_outer": co, "c_child_ns": max(c_child, 0.0),
                          "nested_events": self.events.get(name, 0),
                          "samples": len(self.kept.get(name, []))}
-        return {"targets": out, "wall_ns_instrumented": self.wall, "kappa": k, "events": self.total_events}
+        return {"targets": out, "wall_ns_instrumented": self.wall, "kappa": k, "events": self.total_events,
+                "thread_clock": self.mt}
 
 
 class Sampler:
     """Share of CPU time under each Python-level target, from stack samples: no per-call cost,
     so nested and recursive targets (``deepcopy``) are measured as accurately as flat ones.
-    The outermost target frame on a stack gets the sample.
+    The innermost target frame on a stack gets the sample.
 
     ``signal`` mode (POSIX): a CPU-time timer (``setitimer(ITIMER_PROF)``) fires every
     ``interval`` seconds of process CPU time; the handler runs in the main thread and walks
@@ -533,20 +557,24 @@ class Sampler:
         self.pending = pending
         self.nmods = len(sys.modules)
 
-    def _outer(self, f) -> str | None:
+    def _outer(self, f) -> tuple | None:
+        """The distinct targets on the stack, outermost first (``("logging.Logger.level",
+        "logging.Formatter.format")``): :func:`predict` gives the time to the outermost one
+        whose kernel takes the call, as often as it does, and the rest to the targets inside
+        it. A recursive target (``deepcopy``) appears once."""
         codes = self.codes
-        outer = None
+        chain = []
         while f is not None:
             n = codes.get(f.f_code)
-            if n is not None:
-                outer = n
+            if n is not None and n not in chain:
+                chain.append(n)
             f = f.f_back
-        return outer
+        return tuple(reversed(chain)) if chain else None
 
-    def _add(self, name: str | None, w: float) -> None:
+    def _add(self, chain: tuple | None, w: float) -> None:
         self.total += w
-        if name is not None:
-            self.weights[name] = self.weights.get(name, 0.0) + w
+        if chain is not None:
+            self.weights[chain] = self.weights.get(chain, 0.0) + w
 
     # signal mode ---------------------------------------------------------------------------
     def _thread_cpu(self) -> dict[int, int]:
@@ -660,8 +688,15 @@ class Sampler:
         return self
 
     def shares(self) -> dict:
+        """``shares``: of CPU (signal mode) or wall time, per innermost target; ``chains``: per
+        stack of distinct targets (``"outer>inner"``)."""
+        inner: dict[str, float] = {}
+        for chain, w in self.weights.items():
+            inner[chain[-1]] = inner.get(chain[-1], 0.0) + w
+        t = self.total or 1.0
         out = {"samples": self.samples, "mode": self.mode, "cpu_ns": self.cpu_ns, "wall_ns": self.wall_ns,
-               "shares": {n: w / self.total for n, w in self.weights.items()} if self.total else {},
+               "shares": {n: w / t for n, w in inner.items()} if self.total else {},
+               "chains": {">".join(c): w / t for c, w in self.weights.items()} if self.total else {},
                "unattributed": self.unattributed / self.total if self.total else 0.0}
         if self.disabled:
             out["disabled"] = self.disabled
@@ -672,12 +707,15 @@ def _dummy_py(a, b=1):
     return a
 
 
-def calibrate(n: int = 20000) -> dict:
+def calibrate(n: int = 20000, thread_clock: bool = False) -> dict:
     """Cost of the profiler itself: ns added to one measured Python-level call (``py``), one
-    C-level call (``c``), and one nested monitoring event (``event``)."""
+    C-level call (``c``), and one nested monitoring event (``event``), with the wall clock or
+    (``thread_clock``) the thread CPU-time clock that multi-threaded programs are timed with."""
     p = Profiler.__new__(Profiler)
     Profiler.__init__(p, samples=0)
     p.kappa = {}
+    p.mt = True  # the clock below, whatever threads exist
+    p.clock = time.thread_time_ns if thread_clock else NS
     code = _dummy_py.__code__
     mon = sys.monitoring
     E = mon.events
@@ -855,16 +893,23 @@ def predict(profile: dict, replayed: dict, counters: dict | None, total_ns: floa
         cpu_frac = sampled.get("cpu_ns", 0) / sampled["wall_ns"]
         basis = total_ns * cpu_frac
         denom = max(total_ns, basis)
+    mt = bool(profile.get("thread_clock")) and sampled is not None and mode == "samples"
+    if mt:
+        # Several threads: stack samples of the threads other than the main one are taken
+        # where they gave up the GIL (system calls), not uniformly; the profiler's per-call
+        # times are in thread CPU time there, so they are used instead.
+        mode = "hybrid"
     if sampled is not None:
-        shares = sampled.get("shares", {})
+        shares = assign_chains(sampled, counters, replayed) if sampled.get("chains") else sampled.get("shares", {})
         for n, p in targets.items():
             if p["kind"] == "py" and (mode == "samples" or p.get("nested_events", 0) > 4 * max(p["calls"], 1)):
-                p["ns"] = shares.get(n, 0.0) * basis
+                # samples see C-level targets' time under the innermost Python-level target:
+                # the profiler timed those calls, so they count there, not twice
+                p["ns"] = max(shares.get(n, 0.0) * basis - p.get("c_child_ns", 0.0), 0.0)
                 p["from_samples"] = True
-            elif mode == "samples" and "ns_outer" in p:
-                p["ns"] = p["ns_outer"]
-        for n, sh in shares.items():  # seen by the sampler only (imported after the profiler looked)
-            targets.setdefault(n, {"calls": 0, "ns": sh * basis, "kind": "py", "from_samples": True})
+        if mode == "samples":
+            for n, sh in shares.items():  # seen by the sampler only (imported after the profiler looked)
+                targets.setdefault(n, {"calls": 0, "ns": sh * basis, "kind": "py", "from_samples": True})
     for name, p in targets.items():
         t = p["ns"]
         under += t
@@ -896,6 +941,36 @@ def predict(profile: dict, replayed: dict, counters: dict | None, total_ns: floa
     rows.sort(key=lambda r: -r["saved_ns"])
     return {"ratio": (denom - saved) / denom if denom else 1.0, "under_targets": under / denom if denom else 0.0,
             "saved_ns": saved, "total_ns": denom, "wall_ns": total_ns, "cpu_ns": basis, "rows": rows}
+
+
+def hit_fraction(name: str, counters: dict, replayed: dict) -> float:
+    """How often a target's kernel takes the call: from the enabled run's counters, else from
+    the replay, else 1."""
+    c = counters.get(name) or {}
+    n = c.get("hits", 0) + sum((c.get("fallback") or {}).values())
+    if n:
+        return c.get("hits", 0) / n
+    r = replayed.get(name) or {}
+    n = r.get("hits", 0) + r.get("fallbacks", 0)
+    return r.get("hits", 0) / n if n else 1.0
+
+
+def assign_chains(sampled: dict, counters: dict, replayed: dict) -> dict[str, float]:
+    """Share of time per target from the sampled stacks of targets: each stack's time goes to
+    its outermost target in the proportion of calls its kernel takes (a kernel that takes the
+    call replaces everything under it), the rest to the next target inside, and so on. A
+    ``Logger.info`` that always falls back leaves its time to the logging targets inside it;
+    ``relative_to``, which always hits, keeps the ``PurePath`` calls inside it."""
+    out: dict[str, float] = {}
+    for key, w in sampled["chains"].items():
+        chain = key.split(">")
+        for i, t in enumerate(chain):
+            h = 1.0 if i == len(chain) - 1 else hit_fraction(t, counters, replayed)
+            out[t] = out.get(t, 0.0) + w * h
+            w *= 1 - h
+            if w <= 0:
+                break
+    return out
 
 
 def render(pred: dict, limit: int = 12, notes: list[str] | None = None) -> str:
@@ -992,23 +1067,26 @@ def combine(samples: list[dict], profiles: list[dict], records: list[dict]) -> t
     shares: dict = {}
     cpu = sum(r.get("cpu_ns", 0) for r in samples)
     sampled_wall = sum(r.get("wall_ns", 0) for r in samples)
+    chains: dict = {}
     for r in samples:  # weight each process's shares by its CPU (signal mode) or wall time
         w = (r.get("cpu_ns", 0) / cpu) if cpu and r.get("mode") == "signal" else (
             r["wall_ns"] / total_ns if total_ns else 0)
         for n, sh in r.get("shares", {}).items():
             shares[n] = shares.get(n, 0.0) + sh * w
+        for n, sh in r.get("chains", {}).items():
+            chains[n] = chains.get(n, 0.0) + sh * w
     modes = {r.get("mode") for r in samples if r.get("samples")}
-    sampled = {"samples": sum(r.get("samples", 0) for r in samples), "shares": shares,
+    sampled = {"samples": sum(r.get("samples", 0) for r in samples), "shares": shares, "chains": chains,
                "mode": "signal" if modes == {"signal"} else ("thread" if modes else None),
                "cpu_ns": cpu, "wall_ns": sampled_wall}
-    merged = {"targets": {}}
+    merged = {"targets": {}, "thread_clock": any(pr.get("thread_clock") for pr in profiles)}
     replayed: dict = {}
     for pr in profiles:
         for n, d in pr["targets"].items():
             m = merged["targets"].setdefault(n, {"calls": 0, "ns": 0.0, "ns_raw": 0, "ns_outer": 0.0, "calls_outer": 0,
                                                  "nested_events": 0, "kind": d["kind"], "samples": 0})
-            for k in ("calls", "ns", "ns_raw", "ns_outer", "calls_outer", "nested_events", "samples"):
-                m[k] += d.get(k, 0)
+            for k in ("calls", "ns", "ns_raw", "ns_outer", "calls_outer", "nested_events", "samples", "c_child_ns"):
+                m[k] = m.get(k, 0) + d.get(k, 0)
         for n, d in (pr.get("replay") or {}).items():
             r = replayed.setdefault(n, {"plain_ns": 0.0, "kernel_ns": 0.0, "samples": 0, "hits": 0, "fallbacks": 0})
             w = d.get("ratio", 1.0)
