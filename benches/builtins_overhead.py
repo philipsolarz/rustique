@@ -29,7 +29,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import builtins  # noqa: E402
 
-import rustique as rs  # noqa: E402
 from rustique import _builtins  # noqa: E402
 
 CASES: list[tuple[str, str, str]] = [
@@ -54,14 +53,6 @@ CASES: list[tuple[str, str, str]] = [
     ("any(r8 range)", "any(r8)", "r8"),
     ("sorted(x8)", "sorted(x8)", "x8"),
     ("sorted(x8, reverse=True)", "sorted(x8, reverse=True)", "x8"),
-    ("sorted(rsx8)", "sorted(rsx8)", "rsx8"),
-    ("sum(rsx8)", "sum(rsx8)", "rsx8"),
-    ("min(rsx8)", "min(rsx8)", "rsx8"),
-    ("any(rsz8)", "any(rsz8)", "rsz8"),
-    ("sum(rsx100)", "sum(rsx100)", "rsx100"),
-    ("rsx100.sum() [reference]", "rsx100.sum()", "rsx100"),
-    ("min(rsx100)", "min(rsx100)", "rsx100"),
-    ("rsx100.min() [reference]", "rsx100.min()", "rsx100"),
     ("sum(set8)", "sum(set8)", "set8"),
     ("min(set8)", "min(set8)", "set8"),
     ("max(d8)", "max(d8)", "d8"),
@@ -84,9 +75,6 @@ def make_env() -> dict[str, Any]:
         "z8": [0] * 8,
         "r8": range(8),
         "f": lambda v: -v,
-        "rsx8": rs.List([5, 3, 8, 1, 9, 2, 7, 4]),
-        "rsz8": rs.List([0] * 8),
-        "rsx100": rs.List(range(100)),
         "set8": {5, 3, 8, 1, 9, 2, 7, 4},
         "d8": dict.fromkeys([5, 3, 8, 1, 9, 2, 7, 4]),
     }

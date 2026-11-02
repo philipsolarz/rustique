@@ -17,12 +17,12 @@ the provisional rewrite form on the Rustique side (e.g. `List((a, b, c))`), unti
 takeover mechanism (docs/TAKEOVER.md) produces them for real.
 
 Implementations (`--impls`, the builtin is always measured as the reference)
-    rustique  the Rustique types (`rs.List`, ...) running the same statements, in a process
-              where `rustique.enable()` is active when it exists (the whole product: builtin
-              functions such as `sum` dispatch to native kernels)
     enabled   the builtin types in a process where `rustique.enable()` is active (the
-              in-place acceleration tier, docs/TAKEOVER.md); compared against plain CPython
-              in a separate process, results cross-checked by digest
+              engine); compared against plain CPython in a separate process, results
+              cross-checked by digest. The default.
+    rustique  the opt-in Rustique types (`rs.List`, ...), retired in 0.3 (docs/MIGRATION.md):
+              every cell reports `missing` unless run against `rustique<0.3` (tag
+              `legacy-native-types`), which reproduces the historical boards.
 
 Metrics
     time    pyperf (`bench_time_func`, worker processes, calibrated loops). Mutating
@@ -824,7 +824,7 @@ def run_time_worker() -> None:
     runner = pyperf.Runner(add_cmdline_args=add_cmdline_args, metadata={"rustique_build": metadata("time")["build"]})
     add_filters(runner.argparser)
     runner.argparser.add_argument("--shard")
-    runner.argparser.add_argument("--impls", default="rustique")
+    runner.argparser.add_argument("--impls", default="enabled")
     runner.argparser.add_argument("--status-file")
     # pyperf appends `add_cmdline_args` after its own worker options, so the marker can be
     # anywhere in argv.
@@ -1149,7 +1149,7 @@ def main() -> None:
         sp = sub.add_parser(name)
         add_filters(sp)
         sp.add_argument("--shard")
-        sp.add_argument("--impls", default="rustique", help="rustique,enabled (the builtin is always measured)")
+        sp.add_argument("--impls", default="enabled", help="enabled[,rustique] (the builtin is always measured)")
         if name in ("instr", "time", "_instr_worker"):
             sp.add_argument("-o", "--output", default=f"scoreboard-{name.strip('_').split('_')[0]}.json")
             sp.add_argument("--shards", type=int, default=2,
@@ -1168,11 +1168,11 @@ def main() -> None:
     rp = sub.add_parser("report")
     rp.add_argument("files", nargs="+")
     rp.add_argument("-o", "--output")
-    rp.add_argument("--impl", default="rustique", choices=("rustique", "enabled"))
+    rp.add_argument("--impl", default="enabled", choices=("rustique", "enabled"))
     sp = sub.add_parser("summary", help="parity counts and geometric means, before -> after")
     sp.add_argument("--before", nargs="*", default=[])
     sp.add_argument("--after", nargs="+", required=True)
-    sp.add_argument("--impl", default="rustique", choices=("rustique", "enabled"))
+    sp.add_argument("--impl", default="enabled", choices=("rustique", "enabled"))
     sp.add_argument("--size", action="store_true", help="only sizes 0-100 (instruction counts)")
     args = p.parse_args()
 
