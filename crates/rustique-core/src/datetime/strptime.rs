@@ -428,11 +428,21 @@ fn numeric_ends(dir: Dir, s: &[u8], p: usize, out: &mut Ends) {
     }
 }
 
+/// The name alternatives (`__seqToRE`: longest first). No name of a list is a prefix of
+/// another one of the same list (checked by a test), so at most one matches at `p`.
 fn names(s: &[u8], p: usize, list: &[&str], order: &[u8], out: &mut Ends) {
-    for &k in order {
-        let n = list[k as usize].as_bytes();
-        if s.len() - p >= n.len() && s[p..p + n.len()].eq_ignore_ascii_case(n) {
-            out.push(p + n.len());
+    let rest = &s[p.min(s.len())..];
+    // ASCII lower case of the next few bytes, once (IGNORECASE on ASCII input).
+    let mut low = [0u8; 9];
+    let k = rest.len().min(9);
+    for (d, &b) in low.iter_mut().zip(&rest[..k]) {
+        *d = b.to_ascii_lowercase();
+    }
+    for &i in order {
+        let n = list[i as usize].as_bytes();
+        if n.len() <= k && &low[..n.len()] == n {
+            out.add(p + n.len());
+            return;
         }
     }
 }
@@ -547,6 +557,58 @@ impl Program {
         }
     }
 
+    /// sre's first match found in one forward pass, when it is on the greedy path: each
+    /// item takes the first of its end positions (in sre's order) that passes a check the
+    /// next item needs anyway (the next literal is there, whitespace is there, the next
+    /// directive has an end there), and `\s+` takes the whole run (sre tries it first).
+    /// Every end sre tries before the one taken fails that check, so sre fails it too; if
+    /// the rest then matches along this path, sre's first match is this path. `None` when
+    /// the path fails somewhere (sre may still find a match by backtracking: the caller
+    /// runs [`Self::first_match`] then).
+    fn first_match_greedy(&self, s: &[u8], caps: &mut [(u8, u8)]) -> Option<usize> {
+        let mut pos = 0usize;
+        let items = &self.items;
+        for (i, &item) in items.iter().enumerate() {
+            match item {
+                Item::Lit(c) => {
+                    if at(s, pos).eq_ignore_ascii_case(&c) && pos < s.len() {
+                        pos += 1;
+                    } else {
+                        return None;
+                    }
+                }
+                Item::Ws => {
+                    let k = s[pos..].iter().take_while(|&&b| is_space(b)).count();
+                    if k == 0 {
+                        return None;
+                    }
+                    pos += k;
+                }
+                Item::Field(dir, fi) => {
+                    let mut ends = Ends::new();
+                    self.ends(dir, s, pos, &mut ends);
+                    let next = items.get(i + 1).copied();
+                    let e = *ends.as_slice().iter().find(|&&e| {
+                        let e = e as usize;
+                        match next {
+                            None => true,
+                            Some(Item::Lit(c)) => e < s.len() && s[e].eq_ignore_ascii_case(&c),
+                            Some(Item::Ws) => is_space(at(s, e)),
+                            Some(Item::Field(d2, _)) => {
+                                let mut n2 = Ends::new();
+                                self.ends(d2, s, e, &mut n2);
+                                n2.len > 0
+                            }
+                        }
+                    })?;
+                    caps[fi as usize] = (pos as u8, e);
+                    pos = e as usize;
+                }
+            }
+        }
+        Some(pos)
+    }
+
     /// Run `_strptime` on `s` (ASCII): `Some` when the result is CPython's and no exception
     /// would be raised; `None` means "let CPython decide" (no match, leftover input, an
     /// invalid date, an inconsistent `%z`, ...).
@@ -558,8 +620,13 @@ impl Program {
             return None;
         }
         let mut caps = [(0u8, 0u8); 24];
-        let mut steps = 0;
-        let end = self.first_match(0, 0, s, &mut caps, &mut steps).ok()??;
+        let end = match self.first_match_greedy(s, &mut caps) {
+            Some(e) => e,
+            None => {
+                let mut steps = 0;
+                self.first_match(0, 0, s, &mut caps, &mut steps).ok()??
+            }
+        };
         if end != s.len() {
             return None; // "unconverted data remains"
         }
@@ -776,6 +843,93 @@ mod tests {
         assert_eq!(r.hour, 13);
         let r = p("2024-03-15T13:45:30.12-02:30:15.5", "%Y-%m-%dT%H:%M:%S.%f%z").unwrap();
         assert_eq!((r.fraction, r.gmtoff, r.gmtoff_fraction), (120000, Some(-(2 * 3600 + 30 * 60 + 15)), -500000));
+    }
+
+    #[test]
+    fn names_are_not_prefixes_of_each_other() {
+        for list in [&F_MONTH[..], &A_MONTH[..], &F_WEEKDAY[..], &A_WEEKDAY[..], &AM_PM[..]] {
+            for a in list {
+                for b in list {
+                    assert!(a == b || !b.starts_with(a), "{a} / {b}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn greedy_path_agrees_with_backtracking() {
+        // Inputs over a small alphabet (all of length <= 4, and every one- and two-position
+        // mutation of realistic inputs), for formats mixing adjacent directives, names,
+        // whitespace and %z: when the one-pass greedy matcher succeeds, its match is the
+        // backtracking matcher's (sre's) first match.
+        let cases: [(&str, &str); 16] = [
+            ("%Y%m%d", "2024111"),
+            ("%d%m%y", "11124"),
+            ("%H%M%S", "12345"),
+            ("%m/%d/%Y %I:%M %p", "03/15/2024 01:45 PM"),
+            ("%d/%b/%Y:%H:%M:%S %z", "15/Mar/2024:13:45:30 +0100"),
+            ("%Y-%m-%d %H:%M", "2024-03-15 13:45"),
+            ("%d.%m.%Y %H:%M", "5.3.2024  9:05"),
+            ("%j%y", "1124"),
+            ("%f%S", "1234567"),
+            ("%I%p", "11pm"),
+            ("%b%d", "Mar15"),
+            ("%H %z %M", "10  30"),
+            ("%y%z", "24+01:00"),
+            ("%d %H", " 5  9"),
+            ("%A %d %B", "Friday 15 March"),
+            ("%Y-%m-%dT%H:%M:%S.%f%z", "2024-03-15T13:45:30.123456+02:00"),
+        ];
+        let alphabet: &[u8] = b"0123 59/:+-.ZpaMmJT";
+        let mut checked = 0;
+        let mut check = |prog: &Program, s: &[u8], f: &str| {
+            let mut c1 = [(0u8, 0u8); 24];
+            if let Some(e1) = prog.first_match_greedy(s, &mut c1) {
+                let mut c2 = [(0u8, 0u8); 24];
+                let mut steps = 0;
+                let e2 = prog.first_match(0, 0, s, &mut c2, &mut steps).unwrap().unwrap();
+                assert_eq!((e1, &c1[..prog.fields.len()]), (e2, &c2[..prog.fields.len()]), "{f} {s:?}");
+                checked += 1;
+            }
+        };
+        for (f, seed) in cases {
+            for v in [Version::V3_14, Version::V3_15] {
+                let Some(prog) = compile(f.as_bytes(), v) else { continue };
+                let mut s = Vec::new();
+                for n in 0..=4usize {
+                    for mut k in 0..alphabet.len().pow(n as u32) {
+                        s.clear();
+                        for _ in 0..n {
+                            s.push(alphabet[k % alphabet.len()]);
+                            k /= alphabet.len();
+                        }
+                        check(&prog, &s, f);
+                    }
+                }
+                let seed = seed.as_bytes();
+                for i in 0..seed.len() {
+                    for &a in alphabet {
+                        let mut m = seed.to_vec();
+                        m[i] = a;
+                        check(&prog, &m, f);
+                        for j in i + 1..seed.len() {
+                            for &b in alphabet {
+                                let mut m2 = m.clone();
+                                m2[j] = b;
+                                check(&prog, &m2, f);
+                            }
+                        }
+                        let mut ins = seed.to_vec();
+                        ins.insert(i, a);
+                        check(&prog, &ins, f);
+                        let mut del = seed.to_vec();
+                        del.remove(i);
+                        check(&prog, &del, f);
+                    }
+                }
+            }
+        }
+        assert!(checked > 10_000, "{checked}");
     }
 
     #[test]

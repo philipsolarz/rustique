@@ -1,3 +1,10 @@
+> **History.** This is the Phase-1 decision record of the takeover work (wave 1). Its
+> *native tier* (`enable(native=...)`, `--native`, `@rs.native`, the literal rewrite, the
+> Rustique containers) was retired in 0.3 (docs/MIGRATION.md; code at tag
+> `legacy-native-types`); its benchmarks `benches/takeover_overhead.py` and
+> `takeover_compat.py` went with it. The in-place (safe) tier it chose is the engine, and the
+> measurements cited from docs/ACCELERATION.md as T§n still stand as evidence.
+
 STATUS: decided (Phase 1, 2026-10-25). The decision and the layout requirement are final
 for Phase 1; §8 lists what would reopen them.
 
