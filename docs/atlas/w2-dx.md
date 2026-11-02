@@ -69,6 +69,9 @@ output `onoff.out` (M).
 | `rustique.disable()` mid-process, then `enable()` | hits 10 → 10 (no new hits after disable, even through `from json import dumps` taken before) → 20 | ok |
 | `RUSTIQUE_EXCLUDE=jsn`, `RUSTIQUE=2`, `RUSTIQUE=yes/true` | one-line warning listing the groups; `2`: "ignoring RUSTIQUE='2' (expected 1 or 0)" but the extension is still loaded; `yes`/`true` enable | ok |
 | `pytest -n 4 --rustique` (attrs, pytest-xdist) | the summary merges the 4 workers. `diff -- pytest -n 4`: identical, with stdout correctly reported as volatile (xdist's scheduling order) | ok (with the prototype diff) |
+| celery prefork workers (billiard: fork, `os._exit`) | not run (no broker on the box); same mechanism as the fork pool above (I): accelerated, counters lost | the §3.1 fix covers it |
+| embedded interpreters (mod_wsgi, uWSGI, Blender) | not run. `site` runs when the host initialises Python normally, so `RUSTIQUE=1` in the host's environment works. Hosts that pass `-S`-like config or `Py_IsolatedFlag` run plain silently (I) | doc: `python -m rustique status` from the embedded interpreter |
+| `PYTHONSTARTUP` | interactive only. The `.pth` runs before it; nothing to do (I) | ok |
 | coverage in CI (arrow's `addopts = --cov`) | every Python-level target falls back while coverage listens (`tools` 320 per target in arrow). `diff` then proves little for those targets, and CI timing shows no gain | **doc**: run the Rustique job without coverage |
 
 ## 3. Visibility and trust
@@ -159,10 +162,14 @@ Reading:
   fixtures and assertion rewriting, not by stdlib calls. That is consistent with the workload
   atlas: framework-heavy code is out of reach of today's 84 targets. A developer who measures
   "speed" on their test suite will see nothing, and the estimator (§5) says so up front.
-- **What the counters show** (floors' input): `tuple.__contains__` falls back on 80% of 2.2 M
-  calls in sqlglot (class needles, the wave-1 item); `copy.deepcopy` restarts on 49% in sqlglot
-  and 21% in Django; `builtins.min` restarts on 38% in attrs (`-n 4`); `list.__contains__`
-  falls back on 36–58% in requests, flask and pydantic. Floors owns these.
+- **What the counters show** (floors' input; sent to the lead):
+  - `list.__contains__` falls back on **99.4% of 3.59 M calls in black**, and on 36–75% in
+    requests, flask, httpx, click and pydantic.
+  - `tuple.__contains__` falls back on 80% of 2.17 M calls in sqlglot (class needles, the
+    wave-1 item).
+  - `copy.deepcopy` restarts on 49% in sqlglot, 57% in marshmallow and 21% in Django.
+  - `builtins.min` restarts on 44% in attrs and **49% of 886k in dateutil**.
+  - Every restart pays for the kernel's partial work and then the original.
 - **sqlglot A/B** (plain / on / on without copy, interleaved, 3 rounds): ⟨SQLGLOT-AB⟩
 
 ## 5. "Will this help my program?": `python -m rustique estimate`
