@@ -16,7 +16,7 @@ import sys
 
 STATES = ("installed", "armed", "pending-import", "refused", "disabled")
 # Refusal categories that only say "not validated here": expected on a test matrix.
-EXPECTED_REFUSALS = ("version", "build", "jit", "platform", "unvalidated-patch")
+EXPECTED_REFUSALS = ("version", "build", "jit", "platform", "unvalidated-patch", "not-needed")
 
 # What a developer can do about each fallback reason (docs/USAGE.md "See what it does").
 FALLBACK_ADVICE = {
@@ -53,6 +53,8 @@ REFUSAL_ADVICE = {
     "platform": "not validated on this platform (OS, C library, architecture). CPython's code "
                 "runs; nothing to do (docs/USAGE.md#platforms)",
     "build": "this build of CPython (debug, or an unvalidated configuration) is not validated",
+    "not-needed": "not needed on this build: what the target fixes does not exist here (e.g. a "
+                  "free-threaded-only fix on a GIL build)",
     "jit": "the JIT is on and these targets are not validated with it (PYTHON_JIT=0 to "
            "accelerate them)",
     "fingerprint": "the standard-library code differs from the validated release (a patched or "

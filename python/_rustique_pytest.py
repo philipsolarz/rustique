@@ -35,7 +35,7 @@ import pytest
 
 # Refusal categories (status()["targets"][i]["refusal"]) that only say "not validated for this
 # interpreter or configuration": expected on a test matrix, never fatal.
-EXPECTED_REFUSALS = ("version", "build", "jit", "platform", "unvalidated-patch")
+EXPECTED_REFUSALS = ("version", "build", "jit", "platform", "unvalidated-patch", "not-needed")
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
