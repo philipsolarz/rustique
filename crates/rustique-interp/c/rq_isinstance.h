@@ -129,15 +129,15 @@ rq_isinstance_tuple(PyObject *inst, PyObject *cls)
 static inline __attribute__((always_inline)) int
 rq_isinstance_fast(PyThreadState *tstate, PyObject *inst, PyObject *cls)
 {
+    if ((PyObject *)Py_TYPE(inst) == cls) {
+        return 1;           /* CPython's own first test: never slower, not counted */
+    }
     if (tstate->interp != rq_main_interp) {
-        return (PyObject *)Py_TYPE(inst) == cls ? 1 : -2;
+        return -2;
     }
     RQ_TICK(RQ_G_ISINSTANCE);
     int r;
-    if ((PyObject *)Py_TYPE(inst) == cls) {
-        r = 1;
-    }
-    else if (PyType_Check(cls)) {
+    if (PyType_Check(cls)) {
         r = rq_isinstance_type(inst, cls);
     }
     else if (PyTuple_CheckExact(cls)) {
