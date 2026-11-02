@@ -8,6 +8,7 @@ arithmetic test in test_logging.py.
 
 from __future__ import annotations
 
+import decimal
 import io
 import logging
 import string
@@ -73,6 +74,9 @@ datefmt_strategy = st.one_of(
 scalar = st.one_of(
     st.none(), st.booleans(), st.integers(min_value=-(2**70), max_value=2**70),
     st.floats(allow_nan=True, allow_infinity=True), st.text(max_size=8),
+    # C Decimals (wave 2: plain values for %-formatting), incl. specials and exponents
+    st.decimals(allow_nan=True, allow_infinity=True, places=None),
+    st.builds(lambda m, e: decimal.Decimal(m).scaleb(e), st.integers(-10**12, 10**12), st.integers(-30, 30)),
 )
 msg_args = st.one_of(
     st.tuples(st.sampled_from(["plain", "x=%s", "%d", "%s %s", "%5s|%-5s", "%05d", "%r", "%(a)s %(b)d", "%.2f", "100%%", "%s%%"]),
