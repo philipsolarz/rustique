@@ -296,4 +296,20 @@ its ceiling: loads only). On the shared dev box (load 60–80) 8-thread CPU time
 ±7–10% between identical runs (control row); the all-fallback cell is within that noise and
 needs the quiet box to settle.
 
-TODO: imports, workloads, conformance (final).
+### Steady state (M, `benches/targets/re_workloads.py`: `perf stat -e instructions:u`, per run, median of 3; digests identical)
+
+| workload | plain Ir/run | re group only vs plain | all groups vs all but `re` | `re` kernel calls per run |
+|---|---:|---:|---:|---|
+| web/email_mime | 6.30G | 1.0008 | 1.0021 | none (Pattern methods) |
+| data/log_analytics | 9.33G | 0.9994 | 0.9992 | 6 `re.compile` hits |
+| data/text_corpus | 8.03G | 0.9993 | 0.9987 | 6,000 `re.sub` hits |
+| devtools/pycodestyle_stdlib | 12.36G | 1.0016 | 1.0003 | 1 `re.compile` hit |
+| devtools/sphinx_autodoc | 9.25G | **0.9946** | 0.9965 | 305 match, 1,067 search, 1,339 sub hits |
+| devtools/rich_render | 3.27G | 1.0027 | 0.9997 | 27 split/finditer hits |
+
+No workload falls back in steady state (`RUSTIQUE_STATS`: 0 fallbacks); the module functions are
+a small steady-state share (atlas §11: 0.3–0.5% mean), and the differences of ±0.3% on runs
+with a handful of kernel calls are the shared box's run-to-run noise. The machinery
+prototype's email_mime 1.004 (template/callable fallbacks in its setup) is gone.
+
+TODO: imports.
