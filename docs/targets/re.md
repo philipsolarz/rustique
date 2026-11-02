@@ -184,12 +184,15 @@ CPython's own test modules with the group installed before they import, against 
 `test_re`, `test_email`, `test_tokenize`, `test_configparser`, `test_fnmatch`, `test_textwrap`,
 `test_http_cookies`, `test_difflib`, `test_string`, `test_shlex`, `test_argparse`,
 `test_gettext`, `test_glob`, `test_csv`, `test_urllib`, `test_mailbox` (~5,500 tests): **0
-differences** on 3.15.1, 3.15.1t, 3.14.9 and 3.14.9t, every target installed (recorded as well
-on 3.15.2: 0 differences). One transient difference (a `test_mailbox` temp directory removed
-under the *plain* run by a concurrent sync of the source tree) led to running the suites outside
-the synced tree; rerun clean. The whole Rustique suite (`pytest -q tests`, after merging wave2
-a000743): 3.15.1 and 3.15.1t 2,230 passed / 5 skipped, 3.14.9 and 3.14.9t 2,232 passed / 3
-skipped; `cargo test -p rustique-core` 62 passed; clippy `-D warnings` and `cargo fmt` clean.
+differences** on 3.15.1, 3.15.1t, 3.14.9 and 3.14.9t, every target installed (validated
+eagerly), on the final branch (wave2 d1c0a78 merged). One transient difference earlier (a
+`test_mailbox` temp directory removed under the *plain* run by a concurrent sync of the source
+tree) led to running the suites outside the synced tree. The whole Rustique suite
+(`pytest -q tests`): 3.15.1 2,494 passed / 36 skipped, 3.14.9 2,478 / 52; 3.15.1t and 3.14.9t
+one failure each, `test_dx_cli.py::test_plugin_unexpected_refusal_fails_the_session[build]`,
+which fails the same way with the `re` group excluded (wave2's report truncates the list of
+`[build]` refusals on free-threaded builds); `cargo test -p rustique-core` 69 passed; clippy
+`-D warnings` and `cargo fmt` clean.
 
 ## Version coverage
 
