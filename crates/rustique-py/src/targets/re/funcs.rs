@@ -378,10 +378,6 @@ pub(crate) unsafe fn kernel(
             // gets the target suspended instead of paying the fallback on every call.
             return fallback(Reason::Args);
         }
-        if !super::funcs_ready(st) {
-            // degraded (or validating on another thread): debit, so that suspension follows
-            return fallback(Reason::Args);
-        }
         if !accel::tools_quiet(&rt.tools, f) {
             return fallback(Reason::Tools);
         }
@@ -446,6 +442,13 @@ pub(crate) unsafe fn kernel(
         let Some((p, istext)) = cached(st, pattern, flags) else {
             return fallback(Reason::Args);
         };
+        // Validated at the first hit (nothing observable happened so far: the lookup reads
+        // the pinned cache only).
+        if !super::funcs_ready(st) {
+            ffi::Py_DECREF(p);
+            // degraded (or validating on another thread): debit, so that suspension follows
+            return fallback(Reason::Args);
+        }
         if m == Method::Compile {
             if rt.counters.hit_check_streak() {
                 return accel::check::verify(spec, p, std::slice::from_raw_parts(args, n + nk), || {

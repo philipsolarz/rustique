@@ -20,12 +20,15 @@ python_extern! {
 
 /// The running interpreter's case mappings: what `_sre.unicode_tolower` /
 /// `_sre.unicode_iscased` call (`Py_UNICODE_TOLOWER` / `Py_UNICODE_TOUPPER`), and
-/// `_casefix._EXTRA_CASES` as validated at install.
-pub(crate) struct Cases {
-    pub extra: ExtraCases,
+/// `_casefix._EXTRA_CASES` once validated. The table is read only when a compile first needs
+/// it (Unicode IGNORECASE): without it, the port's lookups record that it was `wanted` (the
+/// compile is then redone with the table, or declined).
+pub(crate) struct Cases<'a> {
+    pub extra: Option<&'a ExtraCases>,
+    pub wanted: std::cell::Cell<bool>,
 }
 
-impl CaseMap for Cases {
+impl CaseMap for Cases<'_> {
     #[inline]
     fn lower(&self, c: u32) -> u32 {
         // SAFETY: a pure function of the code point (CPython's Unicode database).
@@ -38,10 +41,22 @@ impl CaseMap for Cases {
     }
     #[inline]
     fn extra(&self, c: u32) -> Option<&[u32]> {
-        self.extra.get(c)
+        match self.extra {
+            Some(t) => t.get(c),
+            None => {
+                self.wanted.set(true);
+                None
+            }
+        }
     }
     fn extra_is_empty(&self) -> bool {
-        self.extra.is_empty()
+        match self.extra {
+            Some(t) => t.is_empty(),
+            None => {
+                self.wanted.set(true);
+                false
+            }
+        }
     }
 }
 
@@ -90,8 +105,13 @@ unsafe fn read_tag(ty: *mut ffi::PyTypeObject) -> u32 {
 /// only checks identities and declares sites and pins (`docs/targets/re.md`, install cost).
 pub(crate) struct Lazy {
     state: AtomicU8,
-    /// (name in `fps::FPS`, object) of every function to fingerprint (references in `refs`).
+    /// Calls seen while pending (the deferral counter).
+    calls: AtomicU32,
+    /// (name in `fps::FPS`, object) of every original to fingerprint (references in the
+    /// state's `refs`); checked against the v3 data of `owner`.
     pub fps: Vec<(&'static str, O)>,
+    /// The `GroupSpec` name the v3 data records these originals under.
+    pub owner: &'static str,
 }
 
 const PENDING: u8 = 0;
@@ -100,20 +120,31 @@ const OK: u8 = 2;
 const FAILED: u8 = 3;
 
 impl Lazy {
-    pub fn new(fps: Vec<(&'static str, O)>) -> Self {
-        Lazy { state: AtomicU8::new(PENDING), fps }
+    pub fn new(owner: &'static str, fps: Vec<(&'static str, O)>) -> Self {
+        Lazy { state: AtomicU8::new(PENDING), calls: AtomicU32::new(0), fps, owner }
     }
 
-    /// Validated (running `check` once, on the first call that gets here). A thread that finds
-    /// another one validating falls back rather than waits (no lock is held while CPython
-    /// code runs).
+    /// Validated (running `check` once, on the `after`-th call that gets here: the first
+    /// calls of a process fall back without validating, so a program that compiles one or two
+    /// patterns does not pay the validation). A thread that finds another one validating
+    /// falls back rather than waits (no lock is held while CPython code runs).
     #[inline(always)]
-    pub fn ready(&self, check: impl FnOnce() -> Result<(), String>, fail: impl FnOnce(&str)) -> bool {
+    pub fn ready(&self, after: u32, check: impl FnOnce() -> Result<(), String>, fail: impl FnOnce(&str)) -> bool {
         match self.state.load(Ordering::Acquire) {
             OK => true,
-            PENDING => self.run(check, fail),
+            PENDING => {
+                if after > 1 && self.calls.fetch_add(1, Ordering::Relaxed) + 1 < after {
+                    return false;
+                }
+                self.run(check, fail)
+            }
             _ => false,
         }
+    }
+
+    /// Validated now (tests, helpers).
+    pub fn force(&self, check: impl FnOnce() -> Result<(), String>, fail: impl FnOnce(&str)) -> bool {
+        self.ready(1, check, fail)
     }
 
     #[cold]
@@ -135,14 +166,17 @@ impl Lazy {
     }
 }
 
+/// `_EXTRA_CASES` as validated on first need, or why it is not usable.
+pub(crate) type ExtraTable = OnceLock<Result<ExtraCases, String>>;
+
 /// The compile kernel's state.
 pub(crate) struct Compile {
     /// `_sre.compile` (pinned: `_sre.__dict__['compile']`).
     pub sre_compile: O,
     pub maxrepeat: u32,
     pub maxgroups: u32,
-    /// Built by the first-call validation from `_EXTRA_CASES`.
-    pub cases: OnceLock<Cases>,
+    /// Built from `_EXTRA_CASES` when a compile first needs it.
+    pub extra_table: ExtraTable,
     /// `re._constants.__dict__` and `re._compiler._EXTRA_CASES` (checked on first call).
     pub constants: O,
     pub extra: O,
@@ -154,10 +188,9 @@ pub(crate) struct Compile {
 }
 
 impl Compile {
-    /// The port's environment (after validation: the case tables are set).
-    pub fn env(&self) -> Option<Env<'_>> {
-        let cases = self.cases.get()?;
-        Some(Env { maxrepeat: self.maxrepeat, maxgroups: self.maxgroups, case: cases })
+    /// The port's environment over `cases`.
+    pub fn env<'a>(&self, cases: &'a Cases<'a>) -> Env<'a> {
+        Env { maxrepeat: self.maxrepeat, maxgroups: self.maxgroups, case: cases }
     }
     #[inline(always)]
     pub fn tags_intact(&self) -> bool {

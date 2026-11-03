@@ -172,8 +172,16 @@ pub(crate) unsafe fn port(st: &state::Compile, pattern: O, flags: O) -> Option<C
     // SAFETY: per the caller.
     unsafe {
         let fl = flags_of(flags)?;
-        let env = st.env()?;
-        with_units(pattern, |units, istext| core::compile(units, istext, fl, &env).ok())?
+        let table = st.extra_table.get().and_then(|r| r.as_ref().ok());
+        let cases = state::Cases { extra: table, wanted: std::cell::Cell::new(false) };
+        let r = with_units(pattern, |units, istext| core::compile(units, istext, fl, &st.env(&cases)).ok())?;
+        if !cases.wanted.get() {
+            return r;
+        }
+        // The first compile that needs `_EXTRA_CASES` (Unicode IGNORECASE): check and build
+        // it, then compile again with it (the result without the table is discarded).
+        let cases = state::Cases { extra: Some(super::extra_table(st)?), wanted: std::cell::Cell::new(false) };
+        with_units(pattern, |units, istext| core::compile(units, istext, fl, &st.env(&cases)).ok())?
     }
 }
 
@@ -289,7 +297,7 @@ pub(crate) fn _re_compile_args<'py>(
     };
     // SAFETY: attached thread; live arguments.
     unsafe {
-        if !super::compile_ready(st) {
+        if !super::compile_ready_now(st) {
             return Err(pyo3::exceptions::PyRuntimeError::new_err("the re group failed its validation"));
         }
         let Some(c) = port(st, pattern.as_ptr(), flags.as_ptr()) else {
