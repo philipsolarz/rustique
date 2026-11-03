@@ -702,8 +702,16 @@ inputs outside the validated grammar, state the kernel cannot see, error paths).
   - `custom/mini_interp` on 3.15.1t: 1.015 / 1.018 / **1.023** over the three replicates
     (3.15.1: 1.003–1.006), above T1's 1.02 in the last; it hits no kernel of weight. Probe (`w2-phase3.md` §14): loaded but not
     enabled 1.002, `enable()` with every group excluded **1.066**, fully enabled 1.014–1.019 —
-    a fixed cost of `enable()` itself on free-threaded builds that the groups mostly win back.
-    Cause under investigation at the time of writing (accel).
+    reproduced on the dev box (+922M instructions, +5.6%) and diagnosed: not work done by
+    `enable()` but CPython's type-attribute cache. `mini_interp` dispatches with
+    `getattr(self, "visit_" + type(node).__name__)`, a fresh string per call; every such lookup
+    misses the 4,096-slot cache (a hit needs the same name object) and evicts the slot its
+    address picks, so which hot entries survive depends on allocation history: running the same
+    configuration through a `runpy` wrapper gives 1.003–1.006, and plain CPython moves by 1.6%
+    when a few objects are created first (`update_cache_gil_disabled` 5.9% → 9.9% of
+    instructions; the free-threaded build pays more per miss). No guard, watcher, probe or
+    counter shows in the profile. Inferred: the 1.015–1.023 carries ±1–2% of this layout noise;
+    recorded as a T1 miss as measured.
   - copies of the C `decimal.Decimal` fall back on Windows (category `deopt`, results
     identical; every Windows build of the wheel matrix): not diagnosed.
   - the `gc` tier's largest pause on `state_snapshot` (3.15.1): 1.30× the default's in
