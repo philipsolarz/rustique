@@ -192,14 +192,15 @@ def test_counters():
         sorted([3, 1, 2])
         sorted(tuple(f"s{i}" for i in range(5)))
         sorted([1, 2.5])  # declines after the copy: list.sort's original on it
-        [f"s{i}" for i in range(5)].sort()  # short str list: CPython's
+        [f"s{i}" for i in range(5)].sort()  # short str list: native
+        ["one"].sort()  # nothing to order: returns at once
         st_ = rustique.stats()
     finally:
         rustique.stats(False)
         rustique.disable()
     assert st_["builtins.sorted"]["hits"] == 3
     assert st_["builtins.sorted"]["fallback"]["deopt"] == 1
-    assert st_["list.sort"]["fallback"]["args"] >= 1
+    assert st_["list.sort"]["hits"] >= 2
 
 
 orderables = st.one_of(

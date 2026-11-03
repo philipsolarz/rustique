@@ -83,8 +83,14 @@ MINMAX = [
     ("min(str 20, default='') ", "min(D_str_20_rand, default='')"),
 ]
 
+# `list.sort()` in place on fresh copies (the scoreboard's `x.sort()` shape: the copy is made
+# before the measured region), around the short-str hand-off threshold.
+SMALL_N = (1, 2, 3, 4, 5, 6, 8, 12, 16, 20, 24, 31, 32)
+SMALL = [(f"inplace sort {k} n={n} {o}", "P.pop().sort()", f"P = [mk({k!r}, {n}, {o!r}) for _ in range(16000)]")
+         for k in ("str", "int", "float") for n in SMALL_N for o in ("asc", "desc", "rand")]
+
 GROUPS = ["builtins", "containers"]
-SETS = {"sort": SORT, "family": FAMILY, "minmax": MINMAX}
+SETS = {"sort": SORT, "family": FAMILY, "minmax": MINMAX, "small": SMALL}
 
 
 def main() -> None:
@@ -95,9 +101,10 @@ def main() -> None:
         sub = sys.argv[sys.argv.index("-k") + 1]
         cells = [c for c in cells if sub in c[0]]
 
-    def one(c: tuple[str, str]) -> tuple[str, float, float]:
-        name, stmt = c
-        return name, per_call(stmt, SETUP), per_call(stmt, SETUP, enable=GROUPS)
+    def one(c: tuple) -> tuple[str, float, float]:
+        name, stmt, *extra = c
+        setup = SETUP + ("\n" + extra[0] if extra else "")
+        return name, per_call(stmt, setup), per_call(stmt, setup, enable=GROUPS)
 
     out = []
     with ThreadPoolExecutor(jobs) as ex:

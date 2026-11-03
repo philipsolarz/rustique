@@ -1397,11 +1397,6 @@ pub(crate) unsafe fn sort_args(
     Some(reverse)
 }
 
-/// `list.sort` hands lists of fewer `str` than this to CPython's sort: there its binary
-/// insertion with `unsafe_latin_compare` costs less than building keys (measured 1.09 for
-/// 2 strings natively; `sorted` keeps them native, see [`sorted_candidate`]).
-pub(crate) const STR_NATIVE_MIN: isize = 32;
-
 /// Up to this many elements the native sort is timsort's small-list strategy: the first
 /// natural run (`count_run`: a strictly descending run is reversed in place), then
 /// insertion of the remaining elements. Above it, Rust's driftsort, which detects ascending
@@ -1428,17 +1423,6 @@ pub(crate) unsafe fn first_type_racy(list: *mut ffi::PyObject) -> *mut ffi::PyTy
         }
         std::ptr::read_volatile(&raw const (*first).ob_type)
     }
-}
-
-/// A list the native sort leaves to CPython at once: `str` lists shorter than
-/// [`STR_NATIVE_MIN`].
-///
-/// # Safety
-/// `list` is a list; attached thread.
-#[inline(always)]
-unsafe fn short_str_list(list: *mut ffi::PyObject) -> bool {
-    // SAFETY: forwarded.
-    unsafe { ffi::PyList_GET_SIZE(list) < STR_NATIVE_MIN && first_type_racy(list) == str_type() }
 }
 
 /// Whether `builtins.sorted` should copy `seq` (an exact list or tuple) and sort it
@@ -2256,19 +2240,21 @@ unsafe extern "C" fn k_list_sort(
     nargs: ffi::Py_ssize_t,
     kwnames: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
-    // SAFETY: vectorcall arguments from CPython; `slf` is a list. Short `str` lists are
-    // decided before the critical section, so their hand-off is a tail call.
-    // SAFETY: `slf` is a list (a racy peek at its first item only picks a strategy).
-    let short_str = unsafe { short_str_list(slf) };
-    // SAFETY: vectorcall arguments from CPython.
-    let reverse = match unsafe { sort_args(args, nargs, kwnames) } {
-        Some(reverse) if !short_str => reverse,
-        _ => {
-            C_LIST_SORT.fallback(Reason::Args);
-            // SAFETY: same arguments to the original.
-            return unsafe { ORIG_LIST_SORT.get()(slf, args, nargs, kwnames) };
-        }
+    // SAFETY: vectorcall arguments from CPython; `slf` is a list.
+    let Some(reverse) = (unsafe { sort_args(args, nargs, kwnames) }) else {
+        C_LIST_SORT.fallback(Reason::Args);
+        // SAFETY: same arguments to the original.
+        return unsafe { ORIG_LIST_SORT.get()(slf, args, nargs, kwnames) };
     };
+    // SAFETY: `slf` is a list; its size read is atomic on free-threaded builds.
+    let n = unsafe { ffi::PyList_GET_SIZE(slf) };
+    if n < 2 {
+        // Nothing to order: CPython's sort returns None with the list unchanged (its
+        // temporary emptying of the list is invisible: no code runs meanwhile).
+        C_LIST_SORT.hit();
+        // SAFETY: new reference to None.
+        return unsafe { ffi::Py_NewRef(ffi::Py_None()) };
+    }
     let done = guard(None, || {
         // SAFETY: attached thread, `slf` is a live list.
         let py = unsafe { Python::assume_attached() };

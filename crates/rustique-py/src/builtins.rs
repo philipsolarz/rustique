@@ -35,8 +35,8 @@
 //! - **Builtin `set`/`frozenset`/`dict`** (keys): the same scan over the hash table (under
 //!   the critical section); if an item needs Python code, the original builtin is called
 //!   from scratch (the scan had no side effects).
-//! - **`sorted(list | tuple)`** of exact `int`/`float` (or, from `STR_NATIVE_MIN` items on,
-//!   `str`) items: the copy CPython makes (`PySequence_List`), sorted by the `list.sort`
+//! - **`sorted(list | tuple)`** of exact `int`/`float`/`str` items: the copy CPython makes
+//!   (`PySequence_List`), sorted by the `list.sort`
 //!   kernel's algorithm without the bound-method round trip; any other item mix goes to
 //!   `list.sort` on that same copy, as in CPython.
 //!
@@ -1701,11 +1701,11 @@ static LIST_SORT_DEF: AtomicPtr<ffi::PyMethodDef> = AtomicPtr::new(ptr::null_mut
 ///
 /// CPython copies the iterable (`PySequence_List`) and calls `newlist.sort(**kwargs)`
 /// through an attribute lookup and a bound method. For an exact `list`/`tuple` whose first
-/// item is an exact `int`/`bool`/`float` (or `str`, in sequences of at least
-/// `STR_NATIVE_MIN` items), with `key=None` and an exact `bool`/`int` `reverse`, the kernel
+/// item is an exact `int`/`bool`/`float`/`str`, with `key=None` and an exact `bool`/`int`
+/// `reverse`, the kernel
 /// makes the same copy and sorts it with the `list.sort` kernel's algorithm. The copy is
 /// private to the call (no critical section needed). When the native sort declines (mixed
-/// types, big ints, NaN, structured `str` input), `list.sort` runs on that same copy with
+/// types, big ints, NaN), `list.sort` runs on that same copy with
 /// the same keyword arguments, as in CPython. Anything else: the original `sorted`.
 unsafe extern "C" fn rq_sorted(
     _slf: *mut ffi::PyObject,
@@ -1784,6 +1784,12 @@ unsafe extern "C" fn rq_any(slf: *mut ffi::PyObject, arg: *mut ffi::PyObject) ->
         if candidate(t) && t != &raw mut ffi::PyDict_Type {
             C_ANY.hit();
             truth_entry(slf, arg, Which::Any)
+        } else if t == &raw mut ffi::PyDict_Type
+            && std::ptr::read_volatile(&raw const (*arg.cast::<ffi::PyDictObject>()).ma_used) == 0
+        {
+            // An empty dict: CPython would create a key iterator to find nothing.
+            C_ANY.hit();
+            ffi::Py_NewRef(ffi::Py_False())
         } else {
             fallback_o(Which::Any, arg)
         }

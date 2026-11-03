@@ -148,8 +148,12 @@ It was up to 1.84× instructions / 3.2× wall on ordered and short-string input.
   and run trimming, no galloping); ≤ 20 elements → timsort's small-list strategy (the
   first natural run, a strictly descending one reversed, then insertion); otherwise Rust's
   driftsort. Stability and `reverse=True` (equal elements keep their order) as CPython.
-- `list.sort` hands `str` lists shorter than 32 to CPython before any work (a tail call: its
-  binary insertion with `unsafe_latin_compare` is cheaper there than building keys).
+- Lists of fewer than 2 items return at once (after the arguments are checked: CPython's
+  sort changes nothing there). Short `str` lists are sorted natively too: an earlier
+  hand-off of `str` lists shorter than 32 to CPython cost 1.13 on 1 string and 1.02 on 8 in
+  Phase 3's scoreboard; with the one-pass keys every in-place `list.sort()` cell of 1–32
+  str/int/float items in three orders is 0.53–1.003 (`sort_cells.py small`, the copy made
+  outside the measured statement; 2 strings: 1.000–1.003).
 - **`builtins.sorted` is a kernel** (it was a pass-through to the original, which only
   existed for the retired native types): for an exact `list`/`tuple` whose first item is an
   exact `int`/`bool`/`float`/`str`, with `key=None` and an exact `bool`/`int` `reverse`, it
@@ -299,3 +303,28 @@ Custom family per workload (3.15.1): di_plugins 0.996, ecs_arena 0.993, event_le
 fulfilment_sim 0.997, mini_interp 1.000, order_domain 1.004, orm_mapper 0.980,
 report_engine 0.919, rules_engine 1.004, task_planner 1.005 (all within the box's noise of
 1.00 where above it; none of these reaches a changed kernel on a hot path).
+
+### Phase 3 follow-up (scoreboard, wave2 d40e7b9 → ws2/core)
+
+Phase 3's scoreboard (callgrind, sizes 0–100) found the sort hand-offs above 1.05 on tiny
+inputs. `benches/scoreboard.py instr` on the same cells, 3.15.1, before → after:
+
+| cell | before | after |
+|---|---:|---:|
+| `list/x.sort()/str/1` | 1.129 | **0.766** |
+| `list/x.sort()/str/8` | 1.017 | **0.584** |
+| `sorted(x)/str/1` on dict, set, frozenset | 1.084 | **0.959–0.971** |
+| `sorted(x)/str/8` on dict, set, frozenset | 1.024–1.032 | **0.734–0.775** |
+| `dict/any(x)/str/0` (empty dict: now answered natively) | 1.086 | **0.475** |
+| `dict/any(x)/*/1..100` (dict: direct fallback, +28 Ir) | 1.037 | 1.043 |
+
+The remaining cells of that report above 1.02 (`dict/x.copy()`, `dict(x)`, `list(x)`,
+`for v in x` over empty dicts/frozensets, `x.values()` iteration) reach no Rustique site.
+They move by a constant 14–56 Ir with the allocator's state, not with any kernel: in plain
+CPython a few junk allocations before the cell shift `any({})` by +14 Ir and
+`dict(dict100)` by −97; `import rustique` without `enable()` shifts empty-frozenset
+iteration by +14; enabling only `containers` shifts `{}.copy()` by +14; enabling everything
+but the core groups shifts `dict(8 ints)` by −5 and everything by +56 (callgrind,
+deterministic with `PYTHONHASHSEED=0`, `benches/targets/_heapstate.py`). These are pymalloc
+pool boundaries crossed or not in the measured loop (an alloc/free pair that empties and
+refills a pool each iteration), a harness effect.
