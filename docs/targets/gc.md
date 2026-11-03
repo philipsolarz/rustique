@@ -380,3 +380,15 @@ enable/disable under load). Benchmarks and tools: `benches/runtime/` (`gcprobe.p
    observer's private list in `gc.callbacks` until the next collection repairs it (§3); an
    `enable()` that races with a running collection on a free-threaded build waits up to 0.2 s,
    then refuses ("a garbage collection is running") until the next `enable()`.
+6. **Pause milliseconds** (Phase 3, measured on the quiet box, `docs/atlas/w2-phase3.md` §9.1;
+   analysis of `final/gcq-raw.tar.gz`, `set/3.15.1/data__state_snapshot`): the bound the tier
+   guarantees is in **objects examined** — every collection ≤ 1.1× (GIL) / 1.05× (t) of the
+   largest legitimate full collection — and it held (largest collection 1.02 / 1.06 over the
+   GC-heavy set; 1.00× on `state_snapshot`). Pause **milliseconds** are a measured indicator:
+   one exceedance, `state_snapshot` on 3.15.1 at **1.30×** — the deferred collection examined
+   295,026 objects (the default's largest: 321,648) but ran in the program's last phase, where
+   traversal costs 254 ns per object instead of 175–184; the same phase is as costly without the
+   tier (its generation-1 collections take 148 ns per object there against 58 elsewhere). A
+   trigger policy cannot see per-object cost in advance, and a time-based cap only shrinks
+   later collections; bounding milliseconds means not deferring. Accepted as a known limit of
+   the opt-in tier (DECISIONS §13, §16); it is why criterion (c) blocks default status.
