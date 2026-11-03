@@ -151,7 +151,8 @@ jobs:
         env:
           # setup-python's builds are not python-build-standalone: on Linux x86_64 the interp
           # tier is checked in the next step instead.
-          SMOKE_INTERP: ${{ matrix.interp && '' || 'refused' }}
+          # (not `interp && '' || 'refused'`: '' is falsy in expressions, so that gives 'refused')
+          SMOKE_INTERP: ${{ !matrix.interp && 'refused' || '' }}
         run: |
           bash .github/scripts/smoke_all.sh dist \
             "${{ steps.py314.outputs.python-path }}" "${{ steps.py314t.outputs.python-path }}" \
@@ -193,10 +194,14 @@ jobs:
             done
             bash .github/scripts/smoke_all.sh dist $pys'
 
+      # Uploaded even when a smoke check failed, so the platform job still validates the wheels
+      # (the `complete` job requires every wheels cell to pass).
       - uses: actions/upload-artifact@v6
+        if: always()
         with:
           name: wheels-${{ matrix.name }}
           path: dist
+          if-no-files-found: warn
 
   # Every target on every wheel platform: Rustique's tests for the groups installed there and
   # CPython's own test modules, plain against enabled, from the interpreter's exact source

@@ -117,6 +117,9 @@ def summarize(res: str, diff_out: str, rc: int, seconds: float) -> dict:
         s["plain_s"], s["rustique_s"], s["ratio"] = map(float, m.groups())
     m = re.search(r"(\d+) test outcomes", diff_out)
     s["tests"] = int(m.group(1)) if m else None
+    m = re.search(r"note: (\d+) test\(s\) changed outcome, but also without Rustique", diff_out)
+    s["flaky"] = int(m.group(1)) if m else 0
+    s["volatile"] = re.findall(r"note: (stdout|stderr) differs, but it also differs between two plain runs", diff_out)
     rep = os.path.join(res, "diff-runs", "report.json")
     if os.path.exists(rep):
         recs = [json.loads(ln) for ln in open(rep) if ln.strip()]
@@ -138,7 +141,8 @@ def summarize(res: str, diff_out: str, rc: int, seconds: float) -> dict:
         s["top"] = sorted(((k, hits.get(k, 0), fb.get(k, {})) for k in set(hits) | set(fb)),
                           key=lambda x: -(x[1] + sum(x[2].values())))[:8]
         st = recs[0]["status"]["targets"] if recs else []
-        s["states"] = {state: sum(t["state"] == state for t in st) for state in ("installed", "pending-import", "refused")}
+        s["states"] = {state: sum(t["state"] == state for t in st)
+                       for state in ("installed", "armed", "pending-import", "refused", "disabled")}
     return s
 
 
@@ -166,7 +170,8 @@ def run(args):
         env["PATH"] = os.path.join(venv, "bin") + os.pathsep + env["PATH"]
         rc_w, t_w = sh(test, os.path.join(res, "warmup.log"), cwd=src, env=env)
         keep = os.path.join(res, "diff-runs")
-        diff = [vpy, "-m", "rustique", "diff", "--keep", keep, "--repeat", str(args.repeat), "--", *test]
+        diff = [vpy, "-m", "rustique", "diff", "--keep", keep, "--repeat", str(args.repeat),
+                *(["--tiers", args.tiers] if args.tiers else []), "--", *test]
         t0 = time.perf_counter()
         p = subprocess.run(diff, cwd=src, env=env, capture_output=True, text=True)
         seconds = time.perf_counter() - t0
@@ -187,8 +192,15 @@ def table(args):
                 continue
             s = json.load(open(f))
             top = ", ".join(f"{k} {h:,}" + (f" (fb {sum(fb.values()):,})" if fb else "") for k, h, fb in s.get("top", [])[:3])
+            notes = []
+            if s.get("flaky"):
+                notes.append(f"{s['flaky']} flaky")
+            if s.get("volatile"):
+                notes.append("volatile " + "/".join(s["volatile"]))
+            verdict = s.get("verdict") if isinstance(s.get("verdict"), str) else " ".join(s.get("verdict") or [])
             rows.append(f"| {name} {s['tag']} | {py} | {s.get('tests') or '-'} | {s.get('plain_s', '-')} | "
-                        f"{s.get('rustique_s', '-')} | {s.get('ratio', '-')} | {s.get('verdict')} | "
+                        f"{s.get('rustique_s', '-')} | {s.get('ratio', '-')} | {verdict}"
+                        f"{' (' + ', '.join(notes) + ')' if notes else ''} | "
                         f"{s.get('processes', '-')} | {s.get('hits_total', 0):,} / {s.get('fallbacks_total', 0):,} "
                         f"{s.get('fallback_reasons', {})} | {top} |")
     print("| project | py | tests | plain s | rustique s | ratio | diff | procs | hits / fallbacks (reasons) | top targets |")
@@ -206,6 +218,7 @@ def main():
     p.add_argument("--repeat", type=int, default=1)
     p.add_argument("--tag", default="", help="results/<py>+<tag>/ (e.g. a run with a prototype diff)")
     p.add_argument("--diff-from", help="copy this _diff.py into the venv's rustique package before running")
+    p.add_argument("--tiers", help="run: opt-in tiers in the enabled run (diff --tiers)")
     p.add_argument("projects", nargs="*")
     args = p.parse_intermixed_args()
     {"setup": setup, "run": run, "table": table}[args.cmd](args)
