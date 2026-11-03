@@ -520,3 +520,57 @@ framework-heavy and custom software included.
    outside the registry lock; the registry lock is a leaf; suspension decided on the thread that
    falls back) before any target pins a class attribute (`w2-threads.md` §3). A kernel scaling
    rule joins the never-slower bar: CPU time per call at 8 threads ≤ 1.05× CPython's original.
+
+**Rulings made while the workstreams built** (Phase 2; evidence in the target doc named):
+
+10. **Opcode-handler sites** (`docs/targets/interp.md` App. A, now ACCELERATION §1/§3–§7): a site
+    kind for the `interp` tier only — an entry of the tail-calling dispatch table, replaced by a
+    handler generated from the running patch release's `bytecodes.c`, on recorded
+    (release, configuration, ELF build-id) builds only, every entry verified before a
+    compare-and-swap, never on instrumented opcodes, `ENTER_EXECUTOR` or JIT paths; per-group
+    net-benefit suspension. A frame-pushing override may push a Python frame inline only the way
+    an existing CPython specialized form pushes it for the same kind of callee.
+11. **`tp_alloc` routing of recognized frozen dataclasses** (`docs/targets/generated.md` §4, the
+    one exception to ACCELERATION §3.6): a class whose generated `__init__` carries a kernel gets a
+    `tp_alloc` that returns exactly `PyType_GenericAlloc(type, n)`, set before the class reaches
+    user code and followed by `PyType_Modified`, so `CALL_ALLOC_AND_ENTER_INIT` does not bypass
+    the kernel; subclasses get `PyType_GenericAlloc` from `type_new`; while a tool listens, or for
+    a type whose `__init__` lacks the kernel, the function hands `PyType_GenericAlloc` back;
+    `on_disable` restores. Default tier; every cell ≤ 1.05 (M).
+12. **The `gc` tier writes calibrated collector state** (`docs/targets/gc.md`): deferral through
+    `gcstate->long_lived_total` (CPython's own 25% rule), the observer through a private list
+    that `gcstate->callbacks` points to and that forwards every collection to the program's own
+    list exactly as `invoke_gc_callback` does. Both §10.3 deviations are gone (thresholds and
+    `gc.callbacks` read back unchanged). This is an opt-in-tier mechanism, not a site; it does not
+    qualify the tier for default status by itself (memory and pause evidence first). Its free-
+    threaded pause cap is 1.05× (1.1× on GIL builds); an explicit `gc.collect()` of an empty
+    generation costs 1.059× (+76 instructions) with the tier on — a listed opt-in exceedance.
+13. **The `interp` tier ships opt-in and is not yet default-eligible**: every cell ≤ 1.05 and every
+    whole workload ≤ 1.0043 (inside T1), CPython's full regression suite 0 per-test differences on
+    3.15.1t and 3.15.2/3.15.2t and two load-dependent timer flakes on 3.15.1 (pass 3 of 3 when
+    re-run), but its own gate (whole runs ≤ 1.00) misses on pycodestyle (1.0043, genuine
+    copy cost) and on four 0.07–0.25% residuals. Next: never swap the specialized family members
+    on programs without polymorphic sites, and a multi-run measurement protocol.
+14. **Validate on first call** (accel D): on GIL builds a target's fingerprints, self-tests and pins
+    run at its first call (state `armed` until then); free-threaded builds validate eagerly; a
+    target that must act from install on declares `TargetSpec.eager` (the `gc` tier).
+    `RUSTIQUE_VALIDATE=eager` restores eager validation (the test suite sets it).
+15. **Credits v2** (ACCELERATION §5.6): cost-weighted credits per target, a 256-call window for
+    mixed traffic, and an early exit — a target with no hit since it was armed suspends at 64
+    fallbacks; `deopt` is split into restart / continue / abandon; suspensions are reported.
+16. **Patch releases** (§10.5 implemented): fingerprint v3, recorded sets for 3.14.1–3.14.10 and
+    3.15.0–3.15.2 (conformance run before each recording); 3.14.0 stays unrecorded because its
+    conformance run failed on a textwrap helper the kernel reimplemented without fingerprinting —
+    the gate working as intended; every target now fingerprints the helpers it reimplements.
+17. **`not-needed`** is a status category distinct from refusals (e.g. `set.__reduce__` on GIL
+    builds, where the CPython bug it fixes does not exist).
+18. **Accepted overages** (each measured, each bounded): enabling an already-imported group
+    costs 155k–408k instructions at first call (budget 0.1M; the targets' own prepare; every lazy
+    install is within budget); `re` declines cost ≤ 1.036 for their first 64 calls and an
+    all-fallback stream ≤ 1.046 after suspension (the restored call site stays unspecialized);
+    the enum call kernel on a class whose private value map holds a user-typed key 1.033.
+19. **Default-path hygiene**: a default `enable()` leaves no Python object behind that plain
+    CPython would not have (the fork hook is registered only for live counter files), and no
+    framework probe may touch `sys.monitoring` (its tool-id release bumped the global
+    instrumentation version and taxed every later code object ~930 instructions; found by the
+    datamodel workstream, fixed in accel).
