@@ -226,3 +226,60 @@ def test_hypothesis_differential(values, reverse, order):
         values = s[len(s) // 2 :] + s[: len(s) // 2]
     plain, on = both(distinct(values), reverse)
     assert plain == on
+
+
+# --- large inputs: the in-place path for a few long runs (n >= 4096) --------------------
+
+
+def _runs(rng, n, k, kind):
+    """`k` ascending runs (with ties) concatenated, as distinct objects."""
+    out = []
+    for _ in range(k):
+        m = n // k
+        base = sorted(rng.randrange(-500, 500) for _ in range(m))
+        out += base
+    if kind == "float":
+        out = [v / 4 for v in out]
+    elif kind == "str":
+        out = [f"s{v + 1000:05d}" for v in out]
+    return distinct(out)
+
+
+@pytest.mark.parametrize("kind", ["int", "float", "str"])
+@pytest.mark.parametrize("n", [4096, 5000, 20_000])
+def test_large_structured_by_identity(kind, n):
+    rng = random.Random(n)
+    cases = {
+        "asc": _runs(rng, n, 1, kind),
+        "two runs": _runs(rng, n, 2, kind),
+        "five runs": _runs(rng, n, 5, kind),
+        "forty runs": _runs(rng, n, 40, kind),  # above the in-place limit: CPython's sort
+        "strictly desc": distinct(sorted(set(_runs(rng, n, 1, kind)), reverse=True)),
+        "desc with ties": _runs(rng, n, 1, kind)[::-1],
+        "random": rng.sample(_runs(rng, n, 1, kind), n),
+    }
+    nearly = list(cases["asc"])
+    for _ in range(n // 50):
+        i, j = rng.randrange(n), rng.randrange(n)
+        nearly[i], nearly[j] = nearly[j], nearly[i]
+    cases["nearly"] = nearly
+    for name, pool in cases.items():
+        for reverse in (False, True):
+            plain, on = both(pool, reverse)
+            assert plain == on, (kind, n, name, reverse)
+
+
+def test_large_sets_and_declines_by_identity():
+    rng = random.Random(9)
+    ints = set(rng.sample(range(-(10**5), 10**5), 30_000))
+    floats = {v + 0.5 for v in rng.sample(range(-(10**5), 10**5), 30_000)}
+    for s in (ints, floats, frozenset(ints)):
+        for reverse in (False, True):
+            plain, on = both(list(s), reverse)
+            assert plain == on
+    tail_float = list(range(5000)) + [0.5]  # a float after 5000 ints: declines
+    big = list(range(5000)) + [2**40]  # non-compact int: keyed path
+    nan = [float(i) for i in range(5000)] + [float("nan")]
+    for pool in (tail_float, big, nan):
+        plain, on = both(distinct(pool))
+        assert plain == on

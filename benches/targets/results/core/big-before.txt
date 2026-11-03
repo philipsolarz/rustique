@@ -1,0 +1,32 @@
+sorted(set float 10000)                      4,750,854     3,008,194  0.633
+sorted(frozenset float 10000)                4,770,854     3,028,018  0.635
+sorted(list float 10000)                     5,592,936     2,874,379  0.514
+sorted(set wide 10000)                       7,223,178     3,192,278  0.442
+sorted(frozenset wide 10000)                 7,243,125     3,212,348  0.444
+sorted(list wide 10000)                      6,968,363     2,889,958  0.415
+sorted(set int 100000)                      44,976,927    36,413,465  0.810
+sorted(frozenset int 100000)                45,175,567    36,614,171  0.810
+sorted(list int 100000)                     88,225,438    36,124,477  0.409
+sorted(set float 100000)                    37,308,460    36,255,889  0.972
+sorted(frozenset float 100000)              37,510,294    36,457,065  0.972
+sorted(list float 100000)                   71,074,572    36,102,940  0.508
+sorted(set wide 100000)                     73,750,264    36,279,250  0.492
+sorted(frozenset wide 100000)               73,950,207    36,479,044  0.493
+sorted(list wide 100000)                    87,826,258    35,935,723  0.409
+sorted(set int 1000000)                    102,939,240    88,196,416  0.857
+sorted(frozenset int 1000000)              104,939,244    90,196,420  0.860
+sorted(list int 1000000)                 1,065,325,704   413,948,989  0.389
+sorted(set float 1000000)                   87,941,607    81,199,188  0.923
+sorted(frozenset float 1000000)             89,941,611    83,199,192  0.925
+sorted(list float 1000000)                 857,472,048   414,269,499  0.483
+sorted(set wide 1000000)                   614,521,062   414,707,038  0.675
+sorted(frozenset wide 1000000)             616,473,642   416,707,042  0.676
+sorted(list wide 1000000)                1,067,872,527   413,111,926  0.387
+sorted(list(set int 100000))                42,744,084    34,178,904  0.800
+sorted(list(set float 100000))              35,075,233    34,020,284  0.970
+sorted(list(set int 1000000))               84,259,155    69,515,915  0.825
+sorted(list(set float 1000000))             69,261,249    62,518,489  0.903
+list(set int 1000000).sort()                60,260,441    45,517,352  0.755
+list(set float 1000000).sort()              45,259,983    38,517,366  0.851
+
+[exited with code 0]

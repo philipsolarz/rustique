@@ -1,0 +1,78 @@
+sorted(set int 10000)                        5,843,207     3,029,357  0.518
+sorted(frozenset int 10000)                  5,863,211     3,049,497  0.520
+sorted(list int 10000)                       6,943,435     2,885,904  0.416
+sorted(set float 10000)                      4,750,854     3,008,080  0.633
+sorted(frozenset float 10000)                4,770,854     3,028,296  0.635
+sorted(list float 10000)                     5,592,922     2,874,754  0.514
+sorted(set wide 10000)                       7,223,142     3,192,401  0.442
+sorted(frozenset wide 10000)                 7,243,125     3,212,502  0.444
+sorted(list wide 10000)                      6,968,365     2,890,249  0.415
+sorted(set int 100000)                      44,976,951    36,412,885  0.810
+sorted(frozenset int 100000)                45,175,589    36,613,703  0.810
+sorted(list int 100000)                     88,225,450    36,124,963  0.409
+sorted(set float 100000)                    37,308,438    36,256,963  0.972
+sorted(frozenset float 100000)              37,510,296    36,456,183  0.972
+sorted(list float 100000)                   71,074,560    36,102,582  0.508
+sorted(set wide 100000)                     73,750,264    36,279,398  0.492
+sorted(frozenset wide 100000)               73,950,207    36,479,392  0.493
+sorted(list wide 100000)                    87,826,234    35,936,552  0.409
+sorted(set int 1000000)                    102,939,240    63,445,658  0.616
+sorted(frozenset int 1000000)              104,939,244    65,445,723  0.624
+sorted(list int 1000000)                 1,065,325,716   413,949,586  0.389
+sorted(set float 1000000)                   87,941,607    57,459,732  0.653
+sorted(frozenset float 1000000)             89,941,611    59,459,736  0.661
+sorted(list float 1000000)                 857,472,036   414,269,731  0.483
+sorted(set wide 1000000)                   614,521,062   414,707,514  0.675
+sorted(frozenset wide 1000000)             616,473,642   416,707,518  0.676
+sorted(list wide 1000000)                1,067,872,527   413,112,332  0.387
+sorted(list(set int 100000))                42,744,084    34,179,326  0.800
+sorted(list(set float 100000))              35,075,257    34,020,565  0.970
+sorted(list(set int 1000000))               84,259,155    44,765,232  0.531
+sorted(list(set float 1000000))             69,261,249    38,779,015  0.560
+list(set int 1000000).sort()                60,260,441    20,766,728  0.345
+list(set float 1000000).sort()              45,259,983    14,777,956  0.327
+sorted(list int asc 5000)                      413,360       208,271  0.504
+sorted(list int asc 20000)                   1,658,524       838,425  0.506
+sorted(list int asc 100000)                  8,298,421     4,198,312  0.506
+sorted(list int desc 5000)                     443,461       218,215  0.492
+sorted(list int desc 20000)                  1,778,548       878,369  0.494
+sorted(list int desc 100000)                 8,898,445     4,398,256  0.494
+sorted(list int halves 5000)                   475,288       216,313  0.455
+sorted(list int halves 20000)                1,900,725       867,300  0.456
+sorted(list int halves 100000)               9,500,942     4,337,408  0.457
+sorted(list int nearly 5000)                 1,054,267     1,062,978  1.008
+sorted(list int nearly 20000)                4,578,846     4,588,365  1.002
+sorted(list int nearly 100000)              27,036,508    27,041,801  1.000
+sorted(list int rand 5000)                   3,175,990     1,358,772  0.428
+sorted(list int rand 20000)                 15,042,758     6,244,967  0.415
+sorted(list int rand 100000)                88,163,636    35,959,634  0.408
+sorted(list float asc 5000)                    344,524       184,209  0.535
+sorted(list float asc 20000)                 1,364,688       724,363  0.531
+sorted(list float asc 100000)                6,804,585     3,604,250  0.530
+sorted(list float desc 5000)                   379,610       184,132  0.485
+sorted(list float desc 20000)                1,504,774       724,353  0.481
+sorted(list float desc 100000)               7,504,671     3,604,240  0.480
+sorted(list float halves 5000)                 406,175       192,110  0.473
+sorted(list float halves 20000)              1,606,580       753,226  0.469
+sorted(list float halves 100000)             8,006,703     3,743,153  0.468
+sorted(list float nearly 5000)                 853,657       859,200  1.006
+sorted(list float nearly 20000)              3,721,512     3,726,865  1.001
+sorted(list float nearly 100000)            22,185,220    22,187,964  1.000
+sorted(list float rand 5000)                 2,561,359     1,357,412  0.530
+sorted(list float rand 20000)               12,125,586     6,234,421  0.514
+sorted(list float rand 100000)              71,017,584    35,938,931  0.506
+sorted(list str asc 5000)                      649,462       569,953  0.878
+sorted(list str asc 20000)                   2,584,626     2,265,107  0.876
+sorted(list str asc 100000)                 12,904,523    11,304,994  0.876
+sorted(list str desc 5000)                     679,550       574,899  0.846
+sorted(list str desc 20000)                  2,704,714     2,285,053  0.845
+sorted(list str desc 100000)                13,504,611    11,404,940  0.845
+sorted(list str halves 5000)                   712,647       580,532  0.815
+sorted(list str halves 20000)                2,828,364     2,297,030  0.812
+sorted(list str halves 100000)              14,108,787    11,447,339  0.811
+sorted(list str nearly 5000)                 1,764,743     1,809,336  1.025
+sorted(list str nearly 20000)                7,533,791     7,580,715  1.006
+sorted(list str nearly 100000)              43,727,126    43,759,856  1.001
+sorted(list str rand 5000)                   5,364,381     2,193,852  0.409
+sorted(list str rand 20000)                 25,340,547    10,686,100  0.422
+sorted(list str rand 100000)               148,606,842    54,400,145  0.366
