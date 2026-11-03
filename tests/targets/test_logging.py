@@ -979,7 +979,10 @@ def test_decimal_arguments_follow_the_thread_context():
     assert a == b == ["v=1e+3", "v=12.5", "v=1E+3"]
     A.stats(True, True)
     logging.Formatter("%(message)s").format(fixed_record(msg="v=%s", args=(decimal.Decimal("2"),)))
-    assert hits("logging.Formatter.format") == 1
+    # Only the C `decimal.Decimal` is a known scalar; an interpreter built without `_decimal`
+    # (e.g. no libmpdec) has `_pydecimal`'s Python class, and such records go to CPython.
+    c_decimal = not isinstance(decimal.Decimal.__dict__.get("__str__"), types.FunctionType)
+    assert hits("logging.Formatter.format") == (1 if c_decimal else 0)
 
 
 def test_record_subclass_presetting_attributes_keeps_dict_order():
