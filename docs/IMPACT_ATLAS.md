@@ -504,7 +504,7 @@ What the atlas missed:
 - **A new never-slower case in a wave-1 kernel**: the wave-2 sort strategy is slower than
   timsort on long nearly ordered runs (a 1M-element set of numbers, 1.23–1.28; memory traffic,
   not instructions). The 0–100 scoreboard and the 10k cells did not show it; only the 1M
-  wall-time board did. Fixed before the merge (0.714–0.744 on the final code). Large-input
+  wall-time board did. Fixed before the merge (0.714–0.746 on the final code). Large-input
   cells of every kernel whose algorithm changes now belong in the workstream's own gate.
 - **Layout effects at the 5–8% level** (pyperformance `coroutines` on 3.15.1t) that no
   group causes alone: the never-slower bar on whole benchmarks needs a layout control

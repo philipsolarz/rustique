@@ -697,7 +697,7 @@ inputs outside the validated grammar, state the kernel cannot see, error paths).
     (1.4–2.0×) had the same cause. Core's fix (`2e02b1b`): for 4,096+ items, few long runs
     are merged in place on the pointers, strictly reversed input reversed in place, nearly
     sorted input handed to CPython's sort. Quiet box, final code `07786e2`: the four cells
-    0.714–0.744, all 48 sort cells at 10k/1M ≤ 1.007, core's 38 large shapes ≤ 1.032
+    0.714–0.746, all 48 sort cells at 10k/1M ≤ 1.007, core's 38 large shapes ≤ 1.032
     (`w2-phase3.md` §14).
   - `custom/mini_interp` on 3.15.1t: 1.015 / 1.018 / **1.023** over the three replicates
     (3.15.1: 1.003–1.006), above T1's 1.02 in the last; it hits no kernel of weight. Probe (`w2-phase3.md` §14): loaded but not
