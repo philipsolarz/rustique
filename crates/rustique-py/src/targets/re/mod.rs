@@ -35,6 +35,8 @@ pub(crate) static DEPS_COMPILE: DepFlag = DepFlag::new();
 pub(crate) static DEPS_FUNCS: DepFlag = DepFlag::new();
 
 pub(crate) static COMPILE_COUNTERS: Counters = Counters::new();
+/// Generation of the `re._compiler` and `re._parser` namespaces (bumped on any change).
+pub(crate) static NAMESPACES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub(crate) static COMPILE_TOOLS: Tools = Tools::new();
 
 /// Per-target runtime of a module function.
@@ -204,18 +206,12 @@ fn keep(o: &Bound<'_, PyAny>) -> O {
     o.clone().into_ptr()
 }
 
-/// The builtins the originals look up on their success path, pinned with `flag` through
-/// `globals` (absent from the module, present in builtins).
-fn pin_builtins(
-    cx: &mut Prepare<'_>,
-    globals: &Bound<'_, PyDict>,
-    names: &[&str],
-    flag: &'static DepFlag,
-) -> Result<(), Refusal> {
-    for n in names {
-        cx.pin_global(globals, n, flag)?;
-    }
-    Ok(())
+/// `cx.pin_s(dict, key, flag)` for each key, with statically interned keys (no lookup in the
+/// registry's interning table: validation runs at a first call).
+macro_rules! pins {
+    ($py:expr, $cx:expr, $dict:expr, $flag:expr, $($key:literal),+ $(,)?) => {
+        $( $cx.pin_s($dict, pyo3::intern!($py, $key), $flag)?; )+
+    };
 }
 
 /// The inline (format v2) fingerprints of `name`, the fallback where the v3 data has no entry.
@@ -325,10 +321,10 @@ const COMPILE_ORIGINALS: &[(&str, &str, &str, bool)] = &[
 /// validation, ~0.5M instructions, pays off from a handful of compiles on).
 const COMPILE_VALIDATE_AFTER: u32 = 4;
 
-/// What `re._compiler.compile` reaches on its success path. At install (cheap): the modules'
-/// identities, `_sre`'s code-word size and limits, the version tags of the parser's classes,
-/// the pins (snapshots of the `re._compiler`, `re._parser` and `_sre` namespaces, the
-/// builtins they use). On the first call ([`validate_compile`]): the fingerprints of every
+/// What `re._compiler.compile` reaches on its success path. At the target's first call: the
+/// modules' identities, `_sre`'s code-word size and limits, the version tags of the parser's
+/// classes, the pins (generation watches of the `re._compiler` and `re._parser` namespaces,
+/// key pins of `_sre`, the builtins they use). On the first call ([`validate_compile`]): the fingerprints of every
 /// function and method of the parser and compiler, `re._constants`' values against the port's
 /// table, the `_EXTRA_CASES` table.
 fn shared_compile(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
@@ -396,12 +392,37 @@ fn shared_compile(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let sre_compile = dget(py, &sre, "compile")?;
     // pins: the compiler's and parser's namespaces as validated (any rebinding, addition or
     // deletion falls back); of `_sre`, what the compiler reads at call time
-    cx.pin_dict(&co, &DEPS_COMPILE)?;
-    cx.pin_dict(&pa, &DEPS_COMPILE)?;
-    for name in ["compile", "unicode_iscased", "unicode_tolower", "ascii_iscased", "ascii_tolower", "CODESIZE"] {
-        cx.pin(&sre, name, &DEPS_COMPILE)?;
+    // The two namespaces are never modified by programs: a whole-dict generation watch (one
+    // counter, cheaper than a snapshot of ~200 entries) stands for "as validated"; any
+    // addition, replacement or deletion falls back for the rest of the process.
+    if !cx.arming() && !cx.record {
+        crate::accel::guard::watch_dict_generation(&co, &NAMESPACES)?;
+        crate::accel::guard::watch_dict_generation(&pa, &NAMESPACES)?;
     }
-    let builtins = [
+    let namespaces = NAMESPACES.load(std::sync::atomic::Ordering::Acquire);
+    pins!(
+        py,
+        cx,
+        &sre,
+        &DEPS_COMPILE,
+        "compile",
+        "unicode_iscased",
+        "unicode_tolower",
+        "ascii_iscased",
+        "ascii_tolower",
+        "CODESIZE"
+    );
+    // The snapshot pins already cover "absent from the module" (an added global shadowing a
+    // builtin deviates); pin the builtins' own entries once.
+    let bco = cx.builtins_of(&co)?;
+    if !bco.is(&cx.builtins_of(&pa)?) {
+        return Err(refuse!(Deps: "re._parser and re._compiler see different builtins"));
+    }
+    pins!(
+        py,
+        cx,
+        &bco,
+        &DEPS_COMPILE,
         "isinstance",
         "str",
         "bytes",
@@ -420,17 +441,8 @@ fn shared_compile(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         "map",
         "bytearray",
         "memoryview",
-        "ValueError",
-    ];
-    // The snapshot pins already cover "absent from the module" (an added global shadowing a
-    // builtin deviates); pin the builtins' own entries once.
-    let bco = cx.builtins_of(&co)?;
-    if !bco.is(&cx.builtins_of(&pa)?) {
-        return Err(refuse!(Deps: "re._parser and re._compiler see different builtins"));
-    }
-    for n in builtins {
-        cx.pin(&bco, n, &DEPS_COMPILE)?;
-    }
+        "ValueError"
+    );
     refs.push(keep(&sre_compile));
     refs.push(keep(cn.as_any()));
     refs.push(keep(&extra));
@@ -444,6 +456,7 @@ fn shared_compile(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         maxrepeat: maxrepeat as u32,
         maxgroups: maxgroups as u32,
         extra_table: std::sync::OnceLock::new(),
+        namespaces,
         constants: cn.as_ptr(),
         extra: extra.as_ptr(),
         lazy: state::Lazy::new(SHARED_COMPILE.name, fps),
@@ -583,7 +596,6 @@ fn shared_funcs(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     let red = cx.module()?.dict();
     let pa_m = cx.loaded_module("re._parser")?;
     let pa = pa_m.dict();
-    let sre = cx.loaded_module("_sre")?.dict();
     let minor = cx.version().1;
     let mut fps: Vec<(&'static str, O)> = Vec::with_capacity(19);
     let match_name = if minor >= 15 { "prefixmatch" } else { "match" };
@@ -664,26 +676,25 @@ fn shared_funcs(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
         // `re.compile` calls no method: any live object will do
         pattern_t.clone().into_any(),
     ];
-    // pins: the `re` globals the hit path and the template path read, what `parse_template`
-    // and `_compile_template` read from `re._parser` and `_sre`, the builtins
-    for name in
-        ["_compile", "_cache2", "RegexFlag", "_zero_sentinel", "Pattern", "_compile_template", "_parser", "_sre"]
-    {
-        cx.pin(&red, name, &DEPS_FUNCS)?;
+    // pins: the `re` globals and builtins the hit path reads (the template path's are pinned
+    // by `re.sub`/`re.subn`: [`template_pins`])
+    pins!(py, cx, &red, &DEPS_FUNCS, "_compile", "_cache2", "RegexFlag", "_zero_sentinel", "Pattern");
+    for name in [pyo3::intern!(py, "isinstance"), pyo3::intern!(py, "type")] {
+        cx.pin_global_s(&red, name, &DEPS_FUNCS)?;
     }
-    pin_builtins(cx, &red, &["isinstance", "type"], &DEPS_FUNCS)?;
-    for name in ["parse_template", "Tokenizer", "MAXGROUPS", "OCTDIGITS", "DIGITS", "ESCAPES", "ASCIILETTERS"] {
-        cx.pin(&pa, name, &DEPS_FUNCS)?;
-    }
-    pin_builtins(cx, &pa, &["chr", "int", "len", "KeyError", "isinstance", "str"], &DEPS_FUNCS)?;
-    cx.pin(&sre, "template", &DEPS_FUNCS)?;
-    cx.pin(&sre, "compile", &DEPS_FUNCS)?;
     let cache2 = dget(py, &red, "_cache2")?;
     if !cache2.is_exact_instance_of::<PyDict>() {
         return Err(refuse!(Deps: "re._cache2 is not a dict"));
     }
-    let names = ["flags", "count", "maxsplit", "_value_", "groups", "pattern"]
-        .map(|n| crate::accel::prepare::interned(py, n).into_any());
+    let names = [
+        pyo3::intern!(py, "flags"),
+        pyo3::intern!(py, "count"),
+        pyo3::intern!(py, "maxsplit"),
+        pyo3::intern!(py, "_value_"),
+        pyo3::intern!(py, "groups"),
+        pyo3::intern!(py, "pattern"),
+    ]
+    .map(|n| n.clone().into_any());
     let mut refs: Vec<O> = vec![keep(&cache2), keep(&pattern_t), keep(&regexflag), keep(&zero)];
     refs.extend(fps.iter().map(|(_, o)| *o));
     refs.extend(tags.iter().map(|t| {
@@ -733,7 +744,44 @@ pub(crate) unsafe fn funcs_ready(st: &state::Funcs) -> bool {
 
 fn prep_func(py: Python<'_>, cx: &mut Prepare<'_>, attr: &str, kernel: ffi::vectorcallfunc) -> Result<(), Refusal> {
     let red = cx.module()?.dict();
+    if matches!(attr, "sub" | "subn") && !cx.arming() {
+        template_pins(py, cx, &red)?;
+    }
     let attr = if attr == "match" && cx.version().1 >= 15 { "prefixmatch" } else { attr };
     let f = dget(py, &red, attr)?;
     cx.vectorcall(&f, kernel, &accel::FUNCTION_VECTORCALL)
+}
+
+/// What a template `sub` reaches (`_compile_template` → `parse_template`, `_sre.template`):
+/// pinned by `re.sub` and `re.subn` only, so that the other module functions validate
+/// without them.
+fn template_pins(py: Python<'_>, cx: &mut Prepare<'_>, red: &Bound<'_, PyDict>) -> Result<(), Refusal> {
+    let pa = cx.loaded_module("re._parser")?.dict();
+    let sre = cx.loaded_module("_sre")?.dict();
+    pins!(py, cx, red, &DEPS_FUNCS, "_compile_template", "_parser", "_sre");
+    pins!(
+        py,
+        cx,
+        &pa,
+        &DEPS_FUNCS,
+        "parse_template",
+        "Tokenizer",
+        "MAXGROUPS",
+        "OCTDIGITS",
+        "DIGITS",
+        "ESCAPES",
+        "ASCIILETTERS"
+    );
+    for name in [
+        pyo3::intern!(py, "chr"),
+        pyo3::intern!(py, "int"),
+        pyo3::intern!(py, "len"),
+        pyo3::intern!(py, "KeyError"),
+        pyo3::intern!(py, "isinstance"),
+        pyo3::intern!(py, "str"),
+    ] {
+        cx.pin_global_s(&pa, name, &DEPS_FUNCS)?;
+    }
+    pins!(py, cx, &sre, &DEPS_FUNCS, "template");
+    Ok(())
 }

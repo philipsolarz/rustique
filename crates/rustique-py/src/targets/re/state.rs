@@ -177,6 +177,8 @@ pub(crate) struct Compile {
     pub maxgroups: u32,
     /// Built from `_EXTRA_CASES` when a compile first needs it.
     pub extra_table: ExtraTable,
+    /// `NAMESPACES` as validated.
+    pub namespaces: u64,
     /// `re._constants.__dict__` and `re._compiler._EXTRA_CASES` (checked on first call).
     pub constants: O,
     pub extra: O,
@@ -192,9 +194,10 @@ impl Compile {
     pub fn env<'a>(&self, cases: &'a Cases<'a>) -> Env<'a> {
         Env { maxrepeat: self.maxrepeat, maxgroups: self.maxgroups, case: cases }
     }
+    /// The classes and the two namespaces are as validated.
     #[inline(always)]
     pub fn tags_intact(&self) -> bool {
-        self.tags.iter().all(Tag::intact)
+        self.tags.iter().all(Tag::intact) && super::NAMESPACES.load(Ordering::Relaxed) == self.namespaces
     }
 }
 
