@@ -328,3 +328,40 @@ but the core groups shifts `dict(8 ints)` by −5 and everything by +56 (callgri
 deterministic with `PYTHONHASHSEED=0`, `benches/targets/_heapstate.py`). These are pymalloc
 pool boundaries crossed or not in the measured loop (an alloc/free pair that empties and
 refills a pool each iteration), a harness effect.
+
+### Phase 3 follow-up 2: large structured inputs (wall time)
+
+Phase 3's quiet-box scoreboard (wave2 d40e7b9/7fec7e4) measured `sorted()` of a 10^6-element
+set or frozenset of ints or floats at 1.234–1.280× wall. Their iteration order is one or two
+long ascending runs (a hash is the value, and a large table keeps it in order). The keyed
+sort executed fewer instructions there (0.857 / 0.923), but its 16 MB pairs buffer and the
+write-back were memory traffic that timsort's near-linear pass does not have. The same
+showed for presorted and concatenated sorted lists of 10^5–10^6 strings (1.6–2.1× wall),
+and for nearly sorted lists of 10^5–10^6 items (1.4–2.0×; there a natural merge over pairs
+moved every element at every level, where timsort gallops).
+
+Now, for 4,096+ ints/floats/strs (`sort_runs_inplace`): a probe of 8 adjacent pairs; when
+they are all in order, one pass checks the types and records the breaks. With at most
+`16 + n/65536` breaks, the runs are merged in place on the item pointers (timsort's policy
+and run trimming; a run that precedes the other moves as a block). With more, the list is
+nearly sorted: CPython's own sort runs (nothing changed, the pass cost ~1%). A list strictly
+against the order throughout is reversed in place. Anything else keeps the keyed sort.
+
+Measured, 3.15.1, `benches/targets/_wall_big_sort.py` (wall, best of 9, dev box) and
+`sort_big_cells.py` (callgrind, one call), enabled ÷ plain:
+
+| input | wall before | wall after | instructions after |
+|---|---:|---:|---:|
+| `sorted(set of 10^6 ints)` / frozenset | 1.43 (Phase 3: 1.23–1.28) | **0.80 / 0.80** | 0.616 / 0.624 |
+| `sorted(set of 10^6 floats)` / frozenset | (Phase 3: 1.23–1.28) | **0.72 / 0.72** | 0.653 / 0.661 |
+| `sorted(list)`, 10^6 str presorted / reversed / two halves | 2.02 / 2.15 / 2.07 | **0.82 / 0.80 / 0.78** | 0.876 / 0.845 / 0.811 (10^5) |
+| `sorted(list)`, 10^5–10^6 int/float, n/50 swaps | 1.36–2.02 | **0.99–1.02** | 1.000–1.008 |
+| `sorted(list)`, 10^5–10^6 str, n/50 swaps | 0.98–1.02 | **1.00–1.02** | 1.001–1.025 |
+| `sorted(list)`, 10^6 int/float/str random | 0.31 / 0.33 / 0.40 | 0.31 / 0.34 / 0.40 | 0.39 / 0.48 / 0.37 (10^5) |
+
+The 90-cell grid (max 0.942), the 90 family cells (max 1.018), `min`/`max` (133 cells, max
+1.012) and the in-place small cells (117 cells, max 1.013) are unchanged (n < 4096 never takes
+the new path); raw outputs in `benches/targets/results/core/` (`*-v13.txt`, `big-*.txt`).
+Tests: `tests/targets/test_sort.py::test_large_structured_by_identity` (4,096–20,000 items:
+one/two/five/forty runs with ties, strictly and non-strictly descending, nearly sorted,
+random; both directions; by identity) and `test_large_sets_and_declines_by_identity`.

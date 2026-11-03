@@ -1,0 +1,90 @@
+sorted int n=5 asc reverse                                      1895      1161  0.613
+sorted int n=5 desc reverse                                     1844      1133  0.614
+sorted int n=5 rand reverse                                     2088      1325  0.635
+sorted int n=20 asc reverse                                     3272      1873  0.572
+sorted int n=20 desc reverse                                    3125      1803  0.577
+sorted int n=20 rand reverse                                    5442      4078  0.749
+sorted int n=1000 asc reverse                                  92976     49125  0.528
+sorted int n=1000 desc reverse                                 86947     47034  0.541
+sorted int n=1000 rand reverse                                508309    219477  0.432
+sorted float n=5 asc reverse                                    1867      1159  0.621
+sorted float n=5 desc reverse                                   1813      1130  0.623
+sorted float n=5 rand reverse                                   2044      1413  0.691
+sorted float n=20 asc reverse                                   3124      1886  0.604
+sorted float n=20 desc reverse                                  2960      1816  0.613
+sorted float n=20 rand reverse                                  4770      3791  0.795
+sorted float n=1000 asc reverse                                84987     50044  0.589
+sorted float n=1000 desc reverse                               77962     48028  0.616
+sorted float n=1000 rand reverse                              420403    225632  0.537
+sorted str n=5 asc reverse                                      2115      1455  0.688
+sorted str n=5 desc reverse                                     2071      1428  0.690
+sorted str n=5 rand reverse                                     2504      1739  0.694
+sorted str n=20 asc reverse                                     4265      3126  0.733
+sorted str n=20 desc reverse                                    4118      3057  0.742
+sorted str n=20 rand reverse                                    8378      5545  0.662
+sorted str n=1000 asc reverse                                 145328     99359  0.684
+sorted str n=1000 desc reverse                                139278     97268  0.698
+sorted str n=1000 rand reverse                                868283    343833  0.396
+x[:].sort() int n=2 asc                                          894       815  0.912
+x[:].sort() int n=2 desc                                         916       842  0.919
+x[:].sort() int n=2 rand                                         916       842  0.919
+x[:].sort() int n=20 asc                                        2260      1623  0.718
+x[:].sort() int n=20 desc                                       2778      1700  0.612
+x[:].sort() int n=20 rand                                       4745      3785  0.798
+x[:].sort() int n=1000 asc                                     78271     46919  0.599
+x[:].sort() int n=1000 desc                                    84296     48941  0.581
+x[:].sort() int n=1000 rand                                   500483    209447  0.418
+x[:].sort() float n=2 asc                                        895       808  0.903
+x[:].sort() float n=2 desc                                       917       836  0.912
+x[:].sort() float n=2 rand                                       917       836  0.912
+x[:].sort() float n=20 asc                                      2167      1630  0.752
+x[:].sort() float n=20 desc                                     2686      1709  0.636
+x[:].sort() float n=20 rand                                     4356      4307  0.989
+x[:].sort() float n=1000 asc                                   69281     47908  0.692
+x[:].sort() float n=1000 desc                                  76308     49866  0.653
+x[:].sort() float n=1000 rand                                 404828    216479  0.535
+x[:].sort() str n=2 asc                                          955       966  1.012
+x[:].sort() str n=2 desc                                         977       992  1.015
+x[:].sort() str n=2 rand                                         955       966  1.012
+x[:].sort() str n=20 asc                                        3307      2879  0.871
+x[:].sort() str n=20 desc                                       3825      2955  0.773
+x[:].sort() str n=20 rand                                       7867      5805  0.738
+x[:].sort() str n=1000 asc                                    130620     97155  0.744
+x[:].sort() str n=1000 desc                                   136624     99177  0.726
+x[:].sort() str n=1000 rand                                   860148    329858  0.383
+sorted ustr n=20 asc                                            5121      3474  0.678
+sorted ustr n=20 desc                                           5639      3558  0.631
+sorted ustr n=20 rand                                          13804      6282  0.455
+sorted ustr n=100 asc                                          21855     13370  0.612
+sorted ustr n=100 desc                                         24453     13614  0.557
+sorted ustr n=100 rand                                         98614     31019  0.315
+sorted ustr n=1000 asc                                        206851    132226  0.639
+sorted ustr n=1000 desc                                       212878    134230  0.631
+sorted ustr n=1000 rand                                      1524417    374527  0.246
+sorted lstr n=20 asc                                            3652      3546  0.971
+sorted lstr n=20 desc                                           4170      3630  0.870
+sorted lstr n=20 rand                                           8167      5932  0.726
+sorted lstr n=100 asc                                          14274     14082  0.987
+sorted lstr n=100 desc                                         16872     14326  0.849
+sorted lstr n=100 rand                                         56918     31263  0.549
+sorted lstr n=1000 asc                                        130564    132153  1.012
+sorted lstr n=1000 desc                                       136591    134157  0.982
+sorted lstr n=1000 rand                                       852843    376531  0.442
+sorted str n=64 asc                                             9450      7014  0.742
+sorted str n=64 desc                                           11112      7164  0.645
+sorted str n=64 rand                                           33468     16271  0.486
+sorted str n=64 halves                                         11427      8535  0.747
+sorted str n=64 nearly                                         15315      8809  0.575
+sorted str n=64 dups                                           29748     28317  0.952
+sorted(tuple int 20)                                            5048      3703  0.734
+sorted(tuple str 100)                                          57668     27036  0.469
+sorted(set int 100) [fallback: set]                            12891      9805  0.761
+sorted(pairs) [fallback: tuples]                               21735     21887  1.007
+sorted(pairs, key=len) [fallback: key]                          5352      5446  1.018
+sorted(mixed int/float) [decline after copy]                   13820     13880  1.004
+sorted(big ints) [decline after copy]                          10376     10189  0.982
+sorted(floats with nan) [decline after copy]                    4925      4935  1.002
+sorted([])                                                      1057       610  0.577
+sorted int n=1                                                  1065       626  0.588
+sorted(gen) [fallback]                                          4732      4519  0.955
+pairs[:].sort() [fallback: tuples]                             21390     21482  1.004

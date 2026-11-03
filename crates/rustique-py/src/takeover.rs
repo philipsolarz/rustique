@@ -1829,6 +1829,224 @@ unsafe fn general_str_keys(
     }
 }
 
+/// Lists of at least this many ints/floats/strs are checked for a few long natural runs first
+/// ([`sort_runs_inplace`]).
+const RUNS_INPLACE_MIN: usize = 4096;
+
+/// What [`sort_runs_inplace`] decided.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Runs {
+    /// Sorted in place.
+    Done,
+    /// Not ordered input (or not applicable): the keyed sort decides.
+    Keyed,
+    /// Ordered input with more breaks than an in-place merge handles cheaply (nearly sorted):
+    /// CPython's timsort (galloping merges on the pointers) is the right algorithm there,
+    /// and a keyed sort's buffers cost more than they save at this size (measured 1.4–2.0×
+    /// wall at 10^5–10^6 items, n/50 swaps). Nothing was changed.
+    Original,
+}
+
+/// How many order breaks a list may have to be merged in place by [`sort_runs_inplace`].
+#[inline(always)]
+fn runs_inplace_limit(n: usize) -> usize {
+    16 + n / 65_536
+}
+
+/// The value of an exact `int`/`bool` known to be compact (`|v| < 2**30`).
+///
+/// # Safety
+/// `p` is a live exact int/bool, compact.
+#[inline(always)]
+unsafe fn compact_unchecked(p: *mut ffi::PyObject) -> i64 {
+    // SAFETY: per the caller.
+    unsafe {
+        let l = p.cast::<RawLong>();
+        (1 - ((*l).lv_tag & 3) as i64) * i64::from((*l).ob_digit[0])
+    }
+}
+
+/// Sort a list of exact compact ints (or exact non-NaN floats, or exact strs) made of a few
+/// long natural runs in place, on the item pointers. CPython's timsort is near-linear and
+/// cheap per item on such input (a set's iteration order of ints or floats, whose hash is
+/// their value, so that a large table yields one or two ascending runs; presorted, reversed
+/// or concatenated sorted lists), where building and writing back `(key, item)` pairs costs
+/// more than the sort itself: at 10^5–10^6 items the pairs buffer is memory traffic that
+/// timsort's pass does not have (1.2–2.1× wall before this path).
+///
+/// A probe of 8 adjacent pairs decides cheaply whether to look (else [`Runs::Keyed`]). One
+/// pass then checks the types and records the run boundaries, stopping as soon as the input
+/// has more breaks than [`runs_inplace_limit`] ([`Runs::Original`]: nearly sorted input).
+/// The runs are merged with timsort's policy and run trimming ([`merge_at`]); equal elements
+/// keep their order (stable), and `reverse` sorts by `>` with the same stability. A list
+/// strictly against the order throughout is reversed.
+///
+/// # Safety
+/// `items` is a list's item array, `items.len() >= RUNS_INPLACE_MIN`, critical section held;
+/// `t0` is the type of `items[0]`.
+unsafe fn sort_runs_inplace(items: &mut [*mut ffi::PyObject], t0: *mut ffi::PyTypeObject, reverse: bool) -> Runs {
+    // SAFETY: types are checked before values are read; the list's critical section is held.
+    unsafe {
+        if t0 == long_type() || t0 == bool_type() {
+            let val = |p: *mut ffi::PyObject| -> Option<i64> {
+                let t = ffi::Py_TYPE(p);
+                if t != long_type() && t != bool_type() {
+                    return None;
+                }
+                compact_value(p)
+            };
+            if reverse {
+                runs_inplace(items, val, |a, b| compact_unchecked(*b) < compact_unchecked(*a), |x, y| y < x)
+            } else {
+                runs_inplace(items, val, |a, b| compact_unchecked(*a) < compact_unchecked(*b), |x, y| x < y)
+            }
+        } else if t0 == str_type() {
+            // Strings: compared in full (their 8-byte keys would need the pairs buffer this
+            // path avoids); a few long runs need only ~n comparisons.
+            let layout = STR_LAYOUT.get();
+            let t = str_type();
+            let val = |p: *mut ffi::PyObject| -> Option<StrParts> {
+                if ffi::Py_TYPE(p) != t {
+                    return None;
+                }
+                Some(str_view(p, layout))
+            };
+            let cmp =
+                |a: *mut ffi::PyObject, b: *mut ffi::PyObject| str_cmp(&str_view(a, layout), &str_view(b, layout));
+            if reverse {
+                runs_inplace(items, val, |a, b| cmp(*b, *a) == Ordering::Less, |x, y| str_cmp(&y, &x) == Ordering::Less)
+            } else {
+                runs_inplace(items, val, |a, b| cmp(*a, *b) == Ordering::Less, |x, y| str_cmp(&x, &y) == Ordering::Less)
+            }
+        } else if t0 == float_type() {
+            let val = |p: *mut ffi::PyObject| -> Option<f64> {
+                if ffi::Py_TYPE(p) != float_type() {
+                    return None;
+                }
+                let v = float_value(p);
+                if v.is_nan() { None } else { Some(v) }
+            };
+            if reverse {
+                runs_inplace(items, val, |a, b| float_value(*b) < float_value(*a), |x, y| y < x)
+            } else {
+                runs_inplace(items, val, |a, b| float_value(*a) < float_value(*b), |x, y| x < y)
+            }
+        } else {
+            Runs::Keyed
+        }
+    }
+}
+
+/// [`sort_runs_inplace`] for one value kind: `val` checks an item and reads its value,
+/// `less` compares two (checked) items, `lt` two values, both in the requested order.
+///
+/// # Safety
+/// As [`sort_runs_inplace`].
+#[inline(always)]
+unsafe fn runs_inplace<V: Copy>(
+    items: &mut [*mut ffi::PyObject],
+    val: impl Fn(*mut ffi::PyObject) -> Option<V>,
+    less: impl Fn(&*mut ffi::PyObject, &*mut ffi::PyObject) -> bool,
+    lt: impl Fn(V, V) -> bool,
+) -> Runs {
+    let n = items.len();
+    // Probe: 8 evenly spaced adjacent pairs, all in order or all strictly against it (random
+    // input passes with probability 1/128).
+    let (mut fwd, mut back) = (0, 0);
+    for k in 0..8 {
+        let i = 1 + k * (n - 2) / 7;
+        match (val(items[i - 1]), val(items[i])) {
+            (Some(a), Some(b)) if lt(b, a) => back += 1,
+            (Some(_), Some(_)) => fwd += 1,
+            _ => return Runs::Keyed,
+        }
+    }
+    if back == 8 {
+        // Strictly against the order throughout? Then the sorted list is the reversal (no
+        // equal neighbours, so stability holds).
+        let Some(mut prev) = val(items[0]) else { return Runs::Keyed };
+        for &p in &items[1..] {
+            let Some(v) = val(p) else { return Runs::Keyed };
+            if !lt(v, prev) {
+                return Runs::Keyed;
+            }
+            prev = v;
+        }
+        items.reverse();
+        return Runs::Done;
+    }
+    if fwd != 8 {
+        return Runs::Keyed;
+    }
+    // One pass: check every item, record where an item breaks the order.
+    let limit = runs_inplace_limit(n);
+    let mut breaks: [usize; 64] = [0; 64];
+    let mut nb = 0;
+    let Some(mut prev) = val(items[0]) else { return Runs::Keyed };
+    for (i, &p) in items.iter().enumerate().skip(1) {
+        let Some(v) = val(p) else { return Runs::Keyed };
+        if lt(v, prev) {
+            if nb == limit.min(breaks.len()) {
+                return Runs::Original;
+            }
+            breaks[nb] = i;
+            nb += 1;
+        }
+        prev = v;
+    }
+    if nb == 0 {
+        return Runs::Done; // already in order (equal neighbours included: stable)
+    }
+    merge_known_runs(items, &breaks[..nb], &less);
+    Runs::Done
+}
+
+/// Merge the non-decreasing runs of `v` that start at 0 and at each of `breaks`, with
+/// timsort's stack policy.
+fn merge_known_runs<T: Copy, F: Fn(&T, &T) -> bool>(v: &mut [T], breaks: &[usize], less: &F) {
+    let n = v.len();
+    let mut heap_buf: Vec<std::mem::MaybeUninit<T>> = Vec::new();
+    if heap_buf.try_reserve_exact(n / 2 + 1).is_err() {
+        v.sort_by(|a, b| {
+            if less(a, b) {
+                Ordering::Less
+            } else if less(b, a) {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        });
+        return;
+    }
+    // SAFETY: `MaybeUninit` slots need no initialisation; the capacity is reserved.
+    unsafe { heap_buf.set_len(n / 2 + 1) };
+    let buf = &mut heap_buf[..];
+    let mut runs = [(0usize, 0usize); 96];
+    let mut nr = 0;
+    let mut start = 0;
+    for &end in breaks.iter().chain(std::iter::once(&n)) {
+        runs[nr] = (start, end - start);
+        nr += 1;
+        start = end;
+        while nr > 1 {
+            let at = if (nr >= 3 && runs[nr - 3].1 <= runs[nr - 2].1 + runs[nr - 1].1)
+                || (nr >= 4 && runs[nr - 4].1 <= runs[nr - 3].1 + runs[nr - 2].1)
+            {
+                if runs[nr - 3].1 < runs[nr - 1].1 { nr - 3 } else { nr - 2 }
+            } else if runs[nr - 2].1 <= runs[nr - 1].1 {
+                nr - 2
+            } else {
+                break;
+            };
+            merge_at(v, &mut runs, &mut nr, at, buf, less);
+        }
+    }
+    while nr > 1 {
+        let at = if nr >= 3 && runs[nr - 3].1 < runs[nr - 1].1 { nr - 3 } else { nr - 2 };
+        merge_at(v, &mut runs, &mut nr, at, buf, less);
+    }
+}
+
 /// Try the native sort. `None`: not applicable (nothing was changed).
 ///
 /// # Safety
@@ -1844,6 +2062,13 @@ unsafe fn try_sort(list: *mut ffi::PyObject, reverse: bool) -> Option<()> {
         }
         let items = std::slice::from_raw_parts_mut((*list.cast::<ffi::PyListObject>()).ob_item, n);
         let t0 = ffi::Py_TYPE(items[0]);
+        if n >= RUNS_INPLACE_MIN {
+            match sort_runs_inplace(items, t0, reverse) {
+                Runs::Done => return Some(()),
+                Runs::Original => return None,
+                Runs::Keyed => {}
+            }
+        }
         if t0 == long_type() || t0 == bool_type() {
             sort_by_keys(
                 items,
