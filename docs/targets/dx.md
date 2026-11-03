@@ -380,6 +380,11 @@ out-of-process; `pyinstrument`, `yappi`-style samplers are not) is exposed.
 
 ### 6.1 `wheels.yml`
 
+Documented conformance exceptions live in `tests/conformance/allowed.txt` (passed with
+`--allow` by the per-platform job), each with its evidence: so far one CPython flake on musl
+free-threaded builds whose test child runs plain CPython in both modes (the full matrix saw
+it fail on the enabled side in one run and on the plain side in the next).
+
 - **Repack**: right after `maturin-action`, `tools/repack_wheel.py dist/*.whl` (engine's,
   stdlib-only, idempotent; a wheel with grafted libraries — musl — keeps maturin's layout).
   Then `.github/scripts/check_wheels.py --layout top` checks (the `shim` layout instead for a

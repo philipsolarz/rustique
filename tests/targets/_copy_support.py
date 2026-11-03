@@ -209,10 +209,18 @@ def run(fn, cp: Any, dc: Any, sources_fn) -> tuple:
     return outcome, log, named, root
 
 
+def _stack(outcome: tuple) -> tuple:
+    """A C-stack overflow's message measures native stack (`Stack overflow (used N kB)…`):
+    outside the contract (ACCELERATION §5.8); compared by type."""
+    if outcome[:2] == ("raise", "RecursionError") and outcome[2].startswith("Stack overflow (used "):
+        return ("raise", "RecursionError", "Stack overflow")
+    return outcome
+
+
 def compare(fn, sources_fn) -> tuple:
     a = run(fn, REF, REF_DC, sources_fn)
     b = run(fn, copy, dataclasses, sources_fn)
-    assert a[0] == b[0], f"outcome differs:\nref  {a[0]}\nrust {b[0]}"
+    assert _stack(a[0]) == _stack(b[0]), f"outcome differs:\nref  {a[0]}\nrust {b[0]}"
     assert a[1] == b[1], f"hook log differs:\nref  {a[1]}\nrust {b[1]}"
     return a, b
 

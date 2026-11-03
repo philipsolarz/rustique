@@ -1,0 +1,9 @@
+# Test ids whose plain-vs-enabled differences are documented (run_target_suites.py --allow).
+# One per line; '#' starts a comment. Each entry names its evidence.
+
+# CPython flake, not Rustique: the test's child process (`python -I -c ...`) runs plain CPython
+# in both modes; concurrent _datetime initialization in 8 subinterpreters drops output on musl
+# free-threaded builds. Wheel matrix, wave 2: run 41711914995 failed the enabled side (3.14.10t,
+# x86_64 and aarch64), run 41717074725 failed the plain side (3.14.10t x86_64/aarch64, 3.15.2t
+# aarch64). docs/targets/dx.md §6.
+test.datetimetester.ExtensionModuleTests_Fast.test_concurrent_initialization_subinterpreter

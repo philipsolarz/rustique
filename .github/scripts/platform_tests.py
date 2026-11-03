@@ -225,7 +225,8 @@ def main() -> int:
                 out = os.path.join(a.out, f"conformance-{a.name or cov['platform']}-{tag}.json")
                 r = run([py, os.path.join(REPO, "tests", "conformance", "run_target_suites.py"), "--cpython-src", src,
                          "--targets", ",".join(names), "--modules", ",".join(mods), "--expect-installed",
-                         ",".join(names), "--timeout", str(a.timeout), "--json", out], cwd=work, env=clean_env())
+                         ",".join(names), "--timeout", str(a.timeout), "--json", out,
+                         "--allow", os.path.join(REPO, "tests", "conformance", "allowed.txt")], cwd=work, env=clean_env())
                 if r.returncode:
                     failures.append(f"conformance differs or a target was not installed (see {os.path.basename(out)})")
         elif not a.fetch_cpython:

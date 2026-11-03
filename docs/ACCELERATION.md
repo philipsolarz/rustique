@@ -404,8 +404,10 @@ Decide the exact subset **before anything observable happens**, cheaply:
 8. **Outside the contract** (not observable through a documented API, or nondeterministic
    in CPython itself): the timing of garbage collection and allocation counts; a tool
    attached by another thread while a kernel runs (the call in flight completes natively);
-   the exact C-stack depth at which `RecursionError` is raised for deeply nested input
-   (the Python-recursion limit is honoured); private state (§2.4); **asynchronous
+   the exact C-stack depth at which `RecursionError` is raised for deeply nested input,
+   and so the message of that error, which reports the native stack in use and the C call
+   that found it exhausted (`Stack overflow (used N kB)…`; the Python-recursion limit is
+   honoured, with CPython's message; DECISIONS §10, ruling 20); private state (§2.4); **asynchronous
    exceptions** (DECISIONS §10.6): signals and `PyThreadState_SetAsyncExc` arriving while a
    kernel runs are delivered when it returns, at the next eval-breaker check: their timing
    is already nondeterministic in CPython (fingerprint v3 ignores the exception-table

@@ -576,6 +576,15 @@ framework-heavy and custom software included.
     framework probe may touch `sys.monitoring` (its tool-id release bumped the global
     instrumentation version and taxed every later code object ~930 instructions; found by the
     datamodel workstream, fixed in accel).
+20. **C-stack exhaustion messages** (ACCELERATION §5.8, clarified with a measurement): on
+    builds with small native stacks (Windows free-threaded 3.14t in the wave-2 wheel matrix,
+    run 41717074725) a deeply nested `dataclasses.asdict` input exhausts the C stack before the
+    Python-recursion limit; CPython raised `RecursionError('Stack overflow (used 2912 kB)
+    while calling a Python object')`, the kernel `RecursionError('Stack overflow (used 2914
+    kB)')`. Type and point of failure agree; the message measures native stack, which
+    differs between any two implementations (and between CPython builds). The depth was
+    already outside the contract; its message now says so explicitly, and the differential
+    tests compare C-stack overflows by type.
 
 ## 11. Speedup on real workloads, per family, against the targets
 
