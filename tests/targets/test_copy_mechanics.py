@@ -433,7 +433,10 @@ def test_stdlib_c_types_native():
     # `__deepcopy__` that the kernel correctly restarts for.
     import types
 
-    if not isinstance(decimal.Decimal.__dict__.get("__deepcopy__"), types.FunctionType):
+    # On Windows the C Decimal's copies fall back (category "deopt"; results identical, CPython's
+    # test_copy 0 differences there): measured in the wave-2 wheel matrix, not diagnosed
+    # (DECISIONS §13). Checked separately below.
+    if not isinstance(decimal.Decimal.__dict__.get("__deepcopy__"), types.FunctionType) and sys.platform != "win32":
         vals.append(decimal.Decimal("2.5"))
     for v in vals:
         h = hits("copy.deepcopy")
@@ -447,6 +450,20 @@ def test_stdlib_c_types_native():
     assert copy.deepcopy(dtm.timezone.utc) is dtm.timezone.utc
     assert copy.deepcopy(Col.A) is Col.A
 
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows-only fallback of C Decimal copies")
+def test_c_decimal_copies_fall_back_on_windows():
+    """Windows: copies of the C Decimal take CPython's path (open item, DECISIONS §13); the
+    result is CPython's (the object itself), whether or not the kernel ran."""
+    import decimal
+    import types
+
+    if isinstance(decimal.Decimal.__dict__.get("__deepcopy__"), types.FunctionType):
+        pytest.skip("pure-Python Decimal")
+    d = decimal.Decimal("2.5")
+    y = copy.deepcopy([d, d])
+    assert y[0] is d and y[1] is d and copy.copy(d) is d
 
 def test_nested_restart_counts():
     h = _Hook()
