@@ -497,8 +497,18 @@ def calls():
             str(p), p.name, p.relative_to("/a").parts, hash(p) == hash(pathlib.PurePosixPath("/a/b/c.txt")))
 
 # Registered before enable(): runs after the exit hook (originals restored, references released).
-atexit.register(lambda: print("before", calls() == EXPECTED, posixpath.join.__code__ is CODE,
-                              sys.getrefcount(posixpath.__dict__) - RC))
+# The daemon threads stop first (they were inside kernels during the release, which is the
+# point), so a call one of them has in flight cannot hold a transient reference to the module
+# dict while it is counted (free-threaded builds read the count concurrently).
+def before():
+    STOP.append(True)
+    for t in THREADS:
+        t.join(5)
+    print("before", calls() == EXPECTED, posixpath.join.__code__ is CODE,
+          sys.getrefcount(posixpath.__dict__) - RC)
+STOP = []
+THREADS = []
+atexit.register(before)
 EXPECTED = calls()
 CODE = posixpath.join.__code__
 gc.collect()
@@ -509,11 +519,12 @@ assert calls() == EXPECTED
 atexit.register(lambda: print("after", calls() == EXPECTED))  # runs before the hook: kernels
 
 def spin():
-    while True:
+    while not STOP:
         calls()
 
 for _ in range(3):
-    threading.Thread(target=spin, daemon=True).start()
+    THREADS.append(threading.Thread(target=spin, daemon=True))
+    THREADS[-1].start()
 time.sleep(0.05)
 """
 
