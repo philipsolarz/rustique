@@ -38,6 +38,8 @@ pub(crate) const FPS: &[(&str, Fingerprints)] = &[
     ("PurePath.with_segments", &[(3, 14, "93fb271f0b71835e"), (3, 15, "185c894628a66be5")]),
     ("PurePath.__truediv__", &[(3, 14, "34032fe42e88f1f9"), (3, 15, "312ecc99f8ed4c4e")]),
     ("PurePath.__str__", &[(3, 14, "be38afbe0dd95720"), (3, 15, "435c10ada5537957")]),
+    // `os.fspath(path)` (posixpath's kernels take cached path strings); 3.15: `__str__` itself.
+    ("PurePath.__fspath__", &[(3, 14, "de0a311808b68d41"), (3, 15, "435c10ada5537957")]),
     ("PurePath._format_parsed_parts", &[(3, 14, "7768f127fd92d97f"), (3, 15, "b4ba04165f5c4536")]),
     ("PurePath._from_parsed_parts", &[(3, 14, "4dafd1666d14a188"), (3, 15, "e58e5f84a4a7b4e0")]),
     ("PurePath._from_parsed_string", &[(3, 14, "8c6c016c800b9be2"), (3, 15, "47b96b9750737e75")]),
@@ -131,6 +133,7 @@ const CLASS_ATTRS: &[&str] = &[
     "__eq__",
     "_str_normcase",
     "__str__",
+    "__fspath__",
     "__hash__",
 ];
 /// `_PathParents` attributes `path in self.parents` reaches (relative_to).
@@ -269,25 +272,51 @@ unsafe fn put(o: O, k: usize, v: O) {
     unsafe { cell(o, k).store(v, Release) }
 }
 
-/// Run `f` holding the critical section of `o` (free-threaded builds; no-op with the GIL).
+/// Run `f` holding the critical section of `o` (free-threaded builds; no-op with the GIL),
+/// without a reference-count change on `o` (a shared path object's refcount line would
+/// bounce between threads).
 #[inline(always)]
 unsafe fn locked<R>(o: O, f: impl FnOnce() -> R) -> R {
     // SAFETY: attached thread; live object.
-    unsafe {
-        let py = Python::assume_attached();
-        let b = Bound::from_borrowed_ptr(py, o);
-        pyo3::sync::critical_section::with_critical_section(&b, f)
-    }
+    unsafe { rt::with_cs(o, f) }
 }
 
 #[inline(always)]
 unsafe fn locked2<R>(a: O, b: O, f: impl FnOnce() -> R) -> R {
     // SAFETY: attached thread; live objects.
+    unsafe { rt::with_cs2(a, b, f) }
+}
+
+/// The object's type is one of the two validated path classes (a type-pointer compare: no
+/// reference taken).
+///
+/// # Safety
+/// Live object.
+#[inline(always)]
+pub unsafe fn is_path_type(o: O) -> bool {
+    // SAFETY: header read.
+    let t = unsafe { ffi::Py_TYPE(o) };
+    !t.is_null() && (t == PURE_POSIX.load(Relaxed) || t == POSIX.load(Relaxed))
+}
+
+/// `os.fspath(o)` for an exact validated path object whose `str()` is already cached: the
+/// `_str` slot (new reference), as `PurePath.__fspath__` returns it (3.14: `str(self)`, 3.15:
+/// `__fspath__ is __str__`; both fingerprinted, class attributes guarded by the version
+/// tag). `None` when the object is anything else or `_str` is unset (CPython would compute
+/// and store it: the caller falls back).
+///
+/// # Safety
+/// Attached thread; live object.
+pub unsafe fn fspath_cached(o: O) -> Option<O> {
+    // SAFETY: per the caller; slots of a validated class.
     unsafe {
-        let py = Python::assume_attached();
-        let ba = Bound::from_borrowed_ptr(py, a);
-        let bb = Bound::from_borrowed_ptr(py, b);
-        pyo3::sync::critical_section::with_critical_section2(&ba, &bb, f)
+        if PURE_POSIX.load(Relaxed).is_null() || !exact_path(o) {
+            return None;
+        }
+        locked(o, || {
+            let s = get(o, STR);
+            (!s.is_null() && exact_str(s)).then(|| ffi::Py_NewRef(s))
+        })
     }
 }
 

@@ -301,10 +301,55 @@ crate::paths_kernel!(k_join, RT_JOIN, JOIN, |func, args, nargsf, n, kw| {
                 Some(g) => Some(g),
                 None => Some(if t == Ty::Str { join_str(args, n) } else { join_bytes(args, n) }),
             },
-            _ => None,
+            _ => join_pathlike(func, args, n),
         }
     }
 });
+
+/// `join` with `pathlib` path objects among str arguments: `os.fspath` of an exact
+/// validated path whose `str()` is cached is that str (`pathlib::fspath_cached`), so the
+/// join runs natively on the strings. Anything else declines before any reference is
+/// taken (a PathLike fallback on a free-threaded build otherwise pays an extra refcount
+/// round trip on a shared argument in `_PyFunction_Vectorcall`'s frame push).
+///
+/// # Safety
+/// Vectorcall arguments (`n >= 1`); attached thread.
+#[inline(never)]
+unsafe fn join_pathlike(func: O, args: *const O, n: usize) -> Option<O> {
+    // SAFETY: per the caller.
+    unsafe {
+        if n > MAXA || !(0..n).all(|k| exact_str(*args.add(k)) || crate::targets::pathlib::is_path_type(*args.add(k))) {
+            return None;
+        }
+        if let Some(g) = rt::guards(&RT_JOIN, func) {
+            return Some(g);
+        }
+        let mut conv = [std::ptr::null_mut::<ffi::PyObject>(); MAXA];
+        let mut owned = [false; MAXA];
+        let release = |conv: &[O], owned: &[bool]| {
+            for (o, &own) in conv.iter().zip(owned) {
+                if own {
+                    ffi::Py_DECREF(*o);
+                }
+            }
+        };
+        for k in 0..n {
+            let a = *args.add(k);
+            if exact_str(a) {
+                conv[k] = a;
+            } else if let Some(s) = crate::targets::pathlib::fspath_cached(a) {
+                conv[k] = s;
+                owned[k] = true;
+            } else {
+                release(&conv[..k], &owned[..k]);
+                return None;
+            }
+        }
+        let r = join_str(conv.as_ptr(), n);
+        release(&conv[..n], &owned[..n]);
+        Some(r)
+    }
+}
 
 /// `join(a, b)` for two exact `str`: CPython's loop for one step.
 ///

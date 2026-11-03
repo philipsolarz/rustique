@@ -442,12 +442,11 @@ unsafe fn filter(func: O, names: O, pat: O) -> Option<O> {
             return Some(g);
         }
         with_program(k, pat, |prog| {
-            let py = Python::assume_attached();
-            let seq = Bound::from_borrowed_ptr(py, names);
             // Hold the list's lock while reading it (free-threaded builds; a no-op with
-            // the GIL). Matched items get a strong reference before the result list is
-            // allocated (an allocation may run a finalizer that mutates `names`).
-            let picked: Option<Picked> = pyo3::sync::critical_section::with_critical_section(&seq, || {
+            // the GIL), without a refcount round trip on a possibly shared list. Matched
+            // items get a strong reference before the result list is allocated (an
+            // allocation may run a finalizer that mutates `names`).
+            let picked: Option<Picked> = rt::with_cs(names, || {
                 let len = if is_list { ffi::PyList_GET_SIZE(names) } else { ffi::PyTuple_GET_SIZE(names) } as usize;
                 let item = |i: usize| {
                     if is_list {

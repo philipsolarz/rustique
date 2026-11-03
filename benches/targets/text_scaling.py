@@ -25,6 +25,9 @@ _LOGGER = ("import io, logging, threading\n"
            "L.addHandler(h)\nL.isEnabledFor(10)\n")
 
 ks.CELLS.update({
+    "posixpath.join (user PathLike: fallback)": (
+        "import posixpath\nclass P:\n    def __fspath__(self):\n        return '/srv/app'\np = P()",
+        "posixpath.join(p, 'static')"),
     "logging.findCaller": ("import logging; L = logging.getLogger('svc.api')", "L.findCaller()"),
     "logging.info (StringIO)": (_LOGGER, "L.info('user %s logged in', 'ana')"),
     "logging.debug (disabled)": (_LOGGER, "L.debug('user %s logged in', 'ana')"),

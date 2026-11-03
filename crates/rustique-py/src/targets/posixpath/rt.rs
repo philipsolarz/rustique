@@ -627,6 +627,62 @@ pub unsafe fn plain_str_subclass(op: O) -> bool {
     }
 }
 
+/// Run `f` holding `o`'s critical section (free-threaded builds; with the GIL just `f()`),
+/// without touching `o`'s reference count: on a path object shared by threads, a
+/// `Bound` (incref + decref) per call bounces its refcount line (8-thread rule).
+///
+/// # Safety
+/// Attached thread; live object.
+#[inline(always)]
+pub unsafe fn with_cs<R>(o: O, f: impl FnOnce() -> R) -> R {
+    #[cfg(Py_GIL_DISABLED)]
+    // SAFETY: per the caller; the guard ends the section on every exit path.
+    unsafe {
+        struct End(ffi::PyCriticalSection);
+        impl Drop for End {
+            fn drop(&mut self) {
+                // SAFETY: begun below, on this thread.
+                unsafe { ffi::PyCriticalSection_End(&mut self.0) };
+            }
+        }
+        let mut g = End(std::mem::zeroed());
+        ffi::PyCriticalSection_Begin(&mut g.0, o);
+        f()
+    }
+    #[cfg(not(Py_GIL_DISABLED))]
+    {
+        let _ = o;
+        f()
+    }
+}
+
+/// [`with_cs`] for two objects (`Py_BEGIN_CRITICAL_SECTION2`).
+///
+/// # Safety
+/// Attached thread; live objects.
+#[inline(always)]
+pub unsafe fn with_cs2<R>(a: O, b: O, f: impl FnOnce() -> R) -> R {
+    #[cfg(Py_GIL_DISABLED)]
+    // SAFETY: per the caller; the guard ends the section on every exit path.
+    unsafe {
+        struct End(ffi::PyCriticalSection2);
+        impl Drop for End {
+            fn drop(&mut self) {
+                // SAFETY: begun below, on this thread.
+                unsafe { ffi::PyCriticalSection2_End(&mut self.0) };
+            }
+        }
+        let mut g = End(std::mem::zeroed());
+        ffi::PyCriticalSection2_Begin(&mut g.0, a, b);
+        f()
+    }
+    #[cfg(not(Py_GIL_DISABLED))]
+    {
+        let _ = (a, b);
+        f()
+    }
+}
+
 /// The str-family view of a path argument: exact str, or a plain str subclass.
 ///
 /// # Safety

@@ -543,3 +543,33 @@ def test_exit_release_and_daemon_threads():
     )
     assert r.returncode == 0, r.stderr
     assert r.stdout.splitlines() == ["after True", "before True True 0"], (r.stdout, r.stderr)
+
+
+def test_join_with_cached_pathlib_paths_hits_and_matches():
+    """`join(PurePosixPath, ...)`: `os.fspath` of an exact path object whose `str()` is cached
+    is that str (no reference to the path is taken: free-threaded 8-thread rule)."""
+    import pathlib
+
+    rearm()
+    A.enable(["pathlib"])
+    rt.stats(True)
+    try:
+        p = pathlib.PurePosixPath("/srv/app")
+        q = pathlib.PosixPath("static")
+        fresh = pathlib.PurePosixPath("/never/stringified")
+        str(p), str(q)
+        before = hits("posixpath.join")
+        for args in [(p, "static"), (p, q), ("/x", q), (p,), (p, "/abs"), (p, ""), (q, p)]:
+            check("join", *args)
+            r = posixpath.join(*args)
+            assert r == REF["join"](*args)
+        assert hits("posixpath.join") - before >= 7, (rt.stats()["posixpath.join"], [t["state"] for t in rt.status()["targets"] if t["name"] == "posixpath.join"])
+        assert posixpath.join(p) is str(p)  # `path = a` after `a = os.fspath(a)`: the cached str itself
+        # `_str` unset: CPython computes and caches it; the kernel declines (same result)
+        check("join", fresh, "x")
+        class Sub(pathlib.PurePosixPath):
+            def __fspath__(self):
+                return "/sub"
+        check("join", Sub("/a"), "b")
+    finally:
+        A.disable(["pathlib"])
