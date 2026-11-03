@@ -221,14 +221,33 @@ fat LTO, PYTHONHASHSEED=0); M = measured.
 ### Install (M, `benches/targets/re_install.py`)
 
 `import re` costs 21.6M Ir. With accel's first-call validation (the default on GIL builds) the
-group is *armed* at its end: **52k Ir (0.2%)**, sites holding first-call stubs (87k when `re` was
-already imported at `enable()`). Each target validates at its first call: the group's full
-`prepare` (identities, `_sre` limits, version tags, pins: ~0.65M for the compiler, ~0.15M for the
-module functions) and then, on the kernel's first call, the group's own deferred checks
-(fingerprints of 59 functions and the table checks, ~0.55M; ACCELERATION §5.7: a failure
-degrades the targets). Free-threaded builds (and `RUSTIQUE_VALIDATE=eager`) run the full
-`prepare` at install: 0.69M Ir (3.2% of `import re`; T9 budget 5%); with the fingerprints at
-install it was 1.58M (7.3%).
+group is *armed* at its end: **52k Ir (0.2%)**, sites holding first-call stubs. What each target
+validates, and when (Phase 3 rework, wave2 7fec7e4):
+
+- **At a target's first call** (accel's stub): its group's `prepare` — identities, `_sre`'s
+  limits, version tags; pins: generation watches of the `re._compiler` and `re._parser`
+  namespaces (one counter, instead of snapshots of ~200 entries), key pins of the `_sre`
+  functions the compiler reads, of the `re` globals the hit path reads and of the builtins;
+  the template path's pins only for `re.sub`/`re.subn`.
+- **The compiler's fingerprints** (47 originals) and the `re._constants` check: at the 4th
+  call of the compile kernel (the first 3 compiles of a process run CPython's compiler:
+  a module's import typically compiles 0–3 patterns; `fnmatch` and `urllib.parse` compile
+  one), ~0.5M Ir once.
+- **The module functions' fingerprints** (18 originals): at the first cache *hit* (misses
+  fall back before using anything they cover; module-level `re.compile` calls at import are
+  misses).
+- **`_EXTRA_CASES`** (content hash, table build): at the first compile that needs Unicode
+  case folding (the pattern is compiled again with the table).
+- Fingerprints are format v3, checked with `accel::fingerprint::check` against
+  `accel/fingerprints.txt` (owners `re.compiler`, `re.functions`; recorded on 3.14.9 and
+  3.15.1; 3.15.0's v3 equal 3.15.1's, so 3.15.0 no longer degrades), falling back to the
+  inline v2 table where the data has no entry; `record_patch.py` sees them (record mode).
+
+accel's install cells (`benches/accel/install_costs.py`, 3.15.1, budget max(5% of the import,
+0.1M)): `import fnmatch` 1.082 (+1.52M) → **1.042 (+0.78M, budget 0.93M)**, with a call
+1.046; `import urllib.parse` 1.053 → **1.027 (+0.77M, budget 1.42M)**, with a call 1.035. The
+`re` group's share of them: +0.25M / +0.26M (every group vs every group but `re`; it was
++1.0M+). Free-threaded builds (and `RUSTIQUE_VALIDATE=eager`) run the prepares at install.
 
 ### Cells (M, `benches/targets/re_cells.py`: instructions per call, plain vs group installed)
 
