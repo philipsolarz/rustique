@@ -472,12 +472,63 @@ before the first dispatch.
 
 ## 7. Real projects
 
-Phase 1 (w2-dx §4): 14 projects' own suites showed 0 behaviour differences on 3.15.1 (6 again
-on 3.15.1t), with the release wheels of wave 1. `benches/dx/real_projects.py` re-runs them
-under `diff`. The final run on the integrated `wave2` (14 suites on 3.15.1, 6 on 3.15.1t) is
-for when the lead asks, once the target workstreams are merged:
-`real_projects.py setup --wheels DIR` with a release wheel of the integrated branch, then
-`run` and `table`. Not run in this phase.
+**Integrated wave2 d40e7b9** (all workstreams merged), on the dev box (quiet: load 2–4;
+timing indicative):
+
+- the projects' own test suites under `python -m rustique diff`;
+- release wheels of d40e7b9, repacked to the top-level `_rustique`, built with the interp
+  handlers (`benches/dx/rp_wheels.sh`);
+- installed into fresh uv venvs of python-build-standalone 3.15.1 and 3.15.1t
+  (`benches/dx/real_projects.py setup`), each project at its pinned tag;
+- one warm-up run, then `diff`: plain with `RUSTIQUE=0`, enabled with `RUSTIQUE=1`; exit code,
+  stdout/stderr and every test's outcome compared, differing tests re-run (`--confirm 2`).
+
+Three passes, M:
+- 3.15.1, all 14 projects, default tier;
+- 3.15.1t, the 6 projects of Phase 1;
+- 3.15.1 with `diff --tiers interp,gc`. The enabled runs' reports confirm both tiers active
+  ("gc on (1 of 1 targets active), interp on (4 of 4 targets active)").
+
+**Result: no behaviour difference in any of the 34 runs.**
+- Outcomes compared: 24,862 pytest outcomes + 5,361 Django tests per 3.15.1 pass (×2), and
+  6,481 + 5,361 on 3.15.1t.
+- No test was flaky.
+- One stream was volatile: requests' stderr, which its test server's access log writes
+  differently from one plain run to the next (as in Phase 1).
+- Where a suite exits 1, it does so in both runs, for the same tests. These are failures of
+  old tags against pytest 9 or Python 3.15. Django on 3.15.1t fails
+  `test_reporting_frames_for_cyclic_reference` in both runs; it is flaky on 3.15.1t without
+  Rustique (Phase 1: 7 of 12 plain runs fail).
+
+| project @ tag | test outcomes | exit code (both runs) | 3.15.1: diff, ratio (plain s) | 3.15.1t: diff, ratio (plain s) | 3.15.1 + interp,gc: diff, ratio (plain s) | processes |
+|---|---:|:---:|---|---|---|---:|
+| requests v2.34.2 | 633 | 0 | identical (stderr volatile), 1.000 (77.6) | — | identical (stderr volatile), 1.000 (77.6) | 1 |
+| flask 3.1.3 | 490 | 1 | identical, 0.944 (1.5) | — | identical, 0.960 (1.2) | 1 |
+| attrs 26.1.0 | 1387 | 0 | identical, 0.942 (7.1) | identical, 1.019 (7.0) | identical, 0.964 (5.9) | 1 |
+| rich v15.0.0 | 981 | 1 | identical, 0.970 (4.9) | identical, 0.979 (4.5) | identical, 0.973 (4.4) | 3 |
+| httpx 0.28.1 | 1418 | 1 | identical, 0.952 (4.9) | — | identical, 0.984 (4.1) | 1 |
+| jinja 3.1.6 | 909 | 0 | identical, 0.955 (1.5) | identical, 0.977 (1.6) | identical, 0.947 (1.5) | 1 |
+| click 8.5.0 | 2016 | 0 | identical, 0.992 (4.3) | identical, 0.987 (3.6) | identical, 0.985 (4.2) | 3 |
+| marshmallow 4.3.1 | 1188 | 0 | identical, 0.939 (0.9) | identical, 0.903 (1.1) | identical, 0.889 (0.9) | 1 |
+| sqlglot v30.28.0 | 1459 | 0 | identical, 0.998 (72.1) | — | identical, 0.931 (71.7) | 25 |
+| black 26.10.1 | 572 | 0 | identical, 0.986 (36.4) | — | identical, 0.985 (36.3) | 39 |
+| pydantic v2.14.2 | 6603 | 0 | identical, 0.986 (12.1) | — | identical, 0.972 (12.2) | 8 |
+| django 6.1.2 | 5,361 (unittest: exit code and output compared) | 0 | identical, 0.974 (12.3) | identical, 0.976 (13.5) | identical, 0.977 (12.3) | 3 |
+| arrow 1.4.0 | 1863 | 0 | identical, 1.005 (2.9) | — | identical, 0.996 (2.9) | 1 |
+| dateutil 4.0.0 | 5343 | 1 | identical, 0.983 (12.7) | — | identical, 0.983 (12.7) | 2 |
+
+Reading:
+- Timing is flat (0.89–1.02), as in Phase 1: test suites spend their time in pytest
+  machinery and fixtures. The one move with the tiers is sqlglot: 0.931 against 0.998 (one
+  pair; indicative only).
+- The counters still show the Phase-1 fallback signals:
+  - dateutil `builtins.min` restarts (`deopt` 442k);
+  - black's `list.__contains__` (`args` 695k);
+  - arrow's `tools` (255k: `--cov` is in its addopts, so coverage is listening).
+
+Results: `/work/w2ws-dx/rp/results/{3.15.1,3.15.1t,3.15.1+tiers}/<project>/` on the dev box
+(diff output, every run's streams, the enabled run's records). The table:
+`real_projects.py table`.
 
 ## 8. Tests
 
