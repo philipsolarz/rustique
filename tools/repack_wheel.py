@@ -94,11 +94,16 @@ def repack(src: str, dest: str) -> str:
                 new.create_system = info.create_system
                 new.compress_type = zipfile.ZIP_DEFLATED
                 zout.writestr(new, "\n".join(rows) + "\n")
-            verify(tmp.name)
-            os.replace(tmp.name, dest)
         except BaseException:
             os.unlink(tmp.name)
             raise
+    # Replace only once the source is closed: Windows refuses to replace a file that is open.
+    try:
+        verify(tmp.name)
+        os.replace(tmp.name, dest)
+    except BaseException:
+        os.unlink(tmp.name)
+        raise
     what = f"{moved[0]} -> {rename[moved[0]]}" if moved else f"{top[0]} kept"
     return f"{os.path.basename(src)}: {what}" + (f", {SHIM} dropped" if SHIM in names else "")
 
