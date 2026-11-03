@@ -25,3 +25,11 @@ else:
             break
     else:
         raise ImportError(f"rustique: no extension module in {_dir}", name=__name__)
+
+# pytest marks every top-level module of a distribution that provides a pytest plugin for
+# assertion rewriting, and warns about one that is already imported (here: by the startup
+# line, under RUSTIQUE=1). The marker in the docstring is pytest's own opt-out; it lands on the
+# extension, which holds this name now. Release wheels (the extension file itself) need none.
+_ext = sys.modules[__name__]
+if "PYTEST_DONT_REWRITE" not in (_ext.__doc__ or ""):
+    _ext.__doc__ = "PYTEST_DONT_REWRITE"
