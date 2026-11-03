@@ -1,0 +1,6 @@
+libs/attrs_cattrs                    predicted 0.892 measured - error - (under targets 22.3%, profiled run 1274 ms vs 788 ms, replay 0.0 s)
+libs/boto3_client                    predicted 0.976 measured - error - (under targets 4.8%, profiled run 2017 ms vs 1521 ms, replay 0.1 s)
+libs/bs4_scrape                      predicted 0.995 measured - error - (under targets 0.4%, profiled run 1213 ms vs 1210 ms, replay 0.0 s)
+libs/jsonschema_validate             predicted 0.992 measured - error - (under targets 2.6%, profiled run 1865 ms vs 1371 ms, replay 0.0 s)
+libs/pydantic_payloads               predicted 0.990 measured - error - (under targets 2.3%, profiled run 824 ms vs 648 ms, replay 0.0 s)
+libs/yaml_config                     predicted 0.999 measured - error - (under targets 0.3%, profiled run 1138 ms vs 1042 ms, replay 0.0 s)

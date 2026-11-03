@@ -1,0 +1,98 @@
+{
+ "ir": {
+  "plain": 40568542,
+  "unset": 42469775,
+  "off": 43255075,
+  "load": 43101724,
+  "on": 43696992
+ },
+ "toggles": {
+  "create (dlopen + relocations + module object)": 410257,
+  "exec (module exec slot)": 10336,
+  "enable (startup())": 415633,
+  "exit hook": 56217
+ },
+ "perf": {
+  "plain": {
+   "instructions:u": 39882660.0,
+   "instructions:k": 7217595.0,
+   "cycles:u": 23895950.0,
+   "cycles:k": 9769313.0,
+   "page-faults": 905.0,
+   "task-clock": 9.4
+  },
+  "unset": {
+   "instructions:u": 41730650.0,
+   "instructions:k": 7363670.0,
+   "cycles:u": 25369303.0,
+   "cycles:k": 10018190.0,
+   "page-faults": 915.0,
+   "task-clock": 9.73
+  },
+  "off": {
+   "instructions:u": 42507522.0,
+   "instructions:k": 7632956.0,
+   "cycles:u": 26170752.0,
+   "cycles:k": 10675041.0,
+   "page-faults": 985.0,
+   "task-clock": 10.13
+  },
+  "load": {
+   "instructions:u": 42356762.0,
+   "instructions:k": 7579101.0,
+   "cycles:u": 25947419.0,
+   "cycles:k": 10554504.0,
+   "page-faults": 978.0,
+   "task-clock": 10.04
+  },
+  "on": {
+   "instructions:u": 42943075.0,
+   "instructions:k": 7845339.0,
+   "cycles:u": 26668269.0,
+   "cycles:k": 11014514.0,
+   "page-faults": 1041.0,
+   "task-clock": 10.36
+  }
+ },
+ "wall_ms": {
+  "plain": 9.519590999999998,
+  "unset": 9.9916895,
+  "off": 10.4963875,
+  "load": 10.3908065,
+  "on": 10.729704
+ },
+ "parts": [
+  [
+   "`.pth` with RUSTIQUE unset (vs plain venv)",
+   1901233
+  ],
+  [
+   "loader string compile + env test (off \u2212 unset)",
+   0
+  ],
+  [
+   "locate + import (load \u2212 unset \u2212 loader \u2212 create \u2212 exec)",
+   211356
+  ],
+  [
+   "create: dlopen + relocations + module object",
+   410257
+  ],
+  [
+   "exec: module exec slot",
+   10336
+  ],
+  [
+   "enable: `startup()`",
+   415633
+  ],
+  [
+   "exit hook",
+   56217
+  ],
+  [
+   "rest: GC/teardown/watcher (on \u2212 load \u2212 enable \u2212 exit)",
+   123418
+  ]
+ ]
+}

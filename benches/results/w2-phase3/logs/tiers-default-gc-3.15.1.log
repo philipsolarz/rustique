@@ -1,0 +1,154 @@
+web/aiohttp_app                      plain    272.5 ms  default    247.5 ms  gc    247.3 ms  | default/plain 0.908  gc/plain 0.907  gc/default 0.999  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+web/asyncio_http                     plain    233.6 ms  default    183.8 ms  gc    184.1 ms  | default/plain 0.787  gc/plain 0.788  gc/default 1.002  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+web/django_blog                      plain    492.0 ms  default    484.9 ms  gc    484.7 ms  | default/plain 0.986  gc/plain 0.985  gc/default 1.000  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+web/email_mime                       plain    649.8 ms  default    649.8 ms  gc    647.6 ms  | default/plain 1.000  gc/plain 0.997  gc/default 0.997  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+web/fastapi_pydantic                 plain    294.8 ms  default    283.0 ms  gc    285.0 ms  | default/plain 0.960  gc/plain 0.967  gc/default 1.007  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+web/flask_jinja                      plain    418.6 ms  default    401.0 ms  gc    403.1 ms  | default/plain 0.958  gc/plain 0.963  gc/default 1.005  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+web/json_api                         plain    393.7 ms  default    283.3 ms  gc    282.2 ms  | default/plain 0.720  gc/plain 0.717  gc/default 0.996  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+web/logging_service                  plain    283.3 ms  default    194.7 ms  gc    194.0 ms  | default/plain 0.687  gc/plain 0.685  gc/default 0.997  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+web/requests_local                   plain    249.0 ms  default    229.6 ms  gc    229.1 ms  | default/plain 0.922  gc/plain 0.920  gc/default 0.997  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+web/sqlalchemy_orm                   plain    342.7 ms  default    341.3 ms  gc    340.6 ms  | default/plain 0.996  gc/plain 0.994  gc/default 0.998  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+geometric mean                       default/plain 0.885
+geometric mean                       gc/plain 0.885
+geometric mean                       gc/default 1.000
+data/backup_archive                  plain    598.2 ms  default    597.4 ms  gc    596.8 ms  | default/plain 0.999  gc/plain 0.998  gc/default 0.999  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+data/billing_engine                  plain    892.6 ms  default    850.5 ms  gc    739.6 ms  | default/plain 0.953  gc/plain 0.829  gc/default 0.870  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+data/config_merge                    plain    539.3 ms  default    536.8 ms  gc    537.4 ms  | default/plain 0.995  gc/plain 0.996  gc/default 1.001  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+data/csv_etl                         plain    394.6 ms  default    239.0 ms  gc    238.1 ms  | default/plain 0.606  gc/plain 0.603  gc/default 0.996  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+data/fs_inventory                    plain    315.0 ms  default    227.8 ms  gc    227.0 ms  | default/plain 0.723  gc/plain 0.721  gc/default 0.996  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+data/log_analytics                   plain    760.6 ms  default    443.2 ms  gc    443.1 ms  | default/plain 0.583  gc/plain 0.583  gc/default 1.000  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+data/pandas_etl                      plain    528.4 ms  default    526.5 ms  gc    526.8 ms  | default/plain 0.996  gc/plain 0.997  gc/default 1.001  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+data/report_render                   plain    406.2 ms  default    145.6 ms  gc    145.6 ms  | default/plain 0.358  gc/plain 0.358  gc/default 1.000  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+data/state_snapshot                  plain    640.6 ms  default    416.6 ms  gc    416.3 ms  | default/plain 0.650  gc/plain 0.650  gc/default 0.999  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+data/text_corpus                     plain    605.4 ms  default    603.5 ms  gc    603.8 ms  | default/plain 0.997  gc/plain 0.997  gc/default 1.001  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+data/tz_events                       plain    535.1 ms  default    296.7 ms  gc    296.7 ms  | default/plain 0.554  gc/plain 0.554  gc/default 1.000  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+data/xml_feeds                       plain    499.7 ms  default    495.7 ms  gc    497.3 ms  | default/plain 0.992  gc/plain 0.995  gc/default 1.003  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+geometric mean                       default/plain 0.748
+geometric mean                       gc/plain 0.739
+geometric mean                       gc/default 0.988
+devtools/black_format                plain   1195.7 ms  default   1178.8 ms  gc   1176.4 ms  | default/plain 0.986  gc/plain 0.984  gc/default 0.998  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+devtools/coverage_pyflakes_tests     plain    380.5 ms  default    382.6 ms  gc    382.3 ms  | default/plain 1.006  gc/plain 1.005  gc/default 0.999  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+devtools/import_startup              plain   1884.5 ms  default   1885.6 ms  gc   1888.4 ms  | default/plain 1.001  gc/plain 1.002  gc/default 1.001  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+devtools/isort_stdlib                plain    285.6 ms  default    217.0 ms  gc    216.2 ms  | default/plain 0.760  gc/plain 0.757  gc/default 0.996  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+devtools/pip_resolve                 plain    561.5 ms  default    526.7 ms  gc    527.7 ms  | default/plain 0.938  gc/plain 0.940  gc/default 1.002  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+devtools/pycodestyle_stdlib          plain   1012.3 ms  default    994.2 ms  gc    990.4 ms  | default/plain 0.982  gc/plain 0.978  gc/default 0.996  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+devtools/pyflakes_stdlib             plain   1212.6 ms  default   1200.3 ms  gc   1201.0 ms  | default/plain 0.990  gc/plain 0.990  gc/default 1.001  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+devtools/pylint_stdlib               plain   1182.5 ms  default   1177.3 ms  gc   1179.5 ms  | default/plain 0.996  gc/plain 0.997  gc/default 1.002  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+devtools/pytest_networkx             plain    631.8 ms  default    592.4 ms  gc    597.0 ms  | default/plain 0.938  gc/plain 0.945  gc/default 1.008  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+devtools/rich_render                 plain    285.0 ms  default    279.1 ms  gc    279.4 ms  | default/plain 0.979  gc/plain 0.980  gc/default 1.001  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+devtools/sphinx_autodoc              plain    850.0 ms  default    835.0 ms  gc    832.1 ms  | default/plain 0.982  gc/plain 0.979  gc/default 0.997  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+devtools/sqlglot_transpile           plain    877.2 ms  default    849.8 ms  gc    850.3 ms  | default/plain 0.969  gc/plain 0.969  gc/default 1.000  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+geometric mean                       default/plain 0.958
+geometric mean                       gc/plain 0.958
+geometric mean                       gc/default 1.000
+frameworks/django_admin              plain    996.0 ms  default    972.3 ms  gc    973.8 ms  | default/plain 0.976  gc/plain 0.978  gc/default 1.002  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+frameworks/drf_api                   plain   1170.0 ms  default   1158.0 ms  gc   1160.7 ms  | default/plain 0.990  gc/plain 0.992  gc/default 1.002  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+frameworks/falcon_api                plain    386.8 ms  default    303.4 ms  gc    304.8 ms  | default/plain 0.784  gc/plain 0.788  gc/default 1.005  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+frameworks/fastapi_sqlalchemy        plain   1202.3 ms  default   1180.6 ms  gc   1190.1 ms  | default/plain 0.982  gc/plain 0.990  gc/default 1.008  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+frameworks/flask_marshmallow         plain    738.8 ms  default    724.1 ms  gc    719.1 ms  | default/plain 0.980  gc/plain 0.973  gc/default 0.993  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+frameworks/strawberry_graphql        plain    907.1 ms  default    873.2 ms  gc    877.7 ms  | default/plain 0.963  gc/plain 0.968  gc/default 1.005  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+geometric mean                       default/plain 0.943
+geometric mean                       gc/plain 0.945
+geometric mean                       gc/default 1.002
+libs/attrs_cattrs                    plain    800.8 ms  default    689.6 ms  gc    694.9 ms  | default/plain 0.861  gc/plain 0.868  gc/default 1.008  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+libs/boto3_client                    plain   1497.3 ms  default   1454.9 ms  gc   1455.0 ms  | default/plain 0.972  gc/plain 0.972  gc/default 1.000  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+libs/bs4_scrape                      plain   1104.1 ms  default   1086.5 ms  gc   1083.2 ms  | default/plain 0.984  gc/plain 0.981  gc/default 0.997  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+libs/jsonschema_validate             plain   1362.6 ms  default   1350.4 ms  gc   1356.7 ms  | default/plain 0.991  gc/plain 0.996  gc/default 1.005  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+libs/pydantic_payloads               plain    649.1 ms  default    640.4 ms  gc    645.7 ms  | default/plain 0.987  gc/plain 0.995  gc/default 1.008  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+libs/yaml_config                     plain   1040.2 ms  default   1025.2 ms  gc   1025.5 ms  | default/plain 0.986  gc/plain 0.986  gc/default 1.000  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+geometric mean                       default/plain 0.962
+geometric mean                       gc/plain 0.965
+geometric mean                       gc/default 1.003
+custom/di_plugins                    plain    778.3 ms  default    742.0 ms  gc    745.4 ms  | default/plain 0.953  gc/plain 0.958  gc/default 1.005  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+custom/ecs_arena                     plain    957.8 ms  default    928.3 ms  gc    938.0 ms  | default/plain 0.969  gc/plain 0.979  gc/default 1.010  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+custom/event_ledger                  plain   1363.0 ms  default   1192.0 ms  gc   1196.6 ms  | default/plain 0.875  gc/plain 0.878  gc/default 1.004  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+custom/fulfilment_sim                plain   1242.6 ms  default   1210.1 ms  gc   1211.8 ms  | default/plain 0.974  gc/plain 0.975  gc/default 1.001  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+custom/mini_interp                   plain   1094.7 ms  default   1087.4 ms  gc   1090.2 ms  | default/plain 0.993  gc/plain 0.996  gc/default 1.003  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+custom/order_domain                  plain   1276.5 ms  default   1228.6 ms  gc   1241.9 ms  | default/plain 0.962  gc/plain 0.973  gc/default 1.011  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+custom/orm_mapper                    plain    798.6 ms  default    752.7 ms  gc    756.1 ms  | default/plain 0.943  gc/plain 0.947  gc/default 1.004  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+custom/report_engine                 plain    930.7 ms  default    801.3 ms  gc    799.6 ms  | default/plain 0.861  gc/plain 0.859  gc/default 0.998  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+custom/rules_engine                  plain    862.7 ms  default    725.6 ms  gc    701.6 ms  | default/plain 0.841  gc/plain 0.813  gc/default 0.967  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+custom/task_planner                  plain    490.5 ms  default    489.8 ms  gc    485.3 ms  | default/plain 0.999  gc/plain 0.990  gc/default 0.991  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+geometric mean                       default/plain 0.935
+geometric mean                       gc/plain 0.935
+geometric mean                       gc/default 0.999
+services/cache_service               plain    980.5 ms  default    984.0 ms  gc    990.2 ms  | default/plain 1.004  gc/plain 1.010  gc/default 1.006  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+services/job_worker                  plain    619.7 ms  default    342.2 ms  gc    340.9 ms  | default/plain 0.552  gc/plain 0.550  gc/default 0.996  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+services/uvicorn_fastapi             plain    944.4 ms  default    908.6 ms  gc    904.3 ms  | default/plain 0.962  gc/plain 0.958  gc/default 0.995  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+services/waitress_flask              plain   1630.8 ms  default   1521.4 ms  gc   1504.8 ms  | default/plain 0.933  gc/plain 0.923  gc/default 0.989  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+geometric mean                       default/plain 0.840
+geometric mean                       gc/plain 0.837
+geometric mean                       gc/default 0.997
+threads/compute_pool                 plain   1197.5 ms  default   1165.1 ms  gc   1161.4 ms  | default/plain 0.973  gc/plain 0.970  gc/default 0.997  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+threads/http_server                  plain    631.5 ms  default    574.6 ms  gc    575.7 ms  | default/plain 0.910  gc/plain 0.912  gc/default 1.002  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+threads/pipeline_queue               plain    588.8 ms  default    305.6 ms  gc    306.1 ms  | default/plain 0.519  gc/plain 0.520  gc/default 1.002  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+threads/request_pool                 plain    450.0 ms  default    247.1 ms  gc    247.7 ms  | default/plain 0.549  gc/plain 0.550  gc/default 1.002  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+threads/shared_cache                 plain    526.8 ms  default    317.9 ms  gc    318.3 ms  | default/plain 0.604  gc/plain 0.604  gc/default 1.001  same
+                                       gc tier targets per process: {'interp:disabled': 4, 'gc:installed': 1}
+geometric mean                       default/plain 0.686
+geometric mean                       gc/plain 0.687
+geometric mean                       gc/default 1.001

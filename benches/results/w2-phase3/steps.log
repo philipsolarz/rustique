@@ -1,0 +1,120 @@
+[2026-11-03T03:24:40Z] START setup
+[2026-11-03T03:24:41Z] END   setup rc=0 1s
+[2026-11-03T03:24:41Z] START facts
+[2026-11-03T03:24:46Z] END   facts rc=0 5s
+[2026-11-03T03:24:46Z] START quiet
+[2026-11-03T03:24:46Z] END   quiet rc=0 0s
+[2026-11-03T03:24:46Z] START build-3.15.1
+[2026-11-03T03:24:46Z] START build-3.15.1t
+[2026-11-03T03:24:46Z] START build-3.14.9
+[2026-11-03T03:24:46Z] START build-3.14.9t
+[2026-11-03T03:25:15Z] END   build-3.15.1t rc=0 29s
+[2026-11-03T03:25:15Z] START wheel-3.15.1t
+[2026-11-03T03:25:15Z] END   build-3.14.9t rc=0 29s
+[2026-11-03T03:25:15Z] START wheel-3.14.9t
+[2026-11-03T03:25:16Z] END   wheel-3.15.1t rc=0 1s
+[2026-11-03T03:25:16Z] START status-3.15.1t
+[2026-11-03T03:25:16Z] END   wheel-3.14.9t rc=0 1s
+[2026-11-03T03:25:16Z] END   status-3.15.1t rc=0 0s
+[2026-11-03T03:25:16Z] START status-3.14.9t
+[2026-11-03T03:25:16Z] START wlvenv-3.15.1t
+[2026-11-03T03:25:16Z] END   status-3.14.9t rc=0 0s
+[2026-11-03T03:25:16Z] START pytest-3.14.9t
+[2026-11-03T03:25:17Z] END   wlvenv-3.15.1t rc=0 1s
+[2026-11-03T03:25:17Z] START pytest-3.15.1t
+[2026-11-03T03:25:17Z] END   build-3.14.9 rc=0 31s
+[2026-11-03T03:25:17Z] START wheel-3.14.9
+[2026-11-03T03:25:17Z] END   build-3.15.1 rc=0 31s
+[2026-11-03T03:25:17Z] START wheel-3.15.1
+[2026-11-03T03:25:18Z] END   wheel-3.14.9 rc=0 1s
+[2026-11-03T03:25:18Z] START status-3.14.9
+[2026-11-03T03:25:18Z] END   wheel-3.15.1 rc=0 1s
+[2026-11-03T03:25:18Z] START status-3.15.1
+[2026-11-03T03:25:18Z] END   status-3.14.9 rc=0 0s
+[2026-11-03T03:25:18Z] START pytest-3.14.9
+[2026-11-03T03:25:18Z] END   status-3.15.1 rc=0 0s
+[2026-11-03T03:25:18Z] START wlvenv-3.15.1
+[2026-11-03T03:25:19Z] END   wlvenv-3.15.1 rc=0 1s
+[2026-11-03T03:25:19Z] START pytest-3.15.1
+[2026-11-03T03:27:54Z] END   pytest-3.15.1 rc=0 155s
+[2026-11-03T03:27:55Z] END   pytest-3.14.9 rc=0 157s
+[2026-11-03T03:27:59Z] END   pytest-3.14.9t rc=0 163s
+[2026-11-03T03:28:24Z] END   pytest-3.15.1t rc=0 187s
+[2026-11-03T03:28:24Z] START statusx-3.14.10
+[2026-11-03T03:28:24Z] START statusx-3.15.0
+[2026-11-03T03:28:24Z] START statusx-3.14.1
+[2026-11-03T03:28:24Z] START statusx-3.14.6
+[2026-11-03T03:28:24Z] START statusx-3.15.2t
+[2026-11-03T03:28:24Z] START statusx-3.15.2
+[2026-11-03T03:28:24Z] START statusx-3.14.5
+[2026-11-03T03:28:24Z] START statusx-3.14.10t
+[2026-11-03T03:28:24Z] START statusx-3.14.0
+[2026-11-03T03:28:24Z] START status316-3.16.0a1
+[2026-11-03T03:28:24Z] START statusx-3.14.8
+[2026-11-03T03:28:24Z] START status316-3.16.0a1t
+[2026-11-03T03:28:24Z] END   statusx-3.15.2 rc=0 0s
+[2026-11-03T03:28:24Z] END   statusx-3.15.0 rc=0 0s
+[2026-11-03T03:28:24Z] END   statusx-3.15.2t rc=0 0s
+[2026-11-03T03:28:24Z] END   statusx-3.14.1 rc=0 0s
+[2026-11-03T03:28:24Z] END   statusx-3.14.0 rc=0 0s
+[2026-11-03T03:28:24Z] END   statusx-3.14.8 rc=0 0s
+[2026-11-03T03:28:24Z] END   statusx-3.14.5 rc=0 0s
+[2026-11-03T03:28:24Z] END   statusx-3.14.6 rc=0 0s
+[2026-11-03T03:28:24Z] END   statusx-3.14.10 rc=0 0s
+[2026-11-03T03:28:24Z] END   statusx-3.14.10t rc=0 0s
+[2026-11-03T03:28:59Z] END   status316-3.16.0a1 rc=0 35s
+[2026-11-03T03:29:30Z] END   status316-3.16.0a1t rc=0 66s
+[2026-11-03T03:29:30Z] START rust-fmt
+[2026-11-03T03:29:31Z] END   rust-fmt rc=0 1s
+[2026-11-03T03:29:31Z] START rust-clippy
+[2026-11-03T03:29:32Z] END   rust-clippy rc=0 1s
+[2026-11-03T03:29:32Z] START rust-test
+[2026-11-03T03:29:38Z] END   rust-test rc=0 6s
+[2026-11-03T03:29:38Z] START conformance-3.15.1t
+[2026-11-03T03:29:38Z] START conformance-3.15.1
+[2026-11-03T03:29:38Z] START conformance-3.14.9
+[2026-11-03T03:29:38Z] START conformance-3.14.9t
+[2026-11-03T03:30:04Z] START rust-fmt
+[2026-11-03T03:30:04Z] END   rust-fmt rc=0 0s
+[2026-11-03T03:30:04Z] START rust-clippy
+[2026-11-03T03:30:10Z] END   rust-clippy rc=0 6s
+[2026-11-03T03:30:10Z] START rust-test
+[2026-11-03T03:30:22Z] END   rust-test rc=0 12s
+[2026-11-03T03:33:36Z] END   conformance-3.15.1 rc=0 238s
+[2026-11-03T03:33:39Z] END   conformance-3.14.9 rc=0 241s
+[2026-11-03T03:34:00Z] END   conformance-3.14.9t rc=0 262s
+[2026-11-03T03:34:01Z] END   conformance-3.15.1t rc=0 263s
+[2026-11-03T03:34:01Z] START pyperf-venv-3.15.1t
+[2026-11-03T03:34:01Z] START pyperf-venv-3.15.1
+[2026-11-03T03:34:25Z] END   pyperf-venv-3.15.1 rc=0 24s
+[2026-11-03T03:34:27Z] END   pyperf-venv-3.15.1t rc=0 26s
+[2026-11-03T03:34:27Z] WAVE-A done
+[2026-11-03T03:34:27Z] START workloads-3.15.1
+[2026-11-03T03:34:27Z] START tiers-default-gc-3.15.1
+[2026-11-03T03:34:27Z] START instr-3.15.1
+[2026-11-03T03:34:27Z] START workloads-3.15.1t
+[2026-11-03T03:45:37Z] END   instr-3.15.1 rc=0 670s
+[2026-11-03T03:45:37Z] START instr-3.15.1t
+[2026-11-03T03:58:20Z] END   instr-3.15.1t rc=0 763s
+[2026-11-03T03:58:20Z] START isolate-instr-3.15.1
+[2026-11-03T03:59:00Z] END   isolate-instr-3.15.1 rc=0 40s
+[2026-11-03T03:59:00Z] START isolate-instr-3.15.1t
+[2026-11-03T03:59:16Z] END   isolate-instr-3.15.1t rc=0 16s
+[2026-11-03T03:59:16Z] START est-3.15.1
+[2026-11-03T04:08:42Z] END   est-3.15.1 rc=0 566s
+[2026-11-03T04:08:42Z] START wlstats-run-3.15.1
+[2026-11-03T04:10:28Z] END   wlstats-run-3.15.1 rc=0 105s
+[2026-11-03T04:21:48Z] NOTE  lead: final code commit 7fec7e4; d40e7b9 schedule stops after wave B lanes (top-level all killed); whole/startup/wave C skipped here, run on 7fec7e4 (results/final)
+[2026-11-03T04:25:13Z] END   workloads-3.15.1 rc=0 3046s
+[2026-11-03T04:25:13Z] START tiers-default-interp-3.15.1
+[2026-11-03T04:26:11Z] END   workloads-3.15.1t rc=0 3104s
+[2026-11-03T04:26:11Z] START tiers-default-gc-3.15.1t
+[2026-11-03T04:49:24Z] END   tiers-default-gc-3.15.1 rc=0 4497s
+[2026-11-03T04:49:24Z] SKIP  whole 3.15.1 (/work/w2p3/skip/whole-3.15.1)
+[2026-11-03T04:49:24Z] SKIP  whole 3.15.1t (/work/w2p3/skip/whole-3.15.1t)
+[2026-11-03T04:49:24Z] SKIP  startup 3.15.1 (/work/w2p3/skip/startup-3.15.1)
+[2026-11-03T04:49:24Z] SKIP  startup 3.14.9 (/work/w2p3/skip/startup-3.14.9)
+[2026-11-03T05:39:53Z] END   tiers-default-interp-3.15.1 rc=0 4480s
+[2026-11-03T05:39:53Z] START tiers-default-gc+interp-3.15.1
+[2026-11-03T05:42:35Z] END   tiers-default-gc-3.15.1t rc=0 4584s
+[2026-11-03T06:19:06Z] END   tiers-default-gc+interp-3.15.1 rc=0 2353s

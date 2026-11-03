@@ -1,0 +1,135 @@
+wrote /work/w2p3/results/final/scoreboard/enabled-3.15.1.md
+| build | type | cells | at parity before | at parity after | geomean before | geomean after |
+|---|---|---:|---:|---:|---:|---:|
+| 3.15.1 | list | 1319 | — | 1307/1319 | — | 0.79 |
+| 3.15.1 | tuple | 1065 | — | 1052/1065 | — | 0.74 |
+| 3.15.1 | dict | 1224 | — | 1196/1224 | — | 0.90 |
+| 3.15.1 | set | 1101 | — | 1085/1101 | — | 0.91 |
+| 3.15.1 | frozenset | 951 | — | 929/951 | — | 0.90 |
+| build | type | cells | at parity before | at parity after | geomean before | geomean after |
+|---|---|---:|---:|---:|---:|---:|
+| 3.15.1 | list | 890 | — | 890/890 | — | 0.81 |
+| 3.15.1 | tuple | 719 | — | 713/719 | — | 0.77 |
+| 3.15.1 | dict | 819 | — | 817/819 | — | 0.90 |
+| 3.15.1 | set | 743 | — | 742/743 | — | 0.91 |
+| 3.15.1 | frozenset | 643 | — | 640/643 | — | 0.90 |
+=== 3.15.1 impl=enabled
+-- 0-100 elements (instructions): cells 3814, with ratio 3814 (metrics {'instr': 3814}), <= 1.05: 3802/3814, geomean 0.8526, mismatch 0, error 0
+   kernel path: 586 cells, geomean 0.6003, median 0.6672, > 1.05: 0, < 0.95: 523, min 0.085, max 1.032
+   unchanged code: 3228 cells, geomean 0.9086, median 1.0000, > 1.05: 12, < 0.95: 217, min 0.022, max 1.126
+   cells > 1.05 (12):
+       1.126  tuple/hash(x)/object/0
+       1.108  frozenset/hash(x)/int/1
+       1.108  frozenset/hash(x)/int/8
+       1.108  frozenset/hash(x)/int/100
+       1.094  tuple/from list/mixed/100
+       1.090  tuple/from list/str/100
+       1.073  tuple/hash(x)/object/1
+       1.071  tuple/repr(x)/object/0
+       1.069  set/tuple(x)/int/0
+       1.062  tuple/g(*x)/float/100
+       1.060  dict/repr(x)/int/100
+       1.058  dict/for k, v in x.items()/float/0
+   worst kernel-path cells: dict/any(x)/object/1 1.032, dict/any(x)/object/8 1.032, dict/any(x)/object/100 1.032, dict/any(x)/float/1 1.032, dict/any(x)/float/8 1.032
+-- 10k/1M elements (wall time): cells 1846, with ratio 1846 (metrics {'time': 1846}), <= 1.05: 1767/1846, geomean 0.8258, mismatch 0, error 0
+   kernel path: 328 cells, geomean 0.4520, median 0.4998, > 1.05: 10, < 0.95: 269, min 0.082, max 1.264
+   unchanged code: 1518 cells, geomean 0.9406, median 0.9995, > 1.05: 69, < 0.95: 151, min 0.013, max 2.287
+   cells > 1.05 (79): (top 60)
+       2.287  tuple/(*x, *y)/str/10000  noise builtin 0.008 enabled 0.016
+       1.604  frozenset/x.copy()/float/10000  noise builtin 0.009 enabled 0.445
+       1.588  frozenset/x <= t/object/10000  noise builtin 0.088 enabled 0.110
+       1.380  dict/miss in x/str/10000  noise builtin 0.175 enabled 0.257
+       1.299  frozenset/x.isdisjoint(t)/object/1000000  noise builtin 0.101 enabled 0.250
+       1.294  frozenset/x <= t/str/1000000  noise builtin 0.155 enabled 0.347
+       1.271  dict/x[k]/mixed/1000000  noise builtin 0.017 enabled 0.257
+       1.270  frozenset/from list/object/1000000  noise builtin 0.007 enabled 0.253
+     K 1.264  set/sorted(x)/int/1000000  noise builtin 0.007 enabled 0.007
+     K 1.264  set/sorted(x)/float/1000000  noise builtin 0.005 enabled 0.008
+       1.261  tuple/for v in x/mixed/10000  noise builtin 0.003 enabled 0.144
+     K 1.256  frozenset/sorted(x)/int/1000000  noise builtin 0.006 enabled 0.015
+     K 1.255  frozenset/sorted(x)/float/1000000  noise builtin 0.005 enabled 0.006
+       1.246  dict/tuple(x)/float/1000000  noise builtin 0.004 enabled 0.218
+       1.234  set/pickle.dumps/float/10000  noise builtin 0.007 enabled 0.235
+       1.233  frozenset/x.isdisjoint(t)/object/10000  noise builtin 0.101 enabled 0.128
+       1.207  set/copy C(x)/object/10000  noise builtin 0.061 enabled 0.093
+       1.188  dict/x.get(miss)/mixed/1000000  noise builtin 0.108 enabled 0.262
+       1.185  dict/x == y/float/1000000  noise builtin 0.011 enabled 0.038
+       1.169  frozenset/x.isdisjoint(t)/str/10000  noise builtin 0.073 enabled 0.179
+       1.165  dict/x[k] = v/str/1000000  noise builtin 0.007 enabled 0.147
+       1.164  dict/for v in x/object/10000  noise builtin 0.009 enabled 0.157
+       1.158  dict/x.get(miss)/object/10000  noise builtin 0.001 enabled 0.146
+       1.156  dict/miss in x/object/10000  noise builtin 0.102 enabled 0.059
+       1.154  dict/x.get(miss)/object/1000000  noise builtin 0.043 enabled 0.181
+       1.141  dict/len(x)/object/1000000  noise builtin 0.017 enabled 0.089
+       1.141  dict/x[k] = v/mixed/10000  noise builtin 0.005 enabled 0.138
+       1.137  dict/popitem() loop/str/10000  noise builtin 0.007 enabled 0.156
+       1.136  dict/for v in x.values()/object/10000  noise builtin 0.003 enabled 0.124
+       1.128  list/x.reverse()/object/1000000  noise builtin 0.080 enabled 0.085
+       1.124  dict/for v in x/float/10000  noise builtin 0.104 enabled 0.022
+       1.114  dict/x[k]/object/1000000  noise builtin 0.006 enabled 0.066
+       1.110  dict/repr(x)/object/1000000  noise builtin 0.017 enabled 0.024
+       1.109  dict/x.get(k)/str/1000000  noise builtin 0.005 enabled 0.111
+       1.106  frozenset/x.copy()/float/1000000  noise builtin 0.002 enabled 0.043
+       1.106  list/x == t/str/10000  noise builtin 0.002 enabled 0.110
+       1.105  frozenset/hash(x)/str/10000  noise builtin 0.007 enabled 0.100
+       1.102  set/enumerate/str/10000  noise builtin 0.002 enabled 0.103
+       1.102  dict/miss in x/mixed/1000000  noise builtin 0.046 enabled 0.126
+       1.098  set/x == t/mixed/10000  noise builtin 0.014 enabled 0.051
+       1.097  frozenset/x == t/object/1000000  noise builtin 0.106 enabled 0.156
+       1.095  list/x < y/int/10000  noise builtin 0.000 enabled 0.098
+       1.092  dict/hit in x/mixed/1000000  noise builtin 0.090 enabled 0.064
+       1.091  tuple/repr(x)/object/1000000  noise builtin 0.025 enabled 0.050
+       1.088  dict/tuple(x)/str/10000  noise builtin 0.001 enabled 0.114
+       1.085  set/x <= t/mixed/1000000  noise builtin 0.003 enabled 0.080
+       1.082  frozenset/from list/str/10000  noise builtin 0.036 enabled 0.019
+       1.081  frozenset/miss in x/mixed/10000  noise builtin 0.036 enabled 0.037
+     K 1.079  dict/any(x)/int/1000000  noise builtin 0.003 enabled 0.004
+       1.077  tuple/for v in x/object/10000  noise builtin 0.124 enabled 0.124
+       1.076  list/len(x)/object/10000  noise builtin 0.003 enabled 0.086
+       1.075  frozenset/len(x)/int/10000  noise builtin 0.008 enabled 0.061
+       1.073  frozenset/genexpr ingest/float/10000  noise builtin 0.010 enabled 0.052
+       1.073  set/x == y/object/10000  noise builtin 0.035 enabled 0.082
+       1.072  dict/x.get(k)/str/10000  noise builtin 0.007 enabled 0.007
+       1.072  dict/x == t/object/10000  noise builtin 0.007 enabled 0.024
+       1.071  tuple/bool(x)/mixed/1000000  noise builtin 0.030 enabled 0.035
+       1.069  list/comprehension/mixed/10000  noise builtin 0.017 enabled 0.037
+       1.068  set/hit in x/str/10000  noise builtin 0.007 enabled 0.002
+       1.067  list/from list/object/1000000  noise builtin 0.012 enabled 0.035
+   kernel-path cells > 1.05 (10):
+     K 1.264  set/sorted(x)/int/1000000  noise builtin 0.007 enabled 0.007
+     K 1.264  set/sorted(x)/float/1000000  noise builtin 0.005 enabled 0.008
+     K 1.256  frozenset/sorted(x)/int/1000000  noise builtin 0.006 enabled 0.015
+     K 1.255  frozenset/sorted(x)/float/1000000  noise builtin 0.005 enabled 0.006
+     K 1.079  dict/any(x)/int/1000000  noise builtin 0.003 enabled 0.004
+     K 1.064  frozenset/all(x)/str/10000  noise builtin 0.023 enabled 0.037
+     K 1.061  frozenset/all(x)/float/10000  noise builtin 0.069 enabled 0.025
+     K 1.060  set/max(x)/str/10000  noise builtin 0.016 enabled 0.015
+     K 1.057  dict/any(x)/float/1000000  noise builtin 0.008 enabled 0.002
+     K 1.056  set/all(x)/mixed/10000  noise builtin 0.038 enabled 0.054
+-- headline cells (1M, wall-time ratio, rel. std builtin/enabled)
+     list  max(x)         float  10k: 0.082  (0.065/0.001)
+     list  max(x)         float   1M: 0.122  (0.008/0.010)
+     list  min(x)         int    10k: 0.144  (0.001/0.001)
+     list  min(x)         int     1M: 0.160  (0.008/0.009)
+     list  x.sort()       int    10k: 0.260  (0.001/0.005)
+     list  x.sort()       int     1M: 0.213  (0.005/0.006)
+     list  sorted(x)      int    10k: 0.274  (0.001/0.002)
+     list  sorted(x)      int     1M: 0.310  (0.005/0.076)
+     list  hit in x       int    10k: 0.225  (0.003/0.000)
+     list  hit in x       int     1M: 0.232  (0.030/0.004)
+     list  miss in x      int    10k: 0.225  (0.005/0.023)
+     list  miss in x      int     1M: 0.257  (0.005/0.002)
+     list  x.count(hit)   int    10k: 0.235  (0.001/0.003)
+     list  x.count(hit)   int     1M: 0.267  (0.018/0.003)
+     list  x.index(hit)   int    10k: 0.220  (0.001/0.001)
+     list  x.index(hit)   int     1M: 0.223  (0.008/0.002)
+     list  sum(x)         int    10k: 0.292  (0.004/0.001)
+     list  sum(x)         int     1M: 0.348  (0.006/0.010)
+     list  sum(x)         float  10k: 0.769  (0.006/0.000)
+     list  sum(x)         float   1M: 0.774  (0.005/0.001)
+     dict  min(x)         int    10k: 0.358  (0.007/0.009)
+     dict  min(x)         int     1M: 0.380  (0.025/0.018)
+     set   max(x)         int    10k: 0.245  (0.023/0.008)
+     set   max(x)         int     1M: 0.782  (0.005/0.004)
+     tuple max(x)         float  10k: 0.088  (0.009/0.001)
+     tuple max(x)         float   1M: 0.127  (0.003/0.008)

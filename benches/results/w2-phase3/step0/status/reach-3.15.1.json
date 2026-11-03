@@ -1,0 +1,17 @@
+{
+ "3.15.1": {
+  "installed": 110,
+  "of": 111,
+  "refused": {
+   "build": 1
+  },
+  "detail": {
+   "set.__reduce__": [
+    "refused",
+    "build",
+    "set.__reduce__: only free-threaded builds contend with themselves here; no gain with the GIL",
+    null
+   ]
+  }
+ }
+}

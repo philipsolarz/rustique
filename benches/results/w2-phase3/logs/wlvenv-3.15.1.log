@@ -1,0 +1,180 @@
+== web: /work/w2p3/wl/3.15.1-web
+Using Python 3.15.1 environment at: wl/3.15.1-web
+Checked 38 packages in 2ms
+Using Python 3.15.1 environment at: wl/3.15.1-web
+Resolved 1 package in 0.98ms
+Prepared 1 package in 9ms
+Uninstalled 1 package in 0.53ms
+Installed 1 package in 0.68ms
+ ~ rustique==0.3.0 (from file:///work/w2p3/dist/3.15.1/rustique-0.3.0-cp315-cp315-manylinux_2_34_x86_64.whl)
+_rustique.cpython-315-x86_64-linux-gnu.so
+_rustique_pytest.py
+_rustique_startup.pth
+rustique
+rustique-0.3.0.dist-info
+RUSTIQUE=1: ['_rustique', 'rustique._rustique']
+{'source': 'RUSTIQUE=1', 'only': None, 'exclude': (), 'tiers': (), 'killed_calls': 0, 'report': None, 'killed': False, 'stats': False, 'check': None, 'env': {'RUSTIQUE': '1'}}
+{'installed': 4, 'armed': 19, 'pending-import': 87, 'refused': 1, 'disabled': 5}
+unset: []
+tiers: {'interp.isinstance': ('installed', None), 'interp.attr': ('installed', None), 'interp.setattr': ('installed', None), 'interp.kwinit': ('installed', None), 'gc.adaptive': ('installed', None)}
+Using Python 3.15.1 environment at: wl/3.15.1-web
+Checked 41 packages in 0.71ms
+All installed packages are compatible
+Using Python 3.15.1 environment at: wl/3.15.1-web
+== data: /work/w2p3/wl/3.15.1-data
+Using Python 3.15.1 environment at: wl/3.15.1-data
+Checked 5 packages in 0.90ms
+Using Python 3.15.1 environment at: wl/3.15.1-data
+Resolved 1 package in 0.96ms
+Prepared 1 package in 0.14ms
+Uninstalled 1 package in 0.53ms
+Installed 1 package in 1ms
+ ~ rustique==0.3.0 (from file:///work/w2p3/dist/3.15.1/rustique-0.3.0-cp315-cp315-manylinux_2_34_x86_64.whl)
+_rustique.cpython-315-x86_64-linux-gnu.so
+_rustique_pytest.py
+_rustique_startup.pth
+rustique
+rustique-0.3.0.dist-info
+RUSTIQUE=1: ['_rustique', 'rustique._rustique']
+{'source': 'RUSTIQUE=1', 'only': None, 'exclude': (), 'tiers': (), 'killed_calls': 0, 'report': None, 'killed': False, 'stats': False, 'check': None, 'env': {'RUSTIQUE': '1'}}
+{'installed': 4, 'armed': 19, 'pending-import': 87, 'refused': 1, 'disabled': 5}
+unset: []
+tiers: {'interp.isinstance': ('installed', None), 'interp.attr': ('installed', None), 'interp.setattr': ('installed', None), 'interp.kwinit': ('installed', None), 'gc.adaptive': ('installed', None)}
+Using Python 3.15.1 environment at: wl/3.15.1-data
+Checked 8 packages in 0.40ms
+All installed packages are compatible
+Using Python 3.15.1 environment at: wl/3.15.1-data
+== devtools: /work/w2p3/wl/3.15.1-devtools
+Using Python 3.15.1 environment at: wl/3.15.1-devtools
+Checked 32 packages in 4ms
+Using Python 3.15.1 environment at: wl/3.15.1-devtools
+Resolved 1 package in 0.95ms
+Prepared 1 package in 0.14ms
+Uninstalled 1 package in 0.54ms
+Installed 1 package in 1ms
+ ~ rustique==0.3.0 (from file:///work/w2p3/dist/3.15.1/rustique-0.3.0-cp315-cp315-manylinux_2_34_x86_64.whl)
+_rustique.cpython-315-x86_64-linux-gnu.so
+_rustique_pytest.py
+_rustique_startup.pth
+rustique
+rustique-0.3.0.dist-info
+RUSTIQUE=1: ['_rustique', 'rustique._rustique']
+{'source': 'RUSTIQUE=1', 'only': None, 'exclude': (), 'tiers': (), 'killed_calls': 0, 'report': None, 'killed': False, 'stats': False, 'check': None, 'env': {'RUSTIQUE': '1'}}
+{'installed': 5, 'armed': 18, 'pending-import': 87, 'refused': 1, 'disabled': 5}
+unset: []
+tiers: {'interp.isinstance': ('installed', None), 'interp.attr': ('installed', None), 'interp.setattr': ('installed', None), 'interp.kwinit': ('installed', None), 'gc.adaptive': ('installed', None)}
+Using Python 3.15.1 environment at: wl/3.15.1-devtools
+Checked 89 packages in 1ms
+All installed packages are compatible
+Using Python 3.15.1 environment at: wl/3.15.1-devtools
+== frameworks: /work/w2p3/wl/3.15.1-frameworks
+Using Python 3.15.1 environment at: wl/3.15.1-frameworks
+Checked 40 packages in 1ms
+Using Python 3.15.1 environment at: wl/3.15.1-frameworks
+Resolved 1 package in 0.95ms
+Prepared 1 package in 0.14ms
+Uninstalled 1 package in 0.53ms
+Installed 1 package in 1ms
+ ~ rustique==0.3.0 (from file:///work/w2p3/dist/3.15.1/rustique-0.3.0-cp315-cp315-manylinux_2_34_x86_64.whl)
+_rustique.cpython-315-x86_64-linux-gnu.so
+_rustique_pytest.py
+_rustique_startup.pth
+rustique
+rustique-0.3.0.dist-info
+RUSTIQUE=1: ['_rustique', 'rustique._rustique']
+{'source': 'RUSTIQUE=1', 'only': None, 'exclude': (), 'tiers': (), 'killed_calls': 0, 'report': None, 'killed': False, 'stats': False, 'check': None, 'env': {'RUSTIQUE': '1'}}
+{'installed': 4, 'armed': 19, 'pending-import': 87, 'refused': 1, 'disabled': 5}
+unset: []
+tiers: {'interp.isinstance': ('installed', None), 'interp.attr': ('installed', None), 'interp.setattr': ('installed', None), 'interp.kwinit': ('installed', None), 'gc.adaptive': ('installed', None)}
+Using Python 3.15.1 environment at: wl/3.15.1-frameworks
+Checked 43 packages in 0.77ms
+All installed packages are compatible
+Using Python 3.15.1 environment at: wl/3.15.1-frameworks
+== libs: /work/w2p3/wl/3.15.1-libs
+Using Python 3.15.1 environment at: wl/3.15.1-libs
+Checked 21 packages in 1ms
+Using Python 3.15.1 environment at: wl/3.15.1-libs
+Resolved 1 package in 0.97ms
+Prepared 1 package in 0.13ms
+Uninstalled 1 package in 0.53ms
+Installed 1 package in 1ms
+ ~ rustique==0.3.0 (from file:///work/w2p3/dist/3.15.1/rustique-0.3.0-cp315-cp315-manylinux_2_34_x86_64.whl)
+_rustique.cpython-315-x86_64-linux-gnu.so
+_rustique_pytest.py
+_rustique_startup.pth
+rustique
+rustique-0.3.0.dist-info
+RUSTIQUE=1: ['_rustique', 'rustique._rustique']
+{'source': 'RUSTIQUE=1', 'only': None, 'exclude': (), 'tiers': (), 'killed_calls': 0, 'report': None, 'killed': False, 'stats': False, 'check': None, 'env': {'RUSTIQUE': '1'}}
+{'installed': 4, 'armed': 19, 'pending-import': 87, 'refused': 1, 'disabled': 5}
+unset: []
+tiers: {'interp.isinstance': ('installed', None), 'interp.attr': ('installed', None), 'interp.setattr': ('installed', None), 'interp.kwinit': ('installed', None), 'gc.adaptive': ('installed', None)}
+Using Python 3.15.1 environment at: wl/3.15.1-libs
+Checked 24 packages in 0.56ms
+All installed packages are compatible
+Using Python 3.15.1 environment at: wl/3.15.1-libs
+== custom: /work/w2p3/wl/3.15.1-custom
+Using Python 3.15.1 environment at: wl/3.15.1-custom
+Resolved 1 package in 0.96ms
+Prepared 1 package in 0.13ms
+Uninstalled 1 package in 0.54ms
+Installed 1 package in 1ms
+ ~ rustique==0.3.0 (from file:///work/w2p3/dist/3.15.1/rustique-0.3.0-cp315-cp315-manylinux_2_34_x86_64.whl)
+_rustique.cpython-315-x86_64-linux-gnu.so
+_rustique_pytest.py
+_rustique_startup.pth
+rustique
+rustique-0.3.0.dist-info
+RUSTIQUE=1: ['_rustique', 'rustique._rustique']
+{'source': 'RUSTIQUE=1', 'only': None, 'exclude': (), 'tiers': (), 'killed_calls': 0, 'report': None, 'killed': False, 'stats': False, 'check': None, 'env': {'RUSTIQUE': '1'}}
+{'installed': 4, 'armed': 19, 'pending-import': 87, 'refused': 1, 'disabled': 5}
+unset: []
+tiers: {'interp.isinstance': ('installed', None), 'interp.attr': ('installed', None), 'interp.setattr': ('installed', None), 'interp.kwinit': ('installed', None), 'gc.adaptive': ('installed', None)}
+Using Python 3.15.1 environment at: wl/3.15.1-custom
+Checked 3 packages in 0.34ms
+All installed packages are compatible
+Using Python 3.15.1 environment at: wl/3.15.1-custom
+== services: /work/w2p3/wl/3.15.1-services
+Using Python 3.15.1 environment at: wl/3.15.1-services
+Checked 31 packages in 1ms
+Using Python 3.15.1 environment at: wl/3.15.1-services
+Resolved 1 package in 0.96ms
+Prepared 1 package in 0.14ms
+Uninstalled 1 package in 0.52ms
+Installed 1 package in 1ms
+ ~ rustique==0.3.0 (from file:///work/w2p3/dist/3.15.1/rustique-0.3.0-cp315-cp315-manylinux_2_34_x86_64.whl)
+_rustique.cpython-315-x86_64-linux-gnu.so
+_rustique_pytest.py
+_rustique_startup.pth
+rustique
+rustique-0.3.0.dist-info
+RUSTIQUE=1: ['_rustique', 'rustique._rustique']
+{'source': 'RUSTIQUE=1', 'only': None, 'exclude': (), 'tiers': (), 'killed_calls': 0, 'report': None, 'killed': False, 'stats': False, 'check': None, 'env': {'RUSTIQUE': '1'}}
+{'installed': 4, 'armed': 19, 'pending-import': 87, 'refused': 1, 'disabled': 5}
+unset: []
+tiers: {'interp.isinstance': ('installed', None), 'interp.attr': ('installed', None), 'interp.setattr': ('installed', None), 'interp.kwinit': ('installed', None), 'gc.adaptive': ('installed', None)}
+Using Python 3.15.1 environment at: wl/3.15.1-services
+Checked 34 packages in 0.71ms
+All installed packages are compatible
+Using Python 3.15.1 environment at: wl/3.15.1-services
+== threads: /work/w2p3/wl/3.15.1-threads
+Using Python 3.15.1 environment at: wl/3.15.1-threads
+Resolved 1 package in 0.99ms
+Prepared 1 package in 0.14ms
+Uninstalled 1 package in 0.50ms
+Installed 1 package in 1ms
+ ~ rustique==0.3.0 (from file:///work/w2p3/dist/3.15.1/rustique-0.3.0-cp315-cp315-manylinux_2_34_x86_64.whl)
+_rustique.cpython-315-x86_64-linux-gnu.so
+_rustique_pytest.py
+_rustique_startup.pth
+rustique
+rustique-0.3.0.dist-info
+RUSTIQUE=1: ['_rustique', 'rustique._rustique']
+{'source': 'RUSTIQUE=1', 'only': None, 'exclude': (), 'tiers': (), 'killed_calls': 0, 'report': None, 'killed': False, 'stats': False, 'check': None, 'env': {'RUSTIQUE': '1'}}
+{'installed': 4, 'armed': 19, 'pending-import': 87, 'refused': 1, 'disabled': 5}
+unset: []
+tiers: {'interp.isinstance': ('installed', None), 'interp.attr': ('installed', None), 'interp.setattr': ('installed', None), 'interp.kwinit': ('installed', None), 'gc.adaptive': ('installed', None)}
+Using Python 3.15.1 environment at: wl/3.15.1-threads
+Checked 3 packages in 0.34ms
+All installed packages are compatible
+Using Python 3.15.1 environment at: wl/3.15.1-threads

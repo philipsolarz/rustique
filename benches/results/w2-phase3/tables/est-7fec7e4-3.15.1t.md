@@ -1,0 +1,71 @@
+| workload | predicted | measured (this run) | error |
+|---|---:|---:|---:|
+| web/aiohttp_app | 0.930 | 0.931 | -0.001 |
+| web/asyncio_http | 0.800 | 0.805 | -0.005 |
+| web/django_blog | 0.989 | 0.988 | +0.002 |
+| web/email_mime | 0.997 | 1.010 | -0.013 |
+| web/fastapi_pydantic | 0.963 | 0.975 | -0.012 |
+| web/flask_jinja | 0.963 | 0.973 | -0.010 |
+| web/json_api | 0.802 | 0.760 | **+0.042** |
+| web/logging_service | 0.999 | 0.730 | **+0.270** |
+| web/requests_local | 0.953 | 0.922 | **+0.031** |
+| web/sqlalchemy_orm | 0.994 | 0.997 | -0.002 |
+| data/backup_archive | 0.994 | 1.000 | -0.006 |
+| data/billing_engine | 0.925 | 0.952 | -0.027 |
+| data/config_merge | 1.001 | 0.997 | +0.004 |
+| data/csv_etl | 0.648 | 0.632 | +0.016 |
+| data/fs_inventory | 0.720 | 0.718 | +0.001 |
+| data/log_analytics | 0.605 | 0.588 | +0.017 |
+| data/pandas_etl | 1.000 | 0.998 | +0.002 |
+| data/report_render | 0.395 | 0.350 | **+0.045** |
+| data/state_snapshot | 0.323 | 0.478 | **-0.155** |
+| data/text_corpus | 0.993 | 0.999 | -0.006 |
+| data/tz_events | 0.559 | 0.593 | **-0.034** |
+| data/xml_feeds | 1.000 | 1.000 | -0.000 |
+| devtools/black_format | 0.989 | 0.985 | +0.004 |
+| devtools/coverage_pyflakes_tests | 0.983 | 1.004 | -0.020 |
+| devtools/import_startup | 1.000 | 0.999 | +0.001 |
+| devtools/isort_stdlib | 0.176 | 0.201 | -0.026 |
+| devtools/pip_resolve | 0.962 | 0.937 | +0.026 |
+| devtools/pycodestyle_stdlib | 0.989 | 0.998 | -0.009 |
+| devtools/pyflakes_stdlib | 0.998 | 1.003 | -0.005 |
+| devtools/pylint_stdlib | 0.997 | 0.999 | -0.002 |
+| devtools/pytest_networkx | 0.983 | 0.942 | **+0.041** |
+| devtools/rich_render | 0.982 | 0.995 | -0.013 |
+| devtools/sphinx_autodoc | 0.994 | 0.982 | +0.012 |
+| devtools/sqlglot_transpile | 0.950 | 0.975 | -0.025 |
+| frameworks/django_admin | 0.982 | 0.976 | +0.005 |
+| frameworks/drf_api | 0.989 | 0.994 | -0.005 |
+| frameworks/falcon_api | 0.801 | 0.817 | -0.016 |
+| frameworks/fastapi_sqlalchemy | 0.990 | 0.989 | +0.001 |
+| frameworks/flask_marshmallow | 0.978 | 0.978 | +0.000 |
+| frameworks/strawberry_graphql | 0.993 | 0.988 | +0.005 |
+| libs/attrs_cattrs | 0.917 | 0.875 | **+0.042** |
+| libs/boto3_client | 0.974 | 0.947 | +0.027 |
+| libs/bs4_scrape | 0.995 | 1.000 | -0.005 |
+| libs/jsonschema_validate | 0.992 | 0.996 | -0.004 |
+| libs/pydantic_payloads | 0.994 | 0.991 | +0.002 |
+| libs/yaml_config | 1.000 | 0.991 | +0.009 |
+| custom/di_plugins | 0.995 | 0.989 | +0.005 |
+| custom/ecs_arena | 0.999 | 0.992 | +0.007 |
+| custom/event_ledger | 0.992 | 0.967 | +0.025 |
+| custom/fulfilment_sim | 0.978 | 0.973 | +0.005 |
+| custom/mini_interp | 1.000 | 1.018 | -0.018 |
+| custom/order_domain | 0.985 | 0.980 | +0.005 |
+| custom/orm_mapper | 0.975 | 0.946 | +0.029 |
+| custom/report_engine | 0.920 | 0.902 | +0.018 |
+| custom/rules_engine | 0.970 | 0.968 | +0.002 |
+| custom/task_planner | 0.996 | 1.000 | -0.004 |
+| services/cache_service | 1.000 | 0.996 | +0.003 |
+| services/job_worker | 0.803 | 0.682 | **+0.121** |
+| services/uvicorn_fastapi | 0.974 | 0.992 | -0.019 |
+| services/waitress_flask | 0.980 | 0.921 | **+0.059** |
+| threads/compute_pool | 1.000 | 0.982 | +0.018 |
+| threads/http_server | 0.918 | 0.906 | +0.012 |
+| threads/pipeline_queue | 0.508 | 0.716 | **-0.209** |
+| threads/request_pool | 0.654 | 0.778 | **-0.124** |
+| threads/shared_cache | 0.729 | 0.627 | **+0.102** |
+
+65 workloads: within ±0.03: 52 (80%), ±0.02: 44, ±0.05: 58; median |error| 0.012, mean 0.027, bias +0.004; T13 (>= 80% within ±0.03): met
+per family: {'custom': '10/10', 'data': '9/12', 'devtools': '11/12', 'frameworks': '6/6', 'libs': '5/6', 'services': '2/4', 'threads': '2/5', 'web': '7/10'}
+misses: [('data/report_render', 0.045), ('data/state_snapshot', -0.155), ('data/tz_events', -0.034), ('devtools/pytest_networkx', 0.041), ('libs/attrs_cattrs', 0.042), ('services/job_worker', 0.121), ('services/waitress_flask', 0.059), ('threads/pipeline_queue', -0.209), ('threads/request_pool', -0.124), ('threads/shared_cache', 0.102), ('web/json_api', 0.042), ('web/logging_service', 0.27), ('web/requests_local', 0.031)]

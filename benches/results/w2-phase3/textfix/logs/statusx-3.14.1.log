@@ -1,0 +1,121 @@
+Python 3.14.1 (main, Dec  2 2025, 19:46:13) [Clang 21.1.4 ]
+Using Python 3.14.1 environment at: /work/w2p3t/sv/3.14.1
+Resolved 1 package in 1ms
+Installed 1 package in 2ms
+ + rustique==0.3.0 (from file:///work/w2p3t/dist/3.14.9/rustique-0.3.0-cp314-cp314-manylinux_2_34_x86_64.whl)
+{
+ "python": "3.14.1 (main, Dec  2 2025, 19:46:13) [Clang 21.1.4 ]",
+ "executable": "/work/w2p3t/sv/3.14.1/bin/python",
+ "free_threaded": false,
+ "rustique": "0.3.0",
+ "extension": "/work/w2p3t/sv/3.14.1/lib/python3.14/site-packages/_rustique.cpython-314-x86_64-linux-gnu.so",
+ "env": {
+  "RUSTIQUE_INTERP_REQUIRE": "1",
+  "RUSTIQUE_VALIDATE": "eager"
+ },
+ "targets": 116,
+ "default_targets": 111,
+ "groups": [
+  "builtins",
+  "containers",
+  "contextlib",
+  "copy",
+  "dataclasses",
+  "datetime",
+  "enum",
+  "float",
+  "fnmatch",
+  "functools",
+  "generated",
+  "json",
+  "logging",
+  "pathlib",
+  "posixpath",
+  "random",
+  "re",
+  "set",
+  "statistics",
+  "textwrap",
+  "urllib"
+ ],
+ "counts_default": {
+  "installed": 105,
+  "refused": 6
+ },
+ "installed_default": 105,
+ "refusal_categories_default": {
+  "version": 5,
+  "not-needed": 1
+ },
+ "counts_tiers": {
+  "gc": {
+   "disabled": 1
+  },
+  "interp": {
+   "disabled": 4
+  }
+ },
+ "refused": [
+  {
+   "name": "pathlib.PurePath.parent",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.14 not validated for this target"
+  },
+  {
+   "name": "pathlib.PurePath.name",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.14 not validated for this target"
+  },
+  {
+   "name": "pathlib.PurePath.suffix",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.14 not validated for this target"
+  },
+  {
+   "name": "pathlib.PurePath.stem",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.14 not validated for this target"
+  },
+  {
+   "name": "pathlib.PurePath.parts",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.14 not validated for this target"
+  },
+  {
+   "name": "set.__reduce__",
+   "group": "set",
+   "tier": null,
+   "refusal": "not-needed",
+   "reason": "only free-threaded builds need it"
+  }
+ ],
+ "pending": [],
+ "armed": [],
+ "imported": [
+  "logging",
+  "random",
+  "statistics",
+  "urllib.parse",
+  "fnmatch",
+  "pathlib",
+  "_datetime"
+ ],
+ "import_failed": {}
+}
+3.14.1     installed 105 of 111  refused {'version': 5, 'not-needed': 1}
+    pathlib.PurePath.name: version: CPython 3.14 not validated for this target
+    pathlib.PurePath.parent: version: CPython 3.14 not validated for this target
+    pathlib.PurePath.parts: version: CPython 3.14 not validated for this target
+    pathlib.PurePath.stem: version: CPython 3.14 not validated for this target
+    pathlib.PurePath.suffix: version: CPython 3.14 not validated for this target
+    set.__reduce__: not-needed: only free-threaded builds need it

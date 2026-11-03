@@ -1,0 +1,32 @@
+cell                                     plain       eager  first-call  first-call vs plain
+import json lazy                      22219971  22,371,313  22,263,075  1.002 (+43,104; budget +1,110,999)
+import json lazy+call                 22219971  22,378,633  22,393,442  1.008 (+173,471; budget +1,110,999)
+import copy lazy                       4050653   4,198,018   4,119,569  1.017 (+68,916; budget +202,533)
+import copy lazy+call                  4050653   4,203,033   4,209,626  1.039 (+158,973; budget +202,533)
+import logging lazy                   52537828  49,350,032  48,591,647  0.925 (+-3,946,181; budget +2,626,891)
+import logging lazy+call              52537828  49,398,126  48,761,211  0.928 (+-3,776,617; budget +2,626,891)
+import random lazy                     3459743   3,698,076   3,545,522  1.025 (+85,779; budget +172,987)
+import random lazy+call                3459743   3,793,581   3,748,441  1.083 (+288,698; budget +172,987)
+import pathlib lazy                    9228229   9,719,073   9,444,714  1.023 (+216,485; budget +461,411)
+import pathlib lazy+call               9228229   9,729,409   9,700,872  1.051 (+472,643; budget +461,411)
+import fnmatch lazy                   18533571  20,251,128  20,054,720  1.082 (+1,521,149; budget +926,679)
+import fnmatch lazy+call              18533571  20,251,399  20,119,630  1.086 (+1,586,059; budget +926,679)
+import textwrap lazy                  21016372  20,530,151  20,425,386  0.972 (+-590,986; budget +1,050,819)
+import textwrap lazy+call             21016372  20,539,453  20,571,098  0.979 (+-445,274; budget +1,050,819)
+import statistics lazy                32338199  28,849,036  28,569,984  0.883 (+-3,768,215; budget +1,616,910)
+import statistics lazy+call           32338199  28,857,141  28,746,772  0.889 (+-3,591,427; budget +1,616,910)
+import urllib.parse lazy              28360472  30,076,681  29,895,376  1.054 (+1,534,904; budget +1,418,024)
+import urllib.parse lazy+call         28360472  30,084,947  30,099,030  1.061 (+1,738,558; budget +1,418,024)
+import dataclasses lazy               11494681  11,893,153  11,678,131  1.016 (+183,450; budget +574,734)
+import dataclasses lazy+call          11494681  11,893,610  11,675,083  1.016 (+180,402; budget +574,734)
+import datetime lazy                    430711     517,968     507,169  1.178 (+76,458; budget +100,000)
+import datetime lazy+call               430711     519,733     515,899  1.198 (+85,188; budget +100,000)
+enable logging (imported)                          789,899     402,537
+enable copy (imported)                             262,176     152,390
+enable posixpath (imported)                        415,942     230,774
+enable fnmatch (imported)                          511,641     164,159
+enable pathlib (imported)                          712,673     378,947
+enable json (imported)                             395,161     198,200
+enable random (imported)                           392,847     207,544
+enable dataclasses (imported)                      269,714     154,419
+enable all (fresh)                                 626,189     385,924

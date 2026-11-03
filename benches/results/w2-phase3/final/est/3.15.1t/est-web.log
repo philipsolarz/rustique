@@ -1,0 +1,12 @@
+web/aiohttp_app                      predicted 0.930 measured 0.925 error +0.005 (under targets 11.5%, profiled run 385 ms vs 310 ms, replay 0.0 s)
+web/asyncio_http                     predicted 0.800 measured 0.815 error -0.015 (under targets 29.0%, profiled run 326 ms vs 241 ms, replay 0.0 s)
+web/django_blog                      predicted 0.989 measured 0.995 error -0.006 (under targets 5.9%, profiled run 700 ms vs 558 ms, replay 0.2 s)
+web/email_mime                       predicted 0.997 measured 1.001 error -0.004 (under targets 1.9%, profiled run 1226 ms vs 745 ms, replay 0.0 s)
+web/fastapi_pydantic                 predicted 0.963 measured 0.986 error -0.023 (under targets 8.4%, profiled run 658 ms vs 355 ms, replay 0.1 s)
+web/flask_jinja                      predicted 0.963 measured 0.986 error -0.023 (under targets 8.3%, profiled run 651 ms vs 476 ms, replay 0.1 s)
+web/json_api                         predicted 0.802 measured 0.835 error -0.033 (under targets 62.9%, profiled run 1291 ms vs 457 ms, replay 0.1 s)
+web/logging_service                  predicted 0.999 measured 0.864 error +0.135 (under targets 92.6%, profiled run 1034 ms vs 302 ms, replay 0.0 s)
+web/requests_local                   predicted 0.953 measured 0.944 error +0.009 (under targets 10.3%, profiled run 498 ms vs 292 ms, replay 0.1 s)
+web/sqlalchemy_orm                   predicted 0.994 measured 1.005 error -0.011 (under targets 1.3%, profiled run 478 ms vs 405 ms, replay 0.1 s)
+
+10 workloads: mean abs error 0.026, max +0.135, bias +0.003; within 0.02: 6, within 0.05: 9

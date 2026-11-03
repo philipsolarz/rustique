@@ -1,0 +1,3 @@
+# instr: 0 cells > 1.05 in instr-enabled-3.15.1t.json; 3 runs each, cpus 0-7
+# summary (instr): cell, as run, isolated runs, mean
+# 0 cells re-measured; 0 still > 1.05 (mean of the isolated runs)

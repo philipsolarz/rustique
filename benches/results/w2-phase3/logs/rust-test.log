@@ -1,0 +1,127 @@
+   Compiling rustique-interp v0.3.0 (/work/w2p3/src/crates/rustique-interp)
+   Compiling rustique-core v0.3.0 (/work/w2p3/src/crates/rustique-core)
+   Compiling rustique-py v0.3.0 (/work/w2p3/src/crates/rustique-py)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.20s
+     Running unittests src/lib.rs (/work/w2p3/target/rust-ci/debug/deps/rustique_core-6d6a392e4a1dd389)
+
+running 69 tests
+test datetime::cal::tests::weekdays ... ok
+test datetime::strftime::tests::offsets ... ok
+test datetime::strftime::tests::formats ... ok
+test datetime::strftime::tests::scan_rules ... ok
+test datetime::strptime::tests::backtracking_order ... ok
+test datetime::strptime::tests::basics ... ok
+test datetime::strptime::tests::names_are_not_prefixes_of_each_other ... ok
+test datetime::strptime::tests::regex_name_order_is_stable_length_sort ... ok
+test datetime::strptime::tests::rejects ... ok
+test datetime::strptime::tests::optional_z_315 ... ok
+test float_repr::tests::layout_rules ... ok
+test float_repr::tests::longest_fits ... ok
+test float_repr::tests::matches_cpython_table ... ok
+test json::escape::tests::matches_cpython ... ok
+test json::escape::tests::text_widens ... ok
+test json::itoa::tests::edges ... ok
+test datetime::strftime::tests::plans_match_the_reference_renderer ... ok
+test json::scan::tests::numbers_like_cpython ... ok
+test json::scan::tests::special_scan_matches_naive ... ok
+test json::scan::tests::strings_like_cpython ... ok
+test json::scan::tests::whitespace ... ok
+test logging::tests::declines ... ok
+test logging::tests::msecs ... ok
+test logging::tests::numeric_directives ... ok
+test logging::tests::parse ... ok
+test logging::tests::paths ... ok
+test logging::tests::render_matches_python ... ok
+test logging::tests::stack_buffers ... ok
+test paths::glob::tests::basics ... ok
+test paths::posix::tests::components ... ok
+test paths::posix::tests::join_cases ... ok
+test paths::posix::tests::normal_abs ... ok
+test paths::posix::tests::normpath_cases ... ok
+test paths::posix::tests::split_and_ext ... ok
+test pyfmt::tests::f32_layout_rules ... ok
+test json::itoa::tests::same_as_std ... ok
+test pyfmt::tests::layout_rules ... ok
+test pyfmt::tests::f32_round_trips ... ok
+test pyfmt::tests::matches_cpython_table ... ok
+test pyfmt::tests::normal_values_round_trip ... ok
+test random::tests::getrandbits128_matches_word_order ... ok
+test random::tests::getrandbits_word_order ... ok
+test pyfmt::tests::round_trips ... ok
+test random::tests::randbelow_rejects_like_cpython ... ok
+test random::tests::random_is_res53 ... ok
+test random::tests::reference_outputs ... ok
+test random::tests::sample_each_matches_reference ... ok
+test random::tests::normal_z_bound_holds ... ok
+test random::tests::variates_match_cpython ... ok
+test re::tests::declines ... ok
+test datetime::strptime::tests::numeric_matchers_match_regex_tables ... ok
+test re::tests::simple_literal ... ok
+test re::tests::templates ... ok
+test stats::tests::accumulates_exactly ... ok
+test stats::tests::decompose_round_trips ... ok
+test textwrap::tests::dedent_and_indent ... ok
+test textwrap::tests::doc_example ... ok
+test textwrap::tests::em_dashes_and_hyphens ... ok
+test textwrap::tests::wrap_basics ... ok
+test urlparse::tests::quote_matches_doc ... ok
+test urlparse::tests::split_basic ... ok
+test urlparse::tests::unquote_rules ... ok
+test datetime::cal::tests::ordinal_round_trip ... ok
+test random::tests::sample_setsize_matches_float_formula ... ok
+test float_repr::tests::round_trips ... ok
+test float_repr::tests::agrees_with_pyfmt ... ok
+test float_repr::tests::agrees_with_pyfmt_near_layout_cutoffs ... ok
+test re::tests::recorded_cases_match_cpython ... ok
+test datetime::strptime::tests::greedy_path_agrees_with_backtracking ... ok
+
+test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.18s
+
+     Running tests/float_repr_cpython.rs (/work/w2p3/target/rust-ci/debug/deps/float_repr_cpython-2cad8a9341981308)
+
+running 1 test
+test matches_cpython_repr ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.25s
+
+     Running unittests src/lib.rs (/work/w2p3/target/rust-ci/debug/deps/rustique_interp-421802459392a2b4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/work/w2p3/target/rust-ci/debug/deps/rustique_py-8916edc532be0e86)
+
+running 4 tests
+test builtins::tests::compensated_sum_matches_cpython_rules ... ok
+test builtins::tests::int_float_comparison_is_exact ... ok
+test targets::generated::dataclass::tests::rejects_other_forms ... ok
+test targets::generated::dataclass::tests::parses_frozen_forms ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rustique_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rustique_interp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rustique_py
+
+running 6 tests
+test crates/rustique-py/src/accel/check.rs - accel::check (line 12) ... ignored
+test crates/rustique-py/src/accel/dynamic.rs - accel::dynamic (line 13) ... ignored
+test crates/rustique-py/src/accel/guard.rs - accel::guard::ClassCache (line 1456) ... ignored
+test crates/rustique-py/src/accel/guard.rs - accel::guard::OverrideCache (line 1336) ... ignored
+test crates/rustique-py/src/accel/mod.rs - accel (line 19) ... ignored
+test crates/rustique-py/src/accel/spec.rs - accel::spec::TargetSpec (line 23) ... ignored
+
+test result: ok. 0 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.09s; merged doctests compilation took 0.09s

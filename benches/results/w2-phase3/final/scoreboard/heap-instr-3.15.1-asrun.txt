@@ -1,0 +1,20 @@
+# heap offsets [0, 1, 2, 3] (k junk objects of each of 9 size classes before the region); Ir per execution
+# cell | plain by offset | enabled by offset | ratio at offset 0 | ratio of the minima | verdict
+tuple/hash(x)/object/0 | 399.3 413.3 404.3 404.3 | 404.3 404.3 404.3 404.3 | 1.013 | 1.013 | <= 1.05 at the minimum: heap state
+frozenset/hash(x)/int/1 | 382.3 396.3 387.3 387.3 | 387.3 387.3 387.3 387.3 | 1.013 | 1.013 | <= 1.05 at the minimum: heap state
+frozenset/hash(x)/int/8 | 382.3 396.3 387.3 387.3 | 387.3 387.3 387.3 387.3 | 1.013 | 1.013 | <= 1.05 at the minimum: heap state
+frozenset/hash(x)/int/100 | 382.3 396.3 387.3 387.3 | 382.2 396.2 401.2 387.2 | 1.000 | 1.000 | <= 1.05 at the minimum: heap state
+tuple/from list/mixed/100 | 3068.2 3068.2 3068.2 3068.2 | 3068.1 3068.1 3068.1 3068.1 | 1.000 | 1.000 | <= 1.05 at the minimum: heap state
+tuple/from list/str/100 | 3193.2 3193.2 3193.2 3193.2 | 3193.2 3193.2 3193.2 3193.2 | 1.000 | 1.000 | <= 1.05 at the minimum: heap state
+tuple/hash(x)/object/1 | 413.3 404.3 404.3 404.3 | 404.3 404.3 404.3 404.3 | 0.978 | 1.000 | <= 1.05 at the minimum: heap state
+tuple/repr(x)/object/0 | 526.3 540.3 531.3 531.3 | 531.3 531.3 531.3 531.3 | 1.010 | 1.010 | <= 1.05 at the minimum: heap state
+set/tuple(x)/int/0 | 551.3 551.3 551.3 551.3 | 551.2 579.2 579.2 579.2 | 1.000 | 1.000 | <= 1.05 at the minimum: heap state
+tuple/g(*x)/float/100 | 4695.2 4695.2 4695.2 4695.2 | 4695.2 4695.2 4695.2 4695.2 | 1.000 | 1.000 | <= 1.05 at the minimum: heap state
+dict/repr(x)/int/100 | 89631.3 89625.3 89635.3 89635.3 | 89616.3 89616.3 89616.3 89616.3 | 1.000 | 1.000 | <= 1.05 at the minimum: heap state
+dict/for k, v in x.items()/float/0 | 944.8 958.8 949.8 949.8 | 944.8 958.8 949.8 949.8 | 1.000 | 1.000 | <= 1.05 at the minimum: heap state
+dict/from dict/str/100 | 5130.2 5355.2 5355.2 5130.2 | 5130.2 5130.2 5130.2 5357.2 | 1.000 | 1.000 | <= 1.05 at the minimum: heap state
+dict/copy C(x)/str/100 | 5130.2 5357.2 5357.2 5130.2 | 5130.2 5130.2 5130.2 5357.2 | 1.000 | 1.000 | <= 1.05 at the minimum: heap state
+dict/x.copy()/str/100 | 4857.2 5084.2 5084.2 5084.2 | 4857.1 4857.1 4857.1 4857.1 | 1.000 | 1.000 | <= 1.05 at the minimum: heap state
+dict/for v in x/object/0 | 460.7 460.7 460.7 460.7 | 460.6 460.6 460.6 460.6 | 1.000 | 1.000 | <= 1.05 at the minimum: heap state
+dict/for v in x/mixed/0 | 446.7 460.7 441.7 441.7 | 446.6 460.6 446.6 446.6 | 1.000 | 1.011 | <= 1.05 at the minimum: heap state
+dict/x | t/int/0 | 530.2 530.2 530.2 530.2 | 530.2 530.2 530.2 530.2 | 1.000 | 1.000 | <= 1.05 at the minimum: heap state

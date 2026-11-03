@@ -1,0 +1,3 @@
+import fnmatch       plain        3,524  enabled        3,524 (1.000, +0)  enabled without re        3,524 (1.000, +0)
+import urllib.parse  plain    9,740,347  enabled    9,486,651 (0.974, -253,696)  enabled without re    9,267,108 (0.951, -473,239)
+import re            plain        3,471  enabled        3,471 (1.000, +0)  enabled without re        3,471 (1.000, +0)

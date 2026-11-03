@@ -1,0 +1,14 @@
+data/backup_archive                  predicted 0.994 measured 0.999 error -0.005 (under targets 1.4%, profiled run 630 ms vs 609 ms, replay 0.0 s)
+data/billing_engine                  predicted 0.925 measured 0.975 error -0.050 (under targets 19.7%, profiled run 2485 ms vs 776 ms, replay 0.7 s)
+data/config_merge                    predicted 1.001 measured 1.001 error -0.000 (under targets 4.5%, profiled run 643 ms vs 616 ms, replay 0.5 s)
+data/csv_etl                         predicted 0.648 measured 0.64 error +0.008 (under targets 48.5%, profiled run 976 ms vs 441 ms, replay 0.0 s)
+data/fs_inventory                    predicted 0.720 measured 0.735 error -0.015 (under targets 36.2%, profiled run 1349 ms vs 326 ms, replay 0.2 s)
+data/log_analytics                   predicted 0.605 measured 0.609 error -0.004 (under targets 43.4%, profiled run 2318 ms vs 834 ms, replay 0.1 s)
+data/pandas_etl                      predicted 1.000 measured 1.0 error -0.000 (under targets 0.0%, profiled run 622 ms vs 592 ms, replay 0.0 s)
+data/report_render                   predicted 0.395 measured 0.423 error -0.028 (under targets 72.4%, profiled run 1671 ms vs 467 ms, replay 0.1 s)
+data/state_snapshot                  predicted 0.323 measured 0.476 error -0.153 (under targets 90.8%, profiled run 4173 ms vs 1272 ms, replay 6.9 s)
+data/text_corpus                     predicted 0.993 measured 1.001 error -0.008 (under targets 3.0%, profiled run 959 ms vs 647 ms, replay 0.0 s)
+data/tz_events                       predicted 0.559 measured 0.615 error -0.056 (under targets 53.7%, profiled run 1826 ms vs 624 ms, replay 0.1 s)
+data/xml_feeds                       predicted 1.000 measured 1.005 error -0.005 (under targets 1.7%, profiled run 908 ms vs 575 ms, replay 0.0 s)
+
+12 workloads: mean abs error 0.028, max -0.153, bias -0.026; within 0.02: 8, within 0.05: 9

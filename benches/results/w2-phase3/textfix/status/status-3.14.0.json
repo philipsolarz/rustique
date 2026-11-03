@@ -1,0 +1,4789 @@
+{
+ "summary": {
+  "python": "3.14.0 (main, Nov 19 2025, 22:48:15) [Clang 21.1.4 ]",
+  "executable": "/work/w2p3t/sv/3.14.0/bin/python",
+  "free_threaded": false,
+  "rustique": "0.3.0",
+  "extension": "/work/w2p3t/sv/3.14.0/lib/python3.14/site-packages/_rustique.cpython-314-x86_64-linux-gnu.so",
+  "env": {
+   "RUSTIQUE_INTERP_REQUIRE": "1",
+   "RUSTIQUE_VALIDATE": "eager"
+  },
+  "process": {
+   "python": "3.14.0",
+   "hexversion": 51249392,
+   "build": "default",
+   "jit": false,
+   "rustique": "0.3.0",
+   "pid": 928711,
+   "ppid": null,
+   "interpreter": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+   "interpreter_refusal": "unvalidated-patch",
+   "patch": "3.14.0",
+   "platform": "x86_64-linux-gnu",
+   "enabled": false,
+   "stats": false,
+   "check": null,
+   "only": null,
+   "exclude": [],
+   "tiers": [],
+   "validate": "eager",
+   "switch": {
+    "source": "rustique.enable()",
+    "only": null,
+    "exclude": [],
+    "tiers": [],
+    "killed_calls": 0,
+    "report": null,
+    "killed": false,
+    "stats": false,
+    "check": null,
+    "env": {}
+   },
+   "free_threaded": false
+  },
+  "targets": 116,
+  "default_targets": 111,
+  "groups": [
+   "builtins",
+   "containers",
+   "contextlib",
+   "copy",
+   "dataclasses",
+   "datetime",
+   "enum",
+   "float",
+   "fnmatch",
+   "functools",
+   "generated",
+   "json",
+   "logging",
+   "pathlib",
+   "posixpath",
+   "random",
+   "re",
+   "set",
+   "statistics",
+   "textwrap",
+   "urllib"
+  ],
+  "counts_default": {
+   "refused": 111
+  },
+  "installed_default": 0,
+  "refusal_categories_default": {
+   "unvalidated-patch": 111
+  },
+  "counts_tiers": {
+   "gc": {
+    "disabled": 1
+   },
+   "interp": {
+    "disabled": 4
+   }
+  },
+  "refused": [
+   {
+    "name": "list.sort",
+    "group": "containers",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "list.index",
+    "group": "containers",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "list.count",
+    "group": "containers",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "tuple.index",
+    "group": "containers",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "tuple.count",
+    "group": "containers",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "list.__contains__",
+    "group": "containers",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "tuple.__contains__",
+    "group": "containers",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "builtins.sum",
+    "group": "builtins",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "builtins.min",
+    "group": "builtins",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "builtins.max",
+    "group": "builtins",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "builtins.sorted",
+    "group": "builtins",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "builtins.any",
+    "group": "builtins",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "builtins.all",
+    "group": "builtins",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "float.repr",
+    "group": "float",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "json.dumps",
+    "group": "json",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "json.loads",
+    "group": "json",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "logging.Logger.level",
+    "group": "logging",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "logging.Logger.findCaller",
+    "group": "logging",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "logging.LogRecord.__init__",
+    "group": "logging",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "logging.Formatter.formatTime",
+    "group": "logging",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "logging.Formatter.format",
+    "group": "logging",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "logging.Handler.handle",
+    "group": "logging",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "random.randint",
+    "group": "random",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "random.randrange",
+    "group": "random",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "random.choice",
+    "group": "random",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "random.shuffle",
+    "group": "random",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "random.sample",
+    "group": "random",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "random.choices",
+    "group": "random",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "random.normalvariate",
+    "group": "random",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "random.lognormvariate",
+    "group": "random",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "random.expovariate",
+    "group": "random",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "random.paretovariate",
+    "group": "random",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "random.gauss",
+    "group": "random",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "statistics.mean",
+    "group": "statistics",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "statistics.variance",
+    "group": "statistics",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "statistics.pvariance",
+    "group": "statistics",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "statistics.stdev",
+    "group": "statistics",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "statistics.pstdev",
+    "group": "statistics",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "textwrap.wrap",
+    "group": "textwrap",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "textwrap.fill",
+    "group": "textwrap",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "textwrap.shorten",
+    "group": "textwrap",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "textwrap.dedent",
+    "group": "textwrap",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "textwrap.indent",
+    "group": "textwrap",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "textwrap.TextWrapper.wrap",
+    "group": "textwrap",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "textwrap.TextWrapper.fill",
+    "group": "textwrap",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "urllib.parse.quote",
+    "group": "urllib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "urllib.parse.quote_plus",
+    "group": "urllib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "urllib.parse.unquote",
+    "group": "urllib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "urllib.parse.unquote_plus",
+    "group": "urllib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "urllib.parse.parse_qsl",
+    "group": "urllib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "urllib.parse.parse_qs",
+    "group": "urllib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "urllib.parse._urlsplit",
+    "group": "urllib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "posixpath.join",
+    "group": "posixpath",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "posixpath.split",
+    "group": "posixpath",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "posixpath.splitext",
+    "group": "posixpath",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "posixpath.basename",
+    "group": "posixpath",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "posixpath.dirname",
+    "group": "posixpath",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "posixpath.isabs",
+    "group": "posixpath",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "posixpath.relpath",
+    "group": "posixpath",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "posixpath.abspath",
+    "group": "posixpath",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "fnmatch.fnmatch",
+    "group": "fnmatch",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "fnmatch.fnmatchcase",
+    "group": "fnmatch",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "fnmatch.filter",
+    "group": "fnmatch",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "pathlib.PurePath.__new__",
+    "group": "pathlib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "pathlib.Path.__new__",
+    "group": "pathlib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "pathlib.PurePath.__init__",
+    "group": "pathlib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "pathlib.PurePath.__str__",
+    "group": "pathlib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "pathlib.PurePath.__truediv__",
+    "group": "pathlib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "pathlib.PurePath.parent",
+    "group": "pathlib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "pathlib.PurePath.name",
+    "group": "pathlib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "pathlib.PurePath.suffix",
+    "group": "pathlib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "pathlib.PurePath.stem",
+    "group": "pathlib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "pathlib.PurePath.parts",
+    "group": "pathlib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "pathlib.PurePath.relative_to",
+    "group": "pathlib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "pathlib.PurePath.__eq__",
+    "group": "pathlib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "pathlib.PurePath.__hash__",
+    "group": "pathlib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "datetime.datetime.strptime",
+    "group": "datetime",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "datetime.date.strptime",
+    "group": "datetime",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "datetime.time.strptime",
+    "group": "datetime",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "time.strptime",
+    "group": "datetime",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "datetime.date.strftime",
+    "group": "datetime",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "datetime.time.strftime",
+    "group": "datetime",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "time.strftime",
+    "group": "datetime",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "datetime.datetime.isoformat",
+    "group": "datetime",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "datetime.date.isoformat",
+    "group": "datetime",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "datetime.time.isoformat",
+    "group": "datetime",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "copy.deepcopy",
+    "group": "copy",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "copy.copy",
+    "group": "copy",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "dataclasses.asdict",
+    "group": "dataclasses",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "dataclasses.astuple",
+    "group": "dataclasses",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "set.__reduce__",
+    "group": "set",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "enum.property.__get__",
+    "group": "enum",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "enum.EnumType.__call__",
+    "group": "enum",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "enum.Enum.__hash__",
+    "group": "enum",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "enum.Flag.operators",
+    "group": "enum",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "collections.namedtuple",
+    "group": "generated",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "dataclasses.__init__",
+    "group": "generated",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "dataclasses.__init__.positional",
+    "group": "generated",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "contextlib.contextmanager",
+    "group": "contextlib",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "functools.singledispatch",
+    "group": "functools",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "functools.singledispatchmethod.__get__",
+    "group": "functools",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "re._compiler.compile",
+    "group": "re",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "re.match",
+    "group": "re",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "re.fullmatch",
+    "group": "re",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "re.search",
+    "group": "re",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "re.sub",
+    "group": "re",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "re.subn",
+    "group": "re",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "re.split",
+    "group": "re",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "re.findall",
+    "group": "re",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "re.finditer",
+    "group": "re",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   },
+   {
+    "name": "re.compile",
+    "group": "re",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release"
+   }
+  ],
+  "pending": [],
+  "armed": [],
+  "imported": [
+   "logging",
+   "random",
+   "statistics",
+   "urllib.parse",
+   "fnmatch",
+   "pathlib",
+   "_datetime"
+  ],
+  "import_failed": {}
+ },
+ "status": {
+  "targets": [
+   {
+    "name": "list.sort",
+    "group": "containers",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "list.index",
+    "group": "containers",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "list.count",
+    "group": "containers",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "tuple.index",
+    "group": "containers",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "tuple.count",
+    "group": "containers",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "list.__contains__",
+    "group": "containers",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "tuple.__contains__",
+    "group": "containers",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "builtins.sum",
+    "group": "builtins",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "builtins.min",
+    "group": "builtins",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "builtins.max",
+    "group": "builtins",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "builtins.sorted",
+    "group": "builtins",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "builtins.any",
+    "group": "builtins",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "builtins.all",
+    "group": "builtins",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "float.repr",
+    "group": "float",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true
+   },
+   {
+    "name": "json.dumps",
+    "group": "json",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "json"
+   },
+   {
+    "name": "json.loads",
+    "group": "json",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "json"
+   },
+   {
+    "name": "logging.Logger.level",
+    "group": "logging",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.15"
+    ],
+    "checkable": true,
+    "module": "logging"
+   },
+   {
+    "name": "logging.Logger.findCaller",
+    "group": "logging",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "logging"
+   },
+   {
+    "name": "logging.LogRecord.__init__",
+    "group": "logging",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "logging"
+   },
+   {
+    "name": "logging.Formatter.formatTime",
+    "group": "logging",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "logging"
+   },
+   {
+    "name": "logging.Formatter.format",
+    "group": "logging",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "logging"
+   },
+   {
+    "name": "logging.Handler.handle",
+    "group": "logging",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "logging"
+   },
+   {
+    "name": "random.randint",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.randrange",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.choice",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.shuffle",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.sample",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.choices",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.normalvariate",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.lognormvariate",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.expovariate",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.paretovariate",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.gauss",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "statistics.mean",
+    "group": "statistics",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics"
+   },
+   {
+    "name": "statistics.variance",
+    "group": "statistics",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics"
+   },
+   {
+    "name": "statistics.pvariance",
+    "group": "statistics",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics"
+   },
+   {
+    "name": "statistics.stdev",
+    "group": "statistics",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics"
+   },
+   {
+    "name": "statistics.pstdev",
+    "group": "statistics",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics"
+   },
+   {
+    "name": "textwrap.wrap",
+    "group": "textwrap",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap"
+   },
+   {
+    "name": "textwrap.fill",
+    "group": "textwrap",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap"
+   },
+   {
+    "name": "textwrap.shorten",
+    "group": "textwrap",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap"
+   },
+   {
+    "name": "textwrap.dedent",
+    "group": "textwrap",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap"
+   },
+   {
+    "name": "textwrap.indent",
+    "group": "textwrap",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap"
+   },
+   {
+    "name": "textwrap.TextWrapper.wrap",
+    "group": "textwrap",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap"
+   },
+   {
+    "name": "textwrap.TextWrapper.fill",
+    "group": "textwrap",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap"
+   },
+   {
+    "name": "urllib.parse.quote",
+    "group": "urllib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse"
+   },
+   {
+    "name": "urllib.parse.quote_plus",
+    "group": "urllib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse"
+   },
+   {
+    "name": "urllib.parse.unquote",
+    "group": "urllib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse"
+   },
+   {
+    "name": "urllib.parse.unquote_plus",
+    "group": "urllib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse"
+   },
+   {
+    "name": "urllib.parse.parse_qsl",
+    "group": "urllib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse"
+   },
+   {
+    "name": "urllib.parse.parse_qs",
+    "group": "urllib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse"
+   },
+   {
+    "name": "urllib.parse._urlsplit",
+    "group": "urllib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse"
+   },
+   {
+    "name": "posixpath.join",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "posixpath.split",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "posixpath.splitext",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "posixpath.basename",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "posixpath.dirname",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "posixpath.isabs",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "posixpath.relpath",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "posixpath.abspath",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "fnmatch.fnmatch",
+    "group": "fnmatch",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "fnmatch"
+   },
+   {
+    "name": "fnmatch.fnmatchcase",
+    "group": "fnmatch",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "fnmatch"
+   },
+   {
+    "name": "fnmatch.filter",
+    "group": "fnmatch",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "fnmatch"
+   },
+   {
+    "name": "pathlib.PurePath.__new__",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.Path.__new__",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__init__",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__str__",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__truediv__",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.parent",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.name",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.suffix",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.stem",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.parts",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.relative_to",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__eq__",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__hash__",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "datetime.datetime.strptime",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "datetime.date.strptime",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "datetime.time.strptime",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "time.strptime",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "datetime.date.strftime",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "datetime.time.strftime",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "time.strftime",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "time"
+   },
+   {
+    "name": "datetime.datetime.isoformat",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "datetime.date.isoformat",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "datetime.time.isoformat",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "copy.deepcopy",
+    "group": "copy",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "copy"
+   },
+   {
+    "name": "copy.copy",
+    "group": "copy",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "copy"
+   },
+   {
+    "name": "dataclasses.asdict",
+    "group": "dataclasses",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "dataclasses"
+   },
+   {
+    "name": "dataclasses.astuple",
+    "group": "dataclasses",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "dataclasses"
+   },
+   {
+    "name": "set.__reduce__",
+    "group": "set",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "enum.property.__get__",
+    "group": "enum",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.15"
+    ],
+    "checkable": false,
+    "module": "enum"
+   },
+   {
+    "name": "enum.EnumType.__call__",
+    "group": "enum",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "enum"
+   },
+   {
+    "name": "enum.Enum.__hash__",
+    "group": "enum",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "enum"
+   },
+   {
+    "name": "enum.Flag.operators",
+    "group": "enum",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "enum"
+   },
+   {
+    "name": "collections.namedtuple",
+    "group": "generated",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.15"
+    ],
+    "checkable": false,
+    "module": "collections"
+   },
+   {
+    "name": "dataclasses.__init__",
+    "group": "generated",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.15"
+    ],
+    "checkable": false,
+    "module": "dataclasses"
+   },
+   {
+    "name": "dataclasses.__init__.positional",
+    "group": "generated",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.15"
+    ],
+    "checkable": false,
+    "module": "dataclasses"
+   },
+   {
+    "name": "contextlib.contextmanager",
+    "group": "contextlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.15"
+    ],
+    "checkable": false,
+    "module": "contextlib"
+   },
+   {
+    "name": "functools.singledispatch",
+    "group": "functools",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.15"
+    ],
+    "checkable": false,
+    "module": "functools"
+   },
+   {
+    "name": "functools.singledispatchmethod.__get__",
+    "group": "functools",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "functools"
+   },
+   {
+    "name": "interp.isinstance",
+    "group": "interp",
+    "state": "disabled",
+    "reason": "opt-in tier: RUSTIQUE_TIERS=interp",
+    "tier": "interp",
+    "refusal": null,
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "interp.attr",
+    "group": "interp",
+    "state": "disabled",
+    "reason": "opt-in tier: RUSTIQUE_TIERS=interp",
+    "tier": "interp",
+    "refusal": null,
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "interp.setattr",
+    "group": "interp",
+    "state": "disabled",
+    "reason": "opt-in tier: RUSTIQUE_TIERS=interp",
+    "tier": "interp",
+    "refusal": null,
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "interp.kwinit",
+    "group": "interp",
+    "state": "disabled",
+    "reason": "opt-in tier: RUSTIQUE_TIERS=interp",
+    "tier": "interp",
+    "refusal": null,
+    "sites": [],
+    "versions": [
+     "3.15"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "re._compiler.compile",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "re"
+   },
+   {
+    "name": "re.match",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "re"
+   },
+   {
+    "name": "re.fullmatch",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "re"
+   },
+   {
+    "name": "re.search",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "re"
+   },
+   {
+    "name": "re.sub",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "re"
+   },
+   {
+    "name": "re.subn",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "re"
+   },
+   {
+    "name": "re.split",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "re"
+   },
+   {
+    "name": "re.findall",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "re"
+   },
+   {
+    "name": "re.finditer",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "re"
+   },
+   {
+    "name": "re.compile",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "re"
+   },
+   {
+    "name": "gc.adaptive",
+    "group": "gc",
+    "state": "disabled",
+    "reason": "opt-in tier: RUSTIQUE_TIERS=gc",
+    "tier": "gc",
+    "refusal": null,
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   }
+  ],
+  "process": {
+   "python": "3.14.0",
+   "hexversion": 51249392,
+   "build": "default",
+   "jit": false,
+   "rustique": "0.3.0",
+   "pid": 928711,
+   "ppid": null,
+   "interpreter": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+   "interpreter_refusal": "unvalidated-patch",
+   "patch": "3.14.0",
+   "platform": "x86_64-linux-gnu",
+   "enabled": false,
+   "stats": false,
+   "check": null,
+   "only": null,
+   "exclude": [],
+   "tiers": [],
+   "validate": "eager",
+   "switch": {
+    "source": "rustique.enable()",
+    "only": null,
+    "exclude": [],
+    "tiers": [],
+    "killed_calls": 0,
+    "report": null,
+    "killed": false,
+    "stats": false,
+    "check": null,
+    "env": {}
+   },
+   "free_threaded": false
+  }
+ },
+ "enable_result": {
+  "targets": [
+   {
+    "name": "list.sort",
+    "group": "containers",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "list.index",
+    "group": "containers",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "list.count",
+    "group": "containers",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "tuple.index",
+    "group": "containers",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "tuple.count",
+    "group": "containers",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "list.__contains__",
+    "group": "containers",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "tuple.__contains__",
+    "group": "containers",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "builtins.sum",
+    "group": "builtins",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "builtins.min",
+    "group": "builtins",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "builtins.max",
+    "group": "builtins",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "builtins.sorted",
+    "group": "builtins",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "builtins.any",
+    "group": "builtins",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "builtins.all",
+    "group": "builtins",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "float.repr",
+    "group": "float",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true
+   },
+   {
+    "name": "json.dumps",
+    "group": "json",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "json"
+   },
+   {
+    "name": "json.loads",
+    "group": "json",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "json"
+   },
+   {
+    "name": "logging.Logger.level",
+    "group": "logging",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.15"
+    ],
+    "checkable": true,
+    "module": "logging"
+   },
+   {
+    "name": "logging.Logger.findCaller",
+    "group": "logging",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "logging"
+   },
+   {
+    "name": "logging.LogRecord.__init__",
+    "group": "logging",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "logging"
+   },
+   {
+    "name": "logging.Formatter.formatTime",
+    "group": "logging",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "logging"
+   },
+   {
+    "name": "logging.Formatter.format",
+    "group": "logging",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "logging"
+   },
+   {
+    "name": "logging.Handler.handle",
+    "group": "logging",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "logging"
+   },
+   {
+    "name": "random.randint",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.randrange",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.choice",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.shuffle",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.sample",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.choices",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.normalvariate",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.lognormvariate",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.expovariate",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.paretovariate",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "random.gauss",
+    "group": "random",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "random"
+   },
+   {
+    "name": "statistics.mean",
+    "group": "statistics",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics"
+   },
+   {
+    "name": "statistics.variance",
+    "group": "statistics",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics"
+   },
+   {
+    "name": "statistics.pvariance",
+    "group": "statistics",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics"
+   },
+   {
+    "name": "statistics.stdev",
+    "group": "statistics",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics"
+   },
+   {
+    "name": "statistics.pstdev",
+    "group": "statistics",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "statistics"
+   },
+   {
+    "name": "textwrap.wrap",
+    "group": "textwrap",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap"
+   },
+   {
+    "name": "textwrap.fill",
+    "group": "textwrap",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap"
+   },
+   {
+    "name": "textwrap.shorten",
+    "group": "textwrap",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap"
+   },
+   {
+    "name": "textwrap.dedent",
+    "group": "textwrap",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap"
+   },
+   {
+    "name": "textwrap.indent",
+    "group": "textwrap",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap"
+   },
+   {
+    "name": "textwrap.TextWrapper.wrap",
+    "group": "textwrap",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap"
+   },
+   {
+    "name": "textwrap.TextWrapper.fill",
+    "group": "textwrap",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "textwrap"
+   },
+   {
+    "name": "urllib.parse.quote",
+    "group": "urllib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse"
+   },
+   {
+    "name": "urllib.parse.quote_plus",
+    "group": "urllib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse"
+   },
+   {
+    "name": "urllib.parse.unquote",
+    "group": "urllib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse"
+   },
+   {
+    "name": "urllib.parse.unquote_plus",
+    "group": "urllib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse"
+   },
+   {
+    "name": "urllib.parse.parse_qsl",
+    "group": "urllib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse"
+   },
+   {
+    "name": "urllib.parse.parse_qs",
+    "group": "urllib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse"
+   },
+   {
+    "name": "urllib.parse._urlsplit",
+    "group": "urllib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "urllib.parse"
+   },
+   {
+    "name": "posixpath.join",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "posixpath.split",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "posixpath.splitext",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "posixpath.basename",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "posixpath.dirname",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "posixpath.isabs",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "posixpath.relpath",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "posixpath.abspath",
+    "group": "posixpath",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "posixpath"
+   },
+   {
+    "name": "fnmatch.fnmatch",
+    "group": "fnmatch",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "fnmatch"
+   },
+   {
+    "name": "fnmatch.fnmatchcase",
+    "group": "fnmatch",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "fnmatch"
+   },
+   {
+    "name": "fnmatch.filter",
+    "group": "fnmatch",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "fnmatch"
+   },
+   {
+    "name": "pathlib.PurePath.__new__",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.Path.__new__",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__init__",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__str__",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__truediv__",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.parent",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.name",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.suffix",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.stem",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.parts",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.relative_to",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__eq__",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "pathlib.PurePath.__hash__",
+    "group": "pathlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "pathlib"
+   },
+   {
+    "name": "datetime.datetime.strptime",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "datetime.date.strptime",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "datetime.time.strptime",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "time.strptime",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "datetime.date.strftime",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "datetime.time.strftime",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "time.strftime",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "time"
+   },
+   {
+    "name": "datetime.datetime.isoformat",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "datetime.date.isoformat",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "datetime.time.isoformat",
+    "group": "datetime",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "_datetime"
+   },
+   {
+    "name": "copy.deepcopy",
+    "group": "copy",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "copy"
+   },
+   {
+    "name": "copy.copy",
+    "group": "copy",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "copy"
+   },
+   {
+    "name": "dataclasses.asdict",
+    "group": "dataclasses",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "dataclasses"
+   },
+   {
+    "name": "dataclasses.astuple",
+    "group": "dataclasses",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "dataclasses"
+   },
+   {
+    "name": "set.__reduce__",
+    "group": "set",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "enum.property.__get__",
+    "group": "enum",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.15"
+    ],
+    "checkable": false,
+    "module": "enum"
+   },
+   {
+    "name": "enum.EnumType.__call__",
+    "group": "enum",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "enum"
+   },
+   {
+    "name": "enum.Enum.__hash__",
+    "group": "enum",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "enum"
+   },
+   {
+    "name": "enum.Flag.operators",
+    "group": "enum",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "enum"
+   },
+   {
+    "name": "collections.namedtuple",
+    "group": "generated",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.15"
+    ],
+    "checkable": false,
+    "module": "collections"
+   },
+   {
+    "name": "dataclasses.__init__",
+    "group": "generated",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.15"
+    ],
+    "checkable": false,
+    "module": "dataclasses"
+   },
+   {
+    "name": "dataclasses.__init__.positional",
+    "group": "generated",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.15"
+    ],
+    "checkable": false,
+    "module": "dataclasses"
+   },
+   {
+    "name": "contextlib.contextmanager",
+    "group": "contextlib",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.15"
+    ],
+    "checkable": false,
+    "module": "contextlib"
+   },
+   {
+    "name": "functools.singledispatch",
+    "group": "functools",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.15"
+    ],
+    "checkable": false,
+    "module": "functools"
+   },
+   {
+    "name": "functools.singledispatchmethod.__get__",
+    "group": "functools",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "functools"
+   },
+   {
+    "name": "interp.isinstance",
+    "group": "interp",
+    "state": "disabled",
+    "reason": "opt-in tier: RUSTIQUE_TIERS=interp",
+    "tier": "interp",
+    "refusal": null,
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "interp.attr",
+    "group": "interp",
+    "state": "disabled",
+    "reason": "opt-in tier: RUSTIQUE_TIERS=interp",
+    "tier": "interp",
+    "refusal": null,
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "interp.setattr",
+    "group": "interp",
+    "state": "disabled",
+    "reason": "opt-in tier: RUSTIQUE_TIERS=interp",
+    "tier": "interp",
+    "refusal": null,
+    "sites": [],
+    "versions": [
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "interp.kwinit",
+    "group": "interp",
+    "state": "disabled",
+    "reason": "opt-in tier: RUSTIQUE_TIERS=interp",
+    "tier": "interp",
+    "refusal": null,
+    "sites": [],
+    "versions": [
+     "3.15"
+    ],
+    "checkable": false
+   },
+   {
+    "name": "re._compiler.compile",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "re"
+   },
+   {
+    "name": "re.match",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "re"
+   },
+   {
+    "name": "re.fullmatch",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "re"
+   },
+   {
+    "name": "re.search",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "re"
+   },
+   {
+    "name": "re.sub",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "re"
+   },
+   {
+    "name": "re.subn",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "re"
+   },
+   {
+    "name": "re.split",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "re"
+   },
+   {
+    "name": "re.findall",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "re"
+   },
+   {
+    "name": "re.finditer",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false,
+    "module": "re"
+   },
+   {
+    "name": "re.compile",
+    "group": "re",
+    "state": "refused",
+    "reason": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+    "tier": null,
+    "refusal": "unvalidated-patch",
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": true,
+    "module": "re"
+   },
+   {
+    "name": "gc.adaptive",
+    "group": "gc",
+    "state": "disabled",
+    "reason": "opt-in tier: RUSTIQUE_TIERS=gc",
+    "tier": "gc",
+    "refusal": null,
+    "sites": [],
+    "versions": [
+     "3.14",
+     "3.14t",
+     "3.15",
+     "3.15t"
+    ],
+    "checkable": false
+   }
+  ],
+  "process": {
+   "python": "3.14.0",
+   "hexversion": 51249392,
+   "build": "default",
+   "jit": false,
+   "rustique": "0.3.0",
+   "pid": 928711,
+   "ppid": null,
+   "interpreter": "CPython 3.14.0 is not a patch release this Rustique build has validated (validated: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10); RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+   "interpreter_refusal": "unvalidated-patch",
+   "patch": "3.14.0",
+   "platform": "x86_64-linux-gnu",
+   "enabled": false,
+   "stats": false,
+   "check": null,
+   "only": null,
+   "exclude": [],
+   "tiers": [],
+   "validate": "eager",
+   "switch": {
+    "source": "rustique.enable()",
+    "only": null,
+    "exclude": [],
+    "tiers": [],
+    "killed_calls": 0,
+    "report": null,
+    "killed": false,
+    "stats": false,
+    "check": null,
+    "env": {}
+   },
+   "free_threaded": false
+  }
+ }
+}

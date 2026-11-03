@@ -1,0 +1,22 @@
+wrote /work/w2p3/results/final/scoreboard/enabled-3.15.1t.md
+| build | type | cells | at parity before | at parity after | geomean before | geomean after |
+|---|---|---:|---:|---:|---:|---:|
+| 3.15.1t | list | 890 | — | 890/890 | — | 0.84 |
+| 3.15.1t | tuple | 719 | — | 719/719 | — | 0.77 |
+| 3.15.1t | dict | 819 | — | 819/819 | — | 0.90 |
+| 3.15.1t | set | 743 | — | 743/743 | — | 0.91 |
+| 3.15.1t | frozenset | 643 | — | 643/643 | — | 0.89 |
+| build | type | cells | at parity before | at parity after | geomean before | geomean after |
+|---|---|---:|---:|---:|---:|---:|
+| 3.15.1t | list | 890 | — | 890/890 | — | 0.84 |
+| 3.15.1t | tuple | 719 | — | 719/719 | — | 0.77 |
+| 3.15.1t | dict | 819 | — | 819/819 | — | 0.90 |
+| 3.15.1t | set | 743 | — | 743/743 | — | 0.91 |
+| 3.15.1t | frozenset | 643 | — | 643/643 | — | 0.89 |
+=== 3.15.1t impl=enabled
+-- 0-100 elements (instructions): cells 3814, with ratio 3814 (metrics {'instr': 3814}), <= 1.05: 3814/3814, geomean 0.8621, mismatch 0, error 0
+   kernel path: 586 cells, geomean 0.6373, median 0.7039, > 1.05: 0, < 0.95: 545, min 0.082, max 1.035
+   unchanged code: 3228 cells, geomean 0.9107, median 1.0000, > 1.05: 0, < 0.95: 178, min 0.020, max 1.040
+   cells > 1.05 (0):
+   worst kernel-path cells: list/sorted(x)/object/8 1.035, tuple/sorted(x)/object/8 1.034, set/sorted(x)/object/8 1.034, frozenset/sorted(x)/object/8 1.033, dict/any(x)/float/1 1.032
+-- headline cells (1M, wall-time ratio, rel. std builtin/enabled)

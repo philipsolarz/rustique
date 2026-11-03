@@ -1,0 +1,84 @@
+{
+ "3.14.10t": {
+  "installed": 99,
+  "of": 111,
+  "refused": {
+   "build": 7,
+   "version": 5
+  },
+  "detail": {
+   "logging.Logger.level": [
+    "refused",
+    "build",
+    "not validated on free-threaded builds",
+    null
+   ],
+   "pathlib.PurePath.parent": [
+    "refused",
+    "version",
+    "CPython 3.14 not validated for this target",
+    null
+   ],
+   "pathlib.PurePath.name": [
+    "refused",
+    "version",
+    "CPython 3.14 not validated for this target",
+    null
+   ],
+   "pathlib.PurePath.suffix": [
+    "refused",
+    "version",
+    "CPython 3.14 not validated for this target",
+    null
+   ],
+   "pathlib.PurePath.stem": [
+    "refused",
+    "version",
+    "CPython 3.14 not validated for this target",
+    null
+   ],
+   "pathlib.PurePath.parts": [
+    "refused",
+    "version",
+    "CPython 3.14 not validated for this target",
+    null
+   ],
+   "enum.property.__get__": [
+    "refused",
+    "build",
+    "not validated on free-threaded builds",
+    null
+   ],
+   "collections.namedtuple": [
+    "refused",
+    "build",
+    "not validated on free-threaded builds",
+    null
+   ],
+   "dataclasses.__init__": [
+    "refused",
+    "build",
+    "not validated on free-threaded builds",
+    null
+   ],
+   "dataclasses.__init__.positional": [
+    "refused",
+    "build",
+    "not validated on free-threaded builds",
+    null
+   ],
+   "contextlib.contextmanager": [
+    "refused",
+    "build",
+    "not validated on free-threaded builds",
+    null
+   ],
+   "functools.singledispatch": [
+    "refused",
+    "build",
+    "not validated on free-threaded builds",
+    null
+   ]
+  }
+ }
+}

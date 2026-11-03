@@ -1,0 +1,80 @@
+3.15.1t  en json.dumps             local       408 ns/call  eff1=1.00  eff2=1.00  eff4=1.00  eff8=1.00  cpu ns/call 408 407 406 406
+3.15.1t  en json.dumps             shared      407 ns/call  eff1=1.00  eff2=0.46  eff4=0.20  eff8=0.08  cpu ns/call 407 843 1883 4513
+3.15.1t  en json.loads             local       574 ns/call  eff1=1.00  eff2=1.01  eff4=0.99  eff8=1.00  cpu ns/call 574 563 556 555
+3.15.1t  en json.loads             shared      565 ns/call  eff1=1.00  eff2=0.99  eff4=0.98  eff8=0.98  cpu ns/call 565 561 559 549
+3.15.1t  en copy.deepcopy          local       769 ns/call  eff1=1.00  eff2=0.84  eff4=0.73  eff8=0.58  cpu ns/call 769 898 1015 1288
+3.15.1t  en copy.deepcopy          shared      823 ns/call  eff1=1.00  eff2=0.51  eff4=0.29  eff8=0.14  cpu ns/call 823 1579 2648 5415
+3.15.1t  en deepcopy(frozenset)    local       821 ns/call  eff1=1.00  eff2=0.95  eff4=0.86  eff8=0.79  cpu ns/call 821 864 934 1019
+3.15.1t  en deepcopy(frozenset)    shared      829 ns/call  eff1=1.00  eff2=0.59  eff4=0.32  eff8=0.17  cpu ns/call 829 1354 2465 4691
+3.15.1t  en dataclasses.asdict     local       498 ns/call  eff1=1.00  eff2=0.93  eff4=0.89  eff8=0.64  cpu ns/call 498 527 554 684
+3.15.1t  en dataclasses.asdict     shared      548 ns/call  eff1=1.00  eff2=0.52  eff4=0.26  eff8=0.12  cpu ns/call 548 1053 2043 4292
+3.15.1t  en datetime.strptime      local       192 ns/call  eff1=1.00  eff2=0.91  eff4=0.89  eff8=0.71  cpu ns/call 192 210 215 264
+3.15.1t  en datetime.strptime      shared      192 ns/call  eff1=1.00  eff2=0.90  eff4=0.88  eff8=0.74  cpu ns/call 192 213 217 257
+3.15.1t  en datetime.isoformat     local        59 ns/call  eff1=1.00  eff2=0.99  eff4=0.98  eff8=0.97  cpu ns/call 59 60 60 60
+3.15.1t  en datetime.isoformat     shared       63 ns/call  eff1=1.00  eff2=0.52  eff4=0.24  eff8=0.11  cpu ns/call 63 121 258 571
+3.15.1t  en date.strftime          local       110 ns/call  eff1=1.00  eff2=0.80  eff4=0.78  eff8=0.51  cpu ns/call 110 137 140 215
+3.15.1t  en date.strftime          shared      117 ns/call  eff1=1.00  eff2=0.62  eff4=0.23  eff8=0.10  cpu ns/call 117 190 512 1192
+3.15.1t  en posixpath.join         local        90 ns/call  eff1=1.00  eff2=0.99  eff4=0.98  eff8=0.98  cpu ns/call 90 91 91 91
+3.15.1t  en posixpath.join         shared       90 ns/call  eff1=1.00  eff2=0.99  eff4=0.98  eff8=0.97  cpu ns/call 90 90 91 90
+3.15.1t  en posixpath.join_fb      local       286 ns/call  eff1=1.00  eff2=0.94  eff4=0.87  eff8=0.69  cpu ns/call 286 303 325 414
+3.15.1t  en posixpath.join_fb      shared      292 ns/call  eff1=1.00  eff2=0.50  eff4=0.24  eff8=0.11  cpu ns/call 292 532 1124 2395
+3.15.1t  en fnmatch.fnmatch        local        41 ns/call  eff1=1.00  eff2=0.99  eff4=1.00  eff8=1.00  cpu ns/call 41 41 41 41
+3.15.1t  en fnmatch.fnmatch        shared       41 ns/call  eff1=1.00  eff2=1.00  eff4=0.99  eff8=0.96  cpu ns/call 41 41 41 41
+3.15.1t  en pathlib.join           local       208 ns/call  eff1=1.00  eff2=0.99  eff4=0.97  eff8=0.96  cpu ns/call 208 210 211 209
+3.15.1t  en pathlib.join           shared      210 ns/call  eff1=1.00  eff2=0.51  eff4=0.26  eff8=0.13  cpu ns/call 210 402 770 1575
+3.15.1t  en logging.format         local       749 ns/call  eff1=1.00  eff2=0.86  eff4=0.75  eff8=0.31  cpu ns/call 749 866 988 2167
+3.15.1t  en logging.format         shared      799 ns/call  eff1=1.00  eff2=0.56  eff4=0.24  eff8=0.10  cpu ns/call 799 1383 3154 7065
+3.15.1t  en logging.LogRecord      local      1337 ns/call  eff1=1.00  eff2=0.99  eff4=0.98  eff8=0.98  cpu ns/call 1337 1347 1348 1347
+3.15.1t  en logging.LogRecord      shared     1375 ns/call  eff1=1.00  eff2=1.01  eff4=1.02  eff8=1.01  cpu ns/call 1375 1354 1346 1346
+3.15.1t  en urllib.quote           local       142 ns/call  eff1=1.00  eff2=1.00  eff4=0.99  eff8=1.00  cpu ns/call 142 141 142 141
+3.15.1t  en urllib.quote           shared      142 ns/call  eff1=1.00  eff2=1.00  eff4=0.99  eff8=0.94  cpu ns/call 142 141 142 142
+3.15.1t  en urllib.urlsplit        local        68 ns/call  eff1=1.00  eff2=0.46  eff4=0.21  eff8=0.09  cpu ns/call 68 144 310 714
+3.15.1t  en urllib.urlsplit        shared       76 ns/call  eff1=1.00  eff2=0.50  eff4=0.23  eff8=0.10  cpu ns/call 76 152 321 715
+3.15.1t  en random.randint         local        75 ns/call  eff1=1.00  eff2=0.50  eff4=0.24  eff8=0.11  cpu ns/call 75 147 297 648
+3.15.1t  en random.randint         shared       75 ns/call  eff1=1.00  eff2=0.49  eff4=0.24  eff8=0.11  cpu ns/call 75 146 305 657
+3.15.1t  en Random().randint       local        66 ns/call  eff1=1.00  eff2=1.00  eff4=1.00  eff8=0.98  cpu ns/call 66 66 66 66
+3.15.1t  en Random().randint       shared       66 ns/call  eff1=1.00  eff2=0.49  eff4=0.24  eff8=0.10  cpu ns/call 66 133 277 605
+3.15.1t  en textwrap.wrap          local       796 ns/call  eff1=1.00  eff2=1.00  eff4=0.99  eff8=0.97  cpu ns/call 796 792 794 800
+3.15.1t  en textwrap.wrap          shared      796 ns/call  eff1=1.00  eff2=0.99  eff4=0.97  eff8=0.96  cpu ns/call 796 794 802 799
+3.15.1t  en statistics.mean        local       844 ns/call  eff1=1.00  eff2=1.00  eff4=0.99  eff8=0.98  cpu ns/call 844 846 845 844
+3.15.1t  en statistics.mean        shared      830 ns/call  eff1=1.00  eff2=0.59  eff4=0.39  eff8=0.21  cpu ns/call 830 1203 1977 3711
+3.15.1t  en float.repr             local        74 ns/call  eff1=1.00  eff2=0.97  eff4=0.97  eff8=0.97  cpu ns/call 74 76 74 74
+3.15.1t  en float.repr             shared       77 ns/call  eff1=1.00  eff2=1.00  eff4=1.00  eff8=1.00  cpu ns/call 77 75 74 74
+3.15.1t  en sorted(50 ints)        local       591 ns/call  eff1=1.00  eff2=0.98  eff4=0.95  eff8=0.97  cpu ns/call 591 598 600 597
+3.15.1t  en sorted(50 ints)        shared      600 ns/call  eff1=1.00  eff2=0.60  eff4=0.43  eff8=0.24  cpu ns/call 600 838 1247 2257
+3.15.1t  en list.sort(50 str)      local      1216 ns/call  eff1=1.00  eff2=1.00  eff4=0.99  eff8=0.98  cpu ns/call 1215 1217 1219 1220
+3.15.1t  en list.sort(50 str)      shared     1355 ns/call  eff1=1.00  eff2=0.87  eff4=0.31  eff8=0.08  cpu ns/call 1355 1560 4212 8059
+3.15.1t  en x in list(100)         local       651 ns/call  eff1=1.00  eff2=1.00  eff4=1.00  eff8=1.00  cpu ns/call 651 637 644 637
+3.15.1t  en x in list(100)         shared      677 ns/call  eff1=1.00  eff2=1.00  eff4=1.00  eff8=0.98  cpu ns/call 678 677 677 677
+3.15.1t  en list.index(100)        local       584 ns/call  eff1=1.00  eff2=0.98  eff4=0.98  eff8=0.98  cpu ns/call 584 593 595 594
+3.15.1t  en list.index(100)        shared      657 ns/call  eff1=1.00  eff2=1.00  eff4=1.00  eff8=0.95  cpu ns/call 657 657 652 654
+3.15.1t  en x in tuple(8)          local        27 ns/call  eff1=1.00  eff2=1.00  eff4=0.98  eff8=0.98  cpu ns/call 27 27 27 27
+3.15.1t  en x in tuple(8)          shared       27 ns/call  eff1=1.00  eff2=0.99  eff4=0.99  eff8=0.94  cpu ns/call 27 28 27 27
+3.15.1t  en class in tuple(5)      local        58 ns/call  eff1=1.00  eff2=1.00  eff4=0.98  eff8=0.97  cpu ns/call 58 58 58 58
+3.15.1t  en class in tuple(5)      shared       57 ns/call  eff1=1.00  eff2=1.00  eff4=0.99  eff8=0.95  cpu ns/call 57 57 57 57
+3.15.1t  en pair in list(20)       local       194 ns/call  eff1=1.00  eff2=0.99  eff4=0.99  eff8=0.96  cpu ns/call 194 195 195 195
+3.15.1t  en pair in list(20)       shared      238 ns/call  eff1=1.00  eff2=0.49  eff4=0.46  eff8=0.17  cpu ns/call 238 486 522 1377
+3.15.1t  en deepcopy(UUID)         local       736 ns/call  eff1=1.00  eff2=0.76  eff4=0.56  eff8=0.29  cpu ns/call 736 966 1284 2479
+3.15.1t  en deepcopy(UUID)         shared      773 ns/call  eff1=1.00  eff2=0.55  eff4=0.29  eff8=0.14  cpu ns/call 773 1396 2627 5113
+3.15.1t  en set.__reduce__         local       713 ns/call  eff1=1.00  eff2=0.79  eff4=0.55  eff8=0.28  cpu ns/call 713 896 1292 2577
+3.15.1t  en set.__reduce__         shared      713 ns/call  eff1=1.00  eff2=0.77  eff4=0.47  eff8=0.26  cpu ns/call 713 924 1475 2625
+3.15.1t  en sum(list 100)          local       190 ns/call  eff1=1.00  eff2=0.74  eff4=0.74  eff8=0.74  cpu ns/call 190 224 210 217
+3.15.1t  en sum(list 100)          shared      189 ns/call  eff1=1.00  eff2=0.48  eff4=0.22  eff8=0.08  cpu ns/call 189 389 851 2290
+3.15.1t  en max(list 100)          local       109 ns/call  eff1=1.00  eff2=0.82  eff4=0.82  eff8=0.82  cpu ns/call 109 120 120 117
+3.15.1t  en max(list 100)          shared      117 ns/call  eff1=1.00  eff2=0.50  eff4=0.23  eff8=0.09  cpu ns/call 117 234 506 1240
+3.15.1t  en min(dict 50)           local       483 ns/call  eff1=1.00  eff2=1.01  eff4=1.00  eff8=0.98  cpu ns/call 483 473 478 480
+3.15.1t  en min(dict 50)           shared      475 ns/call  eff1=1.00  eff2=0.46  eff4=0.20  eff8=0.08  cpu ns/call 475 1009 2311 5598
+3.15.1t  en functools.cache hit    local        36 ns/call  eff1=1.00  eff2=1.00  eff4=0.98  eff8=0.95  cpu ns/call 36 36 36 36
+3.15.1t  en functools.cache hit    shared       36 ns/call  eff1=1.00  eff2=0.66  eff4=0.35  eff8=0.18  cpu ns/call 36 54 103 205
+3.15.1t  en lru_cache(128) hit     local        44 ns/call  eff1=1.00  eff2=1.00  eff4=0.98  eff8=0.98  cpu ns/call 44 43 44 44
+3.15.1t  en lru_cache(128) hit     shared       44 ns/call  eff1=1.00  eff2=0.49  eff4=0.23  eff8=0.10  cpu ns/call 44 89 188 416
+3.15.1t  en re.match (module cache) local       165 ns/call  eff1=1.00  eff2=0.52  eff4=0.24  eff8=0.11  cpu ns/call 165 288 578 1287
+3.15.1t  en re.match (module cache) shared      181 ns/call  eff1=1.00  eff2=0.49  eff4=0.24  eff8=0.12  cpu ns/call 181 360 726 1282
+3.15.1t  en isinstance(d, Mapping) local       145 ns/call  eff1=1.00  eff2=0.51  eff4=0.25  eff8=0.11  cpu ns/call 145 272 571 1215
+3.15.1t  en isinstance(d, Mapping) shared      145 ns/call  eff1=1.00  eff2=0.51  eff4=0.25  eff8=0.12  cpu ns/call 145 275 559 1193
+3.15.1t  en isinstance(f, Number)  local       144 ns/call  eff1=1.00  eff2=0.50  eff4=0.24  eff8=0.11  cpu ns/call 144 280 580 1237
+3.15.1t  en isinstance(f, Number)  shared      145 ns/call  eff1=1.00  eff2=0.50  eff4=0.25  eff8=0.11  cpu ns/call 145 289 575 1224
+3.15.1t  en isinstance(d, dict) (ref) local        23 ns/call  eff1=1.00  eff2=1.00  eff4=0.99  eff8=0.97  cpu ns/call 23 23 23 23
+3.15.1t  en isinstance(d, dict) (ref) shared       22 ns/call  eff1=1.00  eff2=1.00  eff4=0.99  eff8=0.99  cpu ns/call 22 22 22 22
+3.15.1t  en Pattern.match (compiled) local       111 ns/call  eff1=1.00  eff2=0.54  eff4=0.28  eff8=0.12  cpu ns/call 111 199 375 892
+3.15.1t  en Pattern.match (compiled) shared      110 ns/call  eff1=1.00  eff2=0.51  eff4=0.27  eff8=0.12  cpu ns/call 110 217 402 896
