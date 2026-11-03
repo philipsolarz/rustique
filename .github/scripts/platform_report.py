@@ -15,7 +15,7 @@ import json
 import os
 import sys
 
-EXPECTED = ("version", "build", "jit", "platform", "unvalidated-patch")
+EXPECTED = ("version", "build", "jit", "platform", "unvalidated-patch", "not-needed")
 
 
 def family(cov: dict) -> str:

@@ -302,6 +302,7 @@ rustique 0.3.0 on CPython 3.15.1 (GIL), 5 processes (4 forked): enabled by RUSTI
   | `unvalidated-patch` | a patch release newer than this Rustique release | upgrade Rustique, or `RUSTIQUE_UNVALIDATED_PATCH=1` ([above](#python-versions-and-patch-releases)) |
   | `platform` | not validated on this OS, C library or architecture | nothing ([Platforms](#platforms)) |
   | `build` | a debug build or an unvalidated configuration | — |
+  | `not-needed` | this build does not need the target (the CPython behaviour it fixes is absent here) | nothing |
   | `jit` | the JIT is on and the target is not validated with it | `PYTHON_JIT=0` to accelerate it |
   | `fingerprint` | the standard-library code differs from the validated release (a patched or vendored CPython) | report it if this is a stock build |
   | `conflict` | another tool replaced the entry point first (gevent, an APM agent) | — |
@@ -390,8 +391,8 @@ pytest --rustique --rustique-allow-refused datetime # accept that datetime refus
 The plugin turns Rustique and its counters on before collection, and prints the per-target
 report in the terminal summary. It **fails the session** (exit 1) if a selected target was
 refused for an unexpected reason: a fingerprint mismatch, a site patched by someone else, or
-a failed self-test. Refusals of category `version`, `unvalidated-patch`, `build`, `jit` and
-`platform` are expected on a test matrix and never fail the session. Under `pytest-xdist`
+a failed self-test. Refusals of category `version`, `unvalidated-patch`, `build`, `jit`,
+`platform` and `not-needed` are expected on a test matrix and never fail the session. Under `pytest-xdist`
 every worker is accelerated and the summary adds up their counters. If plugin autoloading is
 off (`PYTEST_DISABLE_PLUGIN_AUTOLOAD`), use `-p rustique.pytest_plugin`.
 
