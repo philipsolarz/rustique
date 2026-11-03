@@ -3,6 +3,20 @@
 Status of the `next` rewrite and where it goes from here. See `ARCHITECTURE.md` for the
 contract and `ARCHAEOLOGY.md` for the history that motivated it.
 
+## Done: wave 2, all kinds of programs (November 2026)
+
+See `DECISIONS.md` §10–§17, `IMPACT_ATLAS.md` Part 2 (§7–§15), `ACCELERATION.md` and
+`docs/atlas/w2-phase3.md` (the measurements).
+
+| Area | State |
+|---|---|
+| Framework (`accel`) | heap-type-slot sites, opcode-handler sites (the `interp` tier), validate-on-first-call, fingerprint v3 with recorded patch releases (`unvalidated-patch` refusal), platform allowlist, cost-weighted credits v2, fork-safe live counters, opt-in tiers (`RUSTIQUE_TIERS`, `enable(tiers=)`), free-threading hardening |
+| Targets | 111 targets in 21 default groups (new: `re` compiler and module functions, `enum`, generated namedtuple/dataclass code, `contextlib`/`functools` bookkeeping, `set.__reduce__` on free-threaded builds; json `default=`, logging handlers, `relpath`, `sorted`) plus two opt-in tiers: `interp` (generated opcode handlers on verified python-build-standalone builds) and `gc` (defers full collections that find nothing) |
+| Results | 65 real programs in 8 families: 0.870 (3.15.1) / 0.872 (3.15.1t), framework apps 0.940, custom applications 0.936, services 0.848, threaded programs 0.685 / 0.792; wave 1's 34 0.858 / 0.826; pyperformance 0.911 / 0.936; 0 differences in CPython's test modules (50 modules, 4 builds) and 14 real projects' suites |
+| Removed | the opt-in native types (`List`, `Dict`, …, `X`, scalars, the C-API capsule): `docs/MIGRATION.md`, tag `legacy-native-types` |
+| DX | `python -m rustique estimate`, `report` with per-target reasons, `pytest --rustique-tiers`, per-platform wheel CI with a target-coverage report, release-ready wheels (not published) |
+| Open | `sorted()` of large sets of numbers, the `gc` tier's pause placement, startup wall time 1.06–1.08, extension 3.6 MB, pyperformance `coroutines` on 3.15.1t (DECISIONS §13) |
+
 ## Done: wave 1, faster real programs (November 2026)
 
 See `DECISIONS.md` §5–§9, `IMPACT_ATLAS.md`, `ACCELERATION.md` (the contract) and
@@ -47,58 +61,25 @@ See `DECISIONS.md` for the decisions and `BENCHMARKS.md` for the numbers.
 
 ## Known trade-offs
 
-- **Per-element access to Rustique containers costs more than to a builtin.** CPython only
-  fast-paths exact builtins: even an empty `list` subclass pays 2.4× for `x[i]`.
-  `List` now runs at 1.0–1.16× of that floor (raw slots, no locks on GIL builds, an
-  element cache for native storage), i.e. ~2× the builtin for `x[i]` on tiny lists. The
-  drop-in speedup for existing code is `rustique.enable()`, which keeps the builtins.
-- **Native float storage has no object identity**, so NaN compares equal to NaN in
-  searches and comparisons (documented deviation).
-- **Typed containers normalise values** (`List[int]` stores `True` as `1`; `List[float]`
-  stores `1` as `1.0`), like `array.array` and NumPy. Untyped containers never do.
-- **NaNs sort last**; CPython's order with NaNs is ill-defined.
-- **Lock fairness over raw throughput**: on 3.15t a lone writer among many readers gets
-  ~11k ops/s (it is never starved); read-heavy scaling is ~2.5× better than before the
-  fairness work.
-- **`remove()`/`extend()` re-entrancy**: `remove()` deletes the element that compared equal
-  (CPython deletes whatever sits at that index afterwards) and `extend()` consumes a generic
-  iterable before appending; both pinned by tests.
-- **Big-endian buffers** are ingested by iteration (like `list(arr)`), so typed lists reject
-  NumPy scalar elements from byte-swapped arrays.
-- **Buffer exports freeze the container**: safer than `bytearray`'s resize-only rule,
-  stricter for writers.
-- **Rustique containers are not builtin subclasses** (by design, `TAKEOVER.md` R2): C code
-  that requires a real `list`/`dict` (`json.dumps`, `type()` namespaces, PyO3 `cast`)
-  rejects them. `match` works: `List`/`Tuple` set the sequence flag, `Dict` the mapping flag.
+The trade-offs of Rustique's own container types (per-element access cost, typed
+normalisation, lock fairness, buffer exports, …) left with those types in 0.3
+(`docs/MIGRATION.md`). What remains are the accepted overages of the acceleration layer,
+each measured and bounded: DECISIONS §10 rulings 18–19 and §13.
 
 ## Next steps
 
-**Wave 2** (ranked, with evidence: `DECISIONS.md` §9): startup and install cost (engine
-split, precompiled loader, deferred fingerprints); json `default=`/`cls=`; class-needle
-membership and `key=` fast paths; HTTP header/e-mail parsing; `re`; deeper coverage of the
-wave-1 targets (copy restarts, pathlib subclasses); platform coverage (Windows symbol
-lookup, `datetime` text on macOS/musl); bulk text kernels, `xml.etree`,
-`tokenize`, `csv`, `ipaddress`, `uuid`.
+**Wave 3** (ranked, with evidence: `DECISIONS.md` §17):
 
-Carried over from the parity program, ranked by expected gain and risk (details and
-evidence: `DECISIONS.md` §4; the atlas demoted the bulk `str`/`bytes` kernels, since real
-inputs are small, and wave 1 shipped the float→text core):
-
-1. **`str` method kernels** behind the existing C entry points (`find`, `count`, `split`,
-   `replace`, `join`, ASCII case mapping): SIMD on PEP 393 buffers, exact semantics,
-   CPython's code otherwise.
-2. **`bytes`/`bytearray` method kernels** (`find`/`count`/`split`/`replace`/`hex`/
-   `fromhex`/`translate`).
-3. **Large-`int` arithmetic** behind `nb_multiply`/`nb_floor_divide`/`nb_power` and
-   `int`↔`str`, above a size threshold (subquadratic algorithms; PEP 757 digit access).
-4. **`float` → text** (`repr`/`str`/`format`) with shortest-round-trip printing.
-5. **Remaining container kernels**: `list ==`/`<`, `list.remove`, `key=` fast paths for
-   `min`/`max`/`sorted`, a faster table walk for large builtin sets.
-6. **Rustique containers**: single-allocation hash tables for `Dict`/`Set` (small sizes),
-   cheaper iterator `next`, native `str` ingest, lock-free reads on free-threaded builds.
-   Carried over from v0.2: big ints natively (PEP 757 export/import), struct-of-arrays
-   records, validity bitmaps for `T | None`, expression-engine string kernels and fused
-   pipelines, abi3t wheels, subinterpreter support, C-API capsule extensions, mimalloc for
-   large fresh buffers.
-7. **Upstream**: a CPython specialization hook for third-party containers is the
-   prerequisite for native storage ever being the default.
+1. Close the open never-slower items: large-set sort, the `gc` tier's pause placement, startup
+   wall time (smaller engine, lazily loaded handler sets), first-call costs over budget.
+2. The `interp` tier as the default on verified builds (its whole-run gate, remaining C→Python
+   frame pushes, a `STORE_ATTR` cache, aarch64 and macOS builds).
+3. Third-party-heavy code: generic attribute lookups, allocation and dict work through the
+   `interp` tier and the runtime layer; `getattr`/`hasattr` with the attribute cache.
+4. email/http header parsing, the `xml.etree` serializer, the json `make_encoder` route,
+   `inspect.signature`, weakref containers.
+5. Free-threading: generated-code targets without stop-the-world installs, the
+   `isinstance(x, ABC)` cache, threaded programs in the estimator.
+6. Platform reach: Windows and macOS/musl target counts proven per release; recording each
+   new CPython patch release as it ships.
+7. Upstream reports (DECISIONS §17.7).

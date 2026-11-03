@@ -1,5 +1,6 @@
 STATUS: Part 1 (§1–§6): wave 1's atlas (2026-11-01) and its outcome. **Part 2 (§7–§14): wave 2's
-atlas (2026-11-02)**, the Phase-1 result that chose wave 2's workstreams and targets. Evidence lives
+atlas (2026-11-02)**, the Phase-1 result that chose wave 2's workstreams and targets; §15:
+wave 2's measured outcome against it (2026-11-03). Evidence lives
 in `docs/atlas/` (wave 1: `workloads-*.md`, `static-usage.md`, `headroom-*.md`, `mechanisms.md`;
 wave 2: `w2-*.md`, one per Phase-1 slice, and `w2-phase0.md`) and the raw data in
 `~/rustique-research/` (wave 2: `~/rustique-research/w2/<slice>/`). Every number is **measured**
@@ -479,3 +480,35 @@ code ≈ 0.98 (frameworks), 0.95 (libs), 0.85 (services), 0.98 (custom), 0.82 (t
 4. The `isinstance(x, ABC)` positive cache for 3.15t threads; `functools.cache` hits under
    threads.
 5. The upstream items of §12.
+
+## 15. Wave 2's outcome against this atlas (Phase 3, `docs/atlas/w2-phase3.md`)
+
+Measured on the quiet c7a.8xlarge, default tier unless stated; the full target-by-target verdict
+is DECISIONS §11.
+
+| what the atlas said (§7, §11, §14) | what wave 2 measured | |
+|---|---|---|
+| stdlib is the largest reachable layer (32%); closing wave 1's gaps in json, logging, paths, copy (#8, #9, #12) | wave 1's 34 programs 0.877 → **0.858** (3.15.1), 0.843 → **0.826** (3.15.1t); `logging_service` 0.813 → 0.686, `json_api` 0.835 → 0.717, `report_render` 0.438 → 0.357 | as predicted; T2 (0.85 / 0.80) missed by 0.008 / 0.026 |
+| `set.__reduce__` on 3.15.1t (#1, score 0.76) | `isort_stdlib` 0.201 with everything on, 0.260 with the copy group off (CPython: 4.0× slower than its GIL build) | as predicted (T7 met) |
+| machinery under custom code (#7, #11, #14, #16): 2–40% of the custom programs that lean on it | custom family **0.936** by default (`rules_engine` 0.845, `report_engine` 0.843); framework family **0.940** (falcon 0.795) | better than the scored estimates on frameworks; custom about as predicted |
+| the `interp` tier (#3–5): whole runs custom 0.952, frameworks 0.982 in instructions (§7.3) | on top of the default tier: frameworks **0.933**, custom **0.920** against plain (0.986 / 0.987 of the default tier) | as predicted in size; T5's custom ≤ 0.90 missed; stays opt-in (its own gate, whole runs ≤ 1.00, not met) |
+| the `gc` tier (#2): 0.42 (GIL) / 0.84 (t) score, "GC-heavy programs ≤ 0.87" (T6) | GC-heavy set **0.982 / 0.952**, RSS ≤ 1.04, pause bound in objects held; pause milliseconds 1.30 once | **over-estimated**: most full collections in these programs find real garbage, and only near-zero-yield ones may be deferred exactly |
+| `re` (#18): small steady share, large on startup of short CLIs (I) | `regex_compile` 0.044, `import yaml` 0.61, `import_startup` whole process 1.022 (wave 1) → 0.990 | as predicted |
+| third-party-heavy code: 36–49% third-party, little reachable by default | libs **0.961** (attrs/cattrs 0.847 through `copy`/`dataclasses`; pydantic, jsonschema, PyYAML 0.99–1.00) | as predicted; T4's 0.95 missed |
+| threaded programs: kernel cliffs and the FT penalty | threads family at 8 threads 0.685 / **0.792**; every kernel ≤ 1.05× CPU per call at 8 threads | T4's 0.78 on t missed by 0.012 |
+| pyperformance (T12 ≤ 0.93 / 0.94) | **0.911 / 0.936** | met |
+| the whole 65 (T3 ≤ 0.88 / 0.84) | **0.870 / 0.872** | met on 3.15.1; on 3.15.1t the new families gain less (the 31 new: 0.925) |
+
+What the atlas missed:
+
+- **A new never-slower case in a wave-1 kernel**: the wave-2 sort strategy is slower than
+  timsort on long nearly ordered runs (a 1M-element set of numbers, 1.23–1.28). The 0–100
+  scoreboard and the 10k cells did not show it; only the 1M wall-time board did. Large-input
+  cells of every kernel whose algorithm changes now belong in the workstream's own gate.
+- **Layout effects at the 5–8% level** (pyperformance `coroutines` on 3.15.1t) that no
+  group causes alone: the never-slower bar on whole benchmarks needs a layout control
+  (enabled ÷ imported) before a cell is attributed.
+- **The estimator** under-counts targets that validate at their first call (69% within ±0.03
+  on 3.15.1, 80% on 3.15.1t; T13).
+
+Next waves, ranked: DECISIONS §17.
