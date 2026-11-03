@@ -1107,6 +1107,10 @@ fn prepare_group<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refu
     if cls.as_ptr() != ld(&RANDOM_CLS) {
         prepare_statics(py, cx, &cls)?;
     }
+    // `self._randbelow(n)`, which the kernels run natively, is this method: fingerprinted
+    // so that a patch release changing it refuses instead of differing.
+    let rb = get_s(cx, &crate::accel::prepare::type_dict(&cls)?, &key(py, "_randbelow_with_getrandbits"))?;
+    cx.fingerprint_code(&rb, &[(3, 14, "f35f0d709dc5c1bf"), (3, 15, "7acb0dd4029b9a49")])?;
     // Module globals: pinned and checked to be what `random` imports them as (`from math
     // import floor as _floor`, ...), read from the source modules' dicts.
     let math = module_dict_s(cx, &key(py, "math"))?;

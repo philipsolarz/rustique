@@ -368,14 +368,15 @@ unsafe fn validate_mp_process(t: Tp) -> bool {
     }
 }
 
+/// `obj` is an original recorded for `LogRecord.__init__` on the running minor (format v3,
+/// `accel/fingerprints.txt`: the per-patch sets every target uses), or, without an entry in
+/// the data, its v2 fingerprint is the inline `expected` one.
 fn fingerprint_ok(obj: O, expected: &'static [(u8, u8, &'static str)]) -> bool {
-    let (major, minor) = crate::accel::version::running();
-    let Some(want) = crate::accel::fingerprint::expected_for(expected, major, minor) else { return false };
     // SAFETY: attached thread (kernel); a live object.
     let py = unsafe { Python::assume_attached() };
     // SAFETY: borrowed reference kept alive by the caller.
     let b = unsafe { Bound::from_borrowed_ptr(py, obj) };
-    crate::accel::fingerprint::any(&b).is_ok_and(|f| f == want)
+    crate::accel::fingerprint::check("logging.LogRecord.__init__", &b, expected)
 }
 
 /// Validate `multiprocessing.current_process` the first time multiprocessing is seen.

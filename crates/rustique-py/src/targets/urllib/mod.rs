@@ -937,9 +937,41 @@ fn prepare_common(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 static URLLIB_DEPS: accel::DepFlag = accel::DepFlag::new();
 
 /// The group's shared declarations (prepared once before the first target).
+/// The module helpers the kernels reimplement on their accepted paths (quoting through
+/// `_byte_quoter_factory`'s `_Quoter`, unquoting, the netloc checks of `_urlsplit` for an
+/// ASCII netloc without brackets): fingerprinted so that a patch release changing one
+/// refuses instead of differing. `_check_bracketed_host` is not: bracketed netlocs fall
+/// back. Inline v2 values (3.14.9 / 3.15.1); the recorded v3 sets are in
+/// `accel/fingerprints.txt`.
+const URL_HELPERS: [(&str, accel::Fingerprints); 8] = [
+    ("quote_from_bytes", &[(3, 14, "b5cd6f61ae36077e"), (3, 15, "d4d31e1f59fa3248")]),
+    ("_byte_quoter_factory", &[(3, 14, "6c3350c664036dbe"), (3, 15, "6ec68c585534130f")]),
+    ("_unquote_impl", &[(3, 14, "e2c6486fd86c9e05"), (3, 15, "1cf55bc4ba119164")]),
+    ("_generate_unquoted_parts", &[(3, 14, "2145397716b3a43f"), (3, 15, "dde052b38b1b8c8b")]),
+    ("unquote_to_bytes", &[(3, 14, "a07614d01156af76"), (3, 15, "2361d8a6390f809f")]),
+    ("_splitnetloc", &[(3, 14, "184be9387f292dc5"), (3, 15, "249451b4aa2c7b7a")]),
+    ("_checknetloc", &[(3, 14, "41b0aceb5e297d77"), (3, 15, "305ebd0ef18ff6ba")]),
+    ("_check_bracketed_netloc", &[(3, 14, "cc53d21ea63a0e4a"), (3, 15, "a607276c54c49a1a")]),
+];
+const QUOTER_HELPERS: [(&str, accel::Fingerprints); 2] = [
+    ("__init__", &[(3, 14, "7a057e1ce085ce97"), (3, 15, "9042e804a5b097fb")]),
+    ("__missing__", &[(3, 14, "83cf665569323911"), (3, 15, "4cab190d58a497f4")]),
+];
+
 fn prepare_group<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
     prepare_common(py, cx)?;
     let globals = cx.module()?.dict();
+    for (name, fps) in URL_HELPERS {
+        let f = cx.get(&globals, name)?;
+        // `_byte_quoter_factory` is an `lru_cache` wrapper: its function is `__wrapped__`.
+        let f = if name == "_byte_quoter_factory" { f.getattr("__wrapped__")? } else { f };
+        cx.fingerprint_code(&f, fps)?;
+    }
+    let quoter = cx.get(&globals, "_Quoter")?.cast_into::<pyo3::types::PyType>().map_err(PyErr::from)?;
+    let qd = crate::accel::prepare::type_dict(&quoter)?;
+    for (name, fps) in QUOTER_HELPERS {
+        cx.fingerprint_code(&cx.get(&qd, name)?, fps)?;
+    }
     pin_keys!(
         cx,
         &globals,

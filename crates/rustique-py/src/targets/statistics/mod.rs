@@ -345,9 +345,28 @@ fn prepare_common(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 static STATS_DEPS: accel::DepFlag = accel::DepFlag::new();
 
 /// The group's shared declarations (prepared once before the first target).
+/// The module helpers the kernels' exact arithmetic reimplements: fingerprinted so that a
+/// patch release changing one refuses instead of differing. Inline v2 values (3.14.9 /
+/// 3.15.1); the recorded v3 sets are in `accel/fingerprints.txt`.
+const STATS_HELPERS: [(&str, accel::Fingerprints); 9] = [
+    ("_coerce", &[(3, 14, "6dad083af676133f"), (3, 15, "6b69ce0771bb898f")]),
+    ("_convert", &[(3, 14, "8c47464d50ed26ba"), (3, 15, "3366eeff97f3d534")]),
+    ("_decimal_sqrt_of_frac", &[(3, 14, "2ffb637f1437a935"), (3, 15, "2cafc6ebdd98c24e")]),
+    ("_exact_ratio", &[(3, 14, "3cfd108469a1a09f"), (3, 15, "13f7a6bd6034c2b8")]),
+    ("_float_sqrt_of_frac", &[(3, 14, "2bfc273c9e281abc"), (3, 15, "1ad28c48294050ad")]),
+    ("_integer_sqrt_of_frac_rto", &[(3, 14, "144cfb00e44a7647"), (3, 15, "20da2971dc095f4b")]),
+    ("_isfinite", &[(3, 14, "358d82b2a8c0f7fb"), (3, 15, "aa7075fb371d2064")]),
+    ("_ss", &[(3, 14, "28b563469b157119"), (3, 15, "8969fabdaafb25cb")]),
+    ("_sum", &[(3, 14, "be9d6735bbccf67a"), (3, 15, "e3a368c4f81f08ec")]),
+];
+
 fn prepare_group<'py>(_py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
     prepare_common(cx)?;
     let globals = cx.module()?.dict();
+    for (name, fps) in STATS_HELPERS {
+        let f = cx.get(&globals, name)?;
+        cx.fingerprint_code(&f, fps)?;
+    }
     pin_keys!(
         cx,
         &globals,

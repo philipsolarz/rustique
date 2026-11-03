@@ -100,14 +100,18 @@ fn get<'py>(d: &Bound<'py, PyDict>, key: &str) -> Result<Bound<'py, PyAny>, Stri
     item(d, key).ok_or_else(|| format!("missing {key}"))
 }
 
+/// The `_strptime`/`locale` code the kernels reimplement is one recorded for the running
+/// minor (format v3, `accel/fingerprints.txt`, owner `datetime`: the per-patch sets every
+/// target uses), or, for an original the data has no entry for, its v2 fingerprint is the
+/// inline one (`fingerprints::code`).
 fn fp_ok(name: &str, f: &Bound<'_, PyAny>) -> Result<(), String> {
-    let (major, minor) = crate::accel::version::running();
-    // The registry's canonical fingerprint (format v2, cached per code object).
-    let observed = crate::accel::fingerprint::function(f).map_err(|e| format!("{name}: {e}"))?;
-    match crate::accel::fingerprint::expected_for(fingerprints::code(name), major, minor) {
-        Some(x) if x == observed => Ok(()),
-        _ => Err(format!("fingerprint: {name}: {observed} not validated for {major}.{minor}")),
+    if crate::accel::fingerprint::check("datetime", f, fingerprints::code(name)) {
+        return Ok(());
     }
+    let (major, minor) = crate::accel::version::running();
+    let observed =
+        crate::accel::fingerprint::any_v3(f).map(|(_, v)| crate::accel::fingerprint::hex(v)).unwrap_or_default();
+    Err(format!("fingerprint: {name}: {observed} not recorded for {major}.{minor}"))
 }
 
 /// Current fingerprints of the Python code the strptime kernels reimplement (to maintain
