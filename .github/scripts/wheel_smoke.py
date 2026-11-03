@@ -10,7 +10,8 @@ plain CPython; RUSTIQUE=1 enables at startup through the shipped .pth, loading o
 (top-level `_rustique`, also registered as `rustique._rustique`); RUSTIQUE unset imports nothing;
 RUSTIQUE=0 turns enable() into a no-op; `python -m rustique status` and `python -m rustique diff`
 work. `--interp installable`: the opt-in `interp` tier is built in: its targets are `disabled`
-with the opt-in reason unless asked for, and installed with `enable(tiers=["interp"])`;
+with the opt-in reason unless asked for, and with `enable(tiers=["interp"])` they install (a
+single target may refuse as `build`/`version`: not validated on this configuration);
 `--interp refused`: asked for, every interp target refuses (off x86_64 Linux: "validated on
 x86_64 Linux (glibc) only"; a wheel built without a clang >= 19: "built without handlers").
 Exit status 0 when every check passes.
@@ -117,7 +118,11 @@ def main() -> int:
         off_ok = bool(got["off"]) and all(t["state"] == "disabled" and "opt-in" in (t.get("reason") or "")
                                           for t in got["off"])
         if interp == "installable":
-            ok = off_ok and bool(got["on"]) and all(t["state"] in ("installed", "armed") for t in got["on"])
+            # the tier installs; single targets may still refuse as not validated on this build
+            # (interp.kwinit on free-threaded builds), never for want of handlers or platform
+            ok = off_ok and any(t["state"] in ("installed", "armed") for t in got["on"]) and all(
+                t["state"] in ("installed", "armed") or t.get("refusal") in ("build", "version")
+                for t in got["on"])
         else:
             ok = off_ok and bool(got["on"]) and all(
                 t["state"] == "refused" and any(w in (t.get("reason") or "")

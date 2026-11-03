@@ -492,6 +492,7 @@ rustique._accel = Accel(rustique._accel)
     ("jit", (), False),
     ("platform", (), False),
     ("unvalidated-patch", (), False),
+    ("not-needed", (), False),
 ])
 def test_plugin_unexpected_refusal_fails_the_session(plain_suite, refusal, args, fails):
     (plain_suite / "conftest.py").write_text(REFUSE.format(refusal=refusal))

@@ -40,7 +40,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-EXPECTED = ("version", "build", "jit", "platform", "unvalidated-patch")
+EXPECTED = ("version", "build", "jit", "platform", "unvalidated-patch", "not-needed")
 # CPython test modules per group (tests/conformance/run_target_suites.py --modules). A group
 # missing here runs Rustique's own tests only; workstreams add their groups.
 CONFORMANCE = {
@@ -143,6 +143,7 @@ def main() -> int:
     ap.add_argument("--no-conformance", action="store_true")
     ap.add_argument("--timeout", type=int, default=2400, help="seconds per conformance module")
     a = ap.parse_args()
+    a.out = os.path.abspath(a.out)  # the conformance runner writes there from another directory
     os.makedirs(a.out, exist_ok=True)
     work = tempfile.mkdtemp(prefix="rq-platform-")
     failures: list[str] = []
