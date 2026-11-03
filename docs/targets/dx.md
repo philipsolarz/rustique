@@ -25,7 +25,10 @@ The `.pth` line is engine's (DECISIONS §10.7):
 `import os; os.environ.get('RUSTIQUE', '0') != '0' and __import__('_rustique').startup()`.
 Release wheels carry the extension as a top-level `_rustique.<abi>.{so,pyd}` (repacked in CI,
 §6). sdist and editable builds keep maturin's in-package layout behind a top-level
-`_rustique.py` shim. The extension registers as both `_rustique` and `rustique._rustique`.
+`_rustique.py` shim, and so do the musllinux wheels: the repair tool grafts `libgcc_s` (Rust's
+unwinder on musl) into `rustique.libs/`, found through the extension's `$ORIGIN`-relative
+search path, which a move to the root would break (measured on the wave-2 full matrix, run
+41707626302; wave 1's musl wheels carried it too). The extension registers as both `_rustique` and `rustique._rustique`.
 OFF values other than `0`, and `-E`/`-I`, unregister it again, so "nothing loaded" still holds.
 The startup cost is w2-startup's and engine's to report.
 
@@ -378,7 +381,9 @@ out-of-process; `pyinstrument`, `yappi`-style samplers are not) is exposed.
 ### 6.1 `wheels.yml`
 
 - **Repack**: right after `maturin-action`, `tools/repack_wheel.py dist/*.whl` (engine's,
-  stdlib-only, idempotent). Then `.github/scripts/check_wheels.py --layout top` checks:
+  stdlib-only, idempotent; a wheel with grafted libraries — musl — keeps maturin's layout).
+  Then `.github/scripts/check_wheels.py --layout top` checks (the `shim` layout instead for a
+  wheel with grafted libraries):
   - exactly one root `_rustique.<abi>.{so,pyd}`;
   - nothing at `rustique/_rustique.*`, and no shim;
   - `_rustique_startup.pth` at the root;

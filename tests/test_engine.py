@@ -269,10 +269,21 @@ def test_repack_to_an_output_directory(tmp_path):
 
 @pytest.mark.parametrize("files", [
     {"rustique/__init__.py": b""},  # no extension
-    {**MATURIN, "rustique.libs/libfoo.so": b""},  # libraries grafted by a repair tool
+    {k: v for k, v in MATURIN.items() if k != "_rustique.py"} | {"rustique.libs/libfoo.so": b""},  # grafted, no shim
 ])
 def test_repack_refuses_what_it_cannot_move(tmp_path, files, capsys):
     whl = make_wheel(tmp_path / "rustique-0.3.0-cp315-cp315-linux_x86_64.whl", files)
     before = open(whl, "rb").read()
     assert repack.main([whl]) == 1
     assert open(whl, "rb").read() == before and "error:" in capsys.readouterr().err
+
+
+def test_repack_keeps_maturins_layout_when_a_repair_tool_grafted_libraries(tmp_path, capsys):
+    """musl wheels carry libgcc_s (Rust's unwinder) in `rustique.libs/`, found through the
+    extension's `$ORIGIN`-relative search path: moving the extension would break it, so the
+    wheel keeps the in-package extension and the `_rustique.py` shim."""
+    whl = make_wheel(tmp_path / "rustique-0.3.0-cp315-cp315-musllinux_1_2_x86_64.whl",
+                     {**MATURIN, "rustique.libs/libgcc_s-f685abf1.so.1": b""})
+    before = open(whl, "rb").read()
+    assert repack.main([whl]) == 0
+    assert open(whl, "rb").read() == before and "kept maturin's layout" in capsys.readouterr().out

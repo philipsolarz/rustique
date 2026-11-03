@@ -512,7 +512,9 @@ framework-heavy and custom software included.
 7. **Packaging**: the extension becomes top-level `_rustique`, loaded directly by the `.pth`
    line, by repacking the wheels in CI (`w2-dx.md` §7, `w2-startup.md` §1); the loader falls
    back to the in-package path for sdist and editable installs. setuptools-rust was rejected
-   (rebuilding the proven wheel matrix for 0.46M instructions).
+   (rebuilding the proven wheel matrix for 0.46M instructions). Exception found by the full
+   wheel matrix (Phase 3): musllinux wheels keep the in-package layout and the shim, since the
+   repair tool grafts `libgcc_s` next to the extension with an `$ORIGIN`-relative search path.
 8. **Platforms**: the process gate gets an allowlist of the validated platforms; anything
    else refuses with category `platform`, and Rustique's own test suite skips on `version` and
    `platform` refusals (`w2-dx.md` §2).

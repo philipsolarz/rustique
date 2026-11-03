@@ -29,7 +29,8 @@ use pyo3::prelude::*;
 use super::layout::Layout;
 use super::policy;
 
-unsafe extern "C" {
+// Not declared by pyo3-ffi: imported from the Python DLL on Windows (`PyAPI_FUNC` since 3.13).
+python_extern! {
     fn PyErr_FormatUnraisable(format: *const std::ffi::c_char, ...);
 }
 

@@ -5,7 +5,9 @@
 ``top`` (release wheels, after ``tools/repack_wheel.py``): the extension is a top-level
 ``_rustique.<abi>.{so,pyd}``, nothing at ``rustique/_rustique.*``, no ``_rustique.py`` shim.
 ``shim`` (maturin's own layout, e.g. a wheel built from the sdist): the extension inside the
-package and the top-level ``_rustique.py`` shim that loads it. Both: the startup ``.pth`` line
+package and the top-level ``_rustique.py`` shim that loads it. Under ``top``, a wheel with
+libraries grafted by a repair tool (``*.libs/``, ``.dylibs/``: musl wheels carry ``libgcc_s``)
+must have the ``shim`` layout instead: repack_wheel.py leaves those alone. Both: the startup ``.pth`` line
 at the root and RECORD listing every file with its hash.
 """
 
@@ -27,6 +29,8 @@ def check(path: str, layout: str) -> list[str]:
         top = [n for n in names if EXT.match(n)]
         inpkg = [n for n in names if PKG_EXT.match(n)]
         shim = "_rustique.py" in names
+        if layout == "top" and any(re.search(r"(^|/)[^/]*\.libs/|(^|/)\.dylibs/", n) for n in names):
+            layout = "shim"  # grafted libraries: repack_wheel.py keeps maturin's layout
         if layout == "top":
             if len(top) != 1:
                 errors.append(f"expected one top-level _rustique extension, found {top or 'none'}")

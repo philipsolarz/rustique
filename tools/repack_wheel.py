@@ -16,10 +16,11 @@ than loading through a package (docs/atlas/w2-startup.md §1.2). This script doe
 
 Every other entry is copied unchanged, in order; the file name, tags and ``WHEEL`` metadata
 do not change. Without ``-o`` each wheel is replaced in place (atomically); with ``-o`` the
-repacked wheels go to OUTDIR. A wheel already in top-level form is left alone. A wheel with
-neither layout, or with libraries grafted next to the extension by a repair tool
-(``*.libs/``, ``.dylibs/``: its run-time search path is relative to its directory), is an
-error: exit status 1.
+repacked wheels go to OUTDIR. A wheel already in top-level form is left alone. So is a wheel
+with libraries grafted next to the extension by a repair tool (``*.libs/``, ``.dylibs/``; on
+musl, ``libgcc_s`` for Rust's unwinder): the extension's run-time search path is relative to
+its directory, so it keeps maturin's layout and the ``_rustique.py`` shim, which every layout
+supports. A wheel with neither layout is an error: exit status 1.
 """
 
 from __future__ import annotations
@@ -57,7 +58,12 @@ def repack(src: str, dest: str) -> str:
         moved = [n for n in names if IN_PACKAGE.match(n)]
         top = [n for n in names if TOP_LEVEL.match(n)]
         if grafted:
-            raise SystemExit(f"{src}: libraries grafted by a repair tool ({grafted[0]}, ...): not repacked")
+            if moved and SHIM in names and os.path.abspath(src) != os.path.abspath(dest):
+                shutil.copyfile(src, dest)
+            if moved and SHIM in names:
+                return (f"{os.path.basename(src)}: kept maturin's layout and the shim "
+                        f"(libraries grafted by a repair tool: {', '.join(grafted[:2])})")
+            raise SystemExit(f"{src}: libraries grafted by a repair tool ({grafted[0]}, ...) without the shim layout")
         if not moved and top and SHIM not in names:
             if os.path.abspath(src) != os.path.abspath(dest):
                 shutil.copyfile(src, dest)

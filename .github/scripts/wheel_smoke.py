@@ -124,11 +124,11 @@ def main() -> int:
                 t["state"] in ("installed", "armed") or t.get("refusal") in ("build", "version")
                 for t in got["on"])
         else:
-            ok = off_ok and bool(got["on"]) and all(
-                t["state"] == "refused" and any(w in (t.get("reason") or "")
-                                                for w in ("x86_64 Linux", "built without handlers"))
-                for t in got["on"])
-        check(f"interp tier {interp}", ok, tier.stdout[:800] + tier.stderr[-800:])
+            # asked for, nothing installs: for want of handlers or platform (3.15), or earlier by
+            # version (the tier is validated on 3.15 only) or build (free-threaded)
+            ok = off_ok and bool(got["on"]) and all(t["state"] == "refused" for t in got["on"])
+        detail = "; ".join(f"{t['name']}: {t['state']} [{t.get('refusal')}] {t.get('reason')}" for t in got["on"])
+        check(f"interp tier {interp}", ok, (detail or tier.stdout[:800]) + tier.stderr[-800:])
 
     status = py("-m", "rustique", "status")
     check("python -m rustique status", status.returncode == 0 and "targets in" in status.stdout, status.stderr)
