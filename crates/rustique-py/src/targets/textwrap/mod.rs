@@ -1159,8 +1159,29 @@ static TEXTWRAP_DEPS: accel::DepFlag = accel::DepFlag::new();
 
 /// The group's shared declarations (prepared once before the first target): the statics,
 /// symbols, class checks and pattern self-test, and the pins.
+/// The `TextWrapper` methods the kernels reimplement (the module functions build a wrapper and
+/// call `wrap`/`fill`; those run every helper below): fingerprinted so that a patch release
+/// changing one (3.14.1 changed `_handle_long_word`) refuses instead of differing. Inline
+/// v2 values (3.14.9 / 3.15.1); the recorded v3 sets are in `accel/fingerprints.txt`.
+const TW_HELPERS: [(&str, accel::Fingerprints); 9] = [
+    ("__init__", &[(3, 14, "f1d824da445674a2"), (3, 15, "eaeb5f4650deb019")]),
+    ("wrap", &[(3, 14, "342108dc0a65162b"), (3, 15, "be9331377cf30cf3")]),
+    ("fill", &[(3, 14, "da16f10692980f7b"), (3, 15, "49c43f2e8ae86675")]),
+    ("_munge_whitespace", &[(3, 14, "47daef7d0b1d655a"), (3, 15, "f87d17dd512ef35d")]),
+    ("_split", &[(3, 14, "9873d3f7509f0c3b"), (3, 15, "bc820c37113ae3a4")]),
+    ("_split_chunks", &[(3, 14, "c4be8d5dbf4c904d"), (3, 15, "8b9433430bc3d113")]),
+    ("_fix_sentence_endings", &[(3, 14, "8a471a334975844a"), (3, 15, "ff1f6e54ccb091d4")]),
+    ("_handle_long_word", &[(3, 14, "4252107ec61dd825"), (3, 15, "51a41749ab430bfc")]),
+    ("_wrap_chunks", &[(3, 14, "cd1c3ab0e44dfd3a"), (3, 15, "4891673e96ec98de")]),
+];
+
 fn prepare_group<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refusal> {
-    prepare_common(py, cx)?;
+    let cls = prepare_common(py, cx)?;
+    let cd = crate::accel::prepare::type_dict(&cls)?;
+    for (name, fps) in TW_HELPERS {
+        let f = get_s(cx, &cd, &key(py, name))?;
+        cx.fingerprint_code(&f, fps)?;
+    }
     let globals = cx.module()?.dict();
     pin_keys!(cx, &globals, &TEXTWRAP_DEPS, ["TextWrapper"]);
     pin_global_keys!(cx, &globals, &TEXTWRAP_DEPS, ["min", "max", "enumerate"]);
