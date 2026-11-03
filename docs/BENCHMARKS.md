@@ -12,8 +12,65 @@ measured:
 Why the default tier keeps exact builtins: `docs/DECISIONS.md`, `docs/TAKEOVER.md`.
 
 Since wave 1 (November 2026) a third thing is measured, and it is the headline: **real
-programs** with every accelerated stdlib group on, below. The sections after it are the
-parity program's measurements (October 2026), re-run at the wave-1 commit where noted.
+programs** with every accelerated stdlib group on, below. Wave 2 widened the set from 34 to 65
+programs (frameworks, third-party-heavy code, custom applications, services, threaded
+programs). The sections after the two waves are the parity program's measurements (October
+2026), re-run at the wave-1 commit where noted; Rustique's own types were retired in 0.3
+(`docs/MIGRATION.md`), so their section is history.
+
+## Wave 2: all kinds of programs (Phase 3, `7fec7e4`)
+
+Full report: `docs/atlas/w2-phase3.md`; raw data and the rerunnable scripts:
+`benches/results/w2-phase3/`; ground truth before wave 2: `docs/atlas/w2-phase0.md`. The same
+dedicated AWS c7a.8xlarge, fat-LTO release builds; "enabled" = the default tier
+(`rustique.enable()`, every default group, no opt-in tier). The code kept landing during the run;
+which commit each stage measured is in the report's §0 (`7fec7e4` is the steady state;
+`9d0abae` and `78751e2` changed only `re`'s first call and the path kernels, re-measured there).
+
+**Method.** `benches/workloads/` now holds 65 programs in eight families (the three of wave 1
+plus `frameworks`, `libs`, `custom`, `services`, `threads`; each family pins its requirements).
+Same `run.py compare all -n 5 -p 5` as wave 1, one L3 domain per build; the threads family runs at
+8 threads. Two replicates (`d40e7b9`, `7fec7e4`) agree within 0.006 per family.
+
+| | 3.15.1 | 3.15.1t |
+|---|---:|---:|
+| **65 workloads, geometric mean** | **0.870** (1.15× faster) | **0.872** (1.15×) |
+| wave 1's 34 (wave-1 code: 0.877 / 0.843) | 0.858 | 0.826 |
+| web (10) / data (12) / devtools (12) | 0.882 / 0.752 / 0.957 | 0.903 / 0.735 / 0.861 |
+| frameworks (6) / libs (6) / custom (10) | 0.940 / 0.961 / 0.936 | 0.955 / 0.966 / 0.973 |
+| services (4) / threads, 8 threads (5) | 0.848 / 0.685 | 0.888 / 0.792 |
+| best; worst | `report_render` 0.357; `mini_interp` 1.006 | `isort_stdlib` 0.201; `mini_interp` 1.018 |
+| digest mismatches | 0 | 0 |
+| 8 whole processes, `RUSTIQUE=1` through the `.pth` (`9d0abae`) | 0.743 | 0.742 |
+| pyperformance 1.14.0, 122 benchmarks (wave-1 code: 0.942 / 0.955) | **0.911** | **0.936** |
+| scoreboard 0–100, cells ≤ 1.05 (instructions, after isolation) | 3814 / 3814 | 3814 / 3814 |
+| scoreboard 10k/1M, wall geomean; kernel paths | 0.826; 0.452 (wave 1: 0.828; 0.461) | not run |
+| `python -c pass`, `RUSTIQUE=1` vs unset (Ir / wall, `9d0abae`) | 1.028 / 1.059 | (3.14.9: 1.029 / 1.075) |
+
+**Opt-in tiers** (`d40e7b9`, all 65, against plain / against the default tier):
+`RUSTIQUE_TIERS=interp` 0.859 / 0.987 (frameworks 0.933, custom 0.920; 3.15.1, verified
+python-build-standalone builds only); `RUSTIQUE_TIERS=gc` 0.868 / 0.998 on 3.15.1 and 0.866 /
+0.992 on 3.15.1t; both, on frameworks / custom / devtools, 0.936 / 0.922 / 0.942 against plain.
+No tier slows a workload by more than 1.8% against the default tier.
+
+**pyperformance**, new wins over wave 1 (3.15.1 / 3.15.1t): `regex_compile` 0.044 / 0.122 (was
+1.02), `logging_format` 0.513 / 0.643, `logging_simple` 0.520 / 0.671; on 3.15.1 `regex_v8`
+0.943, `nqueens` 0.933, `k_core` 0.955. Above 1.05: `python_startup` 1.074 / 1.110 (the
+`enable()` in `sitecustomize`) and `coroutines` on 3.15.1t 1.073–1.080 (pure Python, no group
+alone causes it, not reproducible outside pyperf's worker: a layout effect, *inferred*, open).
+
+**Free-threading.** `isort_stdlib` on 3.15.1t is 0.201 (CPython's `set.__reduce__`
+contends with itself; Rustique's kernel does not), 0.260 with the copy group off;
+`state_snapshot` 0.668 with the copy group off. At 8 threads the threads family scales 1.9–7.5×
+with Rustique on, and CPU time per call of every target at 8 threads is ≤ 1.05× CPython's
+(`78751e2`).
+
+**Open never-slower cells** (measured; DECISIONS §13): `sorted()` of a 1M-element set or
+frozenset of `int`/`float` 1.23–1.28 at `7fec7e4` (the wave-2 sort strategy on long nearly
+ordered runs; see DECISIONS §13 for the fix's status); startup wall time above;
+`coroutines` on 3.15.1t. The other scoreboard cells above 1.05 alone (tuple iteration, set
+equality at 10k, dict lookup at 1M) are not Rustique's: enabled ÷ imported ≤ 1.026 at the best
+heap offset, and plain CPython moves by as much between processes.
 
 ## Wave 1: real workloads (Phase 3, `11bad29`)
 

@@ -22,40 +22,52 @@ Other ways to turn it on: `python -m rustique app.py`, `import rustique; rustiqu
 
 ## What gets faster
 
-Rustique accelerates the parts of the standard library and builtins where real programs
-spend measurable time ([impact atlas](docs/IMPACT_ATLAS.md): 35 real workloads profiled).
-Measured on CPython 3.15.1 (callgrind instructions per call on small realistic inputs, and
-wall time of real workloads; time with Rustique / time without, lower is better; details in
-[docs/targets/](docs/targets/) and [the Phase 3 report](docs/atlas/phase3.md)):
+Rustique accelerates the parts of builtins and the standard library where real programs
+spend measurable time ([impact atlas](docs/IMPACT_ATLAS.md): 65 real programs profiled, from
+stdlib-heavy scripts to framework apps, services and threaded programs). Measured on CPython
+3.15.1 (callgrind instructions per call on small realistic inputs, and wall time of real
+programs; time with Rustique ÷ time without, lower is better; details in
+[docs/targets/](docs/targets/) and [the wave-2 report](docs/atlas/w2-phase3.md)):
 
-| area | entry points | per call | real workloads |
+| area | entry points | per call | real programs |
 |---|---|---|---|
-| JSON | `json.dumps`, `json.loads`, `float.__repr__` | dumps 0.06–0.29, loads 0.22–0.56 | API server 0.79, CSV/JSON ETL 0.63 |
-| copying | `copy.deepcopy`, `copy.copy`, `dataclasses.asdict/astuple` | deepcopy 0.13–0.46 | state snapshots 0.65, isort 0.77 |
-| paths | `os.path`/`posixpath`, `pathlib` pure paths, `fnmatch` | `join` 0.27, `fnmatch` 0.12, pathlib 0.05–0.76 | file inventory 0.74 |
-| date and time text | `strptime`, `strftime`, `isoformat` (datetime, date, time; `time.strptime/strftime`) | strptime 0.07–0.09, strftime 0.09–0.20 | log analytics 0.59, time-zone events 0.59 |
-| logging | `LogRecord`, `Formatter.format`/`formatTime`, `findCaller`, `Logger.level` | one record 0.45–0.51 | logging service 0.82 |
-| utilities | `random` glue, `textwrap`, `urllib.parse`, `statistics` | 0.04–0.67 | report rendering 0.44 |
-| containers, builtins | `list.sort`, `index`/`count`/`in` on lists and tuples; `sum`, `min`, `max`, `sorted`, `any`, `all` | 1M elements: `max(floats)` 0.13, `ints.sort()` 0.18 | spread thinly |
+| JSON | `json.dumps` (also with `default=`), `json.loads`, `float.__repr__` | dumps 0.06–0.29, loads 0.22–0.56 | JSON API server 0.72 |
+| copying, dataclasses | `copy.deepcopy`, `copy.copy`, `dataclasses.asdict/astuple` | deepcopy 0.13–0.46, `asdict` 0.34–0.40 | state snapshots 0.65, isort 0.77 |
+| regular expressions | `re.compile` (the pattern compiler), `re.match`/`search`/`sub`… module functions | compile 0.15–0.28, `re.match` 0.68 | pyperformance `regex_compile` 0.04 |
+| logging | `LogRecord`, `Formatter.format`, `findCaller`, `Handler.handle`, `Logger.level` | one record 0.33 | logging service 0.69 |
+| enums, generated classes | `Enum` lookups and `Flag` operators; namedtuple `_make`/`_replace`; frozen dataclass `__init__`; `@contextmanager`, `singledispatch` bookkeeping | 0.18–0.73 | custom applications 0.94 |
+| paths | `os.path`/`posixpath`, `pathlib` pure paths, `fnmatch` | `join` 0.27, `relpath` 0.08, `fnmatch` 0.12 | file inventory 0.72 |
+| date and time text | `strptime`, `strftime`, `isoformat` (datetime, date, time; `time.strptime/strftime`) | strptime 0.07–0.09, strftime 0.07–0.09 | log analytics 0.58, time-zone events 0.56 |
+| utilities | `random`, `textwrap`, `urllib.parse`, `statistics` | 0.04–0.67 | report rendering 0.36 |
+| containers, builtins | `list.sort`, `sorted`, `sum`, `min`, `max`, `any`, `all`; `index`/`count`/`in` on lists and tuples | sort 0.37–0.94; 1M elements: `max(floats)` 0.13, `ints.sort()` 0.18 | spread thinly |
+| free-threaded builds | `set.__reduce__` (pickling and copying sets) without CPython's lock contention | | isort 0.20 on 3.15t (CPython: 4× slower than with the GIL) |
 
-Whole programs, all groups on (34 workloads, plain vs enabled, identical results):
+Whole programs, every default group on (65 programs, plain vs enabled, identical results):
 
 | | 3.15.1 | 3.15.1t |
 |---|---:|---:|
-| all 34 workloads (geometric mean) | **0.88** (1.14× faster) | **0.84** (1.19×) |
-| data processing / developer tools / web | 0.77 / 0.96 / 0.92 | 0.76 / 0.86 / 0.93 |
-| best | report rendering 0.44 | isort 0.20 |
-| worst | config merging 1.01 | XML feeds 1.01 |
+| all 65 programs (geometric mean) | **0.870** (1.15× faster) | **0.872** (1.15×) |
+| data processing / developer tools / web | 0.75 / 0.96 / 0.88 | 0.74 / 0.86 / 0.90 |
+| framework apps / third-party-heavy / custom applications | 0.94 / 0.96 / 0.94 | 0.96 / 0.97 / 0.97 |
+| services / threaded programs (8 threads) | 0.85 / 0.69 | 0.89 / 0.79 |
+| best | report rendering 0.36 | isort 0.20 |
+| worst | a small bytecode interpreter 1.006 | the same, 1.018 |
+| whole processes, startup included (8 programs) | 0.74 | 0.74 |
+| pyperformance (122 benchmarks) | 0.911 | 0.936 |
 
-- Stdlib-heavy programs gain 1.2–2.3×: report generation, log analytics, time-zone
-  processing, CSV/JSON ETL, state snapshots, file inventories, JSON API servers.
-- Framework-heavy programs (Django, Flask, FastAPI, SQLAlchemy, black, pylint, pandas) run at
-  0.97–1.01: their time is their own bytecode.
-- pyperformance (~120 benchmarks): geometric mean 0.94 on 3.15.1 and 0.96 on 3.15.1t;
-  `deepcopy` 0.13–0.28, `json_dumps` 0.25–0.33, `json_loads` 0.57–0.59, logging 0.61–0.79;
-  only `python_startup` above 1.05 (1.08–1.10).
+- Stdlib-heavy programs gain 1.4–2.8×: report generation, log analytics, time-zone
+  processing, logging services, JSON APIs, state snapshots, file inventories.
+- Framework apps (Django, DRF, Flask, FastAPI, falcon, Strawberry) and custom domain code now
+  gain too, mostly 1–6% (falcon 0.80, a rules engine 0.85): enums, generated classes, `re`,
+  logging and json reach them.
+- Third-party-heavy code gains least (0.96; attrs/cattrs 0.85, pydantic, jsonschema and PyYAML
+  ~0.99–1.00): its time is the library's own bytecode.
+- Two opt-in tiers go further (`RUSTIQUE_TIERS=interp,gc`): framework apps 0.933 and custom
+  applications 0.920 with the `interp` tier; the `gc` tier gives GC-heavy programs 1–5%. Off by
+  default ([why](docs/DECISIONS.md)); details in [USAGE](docs/USAGE.md#opt-in-tiers).
 
-To see what your own program hits, run `python -m rustique report -- python app.py`.
+To see what your own program hits, run `python -m rustique report -- python app.py`; to get
+an estimate before you try it, `python -m rustique estimate -- python app.py`.
 
 ## The catch
 
@@ -63,35 +75,38 @@ To see what your own program hits, run `python -m rustique report -- python app.
   CPython returns: same values, types, exceptions and messages, warnings, side effects and
   their order. For anything else (a subclass, an unusual keyword, a monkeypatched
   dependency, a debugger or coverage listening) CPython's original runs. That fallback is
-  never measurably slower: ≤ 1.05 on every measured cell, small inputs included. The report
-  shows how often each target fell back and why.
-- **Most program time is out of reach.** About two thirds of typical CPU time goes to the
-  program's own bytecode, attribute lookups, allocation and garbage collection. Rustique
-  does not change any of that. If your profile shows no time in the stdlib, expect ~1.0×.
-- **Startup costs something: with Rustique on, it exceeds our own 1.05 bar.** Measured on
-  `python -c pass` (release wheels, callgrind and wall time, [details](docs/atlas/phase3.md#6-startup-cells)):
+  never measurably slower: ≤ 1.05 on every measured cell, small inputs included, and at 8
+  threads on free-threaded builds. The report shows how often each target fell back and why.
+- **Most program time is out of reach by default.** In the 65 programs, about a third of CPU
+  time is the standard library; the rest is the program's own bytecode, third-party code,
+  attribute lookups, allocation and garbage collection, which the default tier leaves to
+  CPython. If your profile shows no time in the standard library, expect ~0.97–1.0×.
+- **Open never-slower items** (measured, being worked on; [DECISIONS §13](docs/DECISIONS.md)):
+  `sorted()` of a 1M-element set of numbers measured 1.23–1.28× at the wave-2 Phase 3 commit;
+  pyperformance `coroutines` reads 1.07× on 3.15.1t (a layout effect, *inferred*).
+- **Startup costs something: with Rustique on, its wall time exceeds our own 1.05 bar.**
+  Measured on `python -c pass` (release wheels, callgrind and wall time,
+  [details](docs/atlas/w2-phase3.md#72-startup-cells-t8--9d0abae)):
   - **Installed but off** (`RUSTIQUE` unset): one `.pth` line read at every interpreter
-    start, nothing imported. Bare venv: 1.03× on 3.15 and 1.05× on 3.14 (+0.3–0.45 ms),
-    most of it the `utf-8-sig` codec import that any `.pth` file costs; in a venv that
-    already has a `.pth` (editable installs, setuptools): ≤ 1.014×.
-  - **On** (`RUSTIQUE=1`, against the same venv with it unset): +0.76 ms, 1.08× wall on
-    3.15, and +1.09 ms, 1.11× on 3.14. That is the extension loading (page faults and
-    relocations) plus installing the targets of modules Python imports at startup.
-  - `import rustique; rustique.enable()` in code costs a little more (it also builds the
-    status it returns).
-
-  This is a documented exceedance of the never-slower rule for wave 1. Short-lived
-  processes (CLI tools run thousands of times) may not gain enough to pay it back.
+    start, nothing imported. Bare venv: 1.03× on 3.15 and 1.05× on 3.14, most of it the
+    `utf-8-sig` codec import that any `.pth` file costs; in a venv that already has a `.pth`
+    (editable installs, setuptools): ≤ 1.016×.
+  - **On** (`RUSTIQUE=1`, against the same venv with it unset): 1.028× instructions, +0.58 ms
+    (1.06× wall) on 3.15 and +0.75 ms (1.08×) on 3.14: the extension loading plus installing
+    the targets of modules Python imports at startup. Targets validate at their first call.
+  - Short-lived processes (CLI tools run thousands of times) may not gain enough to pay it back.
 - **Supported interpreters: CPython 3.14 and 3.15, including free-threaded (3.14t, 3.15t).**
-  - Platforms: Linux x86_64/aarch64 (glibc and musl), macOS arm64/x86_64, Windows x64
-    (arm64 experimental).
-  - Each target installs only on the CPython versions and platforms it was validated on,
-    and reports "refused" elsewhere: all 84 on Linux/glibc with 3.15; 74 on macOS and musl
-    (no `datetime` text); 30 on Windows ([details](docs/USAGE.md#install)).
+  - Each target installs only on the CPython releases and platforms it was validated on, and
+    reports "refused" elsewhere, with the reason. On Linux with 3.15.1: 110 targets (104 on
+    3.15.1t); with 3.14.1–3.14.10: 105 (99 free-threaded).
+  - Patch releases newer than the Rustique release refuse until validated
+    (`unvalidated-patch`; [details](docs/USAGE.md#python-versions-and-patch-releases)).
+  - Platforms: Linux x86_64/aarch64 (glibc and musl), macOS arm64/x86_64, Windows x64/arm64;
+    fewer targets outside Linux/glibc ([what refuses where](docs/USAGE.md#install)).
   - PyPy, GraalPy and CPython 3.16: `pip` refuses to install.
 - **Turning it off.**
   - `RUSTIQUE=0` disables everything without a deploy, including `rustique.enable()`
-    calls in code.
+    calls in code; `RUSTIQUE_TIERS=none` turns off the opt-in tiers.
   - `RUSTIQUE_EXCLUDE=json` turns off one group; `RUSTIQUE_ONLY=json,copy` keeps only
     those groups.
   - `rustique.disable()` restores every original in a running process.
@@ -122,15 +137,12 @@ CPython's. Full report: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 | | |
 |---|---|
-| pyperformance (~120 benchmarks), geometric mean | 1.00× — 1.01× |
-| pyflakes lint / csv→json pipeline / networkx graph (whole processes) | 0.963 / 0.987 / 1.005 — 0.998 / 0.993 / 1.006 |
-| scoreboard, 0–100 elements: cells within 1.05 (instructions) | 3810/3814 — 3814/3814 (every result identical) |
-| scoreboard, 10k/1M elements: geometric mean (wall time) | 0.88 — 0.88 (kernel paths 0.46 — 0.48; untouched code 1.00) |
-| 1M elements: `max(floats)`, `min(ints)`, `ints.sort()`, `x in ints`, `ints.count(v)` | 0.13, 0.17, 0.18, 0.26, 0.25 — 0.21, 0.21, 0.15, 0.33, 0.33 |
-| process startup (`import rustique; rustique.enable()`), 0.2 | +1.7 ms (1.17×) — +2.2 ms (1.18×) |
-
-Startup since 0.3 (instructions, dev box): `RUSTIQUE=1` adds 2.8% to `python -c pass` over an
-installed-but-off start, on 3.15.1 and 3.14.9 alike ([docs/targets/engine.md](docs/targets/engine.md)).
+| 65 real programs, geometric mean | 0.870 — 0.872 |
+| pyperformance (122 benchmarks), geometric mean | 0.911 — 0.936 |
+| scoreboard, 0–100 elements: cells within 1.05 (instructions) | 3814/3814 — 3814/3814 (every result identical) |
+| scoreboard, 10k/1M elements: geometric mean (wall time) | 0.83 (kernel paths 0.45) — not run |
+| 1M elements: `max(floats)`, `ints.sort()`, `sorted(list)` | 0.12, 0.21, 0.30 |
+| process startup, `RUSTIQUE=1` vs installed-but-off (instructions / wall) | 1.028 / 1.059 (3.14.9: 1.029 / 1.075) |
 
 ## Develop
 
