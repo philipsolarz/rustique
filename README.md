@@ -98,9 +98,10 @@ an estimate before you try it, `python -m rustique estimate -- python app.py`.
 - **Supported interpreters: CPython 3.14 and 3.15, including free-threaded (3.14t, 3.15t).**
   - Each target installs only on the CPython releases and platforms it was validated on, and
     reports "refused" elsewhere, with the reason. On Linux with 3.15.1: 110 targets (104 on
-    3.15.1t); with 3.14.1–3.14.10: 105 (99 free-threaded).
-  - Patch releases newer than the Rustique release refuse until validated
-    (`unvalidated-patch`; [details](docs/USAGE.md#python-versions-and-patch-releases)).
+    3.15.1t); with a recorded 3.14 release (3.14.1, .5, .6, .8, .9, .10): 105 (99
+    free-threaded); macOS and musl 103 on 3.15; Windows 80.
+  - Patch releases this Rustique release did not validate (newer ones, and 3.14.0,
+    3.14.2–3.14.4, 3.14.7) refuse (`unvalidated-patch`; [details](docs/USAGE.md#python-versions-and-patch-releases)).
   - Platforms: Linux x86_64/aarch64 (glibc and musl), macOS arm64/x86_64, Windows x64/arm64;
     fewer targets outside Linux/glibc ([what refuses where](docs/USAGE.md#install)).
   - PyPy, GraalPy and CPython 3.16: `pip` refuses to install.

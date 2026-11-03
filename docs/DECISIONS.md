@@ -560,8 +560,11 @@ framework-heavy and custom software included.
 15. **Credits v2** (ACCELERATION §5.6): cost-weighted credits per target, a 256-call window for
     mixed traffic, and an early exit — a target with no hit since it was armed suspends at 64
     fallbacks; `deopt` is split into restart / continue / abandon; suspensions are reported.
-16. **Patch releases** (§10.5 implemented): fingerprint v3, recorded sets for 3.14.1–3.14.10 and
-    3.15.0–3.15.2 (conformance run before each recording); 3.14.0 stays unrecorded because its
+16. **Patch releases** (§10.5 implemented): fingerprint v3, recorded sets for 3.14.1, 3.14.5,
+    3.14.6, 3.14.8, 3.14.9(t), 3.14.10(t) and 3.15.0, 3.15.1(t), 3.15.2(t) — the releases the
+    conformance suites ran on before each recording (`accel/fingerprints.txt`); 3.14.2–3.14.4
+    and 3.14.7 are not recorded and refuse (`unvalidated-patch`: the wheel matrix's macOS x86_64
+    3.14 runner is 3.14.7, 0 targets, by design); 3.14.0 stays unrecorded because its
     conformance run failed on a textwrap helper the kernel reimplemented without fingerprinting —
     the gate working as intended; every target now fingerprints the helpers it reimplements.
 17. **`not-needed`** is a status category distinct from refusals (e.g. `set.__reduce__` on GIL
@@ -647,7 +650,7 @@ three replicates on both builds (M).
 | T7 | free-threading fix | 0.260 / 0.668 | met |
 | T8 | startup ≤ 1.05, extension ≤ 2.5 MB | instructions 1.028 / 1.029 (met); wall 1.059 / 1.075; 3.63 MB | partly |
 | T9 | install budgets | every lazy install within budget on `9d0abae` | met |
-| T10 | reach | 3.15.x 108–110 targets (104 on t), 3.14.x 105 (99 on t), 3.14.0 refuses `unvalidated-patch`, 3.16.0a1 refuses `version` | met (Linux; Windows/macOS/musl floors are CI's) |
+| T10 | reach | Linux: 3.15.x 108–110 targets (104 on t), recorded 3.14.x 105 (99 on t); the full wheel matrix (run 41723892697) holds every platform floor on recorded releases: macOS and musl 103 / 97 on 3.15, 98 / 92 on 3.14, Windows 80 / 73; unrecorded 3.14.0, 3.14.2–3.14.4, 3.14.7 refuse `unvalidated-patch`, 3.16.0a1 `version` | met |
 | T11 | correctness | CPython's test modules: 0 differences in 18,210 outcomes per 3.15 build (50 modules, every default group at once); 14 real projects' suites: 0 differences in 34 runs (dx, `d40e7b9`) | met |
 | T12 | pyperformance | 0.911 / 0.936 | met |
 | T13 | estimator ±0.03 on ≥ 80% | 69% (3.15.1), 80% (3.15.1t) | not met on 3.15.1 |
@@ -802,8 +805,10 @@ Ranked by measured headroom and what wave 2 left, discounted by risk:
    weakref containers.
 5. **Free-threading**: generated-code targets on t without stop-the-world installs; the
    `isinstance(x, ABC)` cache; threaded programs in the estimator.
-6. **Platform reach**: Windows (48 targets planned) and macOS/musl (77) proven by the
-   per-platform CI job; recording new patch releases as they ship.
+6. **Platform reach**: the per-platform job's floors hold on every recorded release (run
+   41723892697: Linux/glibc 110 on 3.15, 104 on 3.15t, 105 / 99 on 3.14; macOS and musl 103 /
+   97 / 98 / 92; Windows 80 / 73); next, more Windows targets, and recording 3.14.2–3.14.4,
+   3.14.7 and each new patch release as it ships.
 7. **Upstream reports** (documented, not filed): `set.__reduce__`'s nested critical section,
    `isinstance`'s `__class__` lookup, the `utf-8-sig` decode every `.pth` costs, a vectorcall for
    `wrapper_descriptor`, remote-frame sampling on 3.15t.

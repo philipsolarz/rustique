@@ -86,8 +86,8 @@ every other build and platform it refuses, with a reason that says why.
 
 | interpreter | what happens |
 |---|---|
-| CPython 3.14.x, 3.15.x (default and free-threaded) | wheels; every target installs on the patch releases this Rustique release was validated on |
-| a newer patch release than this Rustique release knows (e.g. 3.15.4) | installs; every target refuses with category `unvalidated-patch`. Upgrade Rustique, or set `RUSTIQUE_UNVALIDATED_PATCH=1` to install the targets whose code is byte-for-byte the code of a validated release (they are reported as `unvalidated`) |
+| CPython 3.14.x, 3.15.x (default and free-threaded) | wheels; every target installs on the patch releases this Rustique release was validated on: 3.14.1, 3.14.5, 3.14.6, 3.14.8, 3.14.9, 3.14.10, 3.15.0, 3.15.1, 3.15.2 (free-threaded: 3.14.9t, 3.14.10t, 3.15.1t, 3.15.2t) |
+| a patch release this Rustique release did not validate: a newer one (e.g. 3.15.4), or 3.14.0, 3.14.2–3.14.4, 3.14.7 | installs; every target refuses with category `unvalidated-patch`. Upgrade Rustique, or set `RUSTIQUE_UNVALIDATED_PATCH=1` to install the targets whose code is byte-for-byte the code of a validated release (they are reported as `unvalidated`) |
 | CPython 3.16 and later, pre-releases, PyPy, GraalPy, CPython ≤ 3.13 | pip refuses to install it: `requires-python = ">=3.14,<3.16"` |
 
 Why refuse unknown patch releases? A patch release can change C behaviour that a fingerprint
