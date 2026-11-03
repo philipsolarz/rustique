@@ -427,7 +427,14 @@ def test_stdlib_c_types_native():
 
     tz = dtm.timezone(dtm.timedelta(hours=2), "Z")
     vals = [dtm.datetime(2026, 1, 1, tzinfo=tz), dtm.datetime(2026, 1, 1), dtm.date(2026, 1, 1),
-            dtm.time(1, 2, tzinfo=dtm.timezone.utc), dtm.timedelta(3), decimal.Decimal("2.5"), Col.A]
+            dtm.time(1, 2, tzinfo=dtm.timezone.utc), dtm.timedelta(3), Col.A]
+    # Only the C `_decimal` Decimal is a native copy case: CPython built without libmpdec (some
+    # setup-python builds) falls back to `_pydecimal`, whose Decimal has a Python-level
+    # `__deepcopy__` that the kernel correctly restarts for.
+    import types
+
+    if not isinstance(decimal.Decimal.__dict__.get("__deepcopy__"), types.FunctionType):
+        vals.append(decimal.Decimal("2.5"))
     for v in vals:
         h = hits("copy.deepcopy")
         y = copy.deepcopy([v, v])
