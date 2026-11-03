@@ -592,8 +592,10 @@ Measured in Phase 3 (`docs/atlas/w2-phase3.md`) on the dedicated AWS c7a.8xlarge
 workloads (`benches/workloads/`, 8 families), plain CPython against the **default tier**
 (`rustique.enable()`, every default group, no opt-in tier), fresh processes, interleaved
 (`run.py compare -n 5 -p 5`), fat-LTO release builds. Replicate 2 on `7fec7e4` (the final
-steady-state code), replicate 1 on `d40e7b9` (agrees within 0.006 per family). Every
-workload's result digest is identical plain and enabled, in both replicates on both builds (M).
+steady-state code), replicate 1 on `d40e7b9` (agrees within 0.006 per family), replicate 3 on
+the final code `07786e2` (0.872 / 0.871; every family within 0.008 of replicate 2;
+`w2-phase3.md` §14). Every workload's result digest is identical plain and enabled, in all
+three replicates on both builds (M).
 
 | family (n) | 3.15.1 | 3.15.1t | target (IMPACT_ATLAS §14.4) |
 |---|---:|---:|---|
@@ -636,10 +638,10 @@ workload's result digest is identical plain and enabled, in both replicates on b
 
 | # | target | result | |
 |---|---|---|---|
-| T1 | never slower | workloads ≤ 1.018; 0–100 cells 3814/3814; **`sorted()` of a 1M-element set/frozenset of int/float 1.23–1.28** (see §13); `RUSTIQUE=1` wall 1.059 / 1.075; first call of `random` +0.29M Ir; pyperformance `coroutines` 1.07 on 3.15.1t (unexplained) | **not met** |
+| T1 | never slower | workloads ≤ 1.018 in replicates 1–2, but `mini_interp` on 3.15.1t **1.023** in replicate 3 (§13); 0–100 cells 3814/3814; the 1M sort cells (1.23–1.28 at `7fec7e4`) fixed on the final code: 48 sort cells ≤ 1.007; `RUSTIQUE=1` wall 1.059 / 1.075; first call of `random` +0.29M Ir; pyperformance `coroutines` 1.07 on 3.15.1t (unexplained) | **not met** |
 | T2 | wave 1's 34 ≤ 0.85 / 0.80 | 0.858 / 0.826 | not met |
 | T3 | all 65 ≤ 0.88 / 0.84 | 0.870 / 0.872 | met / not met |
-| T4 | families | custom, frameworks, services met; libs 0.961, threads (t) 0.792 not | 3 of 5 |
+| T4 | families | custom, frameworks met; services 0.848 / 0.848 / 0.852 over three replicates (at the bar); libs 0.961, threads (t) 0.792 / 0.784 not | 2–3 of 5 |
 | T5 | `interp`: frameworks ≤ 0.96, custom ≤ 0.90, full regrtest 0 differences | 0.933 / 0.920; regrtest (dev box, interp workstream) 0 differences on 3.15.1t, two load-dependent timer flakes on 3.15.1; not re-run on the bench box | frameworks met, custom not |
 | T6 | `gc` tier | GC-heavy geomean 0.982 / 0.952 (target 0.87); RSS ≤ 1.038 (met); largest pause `state_snapshot` 1.30 (3.15.1) | not met |
 | T7 | free-threading fix | 0.260 / 0.668 | met |
@@ -688,9 +690,22 @@ inputs outside the validated grammar, state the kernel cannot see, error paths).
 - **Unrecorded patch releases** refuse (`unvalidated-patch`), and 3.15.0's `copy` targets
   refuse because CPython's code really changed there.
 - **Open at the end of the wave** (each measured, each listed):
-  - `sorted()` of a 1M-element set or frozenset of int/float: 1.23–1.28 (102.5M → 127.3M Ir per
-    call; long nearly ordered runs, where the wave-2 sort strategy loses to timsort). Fix in
-    progress at the time of writing; see §17 for its status.
+  - **Fixed before the merge**: `sorted()` of a 1M-element set or frozenset of int/float read
+    1.23–1.28 at `7fec7e4` (Phase 3). The cause was memory, not instructions (0.857–0.923 Ir):
+    the keyed sort's 16 MB pairs buffer and write-back, where timsort walks a set's one or two
+    long runs; presorted/concatenated str lists (1.6–2.1×) and nearly sorted 10^5–10^6 lists
+    (1.4–2.0×) had the same cause. Core's fix (`2e02b1b`): for 4,096+ items, few long runs
+    are merged in place on the pointers, strictly reversed input reversed in place, nearly
+    sorted input handed to CPython's sort. Quiet box, final code `07786e2`: the four cells
+    0.714–0.744, all 48 sort cells at 10k/1M ≤ 1.007, core's 38 large shapes ≤ 1.032
+    (`w2-phase3.md` §14).
+  - `custom/mini_interp` on 3.15.1t: 1.015 / 1.018 / **1.023** over the three replicates
+    (3.15.1: 1.003–1.006), above T1's 1.02 in the last; it hits no kernel of weight. Probe (`w2-phase3.md` §14): loaded but not
+    enabled 1.002, `enable()` with every group excluded **1.066**, fully enabled 1.014–1.019 —
+    a fixed cost of `enable()` itself on free-threaded builds that the groups mostly win back.
+    Cause under investigation at the time of writing (accel).
+  - copies of the C `decimal.Decimal` fall back on Windows (category `deopt`, results
+    identical; every Windows build of the wheel matrix): not diagnosed.
   - the `gc` tier's largest pause on `state_snapshot` (3.15.1): 1.30× the default's in
     milliseconds. The tier's bound — objects examined ≤ 1.1× (GIL) / 1.05× (t) of the largest
     full collection the default policy made — held (1.00×): the deferred collection examined
@@ -764,7 +779,7 @@ are the new way of working and stay, at zero cost when not called.
 
 Ranked by measured headroom and what wave 2 left, discounted by risk:
 
-1. **Close the never-slower items** of §13: the large-set sort, the `gc` tier's pause placement,
+1. **Close the never-slower items** of §13: `mini_interp` on 3.15.1t, the `gc` tier's pause placement,
    startup wall time (smaller engine: strip symbols, split the interp handler sets into a
    lazily loaded object), the first-call costs over budget, the `coroutines` layout effect.
 2. **`interp` tier to default on verified builds**: never swap the specialized family members on

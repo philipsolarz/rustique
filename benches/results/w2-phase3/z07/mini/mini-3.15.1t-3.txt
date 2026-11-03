@@ -1,0 +1,7 @@
+# custom/mini_interp: 5 rounds, modes rotated; per mode the median of all timed runs; digests all equal
+plain                                                                                                                                1212.9 ms  ratio 1.000  (per process: 1220, 1212, 1212, 1215, 1210)
+enabled                                                                                                                              1230.8 ms  ratio 1.015  (per process: 1223, 1233, 1238, 1225, 1234)
+excl=re                                                                                                                              1227.5 ms  ratio 1.012  (per process: 1242, 1226, 1227, 1220, 1233)
+excl=builtins,containers,contextlib,copy,dataclasses,datetime,enum,float,fnmatch,functools,generated,json,logging,pathlib,posixpath,random,set,statistics,textwrap,urllib   1290.0 ms  ratio 1.064  (per process: 1281, 1279, 1290, 1297, 1293)
+excl=builtins,containers,contextlib,copy,dataclasses,datetime,enum,float,fnmatch,functools,generated,json,logging,pathlib,posixpath,random,re,set,statistics,textwrap   1293.7 ms  ratio 1.067  (per process: 1268, 1287, 1331, 1299, 1293)
+excl=builtins,containers,contextlib,copy,dataclasses,datetime,enum,float,fnmatch,functools,generated,json,logging,pathlib,posixpath,random,re,set,statistics,textwrap,urllib   1292.3 ms  ratio 1.066  (per process: 1276, 1298, 1271, 1295, 1305)

@@ -1,0 +1,17 @@
+🍹 Building a mixed python/rust project
+🐍 Found CPython 3.14 at /work/w2p3z/venv/3.14.9/bin/python
+🔗 Found pyo3 bindings
+    Finished `release` profile [optimized] target(s) in 0.02s
+📦 Including files matching "python/_rustique_startup.pth"
+📦 Including files matching "python/_rustique_pytest.py"
+📦 Including files matching "python/_rustique.py"
+📦 Built wheel for CPython 3.14 to /work/w2p3z/dist/3.14.9/rustique-0.3.0-cp314-cp314-manylinux_2_34_x86_64.whl
+rustique-0.3.0-cp314-cp314-manylinux_2_34_x86_64.whl: rustique/_rustique.cpython-314-x86_64-linux-gnu.so -> _rustique.cpython-314-x86_64-linux-gnu.so, _rustique.py dropped
+total 1412
+drwxrwxr-x 2 ubuntu ubuntu    4096 Nov  3 20:24 .
+drwxrwxr-x 6 ubuntu ubuntu    4096 Nov  3 20:24 ..
+-rw------- 1 ubuntu ubuntu 1435097 Nov  3 20:24 rustique-0.3.0-cp314-cp314-manylinux_2_34_x86_64.whl
+10118 _rustique_pytest.py
+88 _rustique_startup.pth
+3686400 _rustique.cpython-314-x86_64-linux-gnu.so
+1435f0b59d8990425313a208e45893f907068388bab440a6bc7dcb5aa43c5ae3  /work/w2p3z/dist/3.14.9/rustique-0.3.0-cp314-cp314-manylinux_2_34_x86_64.whl

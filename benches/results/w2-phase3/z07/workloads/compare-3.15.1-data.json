@@ -1,0 +1,89 @@
+{
+ "python": "3.15.1 (main, Oct 21 2026, 17:48:50) [Clang 23.1.3 ]",
+ "rows": [
+  {
+   "workload": "data/backup_archive",
+   "plain_s": 0.5980868549959268,
+   "enabled_s": 0.5973316199961118,
+   "ratio": 0.9987372486228273,
+   "same_result": true
+  },
+  {
+   "workload": "data/billing_engine",
+   "plain_s": 0.9150875780032948,
+   "enabled_s": 0.8840037519985344,
+   "ratio": 0.9660318566747625,
+   "same_result": true
+  },
+  {
+   "workload": "data/config_merge",
+   "plain_s": 0.545385345001705,
+   "enabled_s": 0.5352230599964969,
+   "ratio": 0.9813667802071646,
+   "same_result": true
+  },
+  {
+   "workload": "data/csv_etl",
+   "plain_s": 0.39437340600125026,
+   "enabled_s": 0.24464339499536436,
+   "ratio": 0.6203344121905339,
+   "same_result": true
+  },
+  {
+   "workload": "data/fs_inventory",
+   "plain_s": 0.31394195499888156,
+   "enabled_s": 0.22778857499361038,
+   "ratio": 0.7255754491126294,
+   "same_result": true
+  },
+  {
+   "workload": "data/log_analytics",
+   "plain_s": 0.7644030569936149,
+   "enabled_s": 0.4431760639999993,
+   "ratio": 0.5797675191711081,
+   "same_result": true
+  },
+  {
+   "workload": "data/pandas_etl",
+   "plain_s": 0.5262737339944579,
+   "enabled_s": 0.5272291540022707,
+   "ratio": 1.0018154430785688,
+   "same_result": true
+  },
+  {
+   "workload": "data/report_render",
+   "plain_s": 0.40648201799194794,
+   "enabled_s": 0.1446866790065542,
+   "ratio": 0.3559485354882791,
+   "same_result": true
+  },
+  {
+   "workload": "data/state_snapshot",
+   "plain_s": 0.6448279059986817,
+   "enabled_s": 0.4237620439962484,
+   "ratio": 0.6571707583590757,
+   "same_result": true
+  },
+  {
+   "workload": "data/text_corpus",
+   "plain_s": 0.6057006449991604,
+   "enabled_s": 0.6008566320087994,
+   "ratio": 0.9920026286411371,
+   "same_result": true
+  },
+  {
+   "workload": "data/tz_events",
+   "plain_s": 0.5278226470109075,
+   "enabled_s": 0.294719730009092,
+   "ratio": 0.5583688605976045,
+   "same_result": true
+  },
+  {
+   "workload": "data/xml_feeds",
+   "plain_s": 0.5083196189953014,
+   "enabled_s": 0.5061620140040759,
+   "ratio": 0.9957554166500793,
+   "same_result": true
+  }
+ ]
+}

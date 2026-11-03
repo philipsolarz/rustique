@@ -1,0 +1,33 @@
+{
+ "python": "3.15.1 (main, Oct 21 2026, 17:48:50) [Clang 23.1.3 ]",
+ "rows": [
+  {
+   "workload": "services/cache_service",
+   "plain_s": 0.9819560180039844,
+   "enabled_s": 0.986570192995714,
+   "ratio": 1.004698962995419,
+   "same_result": true
+  },
+  {
+   "workload": "services/job_worker",
+   "plain_s": 0.6202389609970851,
+   "enabled_s": 0.33976154398988,
+   "ratio": 0.547791360032729,
+   "same_result": true
+  },
+  {
+   "workload": "services/uvicorn_fastapi",
+   "plain_s": 0.9386008529982064,
+   "enabled_s": 0.905450802994892,
+   "ratio": 0.9646814192663239,
+   "same_result": true
+  },
+  {
+   "workload": "services/waitress_flask",
+   "plain_s": 1.5744126259960467,
+   "enabled_s": 1.5651403669908177,
+   "ratio": 0.9941106550772464,
+   "same_result": true
+  }
+ ]
+}

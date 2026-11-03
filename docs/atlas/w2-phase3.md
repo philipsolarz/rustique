@@ -12,6 +12,13 @@ tagged *inferred*. Raw data, logs and the rerunnable scripts: `benches/results/w
 
 ## Summary
 
+**Final code `07786e2` (§14, run after the rest).** Measured:
+- core's sort fix brings the four 1M set/frozenset sort cells from 1.23–1.28 to **0.714–0.746**;
+  all 48 sort cells are ≤ 1.05 (max 1.007);
+- headline replicate 3: **0.872 / 0.871**, 0 mismatches;
+- `mini_interp` measures **1.023** on 3.15.1t (a fixed cost of `enable()`, not a group, §14.5);
+- services measures 0.852 on 3.15.1.
+
 **The headline (§4): the 65 workloads, default tier, `7fec7e4` (replicate 2; replicate 1 on
 `d40e7b9` agrees within 0.006 per family). 0 digest mismatches in 4 × 65 comparisons.**
 
@@ -67,10 +74,11 @@ landed (all on `wave2`):
 |---|---|---|
 | `d40e7b9` | the integrated wave 2 (the lead's GO) | stage 1–2 (builds, tests, status, Rust, conformance of all 50 modules), **headline replicate 1**, **opt-in tiers** (+interp, +gc, +both), callgrind scoreboard (first pass), estimator (first pass), counters of one `run()` |
 | `445de19` | + text's fingerprint follow-up (install-time checks only) | stage 1 again, the text groups' 15 conformance modules |
-| `7fec7e4` | + core's tiny-input sort/`sorted`/`any` fixes (made after the first scoreboard pass), a test fix; **the final steady-state code** | stage 1 again, conformance of the changed groups (19 modules), **callgrind scoreboard 0–100**, **headline replicate 2 (the headline)**, T7, estimator, threads and gc addenda, pyperformance, scoreboard wall time and probe, install costs (first look) |
+| `7fec7e4` | + core's tiny-input sort/`sorted`/`any` fixes (made after the first scoreboard pass), a test fix; **the steady-state code of the main run** | stage 1 again, conformance of the changed groups (19 modules), **callgrind scoreboard 0–100**, **headline replicate 2 (the headline)**, T7, estimator, threads and gc addenda, pyperformance, scoreboard wall time and probe, install costs (first look) |
 | `9d0abae` | + `re`'s first-call validation rework (install/first-call behaviour only, no steady-state kernel) | stage 1 again (status/T10), the `re` group's 16 conformance modules, **install costs (T9)**, **startup cells (T8)**, **whole-process runs** |
 | `b2a12b1` | + a test-only fix (the posixpath exit test's daemon-thread race found here, §2.1) | not measured (test only) |
-| `78751e2` | + text's posixpath/pathlib/fnmatch fix for the 8-thread cell found here (§9.2); **the final code commit** | the paths groups' 6 conformance modules, the whole kernel table at 1–8 threads on 3.15.1t, `fs_inventory` and `pytest_networkx` against the headline, the `Pattern.match` re-measure |
+| `78751e2` | + text's posixpath/pathlib/fnmatch fix for the 8-thread cell found here (§9.2) | the paths groups' 6 conformance modules, the whole kernel table at 1–8 threads on 3.15.1t, `fs_inventory` and `pytest_networkx` against the headline, the `Pattern.match` re-measure |
+| `07786e2` | + core's large-sort fix `2e02b1b` and platform/test-only changes; **the final code** (§14) | stage 1 (4 builds, pytest, status), the 48 sort cells at 10k/1M in wall time (3.15.1, 3.15.1t), core's large shapes, **headline replicate 3**, T7, the `mini_interp` probe |
 
 The lead chose each split; what was not re-run on a later commit is unaffected by its changes
 (the lead's statement: install-time, first-call or paths-only changes). Everything is
@@ -1026,3 +1034,259 @@ Incidents and deviations:
 Files over 1 MB are gzipped. The box keeps everything under `/work/w2p3*` (clones `w/<build>`,
 build venvs `venv/<build>`, workload venvs `wl/<build>-<family>`, wheels `dist/<build>/`).
 
+
+## 14. The final code, `07786e2`
+
+`07786e2` = `78751e2` + core's sort fix `2e02b1b`. For structured sorts of 4,096 items or more:
+- a few long runs are merged in place on the item pointers;
+- strictly reversed input is reversed in place;
+- nearly sorted input is handed to CPython's sort.
+
+See `docs/targets/containers.md` "Phase 3 follow-up 2". The commit also brings changes that do not
+touch the Linux release wheel's steady state (*inferred* from the diff):
+- `f46b2ea`: Windows extern declaration in the gc observer, musl layout;
+- `7e0de7a`: `PYTEST_DONT_REWRITE` marker for the source-layout loader;
+- `88248d4`: `repack_wheel`;
+- tests.
+
+**Schedule.** Nov 3, 20:23–21:45Z. Runner `z07.sh`: tree `/work/w2p3z`, results
+`benches/results/w2-phase3/z07/`.
+1. Builds and tests first, one build per L3 domain, nothing timed.
+2. Timing, one job per domain:
+   - domain 1 (CPUs 8–15): headline 3.15.1;
+   - domain 2 (CPUs 16–23): headline 3.15.1t, then T7;
+   - CPU 2 (domain 0) and CPU 30 (domain 3): the scoreboard's sort cells on 3.15.1 (run 1 / run 2), then
+     core's `_wall_big_sort.py`, then the same sort cells on 3.15.1t.
+3. After the headline left domains 1 and 2:
+   - `z07n.sh`: `nearly_pyperf.py`, CPU 10 / CPU 20;
+   - `z07ab.sh`: str sort A/B, CPU 10;
+   - `z07i.sh`: `sb_isolate.py` on the four target cells, CPU 10;
+   - `z07m.sh`: the `mini_interp` probe, domain 2, run one after another.
+
+The box was left idle.
+
+### 14.1 Builds and tests — measured
+
+- Four fat-LTO release builds: `maturin develop --release`, then the repacked release wheel; 39–42 s each.
+- `pytest -q`: **2596 tests, 0 failures, 0 errors on each build**. Passed (skipped):
+
+  | | 3.15.1 | 3.15.1t | 3.14.9 | 3.14.9t |
+  |---|---:|---:|---:|---:|
+  | passed | 2559 | 2573 | 2542 | 2557 |
+  | skipped | 37 | 23 | 54 | 39 |
+
+  The count is 12 more than `7fec7e4`'s 2584, from `tests/targets/test_sort.py`.
+- Target status is unchanged from `78751e2`. Installed targets: 110 / 104 / 105 / 99.
+
+### 14.2 The scoreboard's sort cells at 10k/1M, wall time — measured
+
+**Cells.** Every `sorted(x)` / `x.sort()` cell: list, tuple, set, frozenset, dict × int / float / str /
+object × 10k / 1M. That is 48 cells; `mixed` is not orderable.
+
+**Method.** One `scoreboard.py time --op sort --size 1e4,1e6 --shards 1 --affinity <cpu> -p 10 -n 5`
+per run, alone on one CPU, 2 runs (CPU 2, CPU 30). That is `sb_isolate.py`'s per-cell setting;
+pyperf runs every cell in its own 10 worker processes.
+
+**Exact check.** The four target cells were also run through `sb_isolate.py` itself, one run per
+cell and repetition, CPU 10, `--reps 2`. Result: `z07/sort/isolated-four-3.15.1.txt`.
+
+**3.15.1: all 48 cells ≤ 1.05, max 1.007 (`set/sorted(x)/object/1M`), geomean 0.367.** Each cell
+is the mean of 2 runs; the runs agree within 0.02.
+
+| cell | int 10k | int 1M | float 10k | float 1M | str 10k | str 1M | object 10k | object 1M |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| list `sorted(x)` | 0.277 | 0.306 | 0.295 | 0.347 | 0.184 | 0.175 | 0.999 | 0.998 |
+| list `x.sort()` | 0.262 | 0.213 | 0.281 | 0.250 | 0.228 | 0.141 | 0.999 | 0.999 |
+| tuple `sorted(x)` | 0.276 | 0.307 | 0.296 | 0.347 | 0.186 | 0.172 | 1.001 | 1.000 |
+| set `sorted(x)` | 0.222 | **0.744** | 0.234 | **0.721** | 0.242 | 0.199 | 0.999 | 1.007 |
+| frozenset `sorted(x)` | 0.229 | **0.731** | 0.241 | **0.714** | 0.235 | 0.198 | 1.002 | 0.998 |
+| dict `sorted(x)` | 0.189 | 0.221 | 0.201 | 0.254 | 0.189 | 0.175 | 0.997 | 1.001 |
+
+- **The four set/frozenset 1M int/float cells are fixed.**
+
+  | cell | Phase 3 (`7fec7e4`) | 48-cell runs | `sb_isolate.py` (2 runs) | Phase 0 |
+  |---|---:|---:|---:|---:|
+  | `set` int | 1.259 | 0.744 | 0.746 | 0.869 |
+  | `set` float | 1.266 | 0.721 | 0.719 | 0.906 |
+  | `frozenset` int | 1.257 | 0.731 | 0.737 | 0.873 |
+  | `frozenset` float | 1.256 | 0.714 | 0.717 | 0.924 |
+
+  - Absolute, `set` int: plain 48 ms. Enabled 36 ms, against 60 ms on `7fec7e4`.
+  - These cells now beat wave 1 (Phase 0) as well.
+- **3.15.1t** (not run in Phase 3 or Phase 0): all 48 cells ≤ 1.05, max 1.005, geomean 0.397.
+  The four target cells: 0.788 / 0.778 / 0.792 / 0.773.
+- **The str cells are faster than in Phase 3 §8.2.** For example, `sorted(list)` str 10k goes
+  0.375 → 0.184 and 1M 0.259 → 0.175. Random input does not take the new path (`2e02b1b`'s 8-pair
+  probe fails), so this was checked A/B:
+  - setup: `sorted(list)` str 10k/1M only, CPU 10, `7fec7e4`'s tree and `07786e2`'s, alternated
+    twice (`z07ab.sh`);
+  - `7fec7e4`: 0.310 / 0.255; enabled 450 µs / 84.5 ms;
+  - `07786e2`: 0.249 / 0.175; enabled 361 µs / 58.0 ms;
+  - plain is identical (1.45 ms / 332 ms).
+
+  So the build itself is faster on random strs. *Inferred*: code generation of the fat-LTO build
+  around the keyed str sort, not the algorithm.
+
+  The same build also measures 0.184 in the 48-cell run and 0.249 in the 2-cell run. So these str
+  cells move by up to ~35% with the run's cell selection. *Inferred*: process heap state, as in §8.3.
+  The four int/float target cells do not move that way: run alone per cell, they match the
+  48-cell runs within 0.006.
+
+### 14.3 Core's large shapes, wall time (3.15.1) — measured
+
+**`_wall_big_sort.py` method.** This is core's sibling of `sort_big_cells.py` and has a wall mode.
+Per cell: plain / enabled / plain / enabled in fresh processes, best of 9 calls each, minimum per
+side. Run twice: taskset CPU 2 and CPU 30.
+
+Enabled ÷ plain, range over the 2 runs (`z07/sort/wall-big-sort-3.15.1-run*.txt`,
+`tables/wall-big-sort-07786e2-3.15.1.md`):
+
+| input | 10^5 | 10^6 |
+|---|---|---|
+| `sorted(set)` int / float | 0.435 / 0.431 | 0.821–0.828 / 0.710–0.718 (frozenset alike) |
+| `sorted(set)` "wide" ints (10^8 range) | — | 0.413–0.419 |
+| `sorted(list)` presorted / reversed / two halves, int | 0.591 / 0.574 / 0.574 | 0.675–0.681 / 0.669–0.676 / 0.634–0.636 |
+| same, float | 0.513–0.526 / 0.477–0.500 / 0.477–0.500 | 0.670–0.676 / 0.665–0.673 / 0.641–0.644 |
+| same, str | 0.877–0.889 / 0.890 / 0.878 | 0.783–0.809 / 0.816–0.829 / 0.761–0.791 |
+| `sorted(list)` random, int / float / str | 0.327 / 0.347 / 0.300 | 0.326–0.345 / 0.331 / 0.408–0.413 |
+| `sorted(list)` nearly sorted (n/50 swaps), int / float / str | 1.000–1.005 / 1.000 / 1.003–1.026 | 0.999–1.002 / 0.995–1.006 / **1.020–1.032** |
+
+- **Max 1.032**: nearly sorted str, 10^6. That shape is handed to CPython's own sort after one
+  checking pass.
+- Second method: `nearly_pyperf.py`, pyperf `-p 10 -n 5` alone on one CPU, plain then enabled
+  (`z07/sort/nearly-*.json`):
+
+  | build | str 10^5 | str 10^6 | int 10^6 | float 10^6 |
+  |---|---:|---:|---:|---:|
+  | 3.15.1 | 1.018 | 0.997 | 0.999 | 0.989 |
+  | 3.15.1t | 1.002 | 1.000 | 0.991 | 0.998 |
+
+  So the checking pass costs ≤ 2%. The 1.032 is within the best-of-9 method's spread.
+- Before the fix (core's own table, dev box): presorted / reversed / two-halves str 10^6 were at
+  2.0–2.2, nearly sorted int/float 10^5–10^6 at 1.4–2.0.
+
+### 14.4 Headline replicate 3 — measured
+
+Same method as §4: `run.py compare <family> -n 5 -p 5`. New family venvs carry `07786e2`'s
+repacked wheel; the freezes are in `z07/workloads/`.
+- 3.15.1 ran in domain 1, 20:27–21:18Z; 3.15.1t in domain 2, 20:27–21:19Z.
+- **0 digest mismatches in 2 × 65.**
+- Plain medians, replicate 3 ÷ replicate 2: 0.999 / 1.000, so the replicates compare directly
+  (*inferred*).
+
+| family (n) | 3.15.1 rep 3 (`07786e2`) | rep 2 (`7fec7e4`) | rep 1 (`d40e7b9`) | 3.15.1t rep 3 | rep 2 | rep 1 | target |
+|---|---:|---:|---:|---:|---:|---:|---|
+| web (10) | **0.885** | 0.882 | 0.886 | **0.901** | 0.903 | 0.905 | — |
+| data (12) | **0.751** | 0.752 | 0.749 | **0.736** | 0.735 | 0.736 | — |
+| devtools (12) | **0.958** | 0.957 | 0.955 | **0.861** | 0.861 | 0.863 | — |
+| frameworks (6) | **0.943** | 0.940 | 0.945 | **0.953** | 0.955 | 0.957 | ≤ 0.98 |
+| libs (6) | **0.961** | 0.961 | 0.960 | **0.967** | 0.966 | 0.964 | ≤ 0.95 |
+| custom (10) | **0.942** | 0.936 | 0.940 | **0.974** | 0.973 | 0.975 | ≤ 0.95 |
+| services (4) | **0.852** | 0.848 | 0.848 | **0.884** | 0.888 | 0.885 | ≤ 0.85 |
+| threads (5) | **0.687** | 0.685 | 0.687 | **0.784** | 0.792 | 0.786 | t ≤ 0.78 |
+| **wave 1's 34** | **0.859** | 0.858 | 0.857 | **0.826** | 0.826 | 0.827 | ≤ 0.85 / ≤ 0.80 |
+| the 31 new | **0.888** | 0.884 | 0.886 | **0.924** | 0.925 | 0.924 | — |
+| **all 65** | **0.872** | 0.870 | 0.871 | **0.871** | 0.872 | 0.872 | ≤ 0.88 / ≤ 0.84 |
+
+- **Replicate 3 agrees with replicates 1–2.** Every family is within 0.008 and all 65 within
+  0.002. Per workload, 63 of 65 are within 2% on 3.15.1 and 62 of 65 on 3.15.1t:
+
+  | build | workload | rep 2 → rep 3 |
+  |---|---|---|
+  | 3.15.1 | `billing_engine` | 0.989 → 0.966 (it also moved 3.6% between rep 1 and rep 2) |
+  | 3.15.1 | `report_engine` | 0.843 → 0.861 |
+  | 3.15.1t | `csv_etl` | 0.632 → 0.650 |
+  | 3.15.1t | `uvicorn_fastapi` | 0.992 → 0.972 |
+  | 3.15.1t | `request_pool` | 0.778 → 0.754 |
+
+  *Inferred*: the sort fix does not move the headline. Every family change is within the spread
+  between replicates.
+- **T1 (≤ 1.02):**
+  - 3.15.1: worst `email_mime` and `cache_service`, both 1.005; median 0.968; 25 workloads ≤ 0.95.
+  - 3.15.1t: **`custom/mini_interp` 1.023** (rep 1 1.015, rep 2 1.018; mean of the three 1.019).
+    Next worst `ecs_arena` 1.004; median 0.971; 26 workloads ≤ 0.95. §14.5 has the probe.
+- **T4 services ≤ 0.85**: 0.852 in this replicate, against 0.848 in both earlier ones (mean of
+  three 0.849). It is on the line. The verdict in §4 ("met by 0.002") does not hold in every
+  replicate.
+- Other verdicts are unchanged:
+  - T2: 0.859 / 0.826, not met.
+  - T3: 0.872 met on 3.15.1, 0.871 not met on 3.15.1t.
+  - T4: frameworks met, custom met (0.942), libs not met (0.961), threads not met (0.784 on 3.15.1t).
+- **T7** (copy group off, 3.15.1t, domain 2 after the headline):
+  - `isort_stdlib`: **0.260** (1143.8 → 297.4 ms), met;
+  - `state_snapshot`: **0.677** (1229.4 → 832.7 ms), met.
+
+### 14.5 `custom/mini_interp` on 3.15.1t: what costs the 2% — measured, cause *inferred*
+
+**Probe.** `mini_probe.py`, domain 2 (taskset 16–23, as the headline), 3.15.1t workload venv:
+- every process runs `run.py one custom/mini_interp -n 5` with `RUSTIQUE` unset;
+- 5 rounds, modes rotated; per mode the median of its 25 timed runs;
+- digests are equal across all modes.
+
+"exclude X" means `--enable` with `RUSTIQUE_EXCLUDE=X`. Group halves:
+- A1 = builtins, containers, contextlib, copy, dataclasses;
+- A2 = datetime, enum, float, fnmatch, functools;
+- B = generated, json, logging, pathlib, posixpath, random, re, set, statistics, textwrap, urllib.
+
+Results: `z07/mini/mini-3.15.1t-{1,2,3}.txt`.
+
+| mode | ratio to plain | what is installed |
+|---|---:|---|
+| `import rustique` only, not enabled | **1.002** | nothing (the extension loaded) |
+| enabled | 1.019 / 1.014 / 1.015 (3 sweeps) | all 21 default groups |
+| exclude A (= A1 + A2) | 1.015 | B |
+| exclude A1 | 1.006 | A2 + B |
+| exclude A2 | 1.016 | A1 + B |
+| exclude `re` | 1.012 | all but `re` |
+| exclude B | 1.053 | A |
+| exclude B + A2 | 1.057 | A1 |
+| exclude B + A1 | 1.051 | A2 |
+| exclude all but `re` | 1.064 | `re` |
+| exclude all but `urllib` | 1.067 | `urllib` |
+| **exclude all 21 groups** | **1.066** | **nothing** (status: 116 targets disabled) |
+
+- **Loading the extension is not it: 1.002.** A layout effect of the `.so` alone is ruled out
+  here.
+- **No single group is it.** `enable()` with every group excluded, and nothing installed,
+  measures **1.066**. Any configuration without B's groups measures 1.051–1.067, whichever groups
+  are on. With B's groups on (with or without `re`), it measures 1.006–1.016.
+- So the 1.015–1.023 is a fixed cost of about 6.5% that `enable()` itself leaves in this process.
+  B's groups win back about 5% of it (not `re`; not narrowed further). The A halves alone give back
+  ≤ 1.5%.
+- **What `enable()` leaves behind, all groups or none** (checked untimed, box idle;
+  `z07/mini/enable-state.txt`):
+  - no OS or Python thread;
+  - no profile or trace function, no `sys.monitoring` tool;
+  - no new `sys.meta_path` entry or path hook, `__import__` unchanged;
+  - no module imported;
+  - gc thresholds unchanged;
+  - about 130 more gc objects.
+
+  *Inferred*: the cost is in what `registry::enable_tiers` sets up at the C level even with
+  every group excluded. `accel/guard.rs` registers dict and type watchers. This is a candidate
+  only, not checked.
+
+  The pattern differs from `coroutines` (§6). There, excluding either half of the groups
+  removed the slowdown. Here, removing groups makes it worse.
+
+The probe took 14 minutes (21:30–21:44Z).
+
+### 14.6 Files
+
+`benches/results/w2-phase3/`:
+- Scripts: `z07.sh` (the schedule), `z07n.sh`, `z07ab.sh`, `z07i.sh`, `z07m.sh`.
+- Helpers:
+  - `nearly_pyperf.py`, `mini_probe.py`;
+  - `sortcells.py` (the sort-cell tables), `r3compare.py` (replicate 3 against replicate 2).
+- `z07/` (`07786e2`): `steps.log`, `durations.tsv`, `logs/`, `tests/`, `status/`,
+  `workloads/` (replicate 3, T7, freezes), `mini/`.
+- `z07/sort/`:
+  - `sort-time-<b>-run{1,2}.json.shard0.json`;
+  - `isolated-four-3.15.1.txt`;
+  - `wall-big-sort-3.15.1-run{1,2}.txt`;
+  - `nearly-<b>-{plain,on}.json`;
+  - `str-ab-{w2p3f,w2p3z}-{1,2}.json.shard0.json`.
+- `tables/`:
+  - `sortcells-07786e2-3.15.1.md`, `sortcells-07786e2-3.15.1t.md`;
+  - `wall-big-sort-07786e2-3.15.1.md`;
+  - `headline-r3-07786e2.md`.

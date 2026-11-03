@@ -81,9 +81,9 @@ an estimate before you try it, `python -m rustique estimate -- python app.py`.
   time is the standard library; the rest is the program's own bytecode, third-party code,
   attribute lookups, allocation and garbage collection, which the default tier leaves to
   CPython. If your profile shows no time in the standard library, expect ~0.97–1.0×.
-- **Open never-slower items** (measured, being worked on; [DECISIONS §13](docs/DECISIONS.md)):
-  `sorted()` of a 1M-element set of numbers measured 1.23–1.28× at the wave-2 Phase 3 commit;
-  pyperformance `coroutines` reads 1.07× on 3.15.1t (a layout effect, *inferred*).
+- **Open never-slower items** (measured; [DECISIONS §13](docs/DECISIONS.md)): one custom
+  program (a small bytecode interpreter) runs 1.02× on 3.15.1t; pyperformance `coroutines`
+  reads 1.07× on 3.15.1t (a layout effect, *inferred*).
 - **Startup costs something: with Rustique on, its wall time exceeds our own 1.05 bar.**
   Measured on `python -c pass` (release wheels, callgrind and wall time,
   [details](docs/atlas/w2-phase3.md#72-startup-cells-t8--9d0abae)):

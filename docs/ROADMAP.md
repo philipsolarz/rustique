@@ -15,7 +15,7 @@ See `DECISIONS.md` §10–§17, `IMPACT_ATLAS.md` Part 2 (§7–§15), `ACCELERA
 | Results | 65 real programs in 8 families: 0.870 (3.15.1) / 0.872 (3.15.1t), framework apps 0.940, custom applications 0.936, services 0.848, threaded programs 0.685 / 0.792; wave 1's 34 0.858 / 0.826; pyperformance 0.911 / 0.936; 0 differences in CPython's test modules (50 modules, 4 builds) and 14 real projects' suites |
 | Removed | the opt-in native types (`List`, `Dict`, …, `X`, scalars, the C-API capsule): `docs/MIGRATION.md`, tag `legacy-native-types` |
 | DX | `python -m rustique estimate`, `report` with per-target reasons, `pytest --rustique-tiers`, per-platform wheel CI with a target-coverage report, release-ready wheels (not published) |
-| Open | `sorted()` of large sets of numbers, the `gc` tier's pause placement, startup wall time 1.06–1.08, extension 3.6 MB, pyperformance `coroutines` on 3.15.1t (DECISIONS §13) |
+| Open | `custom/mini_interp` 1.02 on 3.15.1t, the `gc` tier's pause placement, startup wall time 1.06–1.08, extension 3.6 MB, pyperformance `coroutines` on 3.15.1t, Windows Decimal copies (DECISIONS §13) |
 
 ## Done: wave 1, faster real programs (November 2026)
 
@@ -70,8 +70,8 @@ each measured and bounded: DECISIONS §10 rulings 18–19 and §13.
 
 **Wave 3** (ranked, with evidence: `DECISIONS.md` §17):
 
-1. Close the open never-slower items: large-set sort, the `gc` tier's pause placement, startup
-   wall time (smaller engine, lazily loaded handler sets), first-call costs over budget.
+1. Close the open never-slower items: `mini_interp` on 3.15.1t, the `gc` tier's pause
+   placement, startup wall time (smaller engine, lazily loaded handler sets), first-call costs over budget.
 2. The `interp` tier as the default on verified builds (its whole-run gate, remaining C→Python
    frame pushes, a `STORE_ATTR` cache, aarch64 and macOS builds).
 3. Third-party-heavy code: generic attribute lookups, allocation and dict work through the

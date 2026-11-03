@@ -65,10 +65,13 @@ contends with itself; Rustique's kernel does not), 0.260 with the copy group off
 with Rustique on, and CPU time per call of every target at 8 threads is ≤ 1.05× CPython's
 (`78751e2`).
 
-**Open never-slower cells** (measured; DECISIONS §13): `sorted()` of a 1M-element set or
-frozenset of `int`/`float` 1.23–1.28 at `7fec7e4` (the wave-2 sort strategy on long nearly
-ordered runs; see DECISIONS §13 for the fix's status); startup wall time above;
-`coroutines` on 3.15.1t. The other scoreboard cells above 1.05 alone (tuple iteration, set
+**The final code, `07786e2`** (core's large-sort fix on top; `w2-phase3.md` §14): a third
+replicate of the 65 gives **0.872 / 0.871** (0 digest mismatches); `sorted()` of a 1M-element
+set or frozenset of `int`/`float`, 1.23–1.28 at `7fec7e4`, is 0.714–0.744, and all 48 sort cells
+at 10k/1M are ≤ 1.007 (wall, alone on one CPU).
+
+**Open never-slower cells** (measured; DECISIONS §13): `custom/mini_interp` on 3.15.1t (1.015 /
+1.018 / 1.023 over the replicates); startup wall time above; `coroutines` on 3.15.1t. The other scoreboard cells above 1.05 alone (tuple iteration, set
 equality at 10k, dict lookup at 1M) are not Rustique's: enabled ÷ imported ≤ 1.026 at the best
 heap offset, and plain CPython moves by as much between processes.
 
