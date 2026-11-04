@@ -1,0 +1,6 @@
+frameworks/django_admin              predicted 0.982 measured - error - (under targets 5.8%, profiled run 1574 ms vs 1210 ms, replay 0.2 s)
+frameworks/drf_api                   predicted 0.989 measured - error - (under targets 8.4%, profiled run 2091 ms vs 1484 ms, replay 0.2 s)
+frameworks/falcon_api                predicted 0.801 measured - error - (under targets 26.8%, profiled run 661 ms vs 440 ms, replay 0.0 s)
+frameworks/fastapi_sqlalchemy        predicted 0.990 measured - error - (under targets 3.6%, profiled run 2350 ms vs 1653 ms, replay 0.2 s)
+frameworks/flask_marshmallow         predicted 0.978 measured - error - (under targets 4.6%, profiled run 1070 ms vs 887 ms, replay 0.2 s)
+frameworks/strawberry_graphql        predicted 0.993 measured - error - (under targets 2.2%, profiled run 1286 ms vs 1167 ms, replay 0.0 s)

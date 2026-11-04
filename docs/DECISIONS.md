@@ -457,3 +457,358 @@ workloads fall back on (`docs/atlas/phase3.md` §4.2), discounted by risk:
 9. **zlib/crc32** only if the upstream Rust zlib (3.16) slips.
 10. **Upstream reports**: PEP 829 `.start` files cost 1.72× startup (`site` imports `pkgutil`
    and `re`); `copy.deepcopy` is 2–4× slower on free-threaded 3.15.1t than on the GIL build.
+
+# Part 3: wave 2, from stdlib-heavy programs to all Python programs (November 2026)
+
+Evidence: `docs/IMPACT_ATLAS.md` Part 2 (§7–§14, the wave-2 atlas), `docs/atlas/w2-*.md` (one
+per Phase-1 slice) and `docs/atlas/w2-phase0.md` (ground truth). Tags: (M) measured, (I)
+inferred. §10 records the Phase-1 decisions; results follow in Phase 3.
+
+## 10. What was decided at the end of Phase 1, and why
+
+**Workstreams and targets.** Nine Phase-2 workstreams (`engine`, `accel`, `core`, `text`,
+`datamodel`, `re`, `interp`, `gc`, `dx`) and thirteen measurable targets (T1–T13), chosen and
+justified in IMPACT_ATLAS §14. The headline is the speedup on real workloads per family,
+framework-heavy and custom software included.
+
+**Rulings** (each with its evidence in the slice doc named):
+
+1. **Opt-in native types are retired** (`w2-startup.md` §4): `List`/`Dict`/`Set`/`Tuple`/
+   `FrozenSet`, `X` expressions, fixed-width scalars, the C-API capsule and `rustique-api`,
+   `enable(native=...)`, `--native`, `@rs.native`. They are 60% of the extension's code, 68% of
+   test time and a quarter of build time; none speeds up an existing entry point without a code
+   change; the extension shrinks from 6.84 to 2.31 MB, which is a third of the startup fix. The
+   in-place kernels that came from the same program (`list.sort`, `sum`/`min`/`max`/…,
+   containers' `in`/`index`/`count`) are the new way of working and stay. The last commit that
+   contains the native tier is tagged before deletion, with a migration note.
+2. **A new site kind, the opcode handler (M2), ships as an opt-in `interp` tier**
+   (`w2-interp.md` §8–§9): on verified tail-calling builds (python-build-standalone), handlers
+   generated from the running patch release's `bytecodes.c`, every table entry verified before
+   the swap. Default-eligible only after its gates hold (full regrtest 0 differences on each
+   verified build, differential suites, every cell ≤ 1.05, whole runs ≤ 1.00). M1 (a copied
+   loop as a PEP 523 hook) stays research: 1.02–1.04 on whole programs (M).
+3. **The adaptive GC policy ships as an opt-in `gc` tier, not as a default**
+   (`w2-runtime.md` §5). Criterion (a), "documented `gc` APIs report nothing different", is
+   defined as in `w2-runtime.md` §5.1: values that depend on collection timing (`get_count`,
+   `get_stats`, the number of callback invocations, `collect()` return values) are outside the
+   contract, as they already are for every Rustique kernel that allocates less than CPython
+   (ACCELERATION §5.8). The prototype's two declared deviations — `get_threshold()` reports
+   the configured thresholds rather than the ones in force, and `gc.callbacks` holds one extra
+   entry — are acceptable in an opt-in tier and **block default status** on both builds.
+   Memory budget: peak RSS ≤ 1.05× per workload and per adversarial scenario.
+4. **"Fast exit" is not shipped**, not even opt-in (`w2-runtime.md` §6): skipping the
+   exit-time collections loses the finalization of cyclic garbage (buffered data in files only
+   reachable from cycles), which changes semantics, not just timing.
+5. **Unrecorded CPython patch releases refuse by default** (`w2-floors.md` §5): fingerprints
+   cannot see C behaviour changes (3.15.2's `tuple_hash` recursion guard). Fingerprint v3
+   drops docstrings and canonicalizes exception tables; accepted hashes are recorded per patch
+   release by a CI job that runs the conformance suite first; an unrecorded patch release shows
+   the refusal category `unvalidated-patch`, and an explicit opt-in installs targets whose v3
+   fingerprints match a recorded hash, reported as "unvalidated".
+6. **Asynchronous exceptions are outside the contract** (ACCELERATION §5.8 amendment,
+   `w2-floors.md` §5.3): signals and `PyThreadState_SetAsyncExc` arriving while a kernel runs
+   are delivered when it returns, at the next eval-breaker check; their timing is already
+   nondeterministic in CPython.
+7. **Packaging**: the extension becomes top-level `_rustique`, loaded directly by the `.pth`
+   line, by repacking the wheels in CI (`w2-dx.md` §7, `w2-startup.md` §1); the loader falls
+   back to the in-package path for sdist and editable installs. setuptools-rust was rejected
+   (rebuilding the proven wheel matrix for 0.46M instructions). Exception found by the full
+   wheel matrix (Phase 3): musllinux wheels keep the in-package layout and the shim, since the
+   repair tool grafts `libgcc_s` next to the extension with an `$ORIGIN`-relative search path.
+8. **Platforms**: the process gate gets an allowlist of the validated platforms; anything
+   else refuses with category `platform`, and Rustique's own test suite skips on `version` and
+   `platform` refusals (`w2-dx.md` §2).
+9. **Free-threading**: the framework is hardened (no panic escapes `enable()`; dict snapshots
+   outside the registry lock; the registry lock is a leaf; suspension decided on the thread that
+   falls back) before any target pins a class attribute (`w2-threads.md` §3). A kernel scaling
+   rule joins the never-slower bar: CPU time per call at 8 threads ≤ 1.05× CPython's original.
+
+**Rulings made while the workstreams built** (Phase 2; evidence in the target doc named):
+
+10. **Opcode-handler sites** (`docs/targets/interp.md` App. A, now ACCELERATION §1/§3–§7): a site
+    kind for the `interp` tier only — an entry of the tail-calling dispatch table, replaced by a
+    handler generated from the running patch release's `bytecodes.c`, on recorded
+    (release, configuration, ELF build-id) builds only, every entry verified before a
+    compare-and-swap, never on instrumented opcodes, `ENTER_EXECUTOR` or JIT paths; per-group
+    net-benefit suspension. A frame-pushing override may push a Python frame inline only the way
+    an existing CPython specialized form pushes it for the same kind of callee.
+11. **`tp_alloc` routing of recognized frozen dataclasses** (`docs/targets/generated.md` §4, the
+    one exception to ACCELERATION §3.6): a class whose generated `__init__` carries a kernel gets a
+    `tp_alloc` that returns exactly `PyType_GenericAlloc(type, n)`, set before the class reaches
+    user code and followed by `PyType_Modified`, so `CALL_ALLOC_AND_ENTER_INIT` does not bypass
+    the kernel; subclasses get `PyType_GenericAlloc` from `type_new`; while a tool listens, or for
+    a type whose `__init__` lacks the kernel, the function hands `PyType_GenericAlloc` back;
+    `on_disable` restores. Default tier; every cell ≤ 1.05 (M).
+12. **The `gc` tier writes calibrated collector state** (`docs/targets/gc.md`): deferral through
+    `gcstate->long_lived_total` (CPython's own 25% rule), the observer through a private list
+    that `gcstate->callbacks` points to and that forwards every collection to the program's own
+    list exactly as `invoke_gc_callback` does. Both §10.3 deviations are gone (thresholds and
+    `gc.callbacks` read back unchanged). This is an opt-in-tier mechanism, not a site; it does not
+    qualify the tier for default status by itself (memory and pause evidence first). Its free-
+    threaded pause cap is 1.05× (1.1× on GIL builds); an explicit `gc.collect()` of an empty
+    generation costs 1.059× (+76 instructions) with the tier on — a listed opt-in exceedance.
+13. **The `interp` tier ships opt-in and is not yet default-eligible**: every cell ≤ 1.05 and every
+    whole workload ≤ 1.0043 (inside T1), CPython's full regression suite 0 per-test differences on
+    3.15.1t and 3.15.2/3.15.2t and two load-dependent timer flakes on 3.15.1 (pass 3 of 3 when
+    re-run), but its own gate (whole runs ≤ 1.00) misses on pycodestyle (1.0043, genuine
+    copy cost) and on four 0.07–0.25% residuals. Next: never swap the specialized family members
+    on programs without polymorphic sites, and a multi-run measurement protocol.
+14. **Validate on first call** (accel D): on GIL builds a target's fingerprints, self-tests and pins
+    run at its first call (state `armed` until then); free-threaded builds validate eagerly; a
+    target that must act from install on declares `TargetSpec.eager` (the `gc` tier).
+    `RUSTIQUE_VALIDATE=eager` restores eager validation (the test suite sets it).
+15. **Credits v2** (ACCELERATION §5.6): cost-weighted credits per target, a 256-call window for
+    mixed traffic, and an early exit — a target with no hit since it was armed suspends at 64
+    fallbacks; `deopt` is split into restart / continue / abandon; suspensions are reported.
+16. **Patch releases** (§10.5 implemented): fingerprint v3, recorded sets for 3.14.1, 3.14.5,
+    3.14.6, 3.14.8, 3.14.9(t), 3.14.10(t) and 3.15.0, 3.15.1(t), 3.15.2(t) — the releases the
+    conformance suites ran on before each recording (`accel/fingerprints.txt`); 3.14.2–3.14.4
+    and 3.14.7 are not recorded and refuse (`unvalidated-patch`: the wheel matrix's macOS x86_64
+    3.14 runner is 3.14.7, 0 targets, by design); 3.14.0 stays unrecorded because its
+    conformance run failed on a textwrap helper the kernel reimplemented without fingerprinting —
+    the gate working as intended; every target now fingerprints the helpers it reimplements.
+17. **`not-needed`** is a status category distinct from refusals (e.g. `set.__reduce__` on GIL
+    builds, where the CPython bug it fixes does not exist).
+18. **Accepted overages** (each measured, each bounded): enabling an already-imported group
+    costs 155k–408k instructions at first call (budget 0.1M; the targets' own prepare; every lazy
+    install is within budget); `re` declines cost ≤ 1.036 for their first 64 calls and an
+    all-fallback stream ≤ 1.046 after suspension (the restored call site stays unspecialized);
+    the enum call kernel on a class whose private value map holds a user-typed key 1.033.
+19. **Default-path hygiene**: a default `enable()` leaves no Python object behind that plain
+    CPython would not have (the fork hook is registered only for live counter files), and no
+    framework probe may touch `sys.monitoring` (its tool-id release bumped the global
+    instrumentation version and taxed every later code object ~930 instructions; found by the
+    datamodel workstream, fixed in accel).
+20. **C-stack exhaustion messages** (ACCELERATION §5.8, clarified with a measurement): on
+    builds with small native stacks (Windows free-threaded 3.14t in the wave-2 wheel matrix,
+    run 41717074725) a deeply nested `dataclasses.asdict` input exhausts the C stack before the
+    Python-recursion limit; CPython raised `RecursionError('Stack overflow (used 2912 kB)
+    while calling a Python object')`, the kernel `RecursionError('Stack overflow (used 2914
+    kB)')`. Type and point of failure agree; the message measures native stack, which
+    differs between any two implementations (and between CPython builds). The depth was
+    already outside the contract; its message now says so explicitly, and the differential
+    tests compare C-stack overflows by type.
+
+## 11. Speedup on real workloads, per family, against the targets
+
+Measured in Phase 3 (`docs/atlas/w2-phase3.md`) on the dedicated AWS c7a.8xlarge: the 65
+workloads (`benches/workloads/`, 8 families), plain CPython against the **default tier**
+(`rustique.enable()`, every default group, no opt-in tier), fresh processes, interleaved
+(`run.py compare -n 5 -p 5`), fat-LTO release builds. Replicate 2 on `7fec7e4` (the final
+steady-state code), replicate 1 on `d40e7b9` (agrees within 0.006 per family), replicate 3 on
+the final code `07786e2` (0.872 / 0.871; every family within 0.008 of replicate 2;
+`w2-phase3.md` §14). Every workload's result digest is identical plain and enabled, in all
+three replicates on both builds (M).
+
+| family (n) | 3.15.1 | 3.15.1t | target (IMPACT_ATLAS §14.4) |
+|---|---:|---:|---|
+| **all 65** | **0.870** (1.15× faster) | **0.872** (1.15×) | T3 ≤ 0.88 / ≤ 0.84: **met / not met** |
+| wave 1's 34 (web, data, devtools) | 0.858 | 0.826 | T2 ≤ 0.85 / ≤ 0.80: **not met** (wave 1: 0.877 / 0.843) |
+| the 31 new | 0.884 | 0.925 | — |
+| framework apps (6) | 0.940 | 0.955 | ≤ 0.98: **met** |
+| custom applications (10) | 0.936 | 0.973 | ≤ 0.95: **met** (3.15.1) |
+| long-running services (4) | 0.848 | 0.888 | ≤ 0.85: **met** (3.15.1) |
+| third-party-heavy code (6) | 0.961 | 0.966 | ≤ 0.95: **not met** |
+| multi-threaded, 8 threads (5) | 0.685 | 0.792 | ≤ 0.78 on 3.15.1t: **not met** (by 0.012) |
+| web / data / devtools | 0.882 / 0.752 / 0.957 | 0.903 / 0.735 / 0.861 | — |
+| best | `report_render` 0.357 | `isort_stdlib` 0.201 | — |
+| worst | `mini_interp` 1.006 | `mini_interp` 1.018 | T1 ≤ 1.02: **met** |
+
+- **Framework-heavy and custom software moved for the first time.** After wave 1, Django,
+  Flask, FastAPI, SQLAlchemy apps sat at 0.97–1.01; the six new framework apps are 0.940 by
+  default (falcon 0.795, Django admin 0.968), and 0.933 with the `interp` tier. Custom domain
+  software is 0.936 by default and 0.920 with `interp`; with both tiers the rules engine is
+  0.820 and the order domain 0.893. The machinery that gets them there:
+  enum, generated namedtuple/dataclass code, `contextmanager`/`singledispatch` bookkeeping,
+  `re`, logging, json `default=`, UUID copying, and the opcode-handler overrides.
+- **Wave 1's stdlib-heavy programs gained again**: `report_render` 0.438 → 0.357,
+  `logging_service` 0.813 → 0.686, `json_api` 0.835 → 0.717, `flask_jinja` 0.997 → 0.958,
+  `tz_events`, `fs_inventory`, `log_analytics` 1–3 points each (3.15.1).
+- **Whole processes** (`RUSTIQUE=1` through the `.pth`, interpreter start and imports included,
+  8 workloads, `9d0abae`): 0.743 / 0.742; `import_startup` (21 child processes) 0.990 — it
+  was 1.022 in wave 1: the `re` compiler now pays for the startup cost.
+- **pyperformance 1.14.0** (122 benchmarks, `7fec7e4`): **0.911 / 0.936** (T12 ≤ 0.93 / ≤ 0.94:
+  **met**; wave 1 0.942 / 0.955); `regex_compile` 0.044 / 0.122, `logging_format` 0.51 / 0.64.
+- **Opt-in tiers** (`d40e7b9`, against plain / against the default tier, all 65): `interp`
+  0.859 / 0.987; `gc` 0.868 / 0.998 (3.15.1), 0.866 / 0.992 (3.15.1t); both (frameworks, custom,
+  devtools) 0.985 of the default tier; no tier slows a workload by more than 1.8% against the
+  default tier.
+- **Free-threading** (T7): with the copy group off, `isort_stdlib` 0.260 and `state_snapshot`
+  0.668 on 3.15.1t (**met**: the `set.__reduce__` kernel alone removes CPython's
+  self-contention). The threads family scales 1.9–7.5× at 8 threads with Rustique on.
+
+**Against all thirteen targets** (`w2-phase3.md` Summary has the evidence per row):
+
+| # | target | result | |
+|---|---|---|---|
+| T1 | never slower | workloads ≤ 1.018 in replicates 1–2, but `mini_interp` on 3.15.1t **1.023** in replicate 3 (§13); 0–100 cells 3814/3814; the 1M sort cells (1.23–1.28 at `7fec7e4`) fixed on the final code: 48 sort cells ≤ 1.007; `RUSTIQUE=1` wall 1.059 / 1.075; first call of `random` +0.29M Ir; pyperformance `coroutines` 1.07 on 3.15.1t (unexplained) | **not met** |
+| T2 | wave 1's 34 ≤ 0.85 / 0.80 | 0.858 / 0.826 | not met |
+| T3 | all 65 ≤ 0.88 / 0.84 | 0.870 / 0.872 | met / not met |
+| T4 | families | custom, frameworks met; services 0.848 / 0.848 / 0.852 over three replicates (at the bar); libs 0.961, threads (t) 0.792 / 0.784 not | 2–3 of 5 |
+| T5 | `interp`: frameworks ≤ 0.96, custom ≤ 0.90, full regrtest 0 differences | 0.933 / 0.920; regrtest (dev box, interp workstream) 0 differences on 3.15.1t, two load-dependent timer flakes on 3.15.1; not re-run on the bench box | frameworks met, custom not |
+| T6 | `gc` tier | GC-heavy geomean 0.982 / 0.952 (target 0.87); RSS ≤ 1.038 (met); largest pause `state_snapshot` 1.30 (3.15.1) | not met |
+| T7 | free-threading fix | 0.260 / 0.668 | met |
+| T8 | startup ≤ 1.05, extension ≤ 2.5 MB | instructions 1.028 / 1.029 (met); wall 1.059 / 1.075; 3.63 MB | partly |
+| T9 | install budgets | every lazy install within budget on `9d0abae` | met |
+| T10 | reach | Linux: 3.15.x 108–110 targets (104 on t), recorded 3.14.x 105 (99 on t); the full wheel matrix (run 41723892697) holds every platform floor on recorded releases: macOS and musl 103 / 97 on 3.15, 98 / 92 on 3.14, Windows 80 / 73; unrecorded 3.14.0, 3.14.2–3.14.4, 3.14.7 refuse `unvalidated-patch`, 3.16.0a1 `version` | met |
+| T11 | correctness | CPython's test modules: 0 differences in 18,210 outcomes per 3.15 build (50 modules, every default group at once); 14 real projects' suites: 0 differences in 34 runs (dx, `d40e7b9`) | met |
+| T12 | pyperformance | 0.911 / 0.936 | met |
+| T13 | estimator ±0.03 on ≥ 80% | 69% (3.15.1), 80% (3.15.1t) | not met on 3.15.1 |
+
+## 12. Per-target results (wave 2)
+
+21 default groups, 111 targets on 3.15.1 (110 installed, `set.__reduce__` not needed on GIL
+builds), plus the two opt-in tiers (`interp` 4 targets, `gc` 1). Per call: callgrind
+instructions, enabled ÷ plain, small realistic inputs, 3.15.1 (M; each workstream's
+`docs/targets/<group>.md`). Conformance: the CPython test modules of every group, every group
+on at once, 0 differences on 4 builds (M).
+
+| group (new or extended in wave 2) | per call | where it shows |
+|---|---|---|
+| containers / builtins | sort grid every cell 0.37–0.94 (the first kernel reached 1.84 on ordered and short-string input; tiny inputs fixed in `7fec7e4`), `sorted` a real kernel, `any`/`all` 0.53–0.73; `x in list`/`index`/`count` without the list's lock on free-threaded builds | devtools, data |
+| set (new, free-threaded only) | `set.__reduce__` without CPython's self-contention | isort 4.0× → 0.20 on t |
+| json / copy / dataclasses | `dumps(rec, default=hook)` when the hook is not needed 0.183; `asdict(Order)` with a UUID 0.341; `deepcopy` of records holding a UUID 0.544 | json_api 0.717, logging_service |
+| logging | one record 0.327 (wave 1: 0.453), `findCaller` 4,027 → 868 Ir, `Handler.handle` for `StringIO` streams | logging_service 0.686, job_worker, shared_cache |
+| datetime | format plans (`strftime` 1.85k → 1.46k Ir), one-pass `strptime` | tz_events, log_analytics |
+| textwrap / urllib / paths / random | allocation-free textwrap (`fill` 0.038) and urllib (`quote`'s CPU per call from 1 to 8 threads ×19.6 → ×1.01), `relpath` 6,993 → 1,635 Ir, cached pathlib paths in `join`; `randint` 0.22–0.41 | report_render 0.357, fs_inventory |
+| enum (new) | `Color(2)` 0.265, `IntFlag` `\|` 0.180, `m.value` 0.496 | custom family, json_api |
+| generated (new) | namedtuple `_replace` 0.265, `_make` 0.702, `NT(...)` 0.726; frozen dataclass `__init__` 0.63–0.64 (positional calls through `tp_alloc` routing, §10.11) | custom family, pylint (`TokenInfo`) |
+| contextlib / functools (new) | `cm()` 0.644, `singledispatch` `dispatch` 0.669 | rules_engine, event_ledger |
+| re (new) | a compile miss 0.146–0.275 (exact `_sre.compile` arguments; 99.7% of 8,522 PyPI patterns), `re.match` 0.679, `re.compile` hit 0.449 | `import yaml` 0.61, `regex_compile` 0.04 |
+| `interp` tier (opt-in) | `isinstance` metaclass negative 0.330, polymorphic attribute 0.754–0.831, frozen dataclass `F(...)` 0.558, `P(1, b=2)` 0.519 | frameworks 0.933, custom 0.920 |
+| `gc` tier (opt-in) | GC work 0.95 (GIL) / 0.82 (t) | billing 0.87 / 0.91, request_pool 0.85 (t) |
+
+## 13. What fell back, and why; what is open
+
+The fallback classes of §8 stand (user code between native steps, subclasses and duck types,
+inputs outside the validated grammar, state the kernel cannot see, error paths). Wave 2 adds:
+
+- **Ruling 15 keeps the hot halves of dispatchers in CPython**: `contextmanager`'s
+  `__enter__`/`__exit__`, `singledispatch`'s wrapper, frozen dataclasses with `__post_init__`,
+  `html.parser` handlers, `inspect.signature` on annotated functions (`__annotate__`).
+- **Generated code on free-threaded builds**: every per-function site would stop the world; those
+  targets refuse on t this wave (the enum slots and the `set` kernel do not need it).
+- **The `interp` tier** runs only on recorded python-build-standalone builds (tail-calling
+  interpreter, verified build-id); everywhere else it refuses with the reason.
+- **Unrecorded patch releases** refuse (`unvalidated-patch`), and 3.15.0's `copy` targets
+  refuse because CPython's code really changed there.
+- **Open at the end of the wave** (each measured, each listed):
+  - **Fixed before the merge**: `sorted()` of a 1M-element set or frozenset of int/float read
+    1.23–1.28 at `7fec7e4` (Phase 3). The cause was memory, not instructions (0.857–0.923 Ir):
+    the keyed sort's 16 MB pairs buffer and write-back, where timsort walks a set's one or two
+    long runs; presorted/concatenated str lists (1.6–2.1×) and nearly sorted 10^5–10^6 lists
+    (1.4–2.0×) had the same cause. Core's fix (`2e02b1b`): for 4,096+ items, few long runs
+    are merged in place on the pointers, strictly reversed input reversed in place, nearly
+    sorted input handed to CPython's sort. Quiet box, final code `07786e2`: the four cells
+    0.714–0.746, all 48 sort cells at 10k/1M ≤ 1.007, core's 38 large shapes ≤ 1.032
+    (`w2-phase3.md` §14).
+  - `custom/mini_interp` on 3.15.1t: 1.015 / 1.018 / **1.023** over the three replicates
+    (3.15.1: 1.003–1.006), above T1's 1.02 in the last; it hits no kernel of weight. Probe (`w2-phase3.md` §14): loaded but not
+    enabled 1.002, `enable()` with every group excluded **1.066**, fully enabled 1.014–1.019 —
+    reproduced on the dev box (+922M instructions, +5.6%) and diagnosed: not work done by
+    `enable()` but CPython's type-attribute cache. `mini_interp` dispatches with
+    `getattr(self, "visit_" + type(node).__name__)`, a fresh string per call; every such lookup
+    misses the 4,096-slot cache (a hit needs the same name object) and evicts the slot its
+    address picks, so which hot entries survive depends on allocation history: running the same
+    configuration through a `runpy` wrapper gives 1.003–1.006, and plain CPython moves by 1.6%
+    when a few objects are created first (`update_cache_gil_disabled` 5.9% → 9.9% of
+    instructions; the free-threaded build pays more per miss). No guard, watcher, probe or
+    counter shows in the profile. Inferred: the 1.015–1.023 carries ±1–2% of this layout noise;
+    recorded as a T1 miss as measured.
+  - copies of the C `decimal.Decimal` fall back on Windows (category `deopt`, results
+    identical; every Windows build of the wheel matrix): not diagnosed.
+  - the `gc` tier's largest pause on `state_snapshot` (3.15.1): 1.30× the default's in
+    milliseconds. The tier's bound — objects examined ≤ 1.1× (GIL) / 1.05× (t) of the largest
+    full collection the default policy made — held (1.00×): the deferred collection examined
+    295,026 objects where the default's largest examined 321,648, but it landed in the run's last
+    phase, where traversal costs 254 ns per object instead of 175–184 (that phase is as costly
+    under both policies). A trigger policy cannot see per-object cost in advance; bounding
+    milliseconds means not deferring. Known limit of the opt-in tier; see §16.
+  - pyperformance `coroutines` on 3.15.1t: 1.07–1.08 under pyperf only (pure Python, no group
+    alone causes it, 0 GC collections, not reproducible outside the pyperf worker): inferred
+    code/stack layout, not decomposed.
+  - startup wall time with `RUSTIQUE=1`: 1.059 (3.15.1) / 1.075 (3.14.9), instructions 1.028 /
+    1.029; extension 3.63 MB (the new kernels — `re`, datamodel, the interp handler sets —
+    brought it back up from 2.33 MB).
+  - first-call costs over the install budget: `random` +0.29M Ir, `json` and `pathlib` by
+    3–12k; enabling an already-imported group 155k–408k (§10.18).
+
+## 14. What is settled, and why
+
+In addition to IMPACT_ATLAS §12 (the floors and the rejected approaches):
+
+- **The specialized interpreter fast paths** are a floor (our generated copies reach
+  0.96–1.00 at best); only the generic paths are reachable, and only on tail-calling builds.
+- **Language operations already in C** (str methods, dict/list ops, formatting, `getattr`):
+  no Rust re-implementation beats them at real input sizes.
+- **Allocator switching** (`mimalloc` 1.051), **static GC thresholds and freeze policies**,
+  **fast exit**, **CPython's JIT as a policy** (1.015 on the workloads, slower on 5 of 6
+  interpreter-bound ones), **a PEP 523 copy of the loop as a default** (1.02–1.04 on whole
+  programs), **a vectorcall "Rust JIT"** of user functions.
+- **48 of the 84 wave-1 targets** are at or near their floor (`docs/atlas/w2-floors.md` §1).
+- **The scoreboard's non-kernel cells above 1.05** (tuple iteration, dict copy, set equality,
+  pickle at 1M): not Rustique — enabled ÷ imported ≤ 1.026 at the best heap offset; pymalloc pool
+  position and process layout move plain CPython by the same amounts.
+
+## 15. The opt-in native types
+
+Retired in 0.3 (§10.1): `List`/`Dict`/`Set`/`Tuple`/`FrozenSet`, `X`, the scalars, the C-API
+capsule and `rustique-api`, `enable(native=...)`/`--native`/`@rs.native`. About 52,000 lines and
+25 test files removed; the extension went from 6.84 MB to 2.33 MB at the time of the removal
+(wave 2's new kernels brought it back to 3.63 MB) and the test suite from ~300 s to ~150 s per
+build; accessing a removed name raises `AttributeError` that
+points to `docs/MIGRATION.md`; tag `legacy-native-types` marks the last commit with them. The
+in-place kernels they led to (`list.sort`, `sum`/`min`/`max`/`any`/`all`, `in`/`index`/`count`)
+are the new way of working and stay, at zero cost when not called.
+
+## 16. Runtime-policy tiers: the evidence
+
+- **`gc` tier (opt-in)**: defers full collections while they keep finding nothing, through
+  CPython's own 25% rule; steps aside when the program tunes the GC; explicit `gc.collect()` is
+  never touched. Measured on the quiet box (`w2-phase3.md` §9.1): GC-heavy workloads 0.982 /
+  0.952 (T6's 0.87 not met: most of their full collections find real garbage), peak RSS ≤ 1.032 /
+  1.038 (budget 1.05: met), adversarial programs ≤ 1.03× RSS with the pause cap. **Criteria for
+  default status**: (a) documented `gc` APIs report nothing different — met now (thresholds and
+  `gc.callbacks` read back unchanged; timing-derived values are outside the contract); (b) peak
+  memory within 1.05 — met; (c) pauses no longer — **not met**: the bound the tier can guarantee
+  is in objects examined (≤ 1.1× / 1.05× of the largest legitimate full collection; held, 1.02 /
+  1.06 largest collection over the GC-heavy set), and pause milliseconds are a measured
+  indicator with one exceedance (`state_snapshot` on 3.15.1, 1.30×: same size, a costlier phase,
+  §13);
+  (d) steps aside when the program tunes the GC — met (ml_meth hooks on every `gc` setter).
+  Verdict: **stays opt-in**. A default would need (c) in milliseconds, which a deferral policy
+  cannot guarantee; the next step is evidence that pause placement costs nothing on the
+  workloads people run (or a cost model of traversal per object), not a tighter trigger. The two
+  "others" above 1.02 against plain (`pydantic_payloads` 1.021, range 1.00–1.02, GC share < 1%;
+  `fastapi_pydantic` 1.037 on 3.15.1t) include loading the extension; against loaded-but-off the
+  tier measured ≤ 1.005 in instructions on the dev box (the quiet box had no loaded baseline).
+- **`interp` tier (opt-in)**: §10.13; default-eligible per verified build once its own gate
+  (whole runs ≤ 1.00) holds.
+- **Fast exit**: not shipped (§10.4).
+
+## 17. Ranked next waves
+
+Ranked by measured headroom and what wave 2 left, discounted by risk:
+
+1. **Close the never-slower items** of §13: `mini_interp` on 3.15.1t, the `gc` tier's pause placement,
+   startup wall time (smaller engine: strip symbols, split the interp handler sets into a
+   lazily loaded object), the first-call costs over budget, the `coroutines` layout effect.
+2. **`interp` tier to default on verified builds**: never swap the specialized family members on
+   programs without polymorphic sites (pycodestyle 1.0043), a multi-run measurement protocol,
+   the remaining C→Python frame pushes (bound-method `f(*a, **k)`, `__call__`, `partial`: ~1–1.5%
+   on frameworks), a `STORE_ATTR` cache; aarch64 and macOS python-build-standalone builds.
+3. **Third-party-heavy code** (libs 0.961): what libraries make CPython do — generic attribute
+   lookups (5.9%), allocation (12.6%), dict operations — reached through the `interp` tier and the
+   runtime layer; `getattr`/`hasattr` with the attribute cache once its fallback cells fit.
+4. **email/http header parsing** (59% of `email_mime`), the **`xml.etree` serializer** (50% of
+   `xml_feeds`), the json `make_encoder` route (~4% of `json_api`), `inspect.signature`,
+   weakref containers.
+5. **Free-threading**: generated-code targets on t without stop-the-world installs; the
+   `isinstance(x, ABC)` cache; threaded programs in the estimator.
+6. **Platform reach**: the per-platform job's floors hold on every recorded release (run
+   41723892697: Linux/glibc 110 on 3.15, 104 on 3.15t, 105 / 99 on 3.14; macOS and musl 103 /
+   97 / 98 / 92; Windows 80 / 73); next, more Windows targets, and recording 3.14.2–3.14.4,
+   3.14.7 and each new patch release as it ships.
+7. **Upstream reports** (documented, not filed): `set.__reduce__`'s nested critical section,
+   `isinstance`'s `__class__` lookup, the `utf-8-sig` decode every `.pth` costs, a vectorcall for
+   `wrapper_descriptor`, remote-frame sampling on 3.15t.

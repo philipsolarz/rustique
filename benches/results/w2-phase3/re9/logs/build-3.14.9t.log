@@ -1,0 +1,80 @@
+Note: switching to '9d0abae79194b103eaa824d6096c134777beb92d'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+9d0abae79194b103eaa824d6096c134777beb92d
+Python 3.14.9 free-threading build (main, Oct 21 2026, 17:49:33) [Clang 23.1.3 ]
+Using Python 3.14.9 environment at: /work/w2p3r/venv/3.14.9t
+Resolved 1 package in 43ms
+Installed 1 package in 14ms
+ + numpy==2.5.4
+    Updating crates.io index
+     Locking 3 packages to highest Rust 1.99 compatible versions
+      Adding cc v1.11.0
+      Adding find-msvc-tools v0.1.15
+      Adding shlex v2.0.1
+🍹 Building a mixed python/rust project
+🐍 Found CPython 3.14t at /work/w2p3r/venv/3.14.9t/bin/python
+🔗 Found pyo3 bindings
+Using Python 3.14.9 environment at: /work/w2p3r/venv/3.14.9t
+Resolved 16 packages in 47ms
+Installed 8 packages in 82ms
+ + ast-serialize==0.13.1
+ + librt==0.16.0
+ + mypy==2.4.1
+ + mypy-extensions==1.1.0
+ + nodeenv==1.12.0
+ + pathspec==1.1.1
+ + pyright==1.1.414
+ + typing-extensions==4.16.0
+   Compiling target-lexicon v0.13.5
+   Compiling proc-macro2 v1.0.107
+   Compiling libc v0.2.191
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling pyo3-macros-backend v0.30.1
+   Compiling find-msvc-tools v0.1.15
+   Compiling shlex v2.0.1
+   Compiling heck v0.5.0
+   Compiling cc v1.11.0
+   Compiling zmij v1.0.23
+   Compiling equivalent v1.0.3
+   Compiling once_cell v1.21.4
+   Compiling scopeguard v1.2.0
+   Compiling allocator-api2 v0.2.21
+   Compiling foldhash v0.2.0
+   Compiling smallvec v1.16.4
+   Compiling lock_api v0.5.0
+   Compiling pyo3-build-config v0.30.1
+   Compiling hashbrown v0.17.1
+   Compiling syn v3.0.9
+   Compiling pyo3-ffi v0.30.1
+   Compiling pyo3 v0.30.1
+   Compiling rustique-py v0.3.0 (/work/w2p3r/w/3.14.9t/crates/rustique-py)
+   Compiling rustique-core v0.3.0 (/work/w2p3r/w/3.14.9t/crates/rustique-core)
+   Compiling parking_lot_core v0.10.0
+   Compiling rustique-interp v0.3.0 (/work/w2p3r/w/3.14.9t/crates/rustique-interp)
+   Compiling parking_lot v0.13.0
+   Compiling pyo3-macros v0.30.1
+    Finished `release` profile [optimized] target(s) in 35.68s
+📦 Built wheel for CPython 3.14t to /tmp/.tmpp9JPWv/rustique-0.3.0-cp314-cp314t-linux_x86_64.whl
+✏️ Setting installed package as editable
+🛠 Installed rustique-0.3.0
+/work/w2p3r/w/3.14.9t/python/rustique/__init__.py 0.3.0
+['_rustique', 'rustique', 'rustique._rustique']
+enable ok
+-rwxrwxr-x 1 ubuntu ubuntu 3205888 Nov  3 05:20 /work/w2p3r/w/3.14.9t/python/rustique/_rustique.cpython-314t-x86_64-linux-gnu.so
+Using Python 3.14.9 environment at: /work/w2p3r/venv/3.14.9t

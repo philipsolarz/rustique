@@ -1,0 +1,4 @@
+data/fs_inventory                        plain     314.6 ms  enabled     227.7 ms  ratio  0.724  same
+geometric mean                                                                    ratio  0.724
+devtools/pytest_networkx                 plain     635.3 ms  enabled     593.7 ms  ratio  0.934  same
+geometric mean                                                                    ratio  0.934

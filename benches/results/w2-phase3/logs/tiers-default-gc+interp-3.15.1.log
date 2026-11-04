@@ -1,0 +1,65 @@
+frameworks/django_admin              plain    998.4 ms  default    972.8 ms  gc+interp    957.3 ms  | default/plain 0.974  gc+interp/plain 0.959  gc+interp/default 0.984  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+frameworks/drf_api                   plain   1164.1 ms  default   1161.1 ms  gc+interp   1157.1 ms  | default/plain 0.997  gc+interp/plain 0.994  gc+interp/default 0.997  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+frameworks/falcon_api                plain    386.6 ms  default    304.7 ms  gc+interp    307.3 ms  | default/plain 0.788  gc+interp/plain 0.795  gc+interp/default 1.009  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+frameworks/fastapi_sqlalchemy        plain   1197.5 ms  default   1204.5 ms  gc+interp   1181.1 ms  | default/plain 1.006  gc+interp/plain 0.986  gc+interp/default 0.981  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+frameworks/flask_marshmallow         plain    740.3 ms  default    728.3 ms  gc+interp    711.8 ms  | default/plain 0.984  gc+interp/plain 0.961  gc+interp/default 0.977  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+frameworks/strawberry_graphql        plain    919.6 ms  default    865.9 ms  gc+interp    859.5 ms  | default/plain 0.942  gc+interp/plain 0.935  gc+interp/default 0.993  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+geometric mean                       default/plain 0.945
+geometric mean                       gc+interp/plain 0.936
+geometric mean                       gc+interp/default 0.990
+custom/di_plugins                    plain    775.7 ms  default    740.4 ms  gc+interp    753.9 ms  | default/plain 0.955  gc+interp/plain 0.972  gc+interp/default 1.018  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+custom/ecs_arena                     plain    950.8 ms  default    905.7 ms  gc+interp    915.0 ms  | default/plain 0.953  gc+interp/plain 0.962  gc+interp/default 1.010  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+custom/event_ledger                  plain   1353.5 ms  default   1194.4 ms  gc+interp   1193.0 ms  | default/plain 0.882  gc+interp/plain 0.881  gc+interp/default 0.999  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+custom/fulfilment_sim                plain   1239.9 ms  default   1205.9 ms  gc+interp   1194.9 ms  | default/plain 0.973  gc+interp/plain 0.964  gc+interp/default 0.991  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+custom/mini_interp                   plain   1081.4 ms  default   1094.5 ms  gc+interp   1076.3 ms  | default/plain 1.012  gc+interp/plain 0.995  gc+interp/default 0.983  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+custom/order_domain                  plain   1265.3 ms  default   1245.8 ms  gc+interp   1129.5 ms  | default/plain 0.985  gc+interp/plain 0.893  gc+interp/default 0.907  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+custom/orm_mapper                    plain    794.9 ms  default    755.6 ms  gc+interp    725.7 ms  | default/plain 0.951  gc+interp/plain 0.913  gc+interp/default 0.960  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+custom/report_engine                 plain    936.3 ms  default    801.3 ms  gc+interp    794.1 ms  | default/plain 0.856  gc+interp/plain 0.848  gc+interp/default 0.991  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+custom/rules_engine                  plain    855.6 ms  default    724.4 ms  gc+interp    701.2 ms  | default/plain 0.847  gc+interp/plain 0.820  gc+interp/default 0.968  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+custom/task_planner                  plain    490.7 ms  default    487.4 ms  gc+interp    488.1 ms  | default/plain 0.993  gc+interp/plain 0.995  gc+interp/default 1.001  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+geometric mean                       default/plain 0.939
+geometric mean                       gc+interp/plain 0.922
+geometric mean                       gc+interp/default 0.982
+devtools/black_format                plain   1196.2 ms  default   1180.2 ms  gc+interp   1165.7 ms  | default/plain 0.987  gc+interp/plain 0.975  gc+interp/default 0.988  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+devtools/coverage_pyflakes_tests     plain    381.5 ms  default    380.6 ms  gc+interp    378.1 ms  | default/plain 0.998  gc+interp/plain 0.991  gc+interp/default 0.994  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+devtools/import_startup              plain   1881.3 ms  default   1881.9 ms  gc+interp   1883.3 ms  | default/plain 1.000  gc+interp/plain 1.001  gc+interp/default 1.001  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+devtools/isort_stdlib                plain    285.9 ms  default    215.6 ms  gc+interp    217.3 ms  | default/plain 0.754  gc+interp/plain 0.760  gc+interp/default 1.008  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+devtools/pip_resolve                 plain    566.0 ms  default    527.8 ms  gc+interp    529.4 ms  | default/plain 0.932  gc+interp/plain 0.935  gc+interp/default 1.003  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+devtools/pycodestyle_stdlib          plain   1012.6 ms  default    989.3 ms  gc+interp    996.2 ms  | default/plain 0.977  gc+interp/plain 0.984  gc+interp/default 1.007  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+devtools/pyflakes_stdlib             plain   1205.8 ms  default   1199.8 ms  gc+interp   1198.0 ms  | default/plain 0.995  gc+interp/plain 0.994  gc+interp/default 0.998  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+devtools/pylint_stdlib               plain   1191.3 ms  default   1184.3 ms  gc+interp   1155.4 ms  | default/plain 0.994  gc+interp/plain 0.970  gc+interp/default 0.976  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+devtools/pytest_networkx             plain    637.3 ms  default    600.3 ms  gc+interp    582.6 ms  | default/plain 0.942  gc+interp/plain 0.914  gc+interp/default 0.970  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+devtools/rich_render                 plain    285.4 ms  default    279.9 ms  gc+interp    273.0 ms  | default/plain 0.981  gc+interp/plain 0.957  gc+interp/default 0.975  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+devtools/sphinx_autodoc              plain    854.2 ms  default    834.4 ms  gc+interp    829.7 ms  | default/plain 0.977  gc+interp/plain 0.971  gc+interp/default 0.994  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+devtools/sqlglot_transpile           plain    880.0 ms  default    849.7 ms  gc+interp    780.9 ms  | default/plain 0.966  gc+interp/plain 0.887  gc+interp/default 0.919  same
+                                       gc+interp tier targets per process: {'interp:installed': 4, 'gc:installed': 1}
+geometric mean                       default/plain 0.956
+geometric mean                       gc+interp/plain 0.942
+geometric mean                       gc+interp/default 0.986

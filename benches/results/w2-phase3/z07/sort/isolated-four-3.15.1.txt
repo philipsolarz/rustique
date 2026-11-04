@@ -1,0 +1,16 @@
+# time: 4 cells > 0.5 in four-cells.json.shard0.json; 2 runs each, cpus 10
+3.15.1 set/sorted(x)/int/1000000: builtin 47915.8 us (rsd 0.007) enabled 35737.1 us (rsd 0.005) ratio 0.746 (as run 0.747; isolated, run 1, 11 runs, cpu 10)
+3.15.1 frozenset/sorted(x)/int/1000000: builtin 47523.6 us (rsd 0.006) enabled 35047.4 us (rsd 0.005) ratio 0.737 (as run 0.740; isolated, run 1, 11 runs, cpu 10)
+3.15.1 set/sorted(x)/float/1000000: builtin 42762.3 us (rsd 0.003) enabled 30725.5 us (rsd 0.007) ratio 0.719 (as run 0.719; isolated, run 1, 11 runs, cpu 10)
+3.15.1 frozenset/sorted(x)/float/1000000: builtin 42284.9 us (rsd 0.006) enabled 30281.7 us (rsd 0.005) ratio 0.716 (as run 0.716; isolated, run 1, 11 runs, cpu 10)
+3.15.1 set/sorted(x)/int/1000000: builtin 47951.0 us (rsd 0.004) enabled 35754.0 us (rsd 0.006) ratio 0.746 (as run 0.747; isolated, run 2, 11 runs, cpu 10)
+3.15.1 frozenset/sorted(x)/int/1000000: builtin 47570.5 us (rsd 0.007) enabled 35014.1 us (rsd 0.004) ratio 0.736 (as run 0.740; isolated, run 2, 11 runs, cpu 10)
+3.15.1 set/sorted(x)/float/1000000: builtin 42769.9 us (rsd 0.004) enabled 30760.8 us (rsd 0.005) ratio 0.719 (as run 0.719; isolated, run 2, 11 runs, cpu 10)
+3.15.1 frozenset/sorted(x)/float/1000000: builtin 42223.9 us (rsd 0.006) enabled 30285.4 us (rsd 0.006) ratio 0.717 (as run 0.716; isolated, run 2, 11 runs, cpu 10)
+# summary (time): cell, as run, isolated runs, mean
+#   3.15.1 set/sorted(x)/int/1000000: 0.747 -> 0.746 0.746  mean 0.746  STILL > 0.5
+#   3.15.1 frozenset/sorted(x)/int/1000000: 0.740 -> 0.737 0.736  mean 0.737  STILL > 0.5
+#   3.15.1 set/sorted(x)/float/1000000: 0.719 -> 0.719 0.719  mean 0.719  STILL > 0.5
+#   3.15.1 frozenset/sorted(x)/float/1000000: 0.716 -> 0.716 0.717  mean 0.717  STILL > 0.5
+# 4 cells re-measured; 4 still > 0.5 (mean of the isolated runs)
+ISO-DONE

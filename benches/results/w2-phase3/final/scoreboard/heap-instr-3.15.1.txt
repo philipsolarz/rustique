@@ -1,0 +1,2 @@
+# heap offsets [0, 1, 2, 3] (k junk objects of each of 9 size classes before the region); Ir per execution
+# cell | plain by offset | enabled by offset | ratio at offset 0 | ratio of the minima | verdict

@@ -1,0 +1,12 @@
+type(node) in NODE_TYPES (hit at 5th)                                          799       370  0.463
+type(node) in NODE_TYPES_L (list)                                              853       376  0.441
+C in CLS (hit at 3rd)                                                          419       224  0.535
+D in CLS (miss)                                                                561       247  0.441
+type(o) in CLS (hit at 1st)                                                    215       203  0.944
+o in objs (list, hit at 3rd)                                                   455       224  0.493
+o in objs_miss (list miss)                                                     590       249  0.422
+D in MIXED (classes + scalars, miss)                                           915       303  0.331
+e in eqs [fallback: needle __eq__]                                            1119      1156  1.033
+A in WITH_META [fallback after 1 item: metaclass __eq__]                       789       753  0.954
+o in WITH_EQ [fallback after 1 item: item __eq__]                              789       747  0.947
+3 in (1, 2, 3) [scalar path, unchanged]                                        383       246  0.643

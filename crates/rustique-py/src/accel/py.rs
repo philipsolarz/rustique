@@ -27,27 +27,28 @@ fn names(v: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<String>>> {
 /// excludes the `builtins` group. Additive and idempotent; unknown names raise
 /// `ValueError` before anything changes. Returns None, or `status()` with `quiet=False`
 /// (building the status dict costs ~13k Ir per target: only on request). Reads no
-/// environment variable and imports nothing.
+/// environment variable and imports nothing. `tiers`: opt-in tiers to install too
+/// (`["interp", "gc"]`; added to those already requested; unknown tiers raise).
 #[pyfunction]
-#[pyo3(signature = (only=None, exclude=None, builtins=true, quiet=true))]
+#[pyo3(signature = (only=None, exclude=None, builtins=true, quiet=true, tiers=None))]
 fn enable<'py>(
     py: Python<'py>,
     only: Option<&Bound<'py, PyAny>>,
     exclude: Option<&Bound<'py, PyAny>>,
     builtins: bool,
     quiet: bool,
+    tiers: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Option<Bound<'py, PyDict>>> {
     let mut excl = names(exclude)?.unwrap_or_default();
     if !builtins {
         excl.push("builtins".to_owned());
     }
-    registry::enable(py, names(only)?, excl)?;
+    registry::enable_tiers(py, names(only)?, excl, names(tiers)?.unwrap_or_default())?;
     if quiet { Ok(None) } else { status(py).map(Some) }
 }
 
-/// Restore the matching targets (all when `names` is None; then also stop the native
-/// tier's import rewriting if `rustique._takeover` started it). Returns None, or
-/// `status()` with `quiet=False`.
+/// Restore the matching targets (all when `names` is None). Returns None, or `status()`
+/// with `quiet=False`.
 #[pyfunction]
 #[pyo3(signature = (names=None, quiet=true))]
 fn disable<'py>(
@@ -60,27 +61,11 @@ fn disable<'py>(
     if all {
         super::switch::reset_source();
     }
-    if all && !NATIVE.lock().unwrap_or_else(|p| p.into_inner()).is_empty() {
-        let modules = py.import("sys")?.getattr("modules")?;
-        if let Ok(hook) = modules.get_item("rustique._takeover._hook") {
-            hook.call_method0("uninstall")?;
-        }
-        NATIVE.lock().unwrap_or_else(|p| p.into_inner()).clear();
-    }
     if quiet { Ok(None) } else { status(py).map(Some) }
 }
 
-/// Native-tier patterns (set by `rustique._takeover` when `native=` is used), for status.
-static NATIVE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-#[pyfunction]
-fn _set_native(patterns: Vec<String>) {
-    *NATIVE.lock().unwrap_or_else(|p| p.into_inner()) = patterns;
-}
-
 /// `{"targets": [...], "process": {...}}` (docs/ACCELERATION.md §6.2), including the
-/// switch state (`process["switch"]`), `process["free_threaded"]` and the native tier's
-/// patterns.
+/// switch state (`process["switch"]`) and `process["free_threaded"]`.
 #[pyfunction]
 pub(crate) fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     let st = registry::status(py)?;
@@ -88,14 +73,42 @@ pub(crate) fn status(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         .get_item("process")?
         .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("status without process"))?
         .cast_into::<PyDict>()?;
-    let hook = py.import("sys")?.getattr("modules")?.get_item("rustique._takeover._hook").ok();
-    let native: Vec<String> = match hook {
-        Some(h) => h.call_method0("patterns")?.extract()?,
-        None => NATIVE.lock().unwrap_or_else(|p| p.into_inner()).clone(),
-    };
-    process.set_item("native", PyTuple::new(py, native)?)?;
     super::switch::describe(py, &process)?;
     Ok(st)
+}
+
+/// The process-level refusal: `(category, reason)` when every target refuses on this
+/// interpreter (platform, version, build, layout, unvalidated patch release), else `None`.
+/// For test suites that skip when nothing can install.
+#[pyfunction]
+fn process_refusal() -> Option<(&'static str, String)> {
+    super::version::process_refusal().map(|r| (r.category().as_str(), r.reason().to_owned()))
+}
+
+/// Validate armed targets now (all, or the named groups/targets): CI, conformance runs.
+#[pyfunction]
+#[pyo3(signature = (names=None))]
+fn validate(py: Python<'_>, names: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
+    registry::validate(py, self::names(names)?)
+}
+
+/// The validation policy: `"eager"` (validate at install) or `"first-call"` (the default
+/// on GIL builds; free-threaded builds are always eager). Returns the previous one.
+#[pyfunction]
+#[pyo3(signature = (mode=None))]
+fn _set_validation(mode: Option<&str>) -> PyResult<&'static str> {
+    let prev = if registry::eager() { "eager" } else { "first-call" };
+    match mode {
+        None => {}
+        Some("eager") => registry::set_eager(true),
+        Some("first-call") => registry::set_eager(false),
+        Some(m) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "validation must be 'eager' or 'first-call', not {m:?}"
+            )));
+        }
+    }
+    Ok(prev)
 }
 
 #[pyfunction]
@@ -128,6 +141,51 @@ fn fingerprint(obj: &Bound<'_, PyAny>) -> PyResult<String> {
 #[pyo3(signature = (only=None))]
 fn fingerprint_report(py: Python<'_>, only: Option<Vec<String>>) -> PyResult<Vec<registry::FingerprintRow>> {
     registry::fingerprint_report(py, only)
+}
+
+/// Dev tool (the patch-release recorder): every fingerprint the selected targets and their
+/// shared groups check, in record mode: `[{"owner", "id", "v3", "accepted": [hex] | None,
+/// "v2", "v2_expected"}]` (`id` holds a note when a prepare refused or its module is not
+/// imported; `v3` is then empty).
+#[pyfunction]
+#[pyo3(signature = (only=None))]
+fn fingerprint_records(py: Python<'_>, only: Option<Vec<String>>) -> PyResult<Vec<Bound<'_, PyDict>>> {
+    registry::fingerprint_records(py, only)?
+        .into_iter()
+        .map(|(owner, r)| {
+            let d = PyDict::new(py);
+            d.set_item("owner", owner)?;
+            d.set_item("id", r.what)?;
+            d.set_item("v3", r.observed)?;
+            d.set_item("accepted", r.expected.map(|e| e.split(',').map(str::to_owned).collect::<Vec<_>>()))?;
+            d.set_item("v2", r.v2)?;
+            d.set_item("v2_expected", r.v2_expected)?;
+            Ok(d)
+        })
+        .collect()
+}
+
+/// Tests: the patch-release decision for `release` (`("recorded" | "unvalidated", None)` or
+/// `(None, (category, reason))`).
+#[pyfunction]
+fn _patch_decision(release: &str, opt_in: bool) -> (Option<&'static str>, Option<(&'static str, String)>) {
+    match super::version::patch_decision(release, opt_in) {
+        Ok(v) => (Some(v.as_str()), None),
+        Err(r) => (None, Some((r.category().as_str(), r.reason().to_owned()))),
+    }
+}
+
+/// Fingerprint format v3 of an original: `(id, hex)`.
+#[pyfunction]
+fn fingerprint3(obj: &Bound<'_, PyAny>) -> PyResult<(String, String)> {
+    let (id, v) = fp::any_v3(obj)?;
+    Ok((id, fp::hex(v)))
+}
+
+/// The recorded patch releases and the running one: `(recorded, running)`.
+#[pyfunction]
+fn patch_releases() -> (Vec<String>, String) {
+    (super::fingerprint::patches().map(str::to_owned).collect(), super::version::patch_release())
 }
 
 /// Pins of an installed target: `[(key, absent, intact, broken)]`.
@@ -207,6 +265,12 @@ fn func_version(func: &Bound<'_, pyo3::types::PyFunction>) -> u32 {
     unsafe { (*func.as_ptr().cast::<pyo3::ffi::PyFunctionObject>()).func_version }
 }
 
+/// Lock-order violations of the pin tables' leaf rule seen in this process (tests assert 0).
+#[pyfunction]
+fn _lock_violations() -> u64 {
+    super::guard::lock_violations()
+}
+
 /// Is the exit hook registered (tests)?
 #[pyfunction]
 fn exit_hook_registered() -> bool {
@@ -222,12 +286,17 @@ fn add_extras(sub: &Bound<'_, PyModule>) -> PyResult<()> {
         sub.add_function(wrap_pyfunction!(targets, sub)?)?;
         sub.add_function(wrap_pyfunction!(fingerprint, sub)?)?;
         sub.add_function(wrap_pyfunction!(fingerprint_report, sub)?)?;
+        sub.add_function(wrap_pyfunction!(fingerprint_records, sub)?)?;
+        sub.add_function(wrap_pyfunction!(patch_releases, sub)?)?;
+        sub.add_function(wrap_pyfunction!(_patch_decision, sub)?)?;
+        sub.add_function(wrap_pyfunction!(fingerprint3, sub)?)?;
         sub.add_function(wrap_pyfunction!(pins, sub)?)?;
         sub.add_function(wrap_pyfunction!(func_version, sub)?)?;
         sub.add_function(wrap_pyfunction!(_bench, sub)?)?;
         sub.add_function(wrap_pyfunction!(vectorcall_is_original, sub)?)?;
         sub.add_function(wrap_pyfunction!(super::exit::exit_hook, sub)?)?;
         sub.add_function(wrap_pyfunction!(exit_hook_registered, sub)?)?;
+        sub.add_function(wrap_pyfunction!(_lock_violations, sub)?)?;
         sub.add("RustiqueCheckError", sub.py().get_type::<super::check::RustiqueCheckError>())?;
         crate::targets::register(sub)
     })?;
@@ -252,21 +321,32 @@ fn accel_getattr(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let sub = PyModule::new(m.py(), "_accel")?;
-    sub.add_function(wrap_pyfunction!(enable, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(disable, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(status, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(stats, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(_set_native, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(installed, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(check, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(check_mode, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(accel_getattr, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::startup, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::py_switch_enable, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::killed, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::report_to, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::record, &sub)?)?;
-    sub.add_function(wrap_pyfunction!(super::switch::report_at_exit, &sub)?)?;
-    sub.add("FREE_THREADED", super::version::FREE_THREADED)?;
-    m.add("_accel", sub)
+    // Through the module dict, not `PyModule::add`: `add` maintains `__all__`, whose first
+    // lookup raises AttributeError, and PyO3's `PyErr::take` then creates its
+    // `PanicException` type (~40k instructions at startup; docs/atlas/w2-startup.md §1.5).
+    let d = sub.dict();
+    macro_rules! set {
+        ($name:literal, $f:path) => {
+            d.set_item(pyo3::intern!(m.py(), $name), wrap_pyfunction!($f, &sub)?)?
+        };
+    }
+    set!("enable", enable);
+    set!("disable", disable);
+    set!("status", status);
+    set!("stats", stats);
+    set!("installed", installed);
+    set!("validate", validate);
+    set!("process_refusal", process_refusal);
+    set!("_set_validation", _set_validation);
+    set!("check", check);
+    set!("check_mode", check_mode);
+    set!("__getattr__", accel_getattr);
+    set!("startup", super::switch::startup);
+    set!("switch_enable", super::switch::py_switch_enable);
+    set!("killed", super::switch::killed);
+    set!("report_to", super::switch::report_to);
+    set!("_record", super::switch::record);
+    set!("_report_at_exit", super::switch::report_at_exit);
+    d.set_item("FREE_THREADED", super::version::FREE_THREADED)?;
+    m.dict().set_item("_accel", sub)
 }

@@ -1,0 +1,48 @@
+{
+ "3.14.8": {
+  "installed": 105,
+  "of": 111,
+  "refused": {
+   "version": 5,
+   "not-needed": 1
+  },
+  "detail": {
+   "pathlib.PurePath.parent": [
+    "refused",
+    "version",
+    "CPython 3.14 not validated for this target",
+    null
+   ],
+   "pathlib.PurePath.name": [
+    "refused",
+    "version",
+    "CPython 3.14 not validated for this target",
+    null
+   ],
+   "pathlib.PurePath.suffix": [
+    "refused",
+    "version",
+    "CPython 3.14 not validated for this target",
+    null
+   ],
+   "pathlib.PurePath.stem": [
+    "refused",
+    "version",
+    "CPython 3.14 not validated for this target",
+    null
+   ],
+   "pathlib.PurePath.parts": [
+    "refused",
+    "version",
+    "CPython 3.14 not validated for this target",
+    null
+   ],
+   "set.__reduce__": [
+    "refused",
+    "not-needed",
+    "only free-threaded builds need it",
+    null
+   ]
+  }
+ }
+}

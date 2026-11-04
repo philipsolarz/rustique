@@ -280,21 +280,22 @@ def _tool_contexts(code: Any) -> dict[str, tuple[Callable[[list[Any]], contextli
         finally:
             sys.setprofile(old)
 
+    # Imported here, before any counted window: importing it (or `pstats`) inside one would
+    # count the target's calls made by that import as hits.
+    import cProfile
+
     @contextlib.contextmanager
     def cprofile(seen: list[Any]) -> Iterator[None]:
-        import cProfile
-        import pstats
-
         p = cProfile.Profile()
         p.enable()
         try:
             yield
         finally:
             p.disable()
-            st = pstats.Stats(p)
-            for (filename, line, fname), row in st.stats.items():  # type: ignore[attr-defined]
-                if fname == code.co_name and line == code.co_firstlineno:
-                    seen.extend(["call"] * row[1])
+            # The profiler's raw entries (C): no Python code that could call the target.
+            for entry in p.getstats():
+                if entry.code is code:
+                    seen.extend(["call"] * entry.callcount)
 
     def monitoring(events: int, local: bool) -> Callable[[list[Any]], contextlib.AbstractContextManager[None]]:
         @contextlib.contextmanager

@@ -7,17 +7,22 @@ unless asked::
     pytest --rustique --rustique-only json,copy --rustique-exclude re
     pytest -p rustique.pytest_plugin --rustique   # when plugin autoloading is off
 
-With ``--rustique`` the plugin enables Rustique (and its counters) before collection, so
-the code under test is accelerated from its first import; at the end it prints the
-per-target report (hits, fallbacks by reason, refusals) and **fails the session if a
-selected target was refused unexpectedly**: refused for another reason than "this
-interpreter or platform is not one the target is validated for" (refusal category
-``version``, ``build``, ``jit`` or ``platform``), e.g. a fingerprint mismatch, a site patched by someone else, a failed
-self-test. ``--rustique-allow-refused NAMES`` accepts those too. ``--rustique-check``
-turns check mode on (every fast path of a checkable target is compared with CPython's
-original); any mismatch fails the session. Under ``pytest-xdist`` each worker enables Rustique and the controller adds up
-their counters. ``RUSTIQUE=0`` (kill switch) wins: the session runs plain and the summary
-says so.
+With ``--rustique`` the plugin enables Rustique (and its counters) before collection, so the
+code under test is accelerated from its first import. At the end it prints the per-target
+report (hits, fallbacks by reason, refusals) and **fails the session if a selected target
+was refused unexpectedly**: for another reason than "this interpreter or platform is not
+one the target is validated for" (refusal categories ``version``, ``build``, ``jit``,
+``platform``, ``unvalidated-patch``), e.g. a fingerprint mismatch, a site patched by
+someone else, a failed self-test. ``--rustique-allow-refused NAMES`` accepts those too.
+
+- ``--rustique-tiers interp,gc``: opt-in tiers too (like ``RUSTIQUE_TIERS``).
+- ``--rustique-check``: check mode (every fast path of a checkable target is compared with
+  CPython's original); any mismatch fails the session.
+- ``--rustique-outcomes PATH``: every test's outcome by node id, as JSON (``python -m
+  rustique diff`` uses it; works without ``--rustique`` and imports nothing).
+
+Under ``pytest-xdist`` each worker enables Rustique and the controller adds up their
+counters. ``RUSTIQUE=0`` (kill switch) wins: the session runs plain and the summary says so.
 
 A top-level module, not part of the ``rustique`` package: pytest imports every autoloaded
 plugin in every session, and importing anything inside the package runs
@@ -30,7 +35,7 @@ import pytest
 
 # Refusal categories (status()["targets"][i]["refusal"]) that only say "not validated for this
 # interpreter or configuration": expected on a test matrix, never fatal.
-EXPECTED_REFUSALS = ("version", "build", "jit", "platform")
+EXPECTED_REFUSALS = ("version", "build", "jit", "platform", "unvalidated-patch", "not-needed")
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -39,6 +44,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                 help="enable Rustique for the session and report what it accelerated")
     g.addoption("--rustique-only", metavar="G,..", default=None, help="enable only these groups or targets")
     g.addoption("--rustique-exclude", metavar="G,..", default=None, help="do not enable these groups or targets")
+    g.addoption("--rustique-tiers", metavar="T,..", default=None,
+                help="opt-in tiers to turn on too (interp, gc; like RUSTIQUE_TIERS)")
     g.addoption("--rustique-check", action="store_true", default=False,
                 help="check mode: checkable targets re-run CPython's original after each fast path and "
                      "compare; any mismatch fails the session (CPython's result is used)")
@@ -48,12 +55,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                 help="targets or groups whose refusal is accepted (comma-separated, or 'all')")
     g.addoption("--rustique-report-limit", type=int, default=20, metavar="N",
                 help="installed targets shown in the summary (default 20)")
+    g.addoption("--rustique-outcomes", metavar="PATH", default=None,
+                help="write every test's outcome by node id to PATH as JSON (used by `python -m rustique diff`; "
+                     "works without --rustique and imports nothing)")
 
 
 def expected_refusal(t: dict) -> bool:
-    """Refused only because this interpreter (version, build, JIT) is not one the target is
-    validated for. Anything else (fingerprint, layout, conflict, selftest, symbol, deps,
-    other) means the target met a CPython it did not expect: unexpected."""
+    """Refused only because this interpreter (version, patch release, build, JIT, platform)
+    is not one the target is validated for. Anything else (fingerprint, layout, conflict,
+    selftest, symbol, deps, other) means the target met a CPython it did not expect."""
     return t.get("refusal") in EXPECTED_REFUSALS
 
 
@@ -62,19 +72,64 @@ class _Session:
         self.config = config
         self.workers: list[dict] = []
 
+    def allow(self) -> set[str]:
+        return {n.strip() for n in self.config.getoption("rustique_allow_refused").split(",") if n.strip()}
+
     def unexpected(self, st: dict) -> list[dict]:
-        allow = {n.strip() for n in self.config.getoption("rustique_allow_refused").split(",") if n.strip()}
+        allow = self.allow()
         if "all" in allow:
             return []
         return [t for t in st.get("targets", []) if t["state"] == "refused" and not expected_refusal(t)
                 and t["name"] not in allow and t["group"] not in allow]
 
+    def accepted(self, st: dict) -> list[str]:
+        """Refused targets the session was told to accept (``--rustique-allow-refused``)."""
+        allow = self.allow()
+        return [t["name"] for t in st.get("targets", []) if t["state"] == "refused"
+                and ("all" in allow or t["name"] in allow or t["group"] in allow)]
+
+
+class _Outcomes:
+    """``--rustique-outcomes``: ``{node id: passed|failed|error|skipped|xfailed|xpassed}``."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.out: dict[str, str] = {}
+
+    @pytest.hookimpl(trylast=True)
+    def pytest_runtest_logreport(self, report) -> None:
+        nid = report.nodeid
+        xfail = hasattr(report, "wasxfail")
+        if report.when == "call":
+            if xfail:
+                res = "xfailed" if report.skipped else "xpassed"
+            else:
+                res = report.outcome
+            if self.out.get(nid) != "error":
+                self.out[nid] = res
+        elif report.failed:  # setup or teardown error
+            self.out[nid] = "error"
+        elif report.skipped and report.when == "setup":
+            self.out[nid] = "xfailed" if xfail else "skipped"
+
+    def pytest_sessionfinish(self, session) -> None:
+        if getattr(session.config, "workeroutput", None) is not None:
+            return  # an xdist worker: the controller sees every report
+        import json
+
+        with open(self.path, "w") as f:
+            json.dump(self.out, f)
+
 
 def pytest_configure(config: pytest.Config) -> None:
+    if config.getoption("rustique_outcomes"):
+        config.pluginmanager.register(_Outcomes(config.getoption("rustique_outcomes")), "rustique-outcomes")
     if not config.getoption("rustique"):
         return
     import rustique
+    from rustique._cli import add_tiers
 
+    add_tiers(config.getoption("rustique_tiers"))
     rustique.stats(True)
     if (config.getoption("rustique_check") or config.getoption("rustique_check_raise")) and not rustique._killed():
         rustique.check("raise" if config.getoption("rustique_check_raise") else "warn")
@@ -141,7 +196,9 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
         rec["processes"] = len(state.workers)
     tr = terminalreporter
     tr.write_sep("=", "rustique")
-    for line in _report.render(rec, limit=config.getoption("rustique_report_limit")).rstrip().splitlines():
+    keep = [t["name"] for t in state.unexpected(rec["status"])] + state.accepted(rec["status"])
+    for line in _report.render(rec, limit=config.getoption("rustique_report_limit"),
+                               keep_refused=keep).rstrip().splitlines():
         tr.write_line(line)
     bad = state.unexpected(rec["status"])
     if bad:

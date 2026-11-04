@@ -1,0 +1,5 @@
+3.15.1t  threads/compute_pool         t1: 1301.1p  t1: 1282.2e  t2:  661.1p  t2:  648.4e  t4:  336.7p  t4:  329.8e  t8:  173.3p  t8:  170.1e  same
+3.15.1t  threads/http_server          t1:  447.8p  t1:  390.7e  t2:  235.8p  t2:  205.6e  t4:  127.6p  t4:  109.0e  t8:   88.9p  t8:   78.6e  same
+3.15.1t  threads/pipeline_queue       t1:  671.5p  t1:  356.7e  t2:  462.9p  t2:  281.3e  t4:  328.5p  t4:  220.5e  t8:  264.7p  t8:  189.0e  same
+3.15.1t  threads/request_pool         t1:  467.8p  t1:  270.1e  t2:  287.4p  t2:  176.7e  t4:  185.9p  t4:  128.7e  t8:  138.6p  t8:  107.1e  same
+3.15.1t  threads/shared_cache         t1:  576.4p  t1:  366.5e  t2:  408.1p  t2:  262.4e  t4:  281.6p  t4:  180.3e  t8:  227.6p  t8:  140.5e  same

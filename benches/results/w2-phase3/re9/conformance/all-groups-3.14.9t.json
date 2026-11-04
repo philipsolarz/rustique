@@ -1,0 +1,267 @@
+{
+ "python": "3.14.9t",
+ "targets": [
+  "builtins",
+  "containers",
+  "contextlib",
+  "copy",
+  "dataclasses",
+  "datetime",
+  "enum",
+  "float",
+  "fnmatch",
+  "functools",
+  "generated",
+  "json",
+  "logging",
+  "pathlib",
+  "posixpath",
+  "random",
+  "re",
+  "set",
+  "statistics",
+  "textwrap",
+  "urllib"
+ ],
+ "modules": {
+  "test.test_re": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 163,
+    "skip": 3
+   },
+   "differences": [],
+   "seconds": [
+    0.4,
+    0.3
+   ],
+   "stderr": ""
+  },
+  "test.test_email": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 1808,
+    "skip": 1
+   },
+   "differences": [],
+   "seconds": [
+    6.2,
+    6.2
+   ],
+   "stderr": ""
+  },
+  "test.test_tokenize": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 132
+   },
+   "differences": [],
+   "seconds": [
+    10.2,
+    10.2
+   ],
+   "stderr": ""
+  },
+  "test.test_configparser": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 378,
+    "skip": 5
+   },
+   "differences": [],
+   "seconds": [
+    0.7,
+    0.6
+   ],
+   "stderr": ""
+  },
+  "test.test_fnmatch": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 24
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_textwrap": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 68
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_http_cookies": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 33
+   },
+   "differences": [],
+   "seconds": [
+    2.6,
+    2.6
+   ],
+   "stderr": ""
+  },
+  "test.test_difflib": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 59
+   },
+   "differences": [],
+   "seconds": [
+    0.3,
+    0.3
+   ],
+   "stderr": ""
+  },
+  "test.test_string": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 55
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_shlex": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 45
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_argparse": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 1893,
+    "skip": 1
+   },
+   "differences": [],
+   "seconds": [
+    1.5,
+    1.5
+   ],
+   "stderr": ""
+  },
+  "test.test_gettext": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 74
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_glob": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 22,
+    "skip": 2
+   },
+   "differences": [],
+   "seconds": [
+    0.2,
+    0.2
+   ],
+   "stderr": ""
+  },
+  "test.test_csv": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 130,
+    "skip": 4
+   },
+   "differences": [],
+   "seconds": [
+    0.4,
+    0.4
+   ],
+   "stderr": ""
+  },
+  "test.test_urllib": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 104,
+    "skip": 2
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_mailbox": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 373,
+    "skip": 3
+   },
+   "differences": [],
+   "seconds": [
+    1.9,
+    1.9
+   ],
+   "stderr": ""
+  }
+ },
+ "ok": false,
+ "not_installed": {
+  "statistics.mean": [
+   "pending-import",
+   null
+  ],
+  "statistics.pstdev": [
+   "pending-import",
+   null
+  ],
+  "statistics.pvariance": [
+   "pending-import",
+   null
+  ],
+  "statistics.stdev": [
+   "pending-import",
+   null
+  ],
+  "statistics.variance": [
+   "pending-import",
+   null
+  ]
+ }
+}

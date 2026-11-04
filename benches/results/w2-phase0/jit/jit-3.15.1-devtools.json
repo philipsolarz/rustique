@@ -1,0 +1,189 @@
+{
+ "python": "3.15.1 (main, Oct 21 2026, 17:48:50) [Clang 23.1.3 ]",
+ "jit": {
+  "available": true,
+  "enabled": false
+ },
+ "rows": [
+  {
+   "workload": "devtools/black_format",
+   "nojit_s": 1.1959785300005024,
+   "jit_s": 1.2334102449995044,
+   "ratio": 1.0312979824136026,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "devtools/coverage_pyflakes_tests",
+   "nojit_s": 0.38295532099982665,
+   "jit_s": 0.37681578699994134,
+   "ratio": 0.983968014900913,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "devtools/import_startup",
+   "nojit_s": 1.8819175770004222,
+   "jit_s": 1.8858672559999832,
+   "ratio": 1.0020987523831177,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "devtools/isort_stdlib",
+   "nojit_s": 0.2836111209999217,
+   "jit_s": 0.272575651999432,
+   "ratio": 0.9610894348515595,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "devtools/pip_resolve",
+   "nojit_s": 0.5642888259999381,
+   "jit_s": 0.573199600999942,
+   "ratio": 1.0157911597562006,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "devtools/pycodestyle_stdlib",
+   "nojit_s": 1.0111362899997403,
+   "jit_s": 0.9506212710002728,
+   "ratio": 0.9401514715691958,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "devtools/pyflakes_stdlib",
+   "nojit_s": 1.217051578999417,
+   "jit_s": 1.2214073979994282,
+   "ratio": 1.0035789929327337,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "devtools/pylint_stdlib",
+   "nojit_s": 1.1847855579999305,
+   "jit_s": 1.2397041160002118,
+   "ratio": 1.0463531629242602,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "devtools/pytest_networkx",
+   "nojit_s": 0.6410264940004708,
+   "jit_s": 0.6542260690002877,
+   "ratio": 1.020591309600079,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "devtools/rich_render",
+   "nojit_s": 0.2838739910002914,
+   "jit_s": 0.294283586000347,
+   "ratio": 1.036669773667447,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "devtools/sphinx_autodoc",
+   "nojit_s": 0.847799385000144,
+   "jit_s": 0.8427370279996467,
+   "ratio": 0.9940288267601227,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  },
+  {
+   "workload": "devtools/sqlglot_transpile",
+   "nojit_s": 0.8624622750003255,
+   "jit_s": 0.9130736420001995,
+   "ratio": 1.0586824125146284,
+   "same_result": true,
+   "jit_enabled": {
+    "nojit": [
+     false
+    ],
+    "jit": [
+     true
+    ]
+   }
+  }
+ ]
+}

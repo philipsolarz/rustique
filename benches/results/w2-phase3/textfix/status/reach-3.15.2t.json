@@ -1,0 +1,53 @@
+{
+ "3.15.2t": {
+  "installed": 104,
+  "of": 111,
+  "refused": {
+   "build": 7
+  },
+  "detail": {
+   "logging.Logger.level": [
+    "refused",
+    "build",
+    "not validated on free-threaded builds",
+    null
+   ],
+   "enum.property.__get__": [
+    "refused",
+    "build",
+    "not validated on free-threaded builds",
+    null
+   ],
+   "collections.namedtuple": [
+    "refused",
+    "build",
+    "not validated on free-threaded builds",
+    null
+   ],
+   "dataclasses.__init__": [
+    "refused",
+    "build",
+    "not validated on free-threaded builds",
+    null
+   ],
+   "dataclasses.__init__.positional": [
+    "refused",
+    "build",
+    "not validated on free-threaded builds",
+    null
+   ],
+   "contextlib.contextmanager": [
+    "refused",
+    "build",
+    "not validated on free-threaded builds",
+    null
+   ],
+   "functools.singledispatch": [
+    "refused",
+    "build",
+    "not validated on free-threaded builds",
+    null
+   ]
+  }
+ }
+}

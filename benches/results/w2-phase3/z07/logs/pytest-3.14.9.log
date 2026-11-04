@@ -1,0 +1,103 @@
+ssssss..ssssssssssss.................................................... [  2%]
+........................................................................ [  5%]
+........................................................................ [  8%]
+........................................................................ [ 11%]
+........................................................................ [ 13%]
+...........s............................................................ [ 16%]
+........................................................................ [ 19%]
+........................................................................ [ 22%]
+........................................................................ [ 24%]
+........................................................................ [ 27%]
+........................................................................ [ 30%]
+........................................................................ [ 33%]
+........................................................................ [ 36%]
+........................................................................ [ 38%]
+........................................................................ [ 41%]
+........................................................................ [ 44%]
+........................................................................ [ 47%]
+........................................................................ [ 49%]
+........................................................................ [ 52%]
+........................................................................ [ 55%]
+........................................................................ [ 58%]
+........................................................................ [ 61%]
+........................................................................ [ 63%]
+........................................................................ [ 66%]
+........................................................................ [ 69%]
+.........................ss.........................ssssssssssssssssssss [ 72%]
+ssssssssss.............................................................. [ 74%]
+........................................................................ [ 77%]
+........................................................................ [ 80%]
+......................................................................s. [ 83%]
+........................................................................ [ 85%]
+........................................................................ [ 88%]
+........................................................................ [ 91%]
+........................................................................ [ 94%]
+.................................s...................................... [ 97%]
+........................................................................ [ 99%]
+...s                                                                     [100%]
+=============================== warnings summary ===============================
+tests/targets/test_random.py::test_subclasses_match[LoggingRandom]
+tests/targets/test_random.py::test_subclasses_match[FloatyRandom]
+tests/targets/test_random.py::test_subclasses_match[OddRandom]
+  /home/ubuntu/.local/share/uv/python/cpython-3.14.9-linux-x86_64-gnu/lib/python3.14/random.py:263: UserWarning: Underlying random() generator does not supply 
+  enough bits to choose from a population range this large.
+  To remove the range limitation, add a getrandbits() method.
+    warn("Underlying random() generator does not supply \n"
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+============================= slowest 25 durations =============================
+8.80s call     tests/targets/test_json_loads.py::test_hypothesis_repeated_keys
+5.93s call     tests/test_gc_tier_threads.py::test_enable_disable_under_load
+5.28s call     tests/targets/test_json_loads.py::test_hypothesis_mutated_documents
+5.22s call     tests/targets/test_json_loads.py::test_hypothesis_numbers
+5.10s call     tests/targets/test_json_loads.py::test_hypothesis_roundtrip_documents
+4.84s call     tests/targets/test_re.py::test_hypothesis_str
+4.66s call     tests/targets/test_json_dumps.py::test_hypothesis_jsonish
+4.35s call     tests/test_gc_tier.py::test_defers_full_collections
+4.35s call     tests/targets/test_re.py::test_pypi_corpus
+4.08s call     tests/test_accel_threads.py::test_class_attribute_pins_against_class_writers
+4.06s call     tests/test_accel_threads.py::test_enable_survives_concurrent_writes_to_snapshot_pinned_dicts
+3.44s call     tests/test_gc_tier_threads.py::test_allocating_threads_and_callback_mutation
+2.82s call     tests/targets/test_re.py::test_template_check_against_parse_template
+2.78s call     tests/targets/test_fnmatch.py::test_port_equals_regex
+2.70s call     tests/test_gc_tier_threads.py::test_step_aside_races_with_collections
+2.66s call     tests/targets/test_re.py::test_hypothesis_bytes
+2.19s call     tests/targets/test_re.py::test_functions_against_clone
+2.00s call     tests/test_gc_tier_callbacks.py::test_differential_random_programs
+2.00s call     tests/targets/test_re.py::test_large_and_unicode_sets
+1.73s call     tests/targets/test_copy_differential.py::test_recursion_high_limit[plain]
+1.71s call     tests/test_dx_cli.py::test_diff_pytest_outcome_change
+1.67s call     tests/test_dx_cli.py::test_diff_flaky_test_is_not_a_difference
+1.59s call     tests/targets/test_json_loads.py::test_check_mode_agrees
+1.52s call     tests/targets/test_datetime.py::test_threads_with_enable_disable_churn
+1.48s call     tests/targets/test_copy_differential.py::test_deepcopy
+=========================== short test summary info ============================
+SKIPPED [1] tests/interp/test_interp_attr_differential.py:313: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/interp/test_interp_attr_differential.py:323: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/interp/test_interp_calls.py:100: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/interp/test_interp_calls.py:107: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/interp/test_interp_calls.py:145: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/interp/test_interp_calls.py:175: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/interp/test_interp_mechanics.py:42: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/interp/test_interp_mechanics.py:54: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/interp/test_interp_mechanics.py:68: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [3] tests/interp/test_interp_mechanics.py:95: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/interp/test_interp_mechanics.py:155: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/interp/test_interp_mechanics.py:180: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/interp/test_interp_mechanics.py:201: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/interp/test_interp_mechanics.py:228: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/interp/test_interp_threads.py:68: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/interp/test_interp_threads.py:97: interp tier refused: CPython 3.14.9: no verified interp handlers (verified releases: 3.15.1, 3.15.2)
+SKIPPED [1] tests/targets/test_dm_interp_compose.py:46: interp tier not available on this build
+SKIPPED [2] tests/targets/test_re.py:179: CPYTHON_SRC not set
+SKIPPED [12] tests/targets/test_set_reduce.py:146: the target installs on free-threaded builds only
+SKIPPED [2] tests/targets/test_set_reduce.py:153: the target installs on free-threaded builds only
+SKIPPED [12] tests/targets/test_set_reduce.py:161: the target installs on free-threaded builds only
+SKIPPED [1] tests/targets/test_set_reduce.py:179: the target installs on free-threaded builds only
+SKIPPED [1] tests/targets/test_set_reduce.py:193: the target installs on free-threaded builds only
+SKIPPED [1] tests/targets/test_set_reduce.py:211: the target installs on free-threaded builds only
+SKIPPED [1] tests/targets/test_set_reduce.py:245: the target installs on free-threaded builds only
+SKIPPED [1] tests/test_accel_threads.py:207: free-threaded policy
+SKIPPED [1] tests/test_dx_cli.py:569: could not import 'xdist': No module named 'xdist'
+SKIPPED [1] tests/test_takeover_safe.py:314: needs the free-threaded build
+2542 passed, 54 skipped, 3 warnings in 157.75s (0:02:37)

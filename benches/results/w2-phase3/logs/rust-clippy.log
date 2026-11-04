@@ -1,0 +1,4 @@
+   Compiling rustique-interp v0.3.0 (/work/w2p3/src/crates/rustique-interp)
+    Checking rustique-core v0.3.0 (/work/w2p3/src/crates/rustique-core)
+   Compiling rustique-py v0.3.0 (/work/w2p3/src/crates/rustique-py)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.86s

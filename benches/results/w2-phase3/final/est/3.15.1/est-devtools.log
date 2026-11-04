@@ -1,0 +1,14 @@
+devtools/black_format                predicted 0.989 measured 0.99 error -0.001 (under targets 2.8%, profiled run 1879 ms vs 1257 ms, replay 0.1 s)
+devtools/coverage_pyflakes_tests     predicted 0.986 measured 0.995 error -0.009 (under targets 2.0%, profiled run 459 ms vs 386 ms, replay 0.1 s)
+devtools/import_startup              predicted 1.000 measured 1.0 error +0.000 (under targets 0.0%, profiled run 2020 ms vs 2031 ms, replay 0.0 s)
+devtools/isort_stdlib                predicted 0.670 measured 0.771 error -0.101 (under targets 53.2%, profiled run 1743 ms vs 284 ms, replay 0.2 s)
+devtools/pip_resolve                 predicted 0.965 measured 0.949 error +0.016 (under targets 8.1%, profiled run 958 ms vs 566 ms, replay 0.2 s)
+devtools/pycodestyle_stdlib          predicted 0.988 measured 0.985 error +0.003 (under targets 0.0%, profiled run 1015 ms vs 1005 ms, replay 0.0 s)
+devtools/pyflakes_stdlib             predicted 0.998 measured 0.997 error +0.001 (under targets 0.0%, profiled run 1296 ms vs 1288 ms, replay 0.0 s)
+devtools/pylint_stdlib               predicted 0.997 measured 1.002 error -0.005 (under targets 0.9%, profiled run 1322 ms vs 1132 ms, replay 0.2 s)
+devtools/pytest_networkx             predicted 0.977 measured 0.948 error +0.029 (under targets 12.4%, profiled run 1143 ms vs 662 ms, replay 0.3 s)
+devtools/rich_render                 predicted 0.988 measured 0.998 error -0.010 (under targets 3.6%, profiled run 733 ms vs 285 ms, replay 0.0 s)
+devtools/sphinx_autodoc              predicted 0.996 measured 0.977 error +0.019 (under targets 5.0%, profiled run 1377 ms vs 843 ms, replay 0.3 s)
+devtools/sqlglot_transpile           predicted 0.953 measured 0.968 error -0.015 (under targets 19.3%, profiled run 1892 ms vs 869 ms, replay 0.1 s)
+
+12 workloads: mean abs error 0.017, max -0.101, bias -0.006; within 0.02: 10, within 0.05: 11

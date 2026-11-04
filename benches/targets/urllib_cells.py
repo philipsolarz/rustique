@@ -11,6 +11,8 @@ it = iter(URLS * 1000)
 class S(str):
     pass
 SQ = S('a b')
+P2 = '/api/v1/items/\u0161\u010d list'
+U2 = 'a%20b%C3%A9/\u0161'
 """
 
 INSTALL = """
@@ -32,7 +34,11 @@ CELLS = {
     "urlsplit(URL) [lru hit]": "urlsplit(URL)",
     "_urlsplit(URL)": "up._urlsplit(URL)",
     "urljoin(base, rel)": "urljoin(URL, '../x?y=1')",
+    "quote(path, UCS-2)": "quote(P2)",
+    "unquote(mixed, UCS-2)": "unquote(U2)",
+    "quote(bytes)": "quote(b'/a b/c')",
     # fallbacks
+    "quote(' ') [fallback: _Quoter cache object]": "quote(' ')",
     "quote(str subclass) [fallback]": "quote(SQ)",
     "quote(s, encoding='latin-1') [fallback]": "quote(P, encoding='latin-1')",
     "unquote(s, encoding='latin-1') [fallback]": "unquote('a%20b', encoding='latin-1')",

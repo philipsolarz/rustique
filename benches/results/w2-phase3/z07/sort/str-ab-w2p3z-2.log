@@ -1,0 +1,5 @@
+list/sorted(x)/str/10000/builtin: Mean +- std dev: 1.45 ms +- 0.01 ms
+list/sorted(x)/str/10000/enabled: Mean +- std dev: 361 us +- 2 us
+list/sorted(x)/str/1000000/builtin: Mean +- std dev: 332 ms +- 2 ms
+list/sorted(x)/str/1000000/enabled: Mean +- std dev: 58.1 ms +- 3.3 ms
+shard outputs: /work/w2p3/results/z07/sort/str-ab-w2p3z-2.json.shard0.json

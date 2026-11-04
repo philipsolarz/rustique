@@ -1,0 +1,28 @@
+# instr: 6 cells > 1.05 in instr-enabled-3.15.1.json; 3 runs each, cpus 0-7
+3.15.1 set/for v in x/mixed/0: builtin 551.7 enabled 550.0 ratio 0.997 (as run 1.076; isolated, run 1)
+3.15.1 tuple/repr(x)/int/0: builtin 617.7 enabled 616.9 ratio 0.999 (as run 1.062; isolated, run 1)
+3.15.1 frozenset/for v in x/mixed/0: builtin 551.7 enabled 550.0 ratio 0.997 (as run 1.076; isolated, run 2)
+3.15.1 set/for v in x/mixed/0: builtin 551.7 enabled 550.0 ratio 0.997 (as run 1.076; isolated, run 2)
+3.15.1 frozenset/for v in x/mixed/0: builtin 551.7 enabled 550.0 ratio 0.997 (as run 1.076; isolated, run 1)
+3.15.1 list/insert(0, v)/float/100: builtin 1418.2 enabled 1219.3 ratio 0.860 (as run 1.057; isolated, run 1)
+3.15.1 frozenset/tuple(x)/str/0: builtin 604.7 enabled 603.0 ratio 0.997 (as run 1.069; isolated, run 1)
+3.15.1 tuple/pickle.dumps/str/8: builtin 9550.8 enabled 9830.0 ratio 1.029 (as run 1.058; isolated, run 1)
+3.15.1 frozenset/tuple(x)/str/0: builtin 604.7 enabled 603.0 ratio 0.997 (as run 1.069; isolated, run 2)
+3.15.1 tuple/repr(x)/int/0: builtin 617.7 enabled 616.9 ratio 0.999 (as run 1.062; isolated, run 2)
+3.15.1 set/for v in x/mixed/0: builtin 551.7 enabled 550.0 ratio 0.997 (as run 1.076; isolated, run 3)
+3.15.1 frozenset/for v in x/mixed/0: builtin 551.7 enabled 550.0 ratio 0.997 (as run 1.076; isolated, run 3)
+3.15.1 frozenset/tuple(x)/str/0: builtin 604.7 enabled 603.0 ratio 0.997 (as run 1.069; isolated, run 3)
+3.15.1 list/insert(0, v)/float/100: builtin 1418.2 enabled 1219.3 ratio 0.860 (as run 1.057; isolated, run 2)
+3.15.1 tuple/repr(x)/int/0: builtin 617.7 enabled 616.9 ratio 0.999 (as run 1.062; isolated, run 3)
+3.15.1 tuple/pickle.dumps/str/8: builtin 9550.8 enabled 9830.0 ratio 1.029 (as run 1.058; isolated, run 2)
+3.15.1 list/insert(0, v)/float/100: builtin 1418.2 enabled 1219.3 ratio 0.860 (as run 1.057; isolated, run 3)
+3.15.1 tuple/pickle.dumps/str/8: builtin 9550.8 enabled 9830.0 ratio 1.029 (as run 1.058; isolated, run 3)
+# summary (instr): cell, as run, isolated runs, mean
+#   3.15.1 set/for v in x/mixed/0: 1.076 -> 0.997 0.997 0.997  mean 0.997
+#   3.15.1 frozenset/for v in x/mixed/0: 1.076 -> 0.997 0.997 0.997  mean 0.997
+#   3.15.1 frozenset/tuple(x)/str/0: 1.069 -> 0.997 0.997 0.997  mean 0.997
+#   3.15.1 tuple/repr(x)/int/0: 1.062 -> 0.999 0.999 0.999  mean 0.999
+#   3.15.1 tuple/pickle.dumps/str/8: 1.058 -> 1.029 1.029 1.029  mean 1.029
+#   3.15.1 list/insert(0, v)/float/100: 1.057 -> 0.860 0.860 0.860  mean 0.860
+# 6 cells re-measured; 0 still > 1.05 (mean of the isolated runs)
+ISO-DONE

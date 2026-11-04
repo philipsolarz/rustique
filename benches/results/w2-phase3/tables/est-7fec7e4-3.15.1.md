@@ -1,0 +1,71 @@
+| workload | predicted | measured (this run) | error |
+|---|---:|---:|---:|
+| web/aiohttp_app | 0.931 | 0.898 | **+0.033** |
+| web/asyncio_http | 0.768 | 0.793 | -0.025 |
+| web/django_blog | 0.989 | 0.984 | +0.005 |
+| web/email_mime | 0.996 | 0.995 | +0.001 |
+| web/fastapi_pydantic | 0.962 | 0.955 | +0.007 |
+| web/flask_jinja | 0.971 | 0.958 | +0.013 |
+| web/json_api | 0.789 | 0.717 | **+0.072** |
+| web/logging_service | 0.999 | 0.686 | **+0.313** |
+| web/requests_local | 0.952 | 0.911 | **+0.041** |
+| web/sqlalchemy_orm | 0.995 | 0.994 | +0.001 |
+| data/backup_archive | 0.992 | 0.997 | -0.004 |
+| data/billing_engine | 0.910 | 0.989 | **-0.079** |
+| data/config_merge | 0.998 | 0.986 | +0.013 |
+| data/csv_etl | 0.611 | 0.621 | -0.009 |
+| data/fs_inventory | 0.736 | 0.720 | +0.016 |
+| data/log_analytics | 0.577 | 0.578 | -0.001 |
+| data/pandas_etl | 1.000 | 0.996 | +0.004 |
+| data/report_render | 0.373 | 0.357 | +0.016 |
+| data/state_snapshot | 0.551 | 0.658 | **-0.107** |
+| data/text_corpus | 0.994 | 0.994 | +0.000 |
+| data/tz_events | 0.518 | 0.558 | **-0.040** |
+| data/xml_feeds | 1.000 | 1.001 | -0.001 |
+| devtools/black_format | 0.989 | 0.983 | +0.006 |
+| devtools/coverage_pyflakes_tests | 0.986 | 0.998 | -0.012 |
+| devtools/import_startup | 1.000 | 0.998 | +0.002 |
+| devtools/isort_stdlib | 0.670 | 0.767 | **-0.097** |
+| devtools/pip_resolve | 0.965 | 0.941 | +0.023 |
+| devtools/pycodestyle_stdlib | 0.988 | 0.971 | +0.017 |
+| devtools/pyflakes_stdlib | 0.998 | 1.002 | -0.004 |
+| devtools/pylint_stdlib | 0.997 | 0.993 | +0.004 |
+| devtools/pytest_networkx | 0.977 | 0.939 | **+0.038** |
+| devtools/rich_render | 0.988 | 0.975 | +0.013 |
+| devtools/sphinx_autodoc | 0.996 | 0.978 | +0.017 |
+| devtools/sqlglot_transpile | 0.953 | 0.970 | -0.017 |
+| frameworks/django_admin | 0.979 | 0.968 | +0.011 |
+| frameworks/drf_api | 0.986 | 0.989 | -0.003 |
+| frameworks/falcon_api | 0.795 | 0.795 | +0.000 |
+| frameworks/fastapi_sqlalchemy | 0.990 | 0.989 | +0.000 |
+| frameworks/flask_marshmallow | 0.978 | 0.970 | +0.008 |
+| frameworks/strawberry_graphql | 0.994 | 0.944 | **+0.050** |
+| libs/attrs_cattrs | 0.892 | 0.847 | **+0.045** |
+| libs/boto3_client | 0.976 | 0.971 | +0.005 |
+| libs/bs4_scrape | 0.995 | 0.974 | +0.022 |
+| libs/jsonschema_validate | 0.992 | 0.992 | +0.000 |
+| libs/pydantic_payloads | 0.990 | 0.990 | -0.000 |
+| libs/yaml_config | 0.999 | 1.002 | -0.003 |
+| custom/di_plugins | 0.995 | 0.957 | **+0.038** |
+| custom/ecs_arena | 0.999 | 0.978 | +0.021 |
+| custom/event_ledger | 0.992 | 0.887 | **+0.105** |
+| custom/fulfilment_sim | 0.978 | 0.971 | +0.007 |
+| custom/mini_interp | 1.000 | 1.006 | -0.006 |
+| custom/order_domain | 0.985 | 0.960 | +0.025 |
+| custom/orm_mapper | 0.979 | 0.940 | **+0.039** |
+| custom/report_engine | 0.911 | 0.843 | **+0.068** |
+| custom/rules_engine | 0.963 | 0.845 | **+0.118** |
+| custom/task_planner | 0.995 | 0.991 | +0.004 |
+| services/cache_service | 0.999 | 1.003 | -0.004 |
+| services/job_worker | 0.789 | 0.538 | **+0.251** |
+| services/uvicorn_fastapi | 0.973 | 0.962 | +0.011 |
+| services/waitress_flask | 0.975 | 0.993 | -0.019 |
+| threads/compute_pool | 0.970 | 0.978 | -0.009 |
+| threads/http_server | 0.929 | 0.917 | +0.012 |
+| threads/pipeline_queue | 0.474 | 0.513 | **-0.040** |
+| threads/request_pool | 0.598 | 0.547 | **+0.050** |
+| threads/shared_cache | 0.743 | 0.598 | **+0.145** |
+
+65 workloads: within ±0.03: 45 (69%), ±0.02: 40, ±0.05: 54; median |error| 0.013, mean 0.033, bias +0.019; T13 (>= 80% within ±0.03): **not met**
+per family: {'custom': '5/10', 'data': '9/12', 'devtools': '10/12', 'frameworks': '5/6', 'libs': '5/6', 'services': '3/4', 'threads': '2/5', 'web': '6/10'}
+misses: [('custom/di_plugins', 0.038), ('custom/event_ledger', 0.105), ('custom/orm_mapper', 0.039), ('custom/report_engine', 0.068), ('custom/rules_engine', 0.118), ('data/billing_engine', -0.079), ('data/state_snapshot', -0.107), ('data/tz_events', -0.04), ('devtools/isort_stdlib', -0.097), ('devtools/pytest_networkx', 0.038), ('frameworks/strawberry_graphql', 0.05), ('libs/attrs_cattrs', 0.045), ('services/job_worker', 0.251), ('threads/pipeline_queue', -0.04), ('threads/request_pool', 0.05), ('threads/shared_cache', 0.145), ('web/aiohttp_app', 0.033), ('web/json_api', 0.072), ('web/logging_service', 0.313), ('web/requests_local', 0.041)]

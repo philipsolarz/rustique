@@ -267,6 +267,7 @@ def main() -> None:
     p.add_argument("-o")
     a = p.parse_args()
     env = {**os.environ, "PYTHONHASHSEED": "0", "PYTHON_JIT": "1" if a.jit else "0"}
+    env.setdefault("RUSTIQUE_VALIDATE", "eager")  # states read right after enable are final
     names = [n for n in all_cells() if not a.only or any(s in n for s in a.only.split("|"))]
     jobs = [(n, v) for n in names for v in ("plain", "on")]
     with ThreadPoolExecutor(a.j) as ex:

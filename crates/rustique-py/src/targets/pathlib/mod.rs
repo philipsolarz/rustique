@@ -26,7 +26,7 @@ use rustique_core::paths::posix::{self, JoinArg, Joined, Piece};
 
 use crate::accel::{self, DepFlag, Fingerprints, GroupSpec, Prepare, Refusal, TargetSpec};
 use crate::refuse;
-use crate::targets::posixpath::rt::{self, O, Rt, Text, exact_str, str_from_units, str_view};
+use crate::targets::posixpath::rt::{self, O, Rt, exact_str, str_from_units, str_view};
 
 // ---------------------------------------------------------------------------------------
 // Fingerprints
@@ -38,6 +38,8 @@ pub(crate) const FPS: &[(&str, Fingerprints)] = &[
     ("PurePath.with_segments", &[(3, 14, "93fb271f0b71835e"), (3, 15, "185c894628a66be5")]),
     ("PurePath.__truediv__", &[(3, 14, "34032fe42e88f1f9"), (3, 15, "312ecc99f8ed4c4e")]),
     ("PurePath.__str__", &[(3, 14, "be38afbe0dd95720"), (3, 15, "435c10ada5537957")]),
+    // `os.fspath(path)` (posixpath's kernels take cached path strings); 3.15: `__str__` itself.
+    ("PurePath.__fspath__", &[(3, 14, "de0a311808b68d41"), (3, 15, "435c10ada5537957")]),
     ("PurePath._format_parsed_parts", &[(3, 14, "7768f127fd92d97f"), (3, 15, "b4ba04165f5c4536")]),
     ("PurePath._from_parsed_parts", &[(3, 14, "4dafd1666d14a188"), (3, 15, "e58e5f84a4a7b4e0")]),
     ("PurePath._from_parsed_string", &[(3, 14, "8c6c016c800b9be2"), (3, 15, "47b96b9750737e75")]),
@@ -131,6 +133,7 @@ const CLASS_ATTRS: &[&str] = &[
     "__eq__",
     "_str_normcase",
     "__str__",
+    "__fspath__",
     "__hash__",
 ];
 /// `_PathParents` attributes `path in self.parents` reaches (relative_to).
@@ -269,25 +272,51 @@ unsafe fn put(o: O, k: usize, v: O) {
     unsafe { cell(o, k).store(v, Release) }
 }
 
-/// Run `f` holding the critical section of `o` (free-threaded builds; no-op with the GIL).
+/// Run `f` holding the critical section of `o` (free-threaded builds; no-op with the GIL),
+/// without a reference-count change on `o` (a shared path object's refcount line would
+/// bounce between threads).
 #[inline(always)]
 unsafe fn locked<R>(o: O, f: impl FnOnce() -> R) -> R {
     // SAFETY: attached thread; live object.
-    unsafe {
-        let py = Python::assume_attached();
-        let b = Bound::from_borrowed_ptr(py, o);
-        pyo3::sync::critical_section::with_critical_section(&b, f)
-    }
+    unsafe { rt::with_cs(o, f) }
 }
 
 #[inline(always)]
 unsafe fn locked2<R>(a: O, b: O, f: impl FnOnce() -> R) -> R {
     // SAFETY: attached thread; live objects.
+    unsafe { rt::with_cs2(a, b, f) }
+}
+
+/// The object's type is one of the two validated path classes (a type-pointer compare: no
+/// reference taken).
+///
+/// # Safety
+/// Live object.
+#[inline(always)]
+pub unsafe fn is_path_type(o: O) -> bool {
+    // SAFETY: header read.
+    let t = unsafe { ffi::Py_TYPE(o) };
+    !t.is_null() && (t == PURE_POSIX.load(Relaxed) || t == POSIX.load(Relaxed))
+}
+
+/// `os.fspath(o)` for an exact validated path object whose `str()` is already cached: the
+/// `_str` slot (new reference), as `PurePath.__fspath__` returns it (3.14: `str(self)`, 3.15:
+/// `__fspath__ is __str__`; both fingerprinted, class attributes guarded by the version
+/// tag). `None` when the object is anything else or `_str` is unset (CPython would compute
+/// and store it: the caller falls back).
+///
+/// # Safety
+/// Attached thread; live object.
+pub unsafe fn fspath_cached(o: O) -> Option<O> {
+    // SAFETY: per the caller; slots of a validated class.
     unsafe {
-        let py = Python::assume_attached();
-        let ba = Bound::from_borrowed_ptr(py, a);
-        let bb = Bound::from_borrowed_ptr(py, b);
-        pyo3::sync::critical_section::with_critical_section2(&ba, &bb, f)
+        if PURE_POSIX.load(Relaxed).is_null() || !exact_path(o) {
+            return None;
+        }
+        locked(o, || {
+            let s = get(o, STR);
+            (!s.is_null() && exact_str(s)).then(|| ffi::Py_NewRef(s))
+        })
     }
 }
 
@@ -339,38 +368,61 @@ unsafe fn parse_raw(raw: O) -> Option<(O, O)> {
             return None;
         }
         let n = ffi::PyList_GET_SIZE(raw) as usize;
-        let mut items: Vec<O> = Vec::with_capacity(n);
-        for i in 0..n {
-            let it = ffi::PyList_GET_ITEM(raw, i as ffi::Py_ssize_t);
-            if !exact_str(it) {
-                return None;
-            }
-            items.push(it);
+        let item = |i: usize| ffi::PyList_GET_ITEM(raw, i as ffi::Py_ssize_t);
+        if !(0..n).all(|i| exact_str(item(i))) {
+            return None;
         }
-        let mut joined: Vec<u32> = Vec::new();
-        let text: Text<'_> = match n {
-            0 => Text::U1(&[]),
-            1 => str_view(items[0]).text,
-            _ => {
-                // `self.parser.join(*paths)`: only its value matters here.
-                let views: Vec<_> = items.iter().map(|&p| str_view(p)).collect();
-                let jargs: Vec<JoinArg> = views.iter().map(|v| crate::with_text!(v.text, |s| JoinArg::of(s))).collect();
-                let mut pieces = vec![Piece::default(); n];
-                match posix::join_plan(&jargs, &mut pieces) {
-                    Joined::Arg(k) => views[k].text,
-                    Joined::Build { npieces, .. } => {
-                        for p in &pieces[..npieces] {
-                            if p.sep_before {
-                                joined.push(b'/' as u32);
-                            }
-                            crate::with_text!(views[p.arg].text, |s| joined.extend(s.iter().map(|c| c.cp())));
-                        }
-                        Text::U4(&joined)
-                    }
-                }
-            }
+        if n == 0 {
+            return parse_units::<u8>(&[]);
+        }
+        if n == 1 {
+            return crate::with_text!(str_view(item(0)).text, |s| parse_units(s));
+        }
+        // `self.parser.join(*paths)`: only its value matters here. Joined as code points in
+        // a stack buffer (heap only beyond 512 units or 16 segments).
+        const STACK_ARGS: usize = 16;
+        let mut jargs_s = [JoinArg { len: 0, starts_sep: false, ends_sep: false }; STACK_ARGS];
+        let mut pieces_s = [Piece::default(); STACK_ARGS];
+        let (mut jargs_h, mut pieces_h);
+        let (jargs, pieces): (&mut [JoinArg], &mut [Piece]) = if n <= STACK_ARGS {
+            (&mut jargs_s[..n], &mut pieces_s[..n])
+        } else {
+            jargs_h = vec![JoinArg { len: 0, starts_sep: false, ends_sep: false }; n];
+            pieces_h = vec![Piece::default(); n];
+            (&mut jargs_h[..], &mut pieces_h[..])
         };
-        crate::with_text!(text, |s| parse_units(s))
+        for (i, j) in jargs.iter_mut().enumerate() {
+            *j = crate::with_text!(str_view(item(i)).text, |s| JoinArg::of(s));
+        }
+        let (npieces, len) = match posix::join_plan(jargs, pieces) {
+            Joined::Arg(k) => return crate::with_text!(str_view(item(k)).text, |s| parse_units(s)),
+            Joined::Build { npieces, len } => (npieces, len),
+        };
+        let mut stack = std::mem::MaybeUninit::<[u32; 512]>::uninit();
+        let mut heap: Vec<u32> = Vec::new();
+        let base: *mut u32 = if len <= 512 {
+            stack.as_mut_ptr().cast()
+        } else {
+            heap.reserve_exact(len);
+            heap.as_mut_ptr()
+        };
+        // Every one of the `len` units is written before the slice is formed.
+        let mut at = 0;
+        for p in &pieces[..npieces] {
+            if p.sep_before {
+                *base.add(at) = b'/' as u32;
+                at += 1;
+            }
+            crate::with_text!(str_view(item(p.arg)).text, |s| {
+                for (k, c) in s.iter().enumerate() {
+                    *base.add(at + k) = c.cp();
+                }
+                at += s.len();
+            });
+        }
+        debug_assert_eq!(at, len);
+        let buf = std::slice::from_raw_parts(base, at);
+        parse_units(buf)
     }
 }
 
@@ -426,19 +478,18 @@ unsafe fn format(root: O, tail: O) -> O {
         if n == 1 && !has_root {
             return ffi::Py_NewRef(ffi::PyList_GET_ITEM(tail, 0));
         }
-        let mut views = Vec::with_capacity(n + 1);
+        let item = |i: usize| ffi::PyList_GET_ITEM(tail, i as ffi::Py_ssize_t);
         let rv = str_view(root);
         let mut len = rv.len();
         let mut maxchar = rv.maxchar;
         for i in 0..n {
-            let it = ffi::PyList_GET_ITEM(tail, i as ffi::Py_ssize_t);
+            let it = item(i);
             if !exact_str(it) {
                 return std::ptr::null_mut();
             }
             let v = str_view(it);
             len += v.len() + usize::from(i > 0);
             maxchar = maxchar.max(v.maxchar);
-            views.push(v);
         }
         let (o, data, kind) = rt::new_str(len, maxchar.max(0x7f));
         if o.is_null() {
@@ -447,11 +498,13 @@ unsafe fn format(root: O, tail: O) -> O {
         let mut at = 0;
         rt::write_text(data, kind, at, rv.text);
         at += rv.len();
-        for (i, v) in views.iter().enumerate() {
+        for i in 0..n {
             if i > 0 {
                 rt::write_units(data, kind, at, b"/");
                 at += 1;
             }
+            // the list is not mutated in between (no Python code runs): same items
+            let v = str_view(item(i));
             rt::write_text(data, kind, at, v.text);
             at += v.len();
         }

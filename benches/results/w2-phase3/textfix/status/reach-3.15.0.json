@@ -1,0 +1,30 @@
+{
+ "3.15.0": {
+  "installed": 108,
+  "of": 111,
+  "refused": {
+   "fingerprint": 2,
+   "not-needed": 1
+  },
+  "detail": {
+   "copy.deepcopy": [
+    "refused",
+    "fingerprint",
+    "copy.deepcopy: code fingerprint db53303f37e0e7df differs from every one recorded for CPython 3.15",
+    null
+   ],
+   "copy.copy": [
+    "refused",
+    "fingerprint",
+    "copy.deepcopy: code fingerprint db53303f37e0e7df differs from every one recorded for CPython 3.15",
+    null
+   ],
+   "set.__reduce__": [
+    "refused",
+    "not-needed",
+    "only free-threaded builds need it",
+    null
+   ]
+  }
+ }
+}

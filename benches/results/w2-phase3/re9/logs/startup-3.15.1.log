@@ -1,0 +1,64 @@
+total 8
+drwxrwxr-x 2 ubuntu ubuntu 4096 Nov  3 06:11 .
+drwxrwxr-x 3 ubuntu ubuntu 4096 Nov  3 06:11 ..
+total 3584
+drwxrwxr-x  4 ubuntu ubuntu    4096 Nov  3 06:11 .
+drwxrwxr-x  3 ubuntu ubuntu    4096 Nov  3 06:11 ..
+-rwxrwxr-x 12 ubuntu ubuntu 3634144 Nov  3 05:23 _rustique.cpython-315-x86_64-linux-gnu.so
+-rw-rw-r-- 12 ubuntu ubuntu   10118 Nov  3 05:23 _rustique_pytest.py
+-rw-rw-r-- 12 ubuntu ubuntu      88 Nov  3 05:23 _rustique_startup.pth
+drwxrwxr-x  3 ubuntu ubuntu    4096 Nov  3 06:11 rustique
+drwxrwxr-x  3 ubuntu ubuntu    4096 Nov  3 06:11 rustique-0.3.0.dist-info
+
+startup cells (ratios vs plain `python -c pass`)
+variant                              Ir  Ir ratio      ms median (p10-p90)  ms ratio
+plain: pass                  38,668,889    1.0000      9.42 (9.37-9.48)    1.0000
+installed, unset: pass       39,700,290    1.0267      9.74 (9.69-9.80)    1.0334
+RUSTIQUE=1: pass             40,828,311    1.0558     10.31 (10.26-10.37)    1.0947
+import rustique              41,095,644    1.0628     10.25 (10.20-10.31)    1.0882
+import + enable()            42,224,921    1.0920     10.62 (10.56-10.68)    1.1269
+marginal cost of RUSTIQUE=1 in the same venv (vs unset): Ir 1.0284, wall 1.0593 (+0.58 ms)
+total 12
+drwxrwxr-x 2 ubuntu ubuntu 4096 Nov  3 06:12 .
+drwxrwxr-x 3 ubuntu ubuntu 4096 Nov  3 06:12 ..
+-rw-rw-r-- 1 ubuntu ubuntu   28 Nov  3 06:12 aaa_other.pth
+total 3588
+drwxrwxr-x  4 ubuntu ubuntu    4096 Nov  3 06:12 .
+drwxrwxr-x  3 ubuntu ubuntu    4096 Nov  3 06:12 ..
+-rwxrwxr-x 13 ubuntu ubuntu 3634144 Nov  3 05:23 _rustique.cpython-315-x86_64-linux-gnu.so
+-rw-rw-r-- 13 ubuntu ubuntu   10118 Nov  3 05:23 _rustique_pytest.py
+-rw-rw-r-- 13 ubuntu ubuntu      88 Nov  3 05:23 _rustique_startup.pth
+-rw-rw-r--  1 ubuntu ubuntu      28 Nov  3 06:12 aaa_other.pth
+drwxrwxr-x  3 ubuntu ubuntu    4096 Nov  3 06:12 rustique
+drwxrwxr-x  3 ubuntu ubuntu    4096 Nov  3 06:12 rustique-0.3.0.dist-info
+
+startup cells (ratios vs plain `python -c pass`)
+variant                              Ir  Ir ratio      ms median (p10-p90)  ms ratio
+plain: pass                  39,443,560    1.0000      9.66 (9.61-9.70)    1.0000
+installed, unset: pass       39,754,732    1.0079      9.76 (9.71-9.81)    1.0106
+RUSTIQUE=1: pass             40,881,010    1.0364     10.33 (10.29-10.38)    1.0703
+import rustique              41,149,972    1.0433     10.27 (10.23-10.34)    1.0642
+import + enable()            42,278,032    1.0719     10.63 (10.58-10.69)    1.1013
+marginal cost of RUSTIQUE=1 in the same venv (vs unset): Ir 1.0283, wall 1.0590 (+0.58 ms)
+part                                                                Ir  % of on−unset
+`.pth` with RUSTIQUE unset (vs plain venv)                   1,031,401               
+loader string compile + env test (off − unset)                       0           0.0%
+locate + import (load − unset − loader − create − exec)        210,541          18.7%
+create: dlopen + relocations + module object                   365,127          32.4%
+exec: module exec slot                                          10,268           0.9%
+enable: `startup()`                                            394,764          35.0%
+exit hook                                                       53,574           4.7%
+rest: GC/teardown/watcher (on − load − enable − exit)           93,747           8.3%
+RUSTIQUE=1 − unset                                           1,128,021   (1.0284x)
+
+cell               Ir      instr:u     instr:k        cyc:u       cyc:k  faults  task ms  wall ms
+plain      38,668,889   38,005,781   7,417,651   23,270,875   9,808,088     941    9.220    9.424
+unset      39,700,290   39,004,287   7,533,691   24,191,306  10,125,618     950    9.440    9.733
+off        40,255,919   39,560,677   7,620,468   24,702,235  10,480,235    1010    9.680   10.062
+load       40,286,226   39,588,625   7,619,729   24,718,280  10,518,909    1006    9.690   10.041
+on         40,828,311   40,120,801   7,843,157   25,234,474  10,919,895    1060    9.950   10.299
+on / unset: Ir 1.0284, wall 1.0581 (+0.566 ms), cycles 1.0535
+unset / plain: Ir 1.0267, wall 1.0328 (+0.309 ms), cycles 1.0374
+on / plain: Ir 1.0558, wall 1.0928 (+0.875 ms), cycles 1.0930
+off / unset: Ir 1.0140, wall 1.0337 (+0.328 ms), cycles 1.0252
+3,634,144 _rustique.cpython-315-x86_64-linux-gnu.so

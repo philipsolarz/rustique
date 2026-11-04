@@ -1,0 +1,40 @@
+{
+ "python": "3.15.1 (main, Oct 21 2026, 17:48:50) [Clang 23.1.3 ]",
+ "rows": [
+  {
+   "workload": "threads/compute_pool",
+   "plain_s": 1.192358341999352,
+   "enabled_s": 1.1700864910089877,
+   "ratio": 0.9813211765239812,
+   "same_result": true
+  },
+  {
+   "workload": "threads/http_server",
+   "plain_s": 0.626993407990085,
+   "enabled_s": 0.5761972170002991,
+   "ratio": 0.9189844895616684,
+   "same_result": true
+  },
+  {
+   "workload": "threads/pipeline_queue",
+   "plain_s": 0.5901460949971806,
+   "enabled_s": 0.30262790799315553,
+   "ratio": 0.5128016783616967,
+   "same_result": true
+  },
+  {
+   "workload": "threads/request_pool",
+   "plain_s": 0.4529421019979054,
+   "enabled_s": 0.24710927999694832,
+   "ratio": 0.5455648280585121,
+   "same_result": true
+  },
+  {
+   "workload": "threads/shared_cache",
+   "plain_s": 0.5215216999931727,
+   "enabled_s": 0.31688483800098766,
+   "ratio": 0.6076158250081177,
+   "same_result": true
+  }
+ ]
+}

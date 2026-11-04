@@ -1,0 +1,40 @@
+NEXT                                LEFT LAST                              PASSED UNIT                           ACTIVATES
+Tue 2026-11-03 03:30:00 UTC         5min Tue 2026-11-03 03:20:10 UTC 4min 35s ago sysstat-collect.timer          sysstat-collect.service
+Tue 2026-11-03 04:12:31 UTC        47min Tue 2026-11-03 03:13:10 UTC    11min ago fwupd-refresh.timer            fwupd-refresh.service
+Tue 2026-11-03 05:17:29 UTC     1h 52min -                                      - man-db.timer                   man-db.service
+Tue 2026-11-03 18:16:37 UTC          14h Mon 2026-11-02 18:16:37 UTC       9h ago update-notifier-download.timer update-notifier-download.service
+Tue 2026-11-03 18:26:37 UTC          15h Mon 2026-11-02 18:26:37 UTC       8h ago systemd-tmpfiles-clean.timer   systemd-tmpfiles-clean.service
+Wed 2026-11-04 00:00:00 UTC          20h Tue 2026-11-03 00:00:10 UTC 3h 24min ago dpkg-db-backup.timer           dpkg-db-backup.service
+Wed 2026-11-04 00:00:00 UTC          20h Tue 2026-11-03 00:00:10 UTC 3h 24min ago logrotate.timer                logrotate.service
+Wed 2026-11-04 00:07:00 UTC          20h Tue 2026-11-03 00:07:10 UTC 3h 17min ago sysstat-summary.timer          sysstat-summary.service
+Sun 2026-11-08 03:10:51 UTC       4 days -                                      - e2scrub_all.timer              e2scrub_all.service
+Mon 2026-11-09 00:35:20 UTC       5 days -                                      - fstrim.timer                   fstrim.service
+Thu 2026-11-12 02:56:09 UTC 1 week 1 day -                                      - update-notifier-motd.timer     update-notifier-motd.service
+-                                      - -                                      - apport-autoreport.timer        apport-autoreport.service
+-                                      - -                                      - apt-daily-upgrade.timer        apt-daily-upgrade.service
+-                                      - -                                      - apt-daily.timer                apt-daily.service
+-                                      - -                                      - motd-news.timer                motd-news.service
+-                                      - -                                      - snapd.snap-repair.timer        snapd.snap-repair.service
+-                                      - -                                      - ua-timer.timer                 ua-timer.service
+
+17 timers listed.
+NEXT                                LEFT LAST                              PASSED UNIT                           ACTIVATES
+Tue 2026-11-03 18:26:37 UTC          15h Mon 2026-11-02 18:26:37 UTC       8h ago systemd-tmpfiles-clean.timer   systemd-tmpfiles-clean.service
+Sun 2026-11-08 03:10:51 UTC       4 days -                                      - e2scrub_all.timer              e2scrub_all.service
+Mon 2026-11-09 00:35:20 UTC       5 days -                                      - fstrim.timer                   fstrim.service
+Thu 2026-11-12 02:56:09 UTC 1 week 1 day -                                      - update-notifier-motd.timer     update-notifier-motd.service
+-                                      - -                                      - apport-autoreport.timer        apport-autoreport.service
+-                                      - -                                      - apt-daily-upgrade.timer        apt-daily-upgrade.service
+-                                      - -                                      - apt-daily.timer                apt-daily.service
+-                                      - Tue 2026-11-03 00:00:10 UTC 3h 24min ago dpkg-db-backup.timer           dpkg-db-backup.service
+-                                      - Tue 2026-11-03 03:13:10 UTC    11min ago fwupd-refresh.timer            fwupd-refresh.service
+-                                      - Tue 2026-11-03 00:00:10 UTC 3h 24min ago logrotate.timer                logrotate.service
+-                                      - -                                      - man-db.timer                   man-db.service
+-                                      - -                                      - motd-news.timer                motd-news.service
+-                                      - -                                      - snapd.snap-repair.timer        snapd.snap-repair.service
+-                                      - Tue 2026-11-03 03:20:10 UTC 4min 36s ago sysstat-collect.timer          sysstat-collect.service
+-                                      - Tue 2026-11-03 00:07:10 UTC 3h 17min ago sysstat-summary.timer          sysstat-summary.service
+-                                      - -                                      - ua-timer.timer                 ua-timer.service
+-                                      - Mon 2026-11-02 18:16:37 UTC       9h ago update-notifier-download.timer update-notifier-download.service
+
+17 timers listed.

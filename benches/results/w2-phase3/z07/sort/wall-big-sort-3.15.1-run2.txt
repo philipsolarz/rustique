@@ -1,0 +1,38 @@
+sorted(set int 1000000): plain 16.36 ms  on 13.44 ms  ratio 0.822
+sorted(set float 1000000): plain 47.74 ms  on 33.9 ms  ratio 0.710
+sorted(frozenset int 1000000): plain 17.06 ms  on 14.13 ms  ratio 0.828
+sorted(frozenset float 1000000): plain 48.27 ms  on 34.6 ms  ratio 0.717
+sorted(list int 1000000): plain 276.34 ms  on 88.05 ms  ratio 0.319
+sorted(set wide 1000000): plain 194.42 ms  on 80.38 ms  ratio 0.413
+sorted(set int 100000): plain 7.63 ms  on 3.33 ms  ratio 0.436
+sorted(set float 100000): plain 7.33 ms  on 3.16 ms  ratio 0.431
+sorted(list int asc 100000): plain 0.44 ms  on 0.26 ms  ratio 0.591
+sorted(list int asc 1000000): plain 6.56 ms  on 4.43 ms  ratio 0.675
+sorted(list int desc 100000): plain 0.47 ms  on 0.27 ms  ratio 0.574
+sorted(list int desc 1000000): plain 6.67 ms  on 4.51 ms  ratio 0.676
+sorted(list int halves 100000): plain 0.47 ms  on 0.27 ms  ratio 0.574
+sorted(list int halves 1000000): plain 7.33 ms  on 4.65 ms  ratio 0.634
+sorted(list int rand 100000): plain 13.66 ms  on 4.49 ms  ratio 0.329
+sorted(list int rand 1000000): plain 225.9 ms  on 77.93 ms  ratio 0.345
+sorted(list int nearly 100000): plain 2.18 ms  on 2.19 ms  ratio 1.005
+sorted(list int nearly 1000000): plain 36.99 ms  on 36.97 ms  ratio 0.999
+sorted(list float asc 100000): plain 0.38 ms  on 0.2 ms  ratio 0.526
+sorted(list float asc 1000000): plain 6.21 ms  on 4.2 ms  ratio 0.676
+sorted(list float desc 100000): plain 0.44 ms  on 0.22 ms  ratio 0.500
+sorted(list float desc 1000000): plain 6.36 ms  on 4.28 ms  ratio 0.673
+sorted(list float halves 100000): plain 0.42 ms  on 0.21 ms  ratio 0.500
+sorted(list float halves 1000000): plain 6.99 ms  on 4.5 ms  ratio 0.644
+sorted(list float rand 100000): plain 13.04 ms  on 4.54 ms  ratio 0.348
+sorted(list float rand 1000000): plain 225.6 ms  on 74.93 ms  ratio 0.332
+sorted(list float nearly 100000): plain 2.04 ms  on 2.04 ms  ratio 1.000
+sorted(list float nearly 1000000): plain 34.8 ms  on 35.01 ms  ratio 1.006
+sorted(list str asc 100000): plain 0.73 ms  on 0.64 ms  ratio 0.877
+sorted(list str asc 1000000): plain 12.99 ms  on 10.17 ms  ratio 0.783
+sorted(list str desc 100000): plain 0.73 ms  on 0.65 ms  ratio 0.890
+sorted(list str desc 1000000): plain 12.66 ms  on 10.5 ms  ratio 0.829
+sorted(list str halves 100000): plain 0.74 ms  on 0.65 ms  ratio 0.878
+sorted(list str halves 1000000): plain 13.89 ms  on 10.57 ms  ratio 0.761
+sorted(list str rand 100000): plain 20.34 ms  on 6.13 ms  ratio 0.301
+sorted(list str rand 1000000): plain 428.21 ms  on 174.85 ms  ratio 0.408
+sorted(list str nearly 100000): plain 3.46 ms  on 3.55 ms  ratio 1.026
+sorted(list str nearly 1000000): plain 67.76 ms  on 69.91 ms  ratio 1.032

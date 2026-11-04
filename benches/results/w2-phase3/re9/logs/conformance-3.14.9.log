@@ -1,0 +1,26 @@
+groups: builtins,containers,contextlib,copy,dataclasses,datetime,enum,float,fnmatch,functools,generated,json,logging,pathlib,posixpath,random,re,set,statistics,textwrap,urllib
+expect installed: builtins.all,builtins.any,builtins.max,builtins.min,builtins.sorted,builtins.sum,collections.namedtuple,contextlib.contextmanager,copy.copy,copy.deepcopy,dataclasses.__init__,dataclasses.__init__.positional,dataclasses.asdict,dataclasses.astuple,datetime.date.isoformat,datetime.date.strftime,datetime.date.strptime,datetime.datetime.isoformat,datetime.datetime.strptime,datetime.time.isoformat,datetime.time.strftime,datetime.time.strptime,enum.Enum.__hash__,enum.EnumType.__call__,enum.Flag.operators,enum.property.__get__,float.repr,fnmatch.filter,fnmatch.fnmatch,fnmatch.fnmatchcase,functools.singledispatch,functools.singledispatchmethod.__get__,json.dumps,json.loads,list.__contains__,list.count,list.index,list.sort,logging.Formatter.format,logging.Formatter.formatTime,logging.Handler.handle,logging.LogRecord.__init__,logging.Logger.findCaller,logging.Logger.level,pathlib.Path.__new__,pathlib.PurePath.__eq__,pathlib.PurePath.__hash__,pathlib.PurePath.__init__,pathlib.PurePath.__new__,pathlib.PurePath.__str__,pathlib.PurePath.__truediv__,pathlib.PurePath.relative_to,posixpath.abspath,posixpath.basename,posixpath.dirname,posixpath.isabs,posixpath.join,posixpath.relpath,posixpath.split,posixpath.splitext,random.choice,random.choices,random.expovariate,random.gauss,random.lognormvariate,random.normalvariate,random.paretovariate,random.randint,random.randrange,random.sample,random.shuffle,re._compiler.compile,re.compile,re.findall,re.finditer,re.fullmatch,re.match,re.search,re.split,re.sub,re.subn,statistics.mean,statistics.pstdev,statistics.pvariance,statistics.stdev,statistics.variance,textwrap.TextWrapper.fill,textwrap.TextWrapper.wrap,textwrap.dedent,textwrap.fill,textwrap.indent,textwrap.shorten,textwrap.wrap,time.strftime,time.strptime,tuple.__contains__,tuple.count,tuple.index,urllib.parse._urlsplit,urllib.parse.parse_qs,urllib.parse.parse_qsl,urllib.parse.quote,urllib.parse.quote_plus,urllib.parse.unquote,urllib.parse.unquote_plus
+not installed on this build (not expected): [('pathlib.PurePath.parent', 'refused', 'version'), ('pathlib.PurePath.name', 'refused', 'version'), ('pathlib.PurePath.suffix', 'refused', 'version'), ('pathlib.PurePath.stem', 'refused', 'version'), ('pathlib.PurePath.parts', 'refused', 'version'), ('set.__reduce__', 'refused', 'not-needed')]
+target conformance — 3.14.9 — targets builtins,containers,contextlib,copy,dataclasses,datetime,enum,float,fnmatch,functools,generated,json,logging,pathlib,posixpath,random,re,set,statistics,textwrap,urllib
+  test.test_re                             plain=ran        enabled=ran        pass=163 skip=3  differences=0 (0.3s/0.2s)
+  test.test_email                          plain=ran        enabled=ran        pass=1808 skip=1  differences=0 (5.1s/4.7s)
+  test.test_tokenize                       plain=ran        enabled=ran        pass=132  differences=0 (9.8s/9.0s)
+  test.test_configparser                   plain=ran        enabled=ran        pass=378 skip=5  differences=0 (0.6s/0.6s)
+  test.test_fnmatch                        plain=ran        enabled=ran        pass=24  differences=0 (0.1s/0.1s)
+  test.test_textwrap                       plain=ran        enabled=ran        pass=68  differences=0 (0.1s/0.1s)
+  test.test_http_cookies                   plain=ran        enabled=ran        pass=33  differences=0 (1.0s/1.0s)
+  test.test_difflib                        plain=ran        enabled=ran        pass=59  differences=0 (0.2s/0.2s)
+  test.test_string                         plain=ran        enabled=ran        pass=55  differences=0 (0.1s/0.1s)
+  test.test_shlex                          plain=ran        enabled=ran        pass=45  differences=0 (0.1s/0.1s)
+  test.test_argparse                       plain=ran        enabled=ran        pass=1893 skip=1  differences=0 (1.3s/1.3s)
+  test.test_gettext                        plain=ran        enabled=ran        pass=74  differences=0 (0.1s/0.1s)
+  test.test_glob                           plain=ran        enabled=ran        pass=22 skip=2  differences=0 (0.2s/0.2s)
+  test.test_csv                            plain=ran        enabled=ran        pass=130 skip=4  differences=0 (0.4s/0.4s)
+  test.test_urllib                         plain=ran        enabled=ran        pass=104 skip=2  differences=0 (0.1s/0.1s)
+  test.test_mailbox                        plain=ran        enabled=ran        pass=373 skip=3  differences=0 (1.9s/1.9s)
+  NOT INSTALLED statistics.mean: ['pending-import', None]
+  NOT INSTALLED statistics.pstdev: ['pending-import', None]
+  NOT INSTALLED statistics.pvariance: ['pending-import', None]
+  NOT INSTALLED statistics.stdev: ['pending-import', None]
+  NOT INSTALLED statistics.variance: ['pending-import', None]
+FAILED

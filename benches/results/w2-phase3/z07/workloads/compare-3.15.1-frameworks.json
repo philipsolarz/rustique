@@ -1,0 +1,47 @@
+{
+ "python": "3.15.1 (main, Oct 21 2026, 17:48:50) [Clang 23.1.3 ]",
+ "rows": [
+  {
+   "workload": "frameworks/django_admin",
+   "plain_s": 0.9932904809975298,
+   "enabled_s": 0.9666847969929222,
+   "ratio": 0.9732145988373024,
+   "same_result": true
+  },
+  {
+   "workload": "frameworks/drf_api",
+   "plain_s": 1.1685764910071157,
+   "enabled_s": 1.1608311689924449,
+   "ratio": 0.9933720025396064,
+   "same_result": true
+  },
+  {
+   "workload": "frameworks/falcon_api",
+   "plain_s": 0.388427199999569,
+   "enabled_s": 0.3091017099941382,
+   "ratio": 0.7957777158615081,
+   "same_result": true
+  },
+  {
+   "workload": "frameworks/fastapi_sqlalchemy",
+   "plain_s": 1.2076594599930104,
+   "enabled_s": 1.1970423070015386,
+   "ratio": 0.9912084877043622,
+   "same_result": true
+  },
+  {
+   "workload": "frameworks/flask_marshmallow",
+   "plain_s": 0.7423814780049725,
+   "enabled_s": 0.727333123999415,
+   "ratio": 0.9797296208870978,
+   "same_result": true
+  },
+  {
+   "workload": "frameworks/strawberry_graphql",
+   "plain_s": 0.9216589540010318,
+   "enabled_s": 0.8658067290089093,
+   "ratio": 0.9394003337680806,
+   "same_result": true
+  }
+ ]
+}

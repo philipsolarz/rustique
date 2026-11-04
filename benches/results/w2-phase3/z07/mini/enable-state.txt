@@ -1,0 +1,7 @@
+# What enable() leaves behind, 07786e2, workload venvs <b>-custom, RUSTIQUE unset, taskset -c 12 with the box idle
+# (21:45Z; transcribed from the terminal): OS threads (/proc/self/task) before import / after import / after enable,
+# Python threads, sys.getprofile/gettrace, sys.monitoring tools 0-5, switch interval, gc thresholds.
+3.15.1t all groups   OS threads 1 1 1 | py threads 1 | profile None trace None | monitoring [None]*6 | switchinterval 0.005 0.005 | gc (2000, 10, 10) True
+3.15.1t exclude=all  OS threads 1 1 1 | py threads 1 | profile None trace None | monitoring [None]*6 | switchinterval 0.005 0.005 | gc (2000, 10, 10) True
+3.15.1  all groups   OS threads 1 1 1 | py threads 1 | profile None trace None | monitoring [None]*6 | switchinterval 0.005 0.005 | gc (2000, 10, 10) True
+3.15.1  exclude=all  OS threads 1 1 1 | py threads 1 | profile None trace None | monitoring [None]*6 | switchinterval 0.005 0.005 | gc (2000, 10, 10) True

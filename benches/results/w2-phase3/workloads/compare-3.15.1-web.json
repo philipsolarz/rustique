@@ -1,0 +1,75 @@
+{
+ "python": "3.15.1 (main, Oct 21 2026, 17:48:50) [Clang 23.1.3 ]",
+ "rows": [
+  {
+   "workload": "web/aiohttp_app",
+   "plain_s": 0.2720119049990899,
+   "enabled_s": 0.247302903997479,
+   "ratio": 0.9091620603822705,
+   "same_result": true
+  },
+  {
+   "workload": "web/asyncio_http",
+   "plain_s": 0.23218726100458298,
+   "enabled_s": 0.1847940430016024,
+   "ratio": 0.7958836423758618,
+   "same_result": true
+  },
+  {
+   "workload": "web/django_blog",
+   "plain_s": 0.4887956410020706,
+   "enabled_s": 0.4829439140012255,
+   "ratio": 0.9880282749886055,
+   "same_result": true
+  },
+  {
+   "workload": "web/email_mime",
+   "plain_s": 0.6581673980035703,
+   "enabled_s": 0.6509920050011715,
+   "ratio": 0.9890979209481295,
+   "same_result": true
+  },
+  {
+   "workload": "web/fastapi_pydantic",
+   "plain_s": 0.29460814999765716,
+   "enabled_s": 0.28271897599915974,
+   "ratio": 0.9596441103255563,
+   "same_result": true
+  },
+  {
+   "workload": "web/flask_jinja",
+   "plain_s": 0.41653611899528187,
+   "enabled_s": 0.401514616998611,
+   "ratio": 0.9639370961805092,
+   "same_result": true
+  },
+  {
+   "workload": "web/json_api",
+   "plain_s": 0.3964457580004819,
+   "enabled_s": 0.2829089209990343,
+   "ratio": 0.7136131874027781,
+   "same_result": true
+  },
+  {
+   "workload": "web/logging_service",
+   "plain_s": 0.2817766029984341,
+   "enabled_s": 0.19469040800322546,
+   "ratio": 0.6909388711890583,
+   "same_result": true
+  },
+  {
+   "workload": "web/requests_local",
+   "plain_s": 0.2512267149941181,
+   "enabled_s": 0.23142646300402703,
+   "ratio": 0.9211857226626768,
+   "same_result": true
+  },
+  {
+   "workload": "web/sqlalchemy_orm",
+   "plain_s": 0.34237519900489133,
+   "enabled_s": 0.34231179900234565,
+   "ratio": 0.9998148230282744,
+   "same_result": true
+  }
+ ]
+}

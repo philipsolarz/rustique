@@ -1,0 +1,159 @@
+{
+ "import json plain": {
+  "plain": 22482993
+ },
+ "import copy plain": {
+  "plain": 4016138
+ },
+ "import logging plain": {
+  "plain": 89467434
+ },
+ "import random plain": {
+  "plain": 3295579
+ },
+ "import pathlib plain": {
+  "plain": 30009132
+ },
+ "import fnmatch plain": {
+  "plain": 18835354
+ },
+ "import textwrap plain": {
+  "plain": 21359537
+ },
+ "import statistics plain": {
+  "plain": 32876535
+ },
+ "import urllib.parse plain": {
+  "plain": 28625337
+ },
+ "import dataclasses plain": {
+  "plain": 45364214
+ },
+ "import datetime plain": {
+  "plain": 413054
+ },
+ "import json lazy": {
+  "eager": 23675527,
+  "first-call": 23486853
+ },
+ "import json lazy+call": {
+  "eager": 23680318,
+  "first-call": 23619039
+ },
+ "import copy lazy": {
+  "eager": 4171084,
+  "first-call": 4095182
+ },
+ "import copy lazy+call": {
+  "eager": 4172990,
+  "first-call": 4182427
+ },
+ "import logging lazy": {
+  "eager": 88399120,
+  "first-call": 87671555
+ },
+ "import logging lazy+call": {
+  "eager": 88437129,
+  "first-call": 87845018
+ },
+ "import random lazy": {
+  "eager": 3532182,
+  "first-call": 3380616
+ },
+ "import random lazy+call": {
+  "eager": 3629179,
+  "first-call": 3584357
+ },
+ "import pathlib lazy": {
+  "eager": 31697944,
+  "first-call": 31053496
+ },
+ "import pathlib lazy+call": {
+  "eager": 31710340,
+  "first-call": 31274292
+ },
+ "import fnmatch lazy": {
+  "eager": 19992641,
+  "first-call": 19630246
+ },
+ "import fnmatch lazy+call": {
+  "eager": 19986553,
+  "first-call": 19704774
+ },
+ "import textwrap lazy": {
+  "eager": 22380445,
+  "first-call": 22173523
+ },
+ "import textwrap lazy+call": {
+  "eager": 22384497,
+  "first-call": 22319305
+ },
+ "import statistics lazy": {
+  "eager": 34173853,
+  "first-call": 33812637
+ },
+ "import statistics lazy+call": {
+  "eager": 34180154,
+  "first-call": 33990354
+ },
+ "import urllib.parse lazy": {
+  "eager": 29685607,
+  "first-call": 29419868
+ },
+ "import urllib.parse lazy+call": {
+  "eager": 29678221,
+  "first-call": 29628534
+ },
+ "import dataclasses lazy": {
+  "eager": 46538995,
+  "first-call": 46301580
+ },
+ "import dataclasses lazy+call": {
+  "eager": 46540420,
+  "first-call": 46303749
+ },
+ "import datetime lazy": {
+  "eager": 500983,
+  "first-call": 489252
+ },
+ "import datetime lazy+call": {
+  "eager": 504082,
+  "first-call": 498706
+ },
+ "enable logging (imported)": {
+  "eager": 798853,
+  "first-call": 407073
+ },
+ "enable copy (imported)": {
+  "eager": 271871,
+  "first-call": 167587
+ },
+ "enable posixpath (imported)": {
+  "eager": 415040,
+  "first-call": 234420
+ },
+ "enable fnmatch (imported)": {
+  "eager": 518204,
+  "first-call": 164536
+ },
+ "enable pathlib (imported)": {
+  "eager": 700958,
+  "first-call": 365747
+ },
+ "enable json (imported)": {
+  "eager": 395203,
+  "first-call": 198777
+ },
+ "enable random (imported)": {
+  "eager": 386277,
+  "first-call": 199348
+ },
+ "enable dataclasses (imported)": {
+  "eager": 263283,
+  "first-call": 151669
+ },
+ "enable all (fresh)": {
+  "eager": 627334,
+  "first-call": 385816
+ }
+}

@@ -28,14 +28,20 @@ use super::version;
 /// One declared site (its `Original` cell already holds the original entry point).
 pub(crate) struct SiteDecl {
     pub site: Site,
+    /// C arity of the entry point (cell sites; 0: not armable, e.g. an opcode handler).
+    pub arity: u8,
 }
 
-/// A fingerprint observed while preparing (for the dev tool's record mode).
+/// A fingerprint observed while preparing (for the dev tool's record mode): the original's
+/// id, its v3 fingerprint and the recorded ones (comma-separated), and its v2 fingerprint
+/// and the inline expected one.
 #[derive(Debug, Clone)]
 pub struct FingerprintRecord {
     pub what: String,
     pub observed: String,
-    pub expected: Option<&'static str>,
+    pub expected: Option<String>,
+    pub v2: String,
+    pub v2_expected: Option<&'static str>,
 }
 
 /// `ml_flags` calling-convention bits → C arity of `ml_meth`.
@@ -55,12 +61,20 @@ fn meth_arity(flags: c_int) -> Option<usize> {
 pub struct Prepare<'py> {
     py: Python<'py>,
     spec: &'static TargetSpec,
+    /// Whose fingerprints these are in the recorded data: the target's name, or the shared
+    /// group's (`GroupSpec::name`) while a group prepares.
+    owner: &'static str,
     module: Option<Bound<'py, PyModule>>,
     pub(crate) sites: Vec<SiteDecl>,
     pub(crate) pins: Vec<PendingPin>,
     pub(crate) records: Vec<FingerprintRecord>,
     /// Record mode (dev tool): fingerprint mismatches are recorded, not refused.
     pub(crate) record: bool,
+    /// Arming (validate on first call, docs/ACCELERATION.md §3.2): only resolve and declare
+    /// the sites. Fingerprints, self-tests, memoized validations, pins and layout
+    /// calibrations are skipped; `prepare` runs again in full at the target's first call,
+    /// before any kernel is reachable.
+    pub(crate) arming: bool,
 }
 
 impl<'py> Prepare<'py> {
@@ -70,7 +84,38 @@ impl<'py> Prepare<'py> {
         module: Option<Bound<'py, PyModule>>,
         record: bool,
     ) -> Self {
-        Prepare { py, spec, module, sites: Vec::new(), pins: Vec::new(), records: Vec::new(), record }
+        Prepare {
+            py,
+            spec,
+            owner: spec.name,
+            module,
+            sites: Vec::new(),
+            pins: Vec::new(),
+            records: Vec::new(),
+            record,
+            arming: false,
+        }
+    }
+
+    /// The context of a shared group's `prepare` (its fingerprints are recorded under the
+    /// group's name, whichever target activates it first).
+    pub(crate) fn for_group(
+        py: Python<'py>,
+        spec: &'static TargetSpec,
+        group: &'static super::spec::GroupSpec,
+        module: Option<Bound<'py, PyModule>>,
+        record: bool,
+    ) -> Self {
+        let mut cx = Self::new(py, spec, module, record);
+        cx.owner = group.name;
+        cx
+    }
+
+    /// Whether this `prepare` only arms the target (validation deferred to its first call):
+    /// targets may skip expensive validation of their own then. Sites must still be
+    /// declared exactly as in a full `prepare`.
+    pub fn arming(&self) -> bool {
+        self.arming
     }
 
     pub fn py(&self) -> Python<'py> {
@@ -169,8 +214,9 @@ impl<'py> Prepare<'py> {
     // Fingerprints and self-tests.
     // -----------------------------------------------------------------------------------
 
-    /// `what` (a readable name) is only built for a refusal or in record mode.
-    fn check_fingerprint(
+    /// The legacy (format v2, inline) check, for originals the recorded v3 data does not
+    /// cover yet. `what` (a readable name) is only built for a refusal or in record mode.
+    fn check_v2(
         &mut self,
         what: impl FnOnce() -> String,
         observed: String,
@@ -178,17 +224,11 @@ impl<'py> Prepare<'py> {
     ) -> Result<(), Refusal> {
         let (major, minor) = version::running();
         let want = fingerprint::expected_for(expected, major, minor);
-        let ok = want == Some(observed.as_str());
-        if self.record {
-            self.records.push(FingerprintRecord { what: what(), observed, expected: want });
-            return Ok(());
-        }
-        if ok {
+        if want == Some(observed.as_str()) {
             return Ok(());
         }
         let what = what();
         match want {
-            _ if ok => Ok(()),
             None => Err(Refusal::with(
                 Category::Version,
                 format!("{what}: no fingerprint recorded for CPython {major}.{minor}"),
@@ -199,25 +239,79 @@ impl<'py> Prepare<'py> {
         }
     }
 
-    /// Require the canonical code fingerprint of a pure-Python function (or code object)
-    /// to be the one recorded for the running minor version.
+    /// The check of one original: its v3 fingerprint against the hashes recorded for this
+    /// target and the running minor (`fingerprints.txt`); originals with no recorded entry
+    /// fall back to the inline v2 `expected` (`v2` computes it lazily).
+    fn check_original(
+        &mut self,
+        id: String,
+        v3: u64,
+        v2: impl FnOnce() -> Result<String, Refusal>,
+        expected: Fingerprints,
+    ) -> Result<(), Refusal> {
+        let accepted = fingerprint::accepted(self.owner, &id);
+        if self.record {
+            let (major, minor) = version::running();
+            let v2 = v2().unwrap_or_default();
+            self.records.push(FingerprintRecord {
+                what: id,
+                observed: fingerprint::hex(v3),
+                expected: accepted.map(|a| a.iter().map(fingerprint::hex).collect::<Vec<_>>().join(",")),
+                v2,
+                v2_expected: fingerprint::expected_for(expected, major, minor),
+            });
+            return Ok(());
+        }
+        match accepted {
+            Some(set) if set.contains(v3) => Ok(()),
+            Some(_) => {
+                let (major, minor) = version::running();
+                Err(Refusal::with(
+                    Category::Fingerprint,
+                    format!(
+                        "{id}: code fingerprint {} differs from every one recorded for CPython {major}.{minor}",
+                        fingerprint::hex(v3)
+                    ),
+                ))
+            }
+            None => {
+                let observed = v2()?;
+                self.check_v2(|| id, observed, expected)
+            }
+        }
+    }
+
+    /// Require the canonical code fingerprint (format v3) of a pure-Python function (or
+    /// code object) to be one recorded for this target on the running minor version
+    /// (`accel/fingerprints.txt`); originals not recorded there are checked against the
+    /// inline (v2) `expected`, which is otherwise unused.
     pub fn fingerprint_code(&mut self, func: &Bound<'_, PyAny>, expected: Fingerprints) -> Result<(), Refusal> {
-        let observed = if func.cast_exact::<PyFunction>().is_ok() {
-            fingerprint::function(func)?
-        } else {
-            fingerprint::code(func)?
+        if self.arming {
+            return Ok(());
+        }
+        let (id, v3) = fingerprint::any_v3(func)?;
+        let v2 = || -> Result<String, Refusal> {
+            Ok(if func.cast_exact::<PyFunction>().is_ok() {
+                fingerprint::function(func)?
+            } else {
+                fingerprint::code(func)?
+            })
         };
-        self.check_fingerprint(|| describe(func), observed, expected)
+        self.check_original(id, v3, v2, expected)
     }
 
-    /// Require the `ml_name`/`ml_flags`/`ml_doc` fingerprint of a C function or method
-    /// descriptor to be the one recorded for the running minor version.
+    /// Require the `ml_name`/`ml_flags` fingerprint (format v3; v2 also hashed `ml_doc`) of
+    /// a C function or method descriptor to be one recorded for the running minor version.
     pub fn fingerprint_c(&mut self, obj: &Bound<'_, PyAny>, expected: Fingerprints) -> Result<(), Refusal> {
-        let observed = fingerprint::c_object(obj)?;
-        self.check_fingerprint(|| describe(obj), observed, expected)
+        if self.arming {
+            return Ok(());
+        }
+        let (id, v3) = fingerprint::any_v3(obj)?;
+        self.check_original(id, v3, || Ok(fingerprint::c_object(obj)?), expected)
     }
 
-    /// Same as [`Self::fingerprint_c`] for a method table entry found directly.
+    /// Same as [`Self::fingerprint_c`] for a method table entry found directly (`what` is
+    /// its id in the recorded data).
     ///
     /// # Safety
     /// `def` is a live `PyMethodDef`.
@@ -227,14 +321,23 @@ impl<'py> Prepare<'py> {
         def: *const ffi::PyMethodDef,
         expected: Fingerprints,
     ) -> Result<(), Refusal> {
+        if self.arming {
+            return Ok(());
+        }
         // SAFETY: per the caller.
-        let observed = unsafe { fingerprint::method_def(def) };
-        self.check_fingerprint(|| what.to_owned(), observed, expected)
+        let v3 = unsafe { fingerprint::method_def_v3(def) };
+        // SAFETY: per the caller.
+        self.check_original(what.to_owned(), v3, || Ok(unsafe { fingerprint::method_def(def) }), expected)
     }
 
     /// The canonical code fingerprint of `obj` (function, code object, or C function):
     /// for targets that check fingerprints themselves.
     pub fn fingerprint_of(&self, obj: &Bound<'_, PyAny>) -> Result<String, Refusal> {
+        if self.arming {
+            // No recorded fingerprint is empty: callers comparing it fall through to
+            // `fingerprint_code`, which accepts while arming.
+            return Ok(String::new());
+        }
         Ok(fingerprint::any(obj)?)
     }
 
@@ -243,6 +346,9 @@ impl<'py> Prepare<'py> {
     /// dependencies (fingerprints of common helpers, layouts, self-tests) once. Declarations
     /// (sites, pins) must still be made by each target.
     pub fn memo(&mut self, key: &'static str, f: impl FnOnce(&mut Self) -> Result<(), Refusal>) -> Result<(), Refusal> {
+        if self.arming {
+            return Ok(());
+        }
         if let Some(r) = memo_get(key) {
             return r;
         }
@@ -254,6 +360,9 @@ impl<'py> Prepare<'py> {
     /// Run a behavioural self-test (kernel vs original on probe inputs; the `Original`s of
     /// sites declared so far are already set). `Ok(false)` or an error refuses.
     pub fn self_test(&mut self, what: &str, f: impl FnOnce(Python<'py>) -> PyResult<bool>) -> Result<(), Refusal> {
+        if self.arming {
+            return Ok(());
+        }
         match f(self.py) {
             Ok(true) => Ok(()),
             Ok(false) => Err(Refusal::with(Category::Selftest, format!("self-test failed: {what}"))),
@@ -266,15 +375,19 @@ impl<'py> Prepare<'py> {
     // -----------------------------------------------------------------------------------
 
     fn push_site<F: FnPtr>(&mut self, site: Site, original: &'static Original<F>) -> Result<(), Refusal> {
+        self.push_site_ref(&site, original)?;
+        self.sites.push(SiteDecl { site, arity: F::ARITY as u8 });
+        Ok(())
+    }
+
+    fn push_site_ref<F: FnPtr>(&mut self, site: &Site, original: &'static Original<F>) -> Result<(), Refusal> {
         if self.sites.iter().any(|d| d.site.addr == site.addr && d.site.kind == site.kind) {
             return Err(Refusal::from(format!("{}: site declared twice", site.name)));
         }
         if site.original == 0 {
             return Err(Refusal::from(format!("{}: empty entry point", site.name)));
         }
-        original.capture(site.original).map_err(|r| Refusal::with(r.category(), format!("{}: {r}", site.name)))?;
-        self.sites.push(SiteDecl { site });
-        Ok(())
+        original.capture(site.original).map_err(|r| Refusal::with(r.category(), format!("{}: {r}", site.name)))
     }
 
     /// Declare the `ml_meth` of the `PyMethodDef` behind `obj` (method descriptor,
@@ -333,6 +446,7 @@ impl<'py> Prepare<'py> {
             original: current,
             kernel: kernel.addr(),
             installed: false,
+            keep: 0,
         };
         self.push_site(site, original)
     }
@@ -384,9 +498,139 @@ impl<'py> Prepare<'py> {
                 ));
             }
         }
-        let site =
-            Site { name: what, kind: Kind::Slot, addr, original: current, kernel: kernel.addr(), installed: false };
+        let site = Site {
+            name: what,
+            kind: Kind::Slot,
+            addr,
+            original: current,
+            kernel: kernel.addr(),
+            installed: false,
+            keep: 0,
+        };
         self.push_site(site, original)
+    }
+
+    /// Declare a type slot of a *heap type defined in Python* (stdlib classes such as
+    /// `enum.property` (`tp_descr_get`) or `enum.EnumType` (`tp_call`)), whose slot holds
+    /// CPython's `slot_*` dispatcher because the class defines the dunder as a Python
+    /// function. Refuses unless: `ty` is a mutable heap type; its own `__dict__` defines the
+    /// slot's dunder as an exact Python function; the slot is set; and, when `same_as` is
+    /// given, the slot holds the same function as `same_as`'s (an independent class defining
+    /// the same dunder in Python: proof that the original is CPython's dispatcher). The type
+    /// is kept alive while the site exists.
+    ///
+    /// The kernel must send every receiver whose type is not exactly `ty` to the original:
+    /// a subclass created while the kernel is installed inherits the kernel pointer
+    /// (`inherit_slots`) and keeps it after `disable()` (the kernel stays callable and the
+    /// original dispatches correctly for any subclass). Assigning the dunder later (on `ty`
+    /// or a base) makes CPython rewrite the slot: the original behaviour runs from then on,
+    /// `status()` shows `"suspended": "conflict"`, and `disable()` leaves CPython's pointer
+    /// in place; the next `enable()` after a `disable()` validates afresh. Nothing in the
+    /// specializer compares these pointers (generic `LOAD_ATTR` reads `tp_descr_get` per
+    /// call for heap-type descriptors; calls of instances of non-`type` metaclasses go
+    /// through `tp_call`).
+    pub fn heap_slot<F: FnPtr>(
+        &mut self,
+        ty: &Bound<'_, PyType>,
+        slot: SlotName,
+        kernel: F,
+        original: &'static Original<F>,
+        same_as: Option<&Bound<'_, PyType>>,
+    ) -> Result<(), Refusal> {
+        let tp = ty.as_type_ptr();
+        let what = format!("{}.{}", ty.qualname().map(|q| q.to_string()).unwrap_or_default(), slot.c_name());
+        if slot.arity() != F::ARITY {
+            return Err(Refusal::with(
+                Category::Conflict,
+                format!("{what}: slot takes {} arguments, kernel takes {}", slot.arity(), F::ARITY),
+            ));
+        }
+        // SAFETY: a ready type object.
+        let flags = unsafe { ffi::PyType_GetFlags(tp) };
+        if flags & ffi::Py_TPFLAGS_HEAPTYPE == 0 || flags & ffi::Py_TPFLAGS_IMMUTABLETYPE != 0 {
+            return Err(Refusal::with(Category::Conflict, format!("{what}: not a mutable heap type")));
+        }
+        let dunder =
+            slot.dunder().ok_or_else(|| Refusal::with(Category::Conflict, format!("{what}: slot has no dunder")))?;
+        let defined = self.get_opt(&type_dict(ty)?, dunder)?;
+        // SAFETY: type check of a live object.
+        if !defined.is_some_and(|f| unsafe { ffi::Py_TYPE(f.as_ptr()) } == &raw mut ffi::PyFunction_Type) {
+            return Err(Refusal::with(Category::Conflict, format!("{what}: {dunder} is not a Python function")));
+        }
+        // SAFETY: a ready type.
+        let addr = unsafe { site::slot_addr(tp, slot) }
+            .ok_or_else(|| Refusal::with(Category::Layout, format!("{what}: slot is empty")))?;
+        // SAFETY: aligned pointer-sized field of a live type.
+        let current =
+            unsafe { (*(addr as *const std::sync::atomic::AtomicUsize)).load(std::sync::atomic::Ordering::Acquire) };
+        if let Some(r) = same_as {
+            // SAFETY: a ready type.
+            let ra = unsafe { site::slot_addr(r.as_type_ptr(), slot) };
+            // SAFETY: aligned pointer-sized field of a live type.
+            let rv = ra.map(|a| unsafe {
+                (*(a as *const std::sync::atomic::AtomicUsize)).load(std::sync::atomic::Ordering::Acquire)
+            });
+            if rv != Some(current) {
+                return Err(Refusal::with(
+                    Category::Conflict,
+                    format!("{what}: slot differs from the reference class's"),
+                ));
+            }
+        }
+        let site = Site {
+            name: what,
+            kind: Kind::Slot,
+            addr,
+            original: current,
+            kernel: kernel.addr(),
+            installed: false,
+            // SAFETY: an incref of a live type (released with the site).
+            keep: unsafe { ffi::Py_NewRef(ty.as_ptr()) } as usize,
+        };
+        if let Err(r) = self.push_site_ref(&site, original) {
+            site.release();
+            return Err(r);
+        }
+        self.sites.push(SiteDecl { site, arity: F::ARITY as u8 });
+        Ok(())
+    }
+
+    /// Declare an entry of the interpreter's opcode handler table (the `interp` tier): `cell`
+    /// is the address of the pointer-sized table entry, `expected` the handler the caller
+    /// verified it must hold (refuses with `conflict` when it holds anything else), `kernel`
+    /// the replacement. Installed and restored by compare-and-swap, like a slot; reported as
+    /// kind `"opcode-handler"`. The caller keeps its own record of `expected` (the kernel's
+    /// fallback) and is responsible for the handler ABI.
+    pub fn opcode_handler(&mut self, name: &str, cell: usize, expected: usize, kernel: usize) -> Result<(), Refusal> {
+        if cell == 0 || !cell.is_multiple_of(std::mem::align_of::<usize>()) {
+            return Err(Refusal::with(Category::Layout, format!("{name}: misaligned handler table entry")));
+        }
+        if !crate::patch::writable(cell, size_of::<usize>()) {
+            return Err(Refusal::with(Category::Layout, format!("{name}: handler table is read-only")));
+        }
+        if expected == 0 || kernel == 0 {
+            return Err(Refusal::from(format!("{name}: empty handler")));
+        }
+        // SAFETY: aligned, writable pointer-sized cell (checked above).
+        let current =
+            unsafe { (*(cell as *const std::sync::atomic::AtomicUsize)).load(std::sync::atomic::Ordering::Acquire) };
+        if current != expected {
+            return Err(Refusal::with(Category::Conflict, format!("{name}: handler differs from the verified one")));
+        }
+        if self.sites.iter().any(|d| d.site.addr == cell) {
+            return Err(Refusal::from(format!("{name}: site declared twice")));
+        }
+        let site = Site {
+            name: name.to_owned(),
+            kind: Kind::OpcodeHandler,
+            addr: cell,
+            original: current,
+            kernel,
+            installed: false,
+            keep: 0,
+        };
+        self.sites.push(SiteDecl { site, arity: 0 });
+        Ok(())
     }
 
     /// Declare the vectorcall of an exact pure-Python function (found in a module or class
@@ -409,10 +653,10 @@ impl<'py> Prepare<'py> {
             unsafe { Bound::from_borrowed_ptr(self.py, (*func.as_ptr().cast::<ffi::PyFunctionObject>()).func_code) };
         // The local-monitoring layout the tools guard reads: calibrated on the first
         // vectorcall site of the process (a probe code object; C calls only).
-        if !version::calibrate_monitoring(self.py) {
+        if !self.arming && !version::calibrate_monitoring(self.py) {
             return Err(Refusal::with(Category::Layout, format!("{}: local monitoring layout not calibrated", what())));
         }
-        if !version::code_layout_cached(&code)? {
+        if !self.arming && !version::code_layout_cached(&code)? {
             return Err(Refusal::with(Category::Layout, format!("{}: PyCodeObject layout differs", what())));
         }
         let site = Site::vectorcall(func, kernel as usize).map_err(|e| Refusal::from(format!("{}: {e}", what())))?;
@@ -433,7 +677,7 @@ impl<'py> Prepare<'py> {
             site.release();
             return Err(Refusal::from(format!("{}: site declared twice", what())));
         }
-        self.sites.push(SiteDecl { site });
+        self.sites.push(SiteDecl { site, arity: 4 });
         Ok(())
     }
 
@@ -593,7 +837,7 @@ impl<'py> Prepare<'py> {
                 key: key.clone_ref(self.py),
                 expected: v.as_ref().map(|v| v.clone().unbind()),
                 flag,
-                ty: Some(ty.clone().unbind()),
+                ty: Some((ty.clone().unbind(), mro.clone().into_any().unbind())),
             });
             if let Some(v) = v {
                 return Ok(v);
@@ -610,12 +854,31 @@ impl<'py> Prepare<'py> {
     /// Every key must be an exact `str`; at most 64 simultaneous deviations are tracked
     /// (beyond that the pin breaks).
     pub fn pin_dict(&mut self, dict: &Bound<'_, PyDict>, flag: &'static DepFlag) -> Result<&'static DepFlag, Refusal> {
-        let mut snap = Vec::with_capacity(dict.len());
-        for (k, v) in dict.iter() {
-            let k =
-                k.cast_into_exact::<PyString>().map_err(|_| Refusal::with(Category::Deps, "pin_dict: non-str key"))?;
-            snap.push((k.unbind(), v.unbind()));
+        if self.arming {
+            return Ok(flag);
         }
+        let py = self.py;
+        // One consistent view under the dict's critical section (`PyDict_Next`; another
+        // thread may be mutating the dict: never iterate it piecewise).
+        let snap = pyo3::sync::critical_section::with_critical_section(dict.as_any(), || {
+            let mut snap: Vec<(Py<PyString>, Py<PyAny>)> = Vec::with_capacity(dict.len());
+            let mut pos: ffi::Py_ssize_t = 0;
+            let mut k: *mut ffi::PyObject = std::ptr::null_mut();
+            let mut v: *mut ffi::PyObject = std::ptr::null_mut();
+            // SAFETY: attached thread; borrowed references valid under the section; increfs.
+            unsafe {
+                while ffi::PyDict_Next(dict.as_ptr(), &mut pos, &mut k, &mut v) != 0 {
+                    if ffi::PyUnicode_CheckExact(k) == 0 {
+                        return None;
+                    }
+                    let k = Bound::from_borrowed_ptr(py, k).cast_into_unchecked::<PyString>().unbind();
+                    snap.push((k, Bound::from_borrowed_ptr(py, v).unbind()));
+                }
+            }
+            Some(snap)
+        });
+        // Dropped outside the section when refused.
+        let snap = snap.ok_or_else(|| Refusal::with(Category::Deps, "pin_dict: non-str key"))?;
         self.pins.push(PendingPin::Dict { dict: dict.clone().unbind(), snap, flag });
         Ok(flag)
     }
@@ -629,7 +892,7 @@ impl<'py> Prepare<'py> {
     /// The caller is responsible for the signature `F` (validate per minor version).
     pub fn symbol<F: FnPtr>(&mut self, name: &CStr, cell: &'static Original<F>) -> Result<F, Refusal> {
         let addr = dlsym_default(name);
-        if addr == 0 && !cfg!(unix) {
+        if addr == 0 && !cfg!(any(unix, windows)) {
             return Err(Refusal::with(
                 Category::Platform,
                 format!("symbol {}: no runtime symbol lookup on this platform", name.to_string_lossy()),
@@ -646,6 +909,11 @@ impl<'py> Prepare<'py> {
     }
 }
 
+/// An exported symbol of the running interpreter, or 0.
+pub(crate) fn lookup_symbol(name: &CStr) -> usize {
+    dlsym_default(name)
+}
+
 #[cfg(unix)]
 fn dlsym_default(name: &CStr) -> usize {
     unsafe extern "C" {
@@ -659,7 +927,35 @@ fn dlsym_default(name: &CStr) -> usize {
     unsafe { dlsym(handle, name.as_ptr()) as usize }
 }
 
-#[cfg(not(unix))]
+/// Windows: `GetProcAddress` on the Python DLL. Its handle is `sys.dllhandle` (set by
+/// CPython's `sysmodule.c` on Windows from `PyWin_DLLhModule`; a borrowed lookup in the `sys`
+/// dict, no import and no Python code: safe inside the `sys.modules` watcher). Every
+/// `PyAPI_FUNC` is `__declspec(dllexport)` (Include/exports.h), so internal-but-exported
+/// symbols resolve as `dlsym` resolves them on Unix. No `dllhandle` (an interpreter linked
+/// statically into its host): 0, the target refuses (`symbol`).
+#[cfg(windows)]
+fn dlsym_default(name: &CStr) -> usize {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetProcAddress(module: *mut std::ffi::c_void, name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    }
+    // SAFETY: attached thread (prepare); `PySys_GetObject` returns a borrowed reference or
+    // NULL without setting an error; GetProcAddress is thread-safe.
+    unsafe {
+        let h = ffi::PySys_GetObject(c"dllhandle".as_ptr());
+        if h.is_null() {
+            return 0;
+        }
+        let module = ffi::PyLong_AsVoidPtr(h);
+        if module.is_null() {
+            ffi::PyErr_Clear();
+            return 0;
+        }
+        GetProcAddress(module, name.as_ptr()) as usize
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn dlsym_default(_name: &CStr) -> usize {
     0
 }
@@ -671,12 +967,23 @@ static KEYS: std::sync::Mutex<Option<std::collections::HashMap<String, Py<PyStri
 
 /// The interned `str` for `key`, created once per process.
 pub(crate) fn interned<'py>(py: Python<'py>, key: &str) -> Bound<'py, PyString> {
+    {
+        let g = KEYS.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(k) = g.as_ref().and_then(|m| m.get(key)) {
+            // An incref only (the cache keeps its own reference).
+            return k.bind(py).clone();
+        }
+    }
+    // Interning takes the interpreter's interned-strings lock (free-threaded builds), which
+    // may park and detach: never while holding `KEYS` (a thread blocked on a plain mutex
+    // while attached would hold up a stop-the-world).
+    let k = PyString::intern(py, key);
     let mut g = KEYS.lock().unwrap_or_else(|p| p.into_inner());
     let m = g.get_or_insert_with(Default::default);
-    if let Some(k) = m.get(key) {
-        return k.bind(py).clone();
+    if let Some(prev) = m.get(key) {
+        // Another thread won the race: the same interned object.
+        return prev.bind(py).clone();
     }
-    let k = PyString::intern(py, key);
     m.insert(key.to_owned(), k.clone().unbind());
     k
 }
@@ -813,6 +1120,12 @@ unsafe extern "C" {
         funcname: *const std::ffi::c_char,
         firstlineno: std::ffi::c_int,
     ) -> *mut ffi::PyObject;
+}
+
+/// `Type.method` / `module.function` of a C original (the id of C originals in the
+/// recorded fingerprint data).
+pub(crate) fn c_name_of(obj: &Bound<'_, PyAny>, def: *mut ffi::PyMethodDef) -> String {
+    c_name(obj, def)
 }
 
 /// `Type.method` / `module.function` of a C original, without Python calls.

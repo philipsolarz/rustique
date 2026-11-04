@@ -46,6 +46,15 @@ pub struct TargetSpec {
     pub versions: &'static [(u8, u8)],
     /// Validated on free-threaded builds too.
     pub free_threaded: bool,
+    /// Validate at install, never arm (first-call validation, docs/ACCELERATION.md §3.2):
+    /// for targets that must act from install on although their sites fire rarely (a
+    /// policy such as `gc.adaptive`). Default `false`.
+    pub eager: bool,
+    /// Opt-in tier (`Some("interp")`, `Some("gc")`): not in the default set; installed only
+    /// when the tier is requested (`RUSTIQUE_TIERS=interp,gc`, `rustique.enable(tiers=[...])`),
+    /// and then like any target (`only`/`exclude` still apply; a tier name works in both).
+    /// Default `None`.
+    pub opt_in: Option<&'static str>,
     /// Hit / fallback counters of the target's kernels.
     pub counters: &'static Counters,
     /// Validate and declare the sites.
@@ -70,6 +79,14 @@ pub struct TargetSpec {
     /// credit 2, debit 1). Defaults 4 / 1 (20%).
     pub hit_credit: u8,
     pub fallback_debit: u8,
+    /// Credits v2 (docs/atlas/w2-floors.md §3): the extra debit of a [`Reason::Abandon`]
+    /// fallback (a restart after kernel work, which is wasted), on top of `fallback_debit`;
+    /// set it from the work an abandoned call wastes relative to the fallback penalty
+    /// (`continue` and root `deopt` restarts waste nothing). The decision window
+    /// ([`stats::WINDOW`](super::stats::WINDOW)) applies to every target. Default 1.
+    ///
+    /// [`Reason::Abandon`]: super::stats::Reason::Abandon
+    pub abandon_debit: u8,
     /// Called once at interpreter exit (the registry's atexit hook; once per distinct
     /// function when several targets share one), after every site was restored, every pin
     /// dropped and every dependency flag cleared: drop the target's own static references
@@ -79,6 +96,21 @@ pub struct TargetSpec {
     /// must fall back (its flags are false); a static it reads without a flag check must
     /// stay valid or be checked for null. Default `None`.
     pub release: Option<fn(Python<'_>)>,
+    /// Called each time the target is restored after having been installed (`disable()`,
+    /// the exit hook, a refusal after install) and when it is suspended, after its sites
+    /// were restored (and, except for a suspension, its pins dropped), on an attached
+    /// thread, outside the pin tables lock: restore state the target changed that is not a
+    /// site (calibrated internal state, routed slots, caches). A suspension may be decided
+    /// inside a call (the falling-back kernel performs it): the hook must run no Python
+    /// code and release no reference that could. Must tolerate running more than once; a
+    /// resumed target gets `on_install` again. Default `None`.
+    pub on_disable: Option<fn(Python<'_>)>,
+    /// Called after the target was installed (at `enable()`, or after a lazy activation on
+    /// the importing path), outside the registry lock and every watcher, on an attached
+    /// thread, once per install: e.g. adopt objects created before `enable()` with
+    /// `accel::dynamic::install`. The target may have been disabled again meanwhile (the
+    /// hook is skipped then). Default `None`.
+    pub on_install: Option<fn(Python<'_>)>,
 }
 
 /// Declarations shared by several targets: dependency pins (with the group's own
@@ -108,6 +140,8 @@ impl TargetSpec {
         module: None,
         versions: &[],
         free_threaded: false,
+        eager: false,
+        opt_in: None,
         counters: &NO_COUNTERS,
         prepare: no_prepare,
         jit_safe: true,
@@ -115,7 +149,10 @@ impl TargetSpec {
         shared: None,
         hit_credit: crate::accel::stats::HIT_CREDIT,
         fallback_debit: crate::accel::stats::FALLBACK_DEBIT,
+        abandon_debit: crate::accel::stats::FALLBACK_DEBIT,
         release: None,
+        on_disable: None,
+        on_install: None,
     };
 
     /// Hidden targets (group starting with `_`): only selected when named explicitly.
@@ -123,6 +160,11 @@ impl TargetSpec {
         self.group.starts_with('_')
     }
 }
+
+/// Opt-in tiers known to this build even when none of their targets is compiled in
+/// (`enable(tiers=["interp"])` must not raise where the tier is unavailable: its targets
+/// would refuse anyway).
+pub const KNOWN_TIERS: &[&str] = &["interp", "gc"];
 
 /// Machine-readable class of a refusal (`status()["targets"][i]["refusal"]`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +190,14 @@ pub enum Category {
     Symbol,
     /// A dependency is missing or not the validated object.
     Deps,
+    /// The running CPython patch release was not recorded (validated) for this build of
+    /// Rustique (`RUSTIQUE_UNVALIDATED_PATCH=1` installs the targets whose fingerprints
+    /// match a recorded release, reported "unvalidated").
+    UnvalidatedPatch,
+    /// The target is not needed here (what it fixes or speeds up does not exist on this
+    /// build, e.g. a free-threaded-only contention fix on a GIL build): not a failure;
+    /// reported apart from refusals.
+    NotNeeded,
     /// Anything else (including errors raised while preparing).
     Other,
 }
@@ -165,6 +215,8 @@ impl Category {
             Category::Selftest => "selftest",
             Category::Symbol => "symbol",
             Category::Deps => "deps",
+            Category::UnvalidatedPatch => "unvalidated-patch",
+            Category::NotNeeded => "not-needed",
             Category::Other => "other",
         }
     }
@@ -182,6 +234,10 @@ pub struct Refusal {
 impl Refusal {
     pub fn new(reason: impl Into<Cow<'static, str>>) -> Self {
         Refusal { reason: reason.into(), category: Category::Other }
+    }
+    /// Not needed on this build (category `not-needed`, reported apart from refusals).
+    pub fn not_needed(reason: impl Into<Cow<'static, str>>) -> Self {
+        Refusal { reason: reason.into(), category: Category::NotNeeded }
     }
     pub fn with(category: Category, reason: impl Into<Cow<'static, str>>) -> Self {
         Refusal { reason: reason.into(), category }

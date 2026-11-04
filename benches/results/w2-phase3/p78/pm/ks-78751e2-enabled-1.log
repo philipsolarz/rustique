@@ -1,0 +1,4 @@
+3.15.1t  en Pattern.match (compiled) local       114 ns/call  eff1=1.00  eff2=0.56  eff4=0.29  eff8=0.13  cpu ns/call 114 201 369 872
+3.15.1t  en Pattern.match (compiled) shared      125 ns/call  eff1=1.00  eff2=0.51  eff4=0.31  eff8=0.14  cpu ns/call 125 243 401 872
+3.15.1t  en re.match (module cache) local       183 ns/call  eff1=1.00  eff2=0.50  eff4=0.25  eff8=0.12  cpu ns/call 183 362 617 1343
+3.15.1t  en re.match (module cache) shared      183 ns/call  eff1=1.00  eff2=0.51  eff4=0.25  eff8=0.12  cpu ns/call 183 360 733 1332

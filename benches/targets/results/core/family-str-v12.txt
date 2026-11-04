@@ -1,0 +1,26 @@
+sorted ustr n=20 asc                                            5121      3475  0.679
+sorted ustr n=20 desc                                           5639      3559  0.631
+sorted ustr n=20 rand                                          13804      6283  0.455
+sorted ustr n=100 asc                                          21855     13371  0.612
+sorted ustr n=100 desc                                         24453     13615  0.557
+sorted ustr n=100 rand                                         98614     30736  0.312
+sorted ustr n=1000 asc                                        206861    132248  0.639
+sorted ustr n=1000 desc                                       212888    134251  0.631
+sorted ustr n=1000 rand                                      1524441    371667  0.244
+sorted lstr n=20 asc                                            3652      3547  0.971
+sorted lstr n=20 desc                                           4170      3631  0.871
+sorted lstr n=20 rand                                           8167      5933  0.726
+sorted lstr n=100 asc                                          14274     14083  0.987
+sorted lstr n=100 desc                                         16872     14327  0.849
+sorted lstr n=100 rand                                         56918     30992  0.545
+sorted lstr n=1000 asc                                        130574    132175  1.012
+sorted lstr n=1000 desc                                       136601    134178  0.982
+sorted lstr n=1000 rand                                       852861    373753  0.438
+sorted str n=64 asc                                             9436      7015  0.743
+sorted str n=64 desc                                           11098      7165  0.646
+sorted str n=64 rand                                           33566     16094  0.479
+sorted str n=64 halves                                         11420      8850  0.775
+sorted str n=64 nearly                                         15273      9413  0.616
+sorted str n=64 dups                                           31148     28821  0.925
+
+[exited with code 0]

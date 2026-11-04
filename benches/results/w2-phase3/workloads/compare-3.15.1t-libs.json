@@ -1,0 +1,47 @@
+{
+ "python": "3.15.1 free-threading build (main, Oct 21 2026, 17:49:09) [Clang 23.1.3 ]",
+ "rows": [
+  {
+   "workload": "libs/attrs_cattrs",
+   "plain_s": 0.8754229379992466,
+   "enabled_s": 0.7674934359965846,
+   "ratio": 0.8767115901151371,
+   "same_result": true
+  },
+  {
+   "workload": "libs/boto3_client",
+   "plain_s": 1.6472974060015986,
+   "enabled_s": 1.5606440330011537,
+   "ratio": 0.9473966433233364,
+   "same_result": true
+  },
+  {
+   "workload": "libs/bs4_scrape",
+   "plain_s": 1.1734307770020678,
+   "enabled_s": 1.162381332993391,
+   "ratio": 0.9905836422350311,
+   "same_result": true
+  },
+  {
+   "workload": "libs/jsonschema_validate",
+   "plain_s": 1.477447420998942,
+   "enabled_s": 1.4507251959948917,
+   "ratio": 0.9819132480626737,
+   "same_result": true
+  },
+  {
+   "workload": "libs/pydantic_payloads",
+   "plain_s": 0.7452360530005535,
+   "enabled_s": 0.7412809239976923,
+   "ratio": 0.9946927835993218,
+   "same_result": true
+  },
+  {
+   "workload": "libs/yaml_config",
+   "plain_s": 1.1239316189967212,
+   "enabled_s": 1.1199956540003768,
+   "ratio": 0.9964980387331234,
+   "same_result": true
+  }
+ ]
+}

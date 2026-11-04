@@ -1,9 +1,86 @@
-STATUS: wave 1, group `logging` (branch `ws/logging`), 2026-11-01. Validated on CPython 3.14.9,
-3.14.9t, 3.15.1, 3.15.1t. Code: `crates/rustique-py/src/targets/logging/`,
+STATUS: wave 1, group `logging` (branch `ws/logging`), 2026-11-01; wave 2 (workstream `text`,
+2026-11-02: §0). Validated on CPython 3.14.9, 3.14.9t, 3.15.1, 3.15.1t. Code: `crates/rustique-py/src/targets/logging/`,
 `crates/rustique-core/src/logging/`. Tests: `tests/targets/test_logging*.py`. Benchmarks:
 `benches/targets/logging_cg.py`, `benches/targets/logging_suite_stats.py`.
 
 # Group `logging`: the default record path, piecewise
+
+## 0. Wave 2 (2026-11-02)
+
+With wave 1 on, logging was still 53% of `web/logging_service`, 21% of `threads/shared_cache`
+and 2–10% of the services (w2-attribution §6). What changed (callgrind, 3.15.1,
+`benches/targets/logging_cg.py`, Ir per statement; workloads: `benches/targets/text_wl.py`,
+user-space instructions per steady-state `run()`, all digests identical):
+
+| change | mechanism | cell before → after (CPython) |
+|---|---|---|
+| `findCaller` line numbers | the wave-1 memo hashed only the low bits of `lasti` (unrolled call sites thrashed it: 79% of the call was `_PyCode_CheckLineNumber`) and was off on free-threaded builds; now a per-thread table keyed by `(code, co_version, lasti)` with a multiplicative hash, every build | 4,027 → 868 (12,491) |
+| `LogRecord.__init__` stores | the 21 attributes go straight into a fresh record's inline values (slot + insertion-order byte, as `store_instance_attr_lock_held` does when there is no `__dict__`), GIL builds; verified once per process against `PyObject_GenericSetAttr` on the first real record (slots, order array, managed-dict offset), otherwise off | 7,574 → 5,037 (19,673) |
+| `Formatter.format` checks | instance-shadowing checks (`usesTime`/`formatTime`/`formatMessage`/`getMessage`/the style's methods) read the inline values instead of `_PyObject_GetMethod`; class attributes cached per type version (GIL builds); `usesTime` answered once per format plan; record attributes read through the validated class; no buffer zeroing | 9,674 → 7,704 (23,760) |
+| format-plan cache | the global `parking_lot` mutex (`FMT_CACHE`, the 8-thread cliff: CPU ×3.25) becomes an insert-only lock-free table keyed by the `_fmt` object (64 entries, kept for the process; a full table parses per call) | 8-thread CPU per call 1.01 → 0.45 of CPython's |
+| C `Decimal` arguments | an exact `decimal.Decimal` of a loaded `_decimal` (immutable C type; `str`/`repr`/`int`/`float` are C, reading the thread's decimal context as CPython's own `str()` does) is a plain value for `%`-formatting and the `Mapping` answer of `LogRecord`; `shared_cache`'s `Formatter.format` had been suspended by them | `info('total %s', Decimal)` 69.1k → 23.8k |
+| `Logger.level` enabled calls | an enabled call costs the kernel's checks + the vectorcall fallback (~+800 Ir), a disabled one saves ~500: enabled calls now debit the score (credit 5 / debit 7), so a program logging mostly enabled records (services) suspends the target and pays nothing; GIL builds only (8 threads, below) | services: 0 overhead after 64 calls |
+| `Handler.handle` (new target) | `StreamHandler` → exact `io.StringIO`, no filters, exact `_thread.RLock`, a formatter `Formatter.format`'s kernel handles: filter/lock/emit/format/write/flush/unlock natively (§0.1) | `_HS.handle(rec)` 29.6k → 10.1k; a record to StringIO 70.7k → 23.1k |
+
+Records end to end (StreamHandler to StringIO): `info` with `%(asctime)s …` **0.327** (wave 1
+0.453), `%(message)s` 0.348, `LoggerAdapter` 0.402, a file stream 0.408. Fallback cells
+(steady/alternating) ≤ 1.016; the `Handler.handle` fallback for a file stream is 0.533
+steady (the other targets still run) and 0.456 alternating with a StringIO handler.
+
+Workloads (3.15.1, all groups on, ratio of instructions, wave 1 → wave 2):
+`web/logging_service` 0.737 → **0.709**, `services/job_worker` 0.638 → **0.612**,
+`threads/shared_cache` 0.614 → **0.532**.
+
+**8 threads** (3.15.1t, `benches/targets/text_scaling.py -t 1,8`, CPU time per call at 8
+threads, enabled ÷ CPython, local / shared inputs; a loaded shared box, so ±0.2):
+`Formatter.format` 0.56 / 0.51 (wave 1: 1.010, the `FMT_CACHE` mutex), `LogRecord` 0.45 /
+0.38, `findCaller` 0.21 / 0.27, a record to StringIO (with `Handler.handle`) 0.53 / 0.53, a
+Decimal argument 0.63 / 0.43. **`Logger.level` is not installed on free-threaded builds**:
+its `isEnabledFor` shadowing check (`_PyObject_GetMethod`) takes a reference to the shared
+function object on every call, which CPython's specialized call avoids, and a disabled
+`debug()` cost 2.1–3.2× CPython's CPU per call at 8 threads with per-thread loggers (three
+runs), for ~200 Ir saved at one thread. Every installed logging kernel meets the ≤ 1.05
+rule.
+
+**Install** (`benches/targets/logging_install_cost.py`, 3.15.1): `import logging` with the
+group pending 27.65M vs 27.92M plain (accel's deferred activation; within the 5% budget);
+`_accel.enable(['logging'])` with `logging` imported 0.64M cold / 0.22M warm (wave 1:
+0.51M / 0.14M): the sixth target adds five fingerprinted functions and eight captured
+objects. The warm per-group cost stays the documented wave-1 overage (framework-side
+lever: validate on first call).
+
+### 0.1 `logging.Handler.handle`
+
+Exact subset (anything else runs CPython's `Handler.handle`, before anything observable):
+the handler's class resolves `filter`/`emit`/`format`/`flush` to `Filterer.filter`,
+`StreamHandler.emit`, `Handler.format`, `StreamHandler.flush` (fingerprinted; no instance
+shadows them); `filters` an exact empty list; `lock` an exact `_thread.RLock`; `stream` an
+exact `_io.StringIO` with no instance `__dict__`; `terminator` an exact str; the formatter
+(or `_defaultFormatter`, pinned) a class whose `format` is `Formatter.format` and whose
+instances are always true, and the record one `Formatter.format`'s kernel formats natively
+(`isinstance(record, LogRecord)` with `LogRecord` pinned and of metaclass `type`).
+
+Order of effects, as CPython's: the lock is taken with `acquire(False)` (never waits, so no
+signal handler can run below the kernel; a lock held by another thread falls back and
+CPython blocks in its own frames), the record's `message`/`asctime` are stored, the line is
+written with `StringIO.write`, `flush` re-enters the lock and calls `IOBase.flush`, both
+locks are released, the record is returned. A format the kernel declines after the lock
+was taken, or a failed `write` (a closed stream: StringIO checks before writing), releases
+the lock and restarts in CPython's original, which repeats the stores with equal values and
+reports the error through `handleError` from its own frames. `flush` can only fail if
+another thread calls `IOBase.close(stream)` concurrently (there was no instance `__dict__`
+holding `__IOBase_closed`): that close is ordered after the flush.
+
+**Not accelerated:** file and console streams (`TextIOWrapper`): an `OSError` in their
+`write`/`flush` can happen after bytes reached the OS, and `handleError` prints a traceback
+through `emit`'s and `flush`'s frames (and walks `tb_frame.f_back`), which a kernel cannot
+reproduce; handlers with filters (user code); `Logger.handle`/`callHandlers` (they call
+every handler's `handle`, which may be user code). In `logging_service` and `job_worker`
+every handler writes to a file or has a user filter/formatter: `Handler.handle` falls back
+there and suspends after 64 calls. The remaining logging time there is the flush syscall per
+record (CPython's semantics), `os.getpid()` (a syscall per record in CPython too) and the
+user filters/formatters (ruling 15).
+
 
 `logging` is in 40% of popular packages and owns 66% of the `web/logging_service` workload
 (`docs/atlas/workloads-web.md`). Its hook surface is the widest of wave 1 (record
@@ -21,6 +98,7 @@ no Python code runs below the kernel.
 | `logging.LogRecord.__init__` | `LogRecord.__init__` | every record attribute, stored in CPython's order |
 | `logging.Formatter.formatTime` | `Formatter.formatTime` | `converter(created)` + `strftime` + `default_msec_format` |
 | `logging.Formatter.format` | `Formatter.format` | `getMessage()` + `usesTime()` + `formatTime()` + `PercentStyle.format()` |
+| `logging.Handler.handle` (wave 2) | `Handler.handle` | filter + lock + emit + format + write + flush for a `StreamHandler` to `io.StringIO` (§0.1) |
 
 All five are module targets (`module: "logging"`: installed when `logging` is imported,
 lazily), validated on 3.14 and 3.15 including free-threaded builds, `jit_safe`.
@@ -191,6 +269,12 @@ flags, width and (for `%s`) precision, Latin-1 text — byte-for-byte
 - `func_version` of the patched functions (the specializer stops inlining calls to them;
   restored on `disable()`), and the kernels' own caches (validated types, parsed format
   strings, line numbers, ABC answers).
+- Wave 2: the format-plan table (≤ 64 `_fmt` strings kept for the process with their key
+  strings), the per-thread line-number table, the remembered `_decimal.Decimal` types, the
+  per-type cached class attributes and shared-keys indices. The first record of a process
+  gets its `__dict__` materialized once (verification of the inline-value stores: an
+  allocation, not a value). `Handler.handle` takes the handler's lock with `acquire(False)`
+  where CPython's `with` uses `acquire()` (same lock state; it never waits).
 - `PyFrame_GetLineNumber` is skipped on a line-number memo hit (for a frame whose
   `f_lineno` field is 0 it has no side effect); `Task.get_name()` is called when CPython
   calls it (it caches the generated `Task-N` name, as in CPython).

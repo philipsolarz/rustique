@@ -1,0 +1,858 @@
+Python 3.16.0a1 (main, Oct 26 2026, 14:10:58) [Clang 23.1.3 ]
+== wheel rustique-0.3.0-cp315-cp315-manylinux_2_34_x86_64.whl
+Using Python 3.16.0a1 environment at: sv/3.16.0a1
+error: No solution found when resolving dependencies
+  cause: Because only rustique==0.3.0 is available and rustique==0.3.0 has no wheels with a matching Python version tag (e.g., `cp316`), we can conclude that all versions of rustique cannot be used.
+         And because you require rustique, we can conclude that your requirements are unsatisfiable.
+== pip from the source tree (what uv does on a 3.16 pre-release: the sdist)
+Using Python 3.16.0a1 environment at: /work/w2p3/sv/3.16.0a1
+Resolved 1 package in 281ms
+   Building rustique @ file:///work/w2p3/src
+      Built rustique @ file:///work/w2p3/src
+Prepared 1 package in 34.05s
+Installed 1 package in 0.70ms
+ + rustique==0.3.0 (from file:///work/w2p3/src)
+{
+ "python": "3.16.0a1 (main, Oct 26 2026, 14:10:58) [Clang 23.1.3 ]",
+ "executable": "/work/w2p3/sv/3.16.0a1/bin/python",
+ "free_threaded": false,
+ "rustique": "0.3.0",
+ "extension": "/work/w2p3/sv/3.16.0a1/lib/python3.16/site-packages/rustique/_rustique.cpython-316-x86_64-linux-gnu.so",
+ "env": {
+  "RUSTIQUE_INTERP_REQUIRE": "1",
+  "RUSTIQUE_VALIDATE": "eager"
+ },
+ "targets": 116,
+ "default_targets": 111,
+ "groups": [
+  "builtins",
+  "containers",
+  "contextlib",
+  "copy",
+  "dataclasses",
+  "datetime",
+  "enum",
+  "float",
+  "fnmatch",
+  "functools",
+  "generated",
+  "json",
+  "logging",
+  "pathlib",
+  "posixpath",
+  "random",
+  "re",
+  "set",
+  "statistics",
+  "textwrap",
+  "urllib"
+ ],
+ "counts_default": {
+  "refused": 111
+ },
+ "installed_default": 0,
+ "refusal_categories_default": {
+  "version": 111
+ },
+ "counts_tiers": {
+  "gc": {
+   "disabled": 1
+  },
+  "interp": {
+   "disabled": 4
+  }
+ },
+ "refused": [
+  {
+   "name": "list.sort",
+   "group": "containers",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "list.index",
+   "group": "containers",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "list.count",
+   "group": "containers",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "tuple.index",
+   "group": "containers",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "tuple.count",
+   "group": "containers",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "list.__contains__",
+   "group": "containers",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "tuple.__contains__",
+   "group": "containers",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "builtins.sum",
+   "group": "builtins",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "builtins.min",
+   "group": "builtins",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "builtins.max",
+   "group": "builtins",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "builtins.sorted",
+   "group": "builtins",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "builtins.any",
+   "group": "builtins",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "builtins.all",
+   "group": "builtins",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "float.repr",
+   "group": "float",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "json.dumps",
+   "group": "json",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "json.loads",
+   "group": "json",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "logging.Logger.level",
+   "group": "logging",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "logging.Logger.findCaller",
+   "group": "logging",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "logging.LogRecord.__init__",
+   "group": "logging",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "logging.Formatter.formatTime",
+   "group": "logging",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "logging.Formatter.format",
+   "group": "logging",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "logging.Handler.handle",
+   "group": "logging",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "random.randint",
+   "group": "random",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "random.randrange",
+   "group": "random",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "random.choice",
+   "group": "random",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "random.shuffle",
+   "group": "random",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "random.sample",
+   "group": "random",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "random.choices",
+   "group": "random",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "random.normalvariate",
+   "group": "random",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "random.lognormvariate",
+   "group": "random",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "random.expovariate",
+   "group": "random",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "random.paretovariate",
+   "group": "random",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "random.gauss",
+   "group": "random",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "statistics.mean",
+   "group": "statistics",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "statistics.variance",
+   "group": "statistics",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "statistics.pvariance",
+   "group": "statistics",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "statistics.stdev",
+   "group": "statistics",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "statistics.pstdev",
+   "group": "statistics",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "textwrap.wrap",
+   "group": "textwrap",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "textwrap.fill",
+   "group": "textwrap",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "textwrap.shorten",
+   "group": "textwrap",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "textwrap.dedent",
+   "group": "textwrap",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "textwrap.indent",
+   "group": "textwrap",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "textwrap.TextWrapper.wrap",
+   "group": "textwrap",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "textwrap.TextWrapper.fill",
+   "group": "textwrap",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "urllib.parse.quote",
+   "group": "urllib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "urllib.parse.quote_plus",
+   "group": "urllib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "urllib.parse.unquote",
+   "group": "urllib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "urllib.parse.unquote_plus",
+   "group": "urllib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "urllib.parse.parse_qsl",
+   "group": "urllib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "urllib.parse.parse_qs",
+   "group": "urllib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "urllib.parse._urlsplit",
+   "group": "urllib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "posixpath.join",
+   "group": "posixpath",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "posixpath.split",
+   "group": "posixpath",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "posixpath.splitext",
+   "group": "posixpath",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "posixpath.basename",
+   "group": "posixpath",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "posixpath.dirname",
+   "group": "posixpath",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "posixpath.isabs",
+   "group": "posixpath",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "posixpath.relpath",
+   "group": "posixpath",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "posixpath.abspath",
+   "group": "posixpath",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "fnmatch.fnmatch",
+   "group": "fnmatch",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "fnmatch.fnmatchcase",
+   "group": "fnmatch",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "fnmatch.filter",
+   "group": "fnmatch",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "pathlib.PurePath.__new__",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "pathlib.Path.__new__",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "pathlib.PurePath.__init__",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "pathlib.PurePath.__str__",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "pathlib.PurePath.__truediv__",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "pathlib.PurePath.parent",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "pathlib.PurePath.name",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "pathlib.PurePath.suffix",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "pathlib.PurePath.stem",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "pathlib.PurePath.parts",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "pathlib.PurePath.relative_to",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "pathlib.PurePath.__eq__",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "pathlib.PurePath.__hash__",
+   "group": "pathlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "datetime.datetime.strptime",
+   "group": "datetime",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "datetime.date.strptime",
+   "group": "datetime",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "datetime.time.strptime",
+   "group": "datetime",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "time.strptime",
+   "group": "datetime",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "datetime.date.strftime",
+   "group": "datetime",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "datetime.time.strftime",
+   "group": "datetime",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "time.strftime",
+   "group": "datetime",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "datetime.datetime.isoformat",
+   "group": "datetime",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "datetime.date.isoformat",
+   "group": "datetime",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "datetime.time.isoformat",
+   "group": "datetime",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "copy.deepcopy",
+   "group": "copy",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "copy.copy",
+   "group": "copy",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "dataclasses.asdict",
+   "group": "dataclasses",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "dataclasses.astuple",
+   "group": "dataclasses",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "set.__reduce__",
+   "group": "set",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "enum.property.__get__",
+   "group": "enum",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "enum.EnumType.__call__",
+   "group": "enum",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "enum.Enum.__hash__",
+   "group": "enum",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "enum.Flag.operators",
+   "group": "enum",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "collections.namedtuple",
+   "group": "generated",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "dataclasses.__init__",
+   "group": "generated",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "dataclasses.__init__.positional",
+   "group": "generated",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "contextlib.contextmanager",
+   "group": "contextlib",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "functools.singledispatch",
+   "group": "functools",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "functools.singledispatchmethod.__get__",
+   "group": "functools",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "re._compiler.compile",
+   "group": "re",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "re.match",
+   "group": "re",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "re.fullmatch",
+   "group": "re",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "re.search",
+   "group": "re",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "re.sub",
+   "group": "re",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "re.subn",
+   "group": "re",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "re.split",
+   "group": "re",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "re.findall",
+   "group": "re",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "re.finditer",
+   "group": "re",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  },
+  {
+   "name": "re.compile",
+   "group": "re",
+   "tier": null,
+   "refusal": "version",
+   "reason": "CPython 3.16 pre-release (0x31000a1)"
+  }
+ ],
+ "pending": [],
+ "armed": [],
+ "imported": [
+  "logging",
+  "random",
+  "statistics",
+  "urllib.parse",
+  "fnmatch",
+  "_datetime",
+  "copy",
+  "dataclasses"
+ ],
+ "import_failed": {}
+}
+RUSTIQUE=1 loads: ['_rustique', 'rustique._rustique']

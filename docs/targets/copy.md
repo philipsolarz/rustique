@@ -1,4 +1,5 @@
-STATUS: wave 1, groups `copy` and `dataclasses`. Contract: `docs/ACCELERATION.md`, ruling 15
+STATUS: wave 1, groups `copy` and `dataclasses`; wave 2 (workstream `core`): `uuid.UUID`
+copied natively (§7). Contract: `docs/ACCELERATION.md`, ruling 15
 (restart before anything observable). Code: `crates/rustique-py/src/targets/copy/`. Tests:
 `tests/targets/test_copy_*.py`. Benchmarks: `benches/targets/copy_cells.py` (callgrind),
 `copy_pyperf.py`, `copy_install.py`.
@@ -303,3 +304,65 @@ Workloads (`benches/workloads/run.py compare ... -n 5 -p 3 --only copy,dataclass
   pinned dependency patched with `mock.patch` (honoured, re-armed), helper defaults
   replaced, 3.14's mutable type sets, dataclasses installed before `copy` is imported (3.15
   lazy import), free-threaded stress.
+
+## 7. Wave 2 (workstream `core`): `uuid.UUID` in `deepcopy` and `asdict`
+
+json_api's `asdict(order)` restarted at every customer id (a `uuid.UUID`: Python
+`__getstate__`/`__setstate__`), ~11% of the run (`w2-floors.md` §2). The engine now emulates
+those two methods (`crates/rustique-py/src/targets/copy/uuidk.rs`), as it emulates
+`copy.py`'s and `copyreg`'s helpers: they are standard-library code verified by fingerprint,
+not user code.
+
+- **Recognised class**: `sys.modules['uuid'].UUID` (resolved lazily, never imported, C-level
+  reads only), metatype `type`, MRO `(UUID, object)`, `__getstate__`/`__setstate__`
+  functions with the recorded code fingerprints (3.14: `4aed2bf10b533995` /
+  `ac3a32a4fe7a35af`; 3.15: `34553904bd4f8992` / `1f178d7c0bb94b3c`), every other copy hook
+  `object`'s or absent, no finalizer, slots `int`/`is_safe` as member descriptors;
+  `uuid.SafeUUID` an enum class whose metatype does plain type lookup and whose `==` is
+  `object`'s. Per call: the class's version tag and both methods' code objects unchanged,
+  `uuid.SafeUUID` (module global) still the validated class and its version tag unchanged.
+- **Exact subset per object**: exact `UUID`, `x.int` an exact `int`, `x.is_safe is
+  SafeUUID.unknown` (what `uuid4()`, `UUID(str)`, `UUID(int=)` produce). Subclasses and
+  `is_safe` `safe`/`unsafe` (whose `__setstate__` calls the enum) restart as before.
+- **Emulated steps**, in CPython's order and frames: `object.__reduce_ex__(4)` →
+  `UUID.__getstate__` (one frame against the recursion budget) → `{'int': x.int}` →
+  `_reconstruct` (the engine's existing `copyreg.__newobj__` / memo / `deepcopy(state)`
+  steps, so a caller's memo receives CPython's entries and keep-alive list) →
+  `UUID.__setstate__` (one frame) → the `int` and `is_safe` slots stored as
+  `object.__setattr__` stores them.
+- Tools: as for every input, a listening tool sends the whole call to the original
+  (`tests/targets/test_copy_uuid.py::test_tracer_sees_cpythons_frames`).
+
+callgrind, Ir per call, 3.15.1, plain → `enable(only=["copy", "dataclasses", "datetime"])`
+(`benches/targets/core_cells.py uuid`), **measured**:
+
+| cell | plain | enabled | ratio | before |
+|---|---:|---:|---:|---:|
+| `asdict(Order)`, customer id a UUID (json_api's shape) | 162,375 | 55,387 | **0.341** | 0.853 |
+| `asdict(Order)`, customer id an int | 132,897 | 50,072 | 0.377 | 0.377 |
+| `asdict(Customer)` with a UUID | 44,129 | 11,584 | 0.262 | — |
+| `deepcopy(UUID)` | 27,610 | 5,223 | **0.189** | 0.861 |
+| `deepcopy([UUID, UUID])` | 35,014 | 6,683 | 0.191 | — |
+| `deepcopy(UUID, memo={})` | 27,641 | 7,432 | 0.269 | — |
+
+Tests: `tests/targets/test_copy_uuid.py` (results, identity of shared copies, caller memo
+contents, counters, subclasses and `safe`/`unsafe` restarting with CPython's result, a
+patched `__getstate__` running CPython's code, tracers). Not covered: `copy.copy(UUID)`
+(shallow; not on a measured hot path), `PurePath` (isort 0.23%, `w2-floors.md` §2 gap #9).
+
+### 7.1 Free-threaded scaling and the "4.4× on 3.15.1t" signal
+
+- 8-thread CPU per call, enabled ÷ plain (3.15.1t, `benches/ft/kernel_scaling.py -t 1,8`,
+  local / shared inputs, **measured**): `deepcopy(dict)` 0.239 / 0.215, `deepcopy` of a
+  dict holding a UUID 0.213 / 0.174, `deepcopy` of a frozenset 0.020 / 0.023, `asdict`
+  0.358 / 0.445: within DECISIONS §10.9 (≤ 1.05); the extra reference-count traffic on
+  shared inputs costs part of the 1-thread gain, never more than the original.
+- w2-dx's replay of sqlglot's `deepcopy` calls (kernel/original 4.4 on 3.15.1t) **does not
+  reproduce as a slowdown**: replaying the 2,691 outermost calls of one `sqlglot_transpile`
+  run (`benches/ft/deepcopy_replay.py`, CPU time per call, same process, best of 3–7) gave
+  0.77, 0.91 and 1.08 in three runs on the loaded dev box (3.15.1: 0.84), with the cyclic
+  GC running; with the GC off (`--nogc`) it is stable: **0.851, 0.863, 0.862**, and callgrind
+  on 600 of the calls counts 351.4M → 267.1M instructions (**0.760**). The calls are root-blocked restarts (sqlglot's `Expression.__deepcopy__`,
+  67,950 of 289,692 calls) whose inner `deepcopy`s run natively; no lock, `sched_yield` or
+  park shows in the profile. The earlier 4.4 is consistent with GC timing and CPU-time noise
+  on a box at load 40–60, not with a kernel effect.

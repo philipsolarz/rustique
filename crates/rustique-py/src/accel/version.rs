@@ -167,11 +167,51 @@ use super::spec::{Category, Refusal};
 
 static PROCESS: std::sync::OnceLock<Result<(), Refusal>> = std::sync::OnceLock::new();
 
-/// Facts every target needs: a final release, not a debug build, the minor this extension
-/// was compiled for. Computed once, without importing anything.
+/// The platforms Rustique is built and validated for (the CI wheel matrix): 64-bit
+/// little-endian x86-64 or AArch64, on Linux (glibc or musl), macOS or Windows. Anything
+/// else (an sdist built for i686, armv7, s390x, ppc64le, riscv64, FreeBSD, ...) refuses every
+/// target with category `platform`: a working, never-wrong install.
+pub const PLATFORM_VALIDATED: bool = cfg!(all(
+    target_pointer_width = "64",
+    target_endian = "little",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    any(
+        all(target_os = "linux", any(target_env = "gnu", target_env = "musl")),
+        target_os = "macos",
+        target_os = "windows"
+    )
+));
+
+/// `arch-os[-env]` of this build (refusal reasons, status).
+pub fn platform() -> String {
+    let mut s = format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS);
+    if cfg!(target_env = "gnu") {
+        s.push_str("-gnu");
+    } else if cfg!(target_env = "musl") {
+        s.push_str("-musl");
+    } else if cfg!(target_env = "msvc") {
+        s.push_str("-msvc");
+    }
+    if cfg!(target_endian = "big") {
+        s.push_str(" (big-endian)");
+    }
+    if cfg!(target_pointer_width = "32") {
+        s.push_str(" (32-bit)");
+    }
+    s
+}
+
+/// Facts every target needs: a validated platform, a final release, not a debug build, the
+/// minor this extension was compiled for. Computed once, without importing anything.
 pub fn process_gate() -> Result<(), Refusal> {
     PROCESS
         .get_or_init(|| {
+            if !PLATFORM_VALIDATED {
+                return Err(Refusal::with(
+                    Category::Platform,
+                    format!("built from source for {}, a platform Rustique has not validated", platform()),
+                ));
+            }
             let v = runtime_version();
             let (major, minor, level) = ((v >> 24) & 0xff, (v >> 16) & 0xff, (v >> 4) & 0xf);
             if major != 3 || minor as u8 != compiled_minor() {
@@ -198,9 +238,83 @@ pub fn process_gate() -> Result<(), Refusal> {
         .clone()
 }
 
-/// Per-target part of the gate: validated minor and free-threading.
+/// How the running patch release was validated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Validation {
+    /// A recorded patch release (its conformance suites passed before its fingerprints were
+    /// recorded).
+    Recorded,
+    /// Not recorded; installed because `RUSTIQUE_UNVALIDATED_PATCH=1`: targets whose code
+    /// fingerprints match a recorded release.
+    Unvalidated,
+}
+
+impl Validation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Validation::Recorded => "recorded",
+            Validation::Unvalidated => "unvalidated",
+        }
+    }
+}
+
+/// `3.15.1` / `3.15.1t`: the running patch release as recorded.
+pub fn patch_release() -> String {
+    let v = runtime_version();
+    format!("{}.{}.{}{}", (v >> 24) & 0xff, (v >> 16) & 0xff, (v >> 8) & 0xff, if FREE_THREADED { "t" } else { "" })
+}
+
+static PATCH: std::sync::OnceLock<Result<Validation, Refusal>> = std::sync::OnceLock::new();
+
+/// The patch-release gate (DECISIONS §10.5): the running patch release must be one
+/// recorded in the fingerprint data, unless `RUSTIQUE_UNVALIDATED_PATCH=1` (then targets
+/// install when their fingerprints match a recorded release, reported "unvalidated").
+/// Computed once (the environment is read at the first gate).
+pub fn patch_gate() -> Result<Validation, Refusal> {
+    PATCH
+        .get_or_init(|| {
+            // SAFETY: gates run on attached threads.
+            let py = unsafe { Python::assume_attached() };
+            patch_decision(&patch_release(), super::switch::env_on(py, "RUSTIQUE_UNVALIDATED_PATCH"))
+        })
+        .clone()
+}
+
+/// The patch-release decision for release `id` (`"3.15.1"`, `"3.15.1t"`), with or without
+/// the explicit opt-in.
+pub fn patch_decision(id: &str, opt_in: bool) -> Result<Validation, Refusal> {
+    if super::fingerprint::patches().any(|p| p == id) {
+        return Ok(Validation::Recorded);
+    }
+    if opt_in {
+        return Ok(Validation::Unvalidated);
+    }
+    let free_threaded = id.ends_with('t');
+    let mut parts = id.trim_end_matches('t').split('.');
+    let (major, minor) = (parts.next().unwrap_or("?"), parts.next().unwrap_or("?"));
+    let prefix = format!("{major}.{minor}.");
+    let same: Vec<&str> =
+        super::fingerprint::patches().filter(|p| p.starts_with(&prefix) && p.ends_with('t') == free_threaded).collect();
+    Err(Refusal::with(
+        Category::UnvalidatedPatch,
+        format!(
+            "CPython {id} is not a patch release this Rustique build has validated (validated: {}); \
+             RUSTIQUE_UNVALIDATED_PATCH=1 installs the targets whose code matches a validated release",
+            if same.is_empty() { "none".to_owned() } else { same.join(", ") }
+        ),
+    ))
+}
+
+/// The process-level refusal, if any (platform, version, build, layout, patch release).
+pub fn process_refusal() -> Option<Refusal> {
+    process_gate().err().or_else(|| patch_gate().err())
+}
+
+/// Per-target part of the gate: validated minor and free-threading (after the process
+/// gate and the patch-release gate).
 pub fn target_gate(versions: &[(u8, u8)], free_threaded: bool) -> Result<(), Refusal> {
     process_gate()?;
+    patch_gate()?;
     let (major, minor) = running();
     if !versions.contains(&(major, minor)) {
         return Err(Refusal::with(Category::Version, format!("CPython {major}.{minor} not validated for this target")));
@@ -255,61 +369,37 @@ unsafe extern "C" {
 
 static MONITORING_LAYOUT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-/// Calibrate the local-monitoring layout the tools guard reads (`_co_monitoring` →
-/// `local_monitors.tools[guard::LOCAL_EVENTS]`): on a fresh empty code object, set each
-/// probe event locally with a free `sys.monitoring` tool id and check that exactly that
-/// byte holds the tool's bit. Runs when the first vectorcall site is prepared, once per
-/// process (so a process that never prepares one never pays it). That may be inside the
-/// `sys.modules` watcher (lazy activation): the probe runs no Python code, only
-/// `sys.monitoring`'s C functions on a private code object (`set_local_events` stops the
-/// world on free-threaded builds, as installing a vectorcall site there does anyway).
-/// `true` when no tool id is free (nothing to calibrate against: the compile-time layout
-/// of the running minor is used).
+/// Check the local-monitoring layout the tools guard reads (`_co_monitoring` →
+/// `local_monitors.tools[guard::LOCAL_EVENTS]`), without touching `sys.monitoring`: on a
+/// fresh empty code object (never instrumented), the calibrated `PyCodeObject` prefix must
+/// hold (pointer fields equal the attributes CPython reports, up to `co_linetable`), and
+/// the fields that follow, up to `_co_monitoring`, must be NULL as for any code object no
+/// tool ever instrumented. The field order after `co_linetable` and the number of local
+/// events are those of the minor's header (`cpython/code.h`, identical on GIL and
+/// free-threaded builds of 3.14 and 3.15). Runs when the first vectorcall site is prepared,
+/// once per process; C calls only (safe in the `sys.modules` watcher).
+///
+/// (Wave 1 probed the layout by setting a local event with a free tool id: freeing the id
+/// bumps the interpreter's monitoring version for good, so every code object created
+/// afterwards paid `_Py_Instrument` at its first `RESUME`, ~930 instructions per new code
+/// object: a never-slower leak on every later import.)
 pub fn calibrate_monitoring(py: Python<'_>) -> bool {
-    *MONITORING_LAYOUT.get_or_init(|| probe_monitoring(py).unwrap_or(false))
+    *MONITORING_LAYOUT.get_or_init(|| check_monitoring_layout(py).unwrap_or(false))
 }
 
-fn probe_monitoring(py: Python<'_>) -> PyResult<bool> {
-    use super::guard::LOCAL_EVENTS;
-    // `sys.monitoring` without an import (no `__import__` call inside the watcher).
-    // SAFETY: borrowed reference or NULL (without an exception set).
-    let mon = unsafe { ffi::PySys_GetObject(c"monitoring".as_ptr()) };
-    if mon.is_null() {
-        return Ok(false);
-    }
-    // SAFETY: a live object owned by the sys module.
-    let mon = unsafe { Bound::from_borrowed_ptr(py, mon) };
-    let Some(id) = (0..6u8).rev().find(|i| mon.call_method1("get_tool", (*i,)).is_ok_and(|r| r.is_none())) else {
-        return Ok(true);
-    };
-    mon.call_method1("use_tool_id", (id, "rustique-layout-probe"))?;
+fn check_monitoring_layout(py: Python<'_>) -> PyResult<bool> {
     // SAFETY: static C strings; returns a new reference or NULL with an exception.
     let code = unsafe { PyCode_NewEmpty(c"<rustique-probe>".as_ptr(), c"probe".as_ptr(), 1) };
     // SAFETY: new reference or NULL.
-    let code = unsafe { Bound::from_owned_ptr_or_err(py, code) };
-    let result = (|| -> PyResult<bool> {
-        let code = code?;
-        // LINE (local on every version), STOP_ITERATION (the last local event on 3.14), and
-        // RERAISE (the last local event on 3.15).
-        let mut events = vec![5u8, 10];
-        if LOCAL_EVENTS == 16 {
-            events.push(15);
-        }
-        for ev in events {
-            mon.call_method1("set_local_events", (id, &code, 1u32 << ev))?;
-            // SAFETY: a live code object; layout prefix calibrated by `code_layout_ok_for`
-            // on real functions (same struct); bytes read within the local monitors.
-            let ok = unsafe {
-                let raw = (*code.as_ptr().cast::<RawCode>())._co_monitoring;
-                !raw.is_null() && (0..LOCAL_EVENTS).all(|i| *raw.add(i) == if i == ev as usize { 1 << id } else { 0 })
-            };
-            mon.call_method1("set_local_events", (id, &code, 0))?;
-            if !ok {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    })();
-    mon.call_method1("free_tool_id", (id,))?;
-    result
+    let code = unsafe { Bound::from_owned_ptr_or_err(py, code) }?;
+    if !code_layout_ok_for(&code)? {
+        return Ok(false);
+    }
+    // SAFETY: a live code object; reads within the documented prefix (calibrated above).
+    let raw = unsafe { &*code.as_ptr().cast::<RawCode>() };
+    Ok(raw.co_linetable == code.getattr("co_linetable")?.as_ptr()
+        && raw.co_weakreflist.is_null()
+        && raw.co_executors.is_null()
+        && raw._co_cached.is_null()
+        && raw._co_monitoring.is_null())
 }

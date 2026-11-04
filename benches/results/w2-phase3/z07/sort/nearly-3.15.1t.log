@@ -1,0 +1,32 @@
+...........
+WARNING: the benchmark result may be unstable
+* Not enough samples to get a stable result (95% certainly of less than 1% variation)
+
+Try to rerun the benchmark with more runs, values and/or loops.
+Run 'python -m pyperf system tune' command to reduce the system jitter.
+Use pyperf stats, pyperf dump and pyperf hist to analyze results.
+Use --quiet option to hide these warnings.
+
+sorted(list str nearly 100000): Mean +- std dev: 3.91 ms +- 0.05 ms
+...........
+sorted(list str nearly 1000000): Mean +- std dev: 93.1 ms +- 1.0 ms
+...........
+sorted(list int nearly 1000000): Mean +- std dev: 52.3 ms +- 0.5 ms
+...........
+sorted(list float nearly 1000000): Mean +- std dev: 47.0 ms +- 0.4 ms
+...........
+sorted(list str nearly 100000): Mean +- std dev: 3.91 ms +- 0.04 ms
+...........
+sorted(list str nearly 1000000): Mean +- std dev: 93.2 ms +- 1.0 ms
+...........
+WARNING: the benchmark result may be unstable
+* Not enough samples to get a stable result (95% certainly of less than 1% variation)
+
+Try to rerun the benchmark with more runs, values and/or loops.
+Run 'python -m pyperf system tune' command to reduce the system jitter.
+Use pyperf stats, pyperf dump and pyperf hist to analyze results.
+Use --quiet option to hide these warnings.
+
+sorted(list int nearly 1000000): Mean +- std dev: 51.8 ms +- 0.6 ms
+...........
+sorted(list float nearly 1000000): Mean +- std dev: 46.9 ms +- 0.3 ms

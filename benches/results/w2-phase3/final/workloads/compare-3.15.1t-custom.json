@@ -1,0 +1,75 @@
+{
+ "python": "3.15.1 free-threading build (main, Oct 21 2026, 17:49:09) [Clang 23.1.3 ]",
+ "rows": [
+  {
+   "workload": "custom/di_plugins",
+   "plain_s": 0.8267663500009803,
+   "enabled_s": 0.8180407079998986,
+   "ratio": 0.9894460605453145,
+   "same_result": true
+  },
+  {
+   "workload": "custom/ecs_arena",
+   "plain_s": 1.073952084996563,
+   "enabled_s": 1.0654323349954211,
+   "ratio": 0.9920669179564291,
+   "same_result": true
+  },
+  {
+   "workload": "custom/event_ledger",
+   "plain_s": 1.5530971830012277,
+   "enabled_s": 1.5012483239988796,
+   "ratio": 0.966615830889504,
+   "same_result": true
+  },
+  {
+   "workload": "custom/fulfilment_sim",
+   "plain_s": 1.3571379839995643,
+   "enabled_s": 1.320051353002782,
+   "ratio": 0.9726729106148176,
+   "same_result": true
+  },
+  {
+   "workload": "custom/mini_interp",
+   "plain_s": 1.2194807490013773,
+   "enabled_s": 1.2415684090010473,
+   "ratio": 1.0181123482414605,
+   "same_result": true
+  },
+  {
+   "workload": "custom/order_domain",
+   "plain_s": 1.4006046099966625,
+   "enabled_s": 1.3725327009960893,
+   "ratio": 0.9799572921578202,
+   "same_result": true
+  },
+  {
+   "workload": "custom/orm_mapper",
+   "plain_s": 0.8542354480014183,
+   "enabled_s": 0.8083971490050317,
+   "ratio": 0.9463399709018977,
+   "same_result": true
+  },
+  {
+   "workload": "custom/report_engine",
+   "plain_s": 1.0348454330014647,
+   "enabled_s": 0.9336625619980623,
+   "ratio": 0.9022241701256469,
+   "same_result": true
+  },
+  {
+   "workload": "custom/rules_engine",
+   "plain_s": 1.086169306996453,
+   "enabled_s": 1.0509119030029979,
+   "ratio": 0.9675396793424854,
+   "same_result": true
+  },
+  {
+   "workload": "custom/task_planner",
+   "plain_s": 0.531975441997929,
+   "enabled_s": 0.5318500060020597,
+   "ratio": 0.9997642071682891,
+   "same_result": true
+  }
+ ]
+}

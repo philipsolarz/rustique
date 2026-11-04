@@ -1,23 +1,20 @@
 """Pytest configuration shared by the Rustique test-suite.
 
-See ``_support.py`` for implementation selection (``RUSTIQUE_IMPLS``). Hypothesis
-profiles: ``default`` (Hypothesis defaults, no deadline), ``quick`` (smoke runs on a busy
-machine), ``thorough`` (CI / pre-merge); select with e.g. ``HYPOTHESIS_PROFILE=thorough``.
+Hypothesis profiles: ``default`` (Hypothesis defaults, no deadline), ``quick`` (smoke runs
+on a busy machine), ``thorough`` (CI / pre-merge); select with e.g.
+``HYPOTHESIS_PROFILE=thorough``.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-from types import ModuleType
 from typing import Any
 
 import pytest
 from hypothesis import HealthCheck, settings
 
 sys.path.insert(0, os.path.dirname(__file__))
-
-from _support import ListImpl, list_impls, load_rustique, rustique_selected  # noqa: E402
 
 settings.register_profile(
     "default",
@@ -42,44 +39,50 @@ settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 FREE_THREADED = bool(getattr(sys, "_is_gil_enabled", lambda: True)() is False)
 
+# Targets validate at install in the test-suite (their tests assert "installed" right after
+# enable()); the first-call path has its own tests (tests/test_accel_firstcall.py). Child
+# processes inherit the setting through the environment.
+os.environ.setdefault("RUSTIQUE_VALIDATE", "eager")
+try:
+    from rustique import _rustique as _rq
+
+    _rq._accel._set_validation(os.environ["RUSTIQUE_VALIDATE"])
+except (ImportError, AttributeError):  # not built, or an older build
+    pass
+
 
 def pytest_report_header(config: pytest.Config) -> list[str]:
-    from _support import selected_kinds
-
-    gil = "disabled (free-threaded)" if FREE_THREADED else "enabled"
-    return [f"rustique implementations: {', '.join(selected_kinds())}; GIL {gil}"]
-
-
-@pytest.fixture(params=list_impls())
-def impl(request: pytest.FixtureRequest) -> ListImpl:
-    """Every list implementation: builtin, untyped List, typed List[T]."""
-    impl: ListImpl = request.param
-    if not impl.is_builtin:
-        load_rustique()
-    return impl
-
-
-@pytest.fixture(params=list_impls(typed=False))
-def uimpl(request: pytest.FixtureRequest) -> ListImpl:
-    """Implementations that accept heterogeneous data: builtin list and untyped List."""
-    impl: ListImpl = request.param
-    if not impl.is_builtin:
-        load_rustique()
-    return impl
-
-
-@pytest.fixture
-def rs() -> ModuleType:
-    """The rustique module (skips when only builtins are selected)."""
-    if not rustique_selected():
-        pytest.skip("RUSTIQUE_IMPLS selects builtins only")
-    return load_rustique()
+    return [f"GIL {'disabled (free-threaded)' if FREE_THREADED else 'enabled'}"]
 
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "slow: long-running stress tests")
+    config.addinivalue_line(
+        "markers",
+        "refused_ok: runs even where Rustique refuses every target (an unvalidated CPython "
+        "version, platform or patch release); every other test is skipped there",
+    )
+
+
+# Where the interpreter itself is refused (a pre-release such as 3.16.0a1, a platform
+# Rustique has not validated, an unrecorded patch release without RUSTIQUE_UNVALIDATED_PATCH=1)
+# no target can install: the suite skips instead of failing (DECISIONS §10.8).
+SKIP_REFUSALS = {"version", "platform", "unvalidated-patch"}
+
+
+def process_refusal() -> tuple[str, str] | None:
+    try:
+        from rustique import _rustique
+
+        return _rustique._accel.process_refusal()
+    except (ImportError, AttributeError):
+        return None
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[Any]) -> None:
-    # Keep thread stress tests last so a hang (guarded by timeouts) cannot mask other results.
-    items.sort(key=lambda item: "test_threads" in item.nodeid)
+    refusal = process_refusal()
+    if refusal and refusal[0] in SKIP_REFUSALS:
+        skip = pytest.mark.skip(reason=f"rustique refuses every target here [{refusal[0]}]: {refusal[1]}")
+        for item in items:
+            if "refused_ok" not in item.keywords:
+                item.add_marker(skip)

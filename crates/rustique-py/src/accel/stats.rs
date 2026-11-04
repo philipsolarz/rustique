@@ -8,7 +8,7 @@
 //! mode). Check mode (`check.rs`) shares the same byte, so a kernel that supports it still
 //! pays one load when everything is off ([`Counters::hit_check`]).
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 /// Bit set: [`STATS`], [`CHECK`], [`CHECK_RAISE`].
 pub static MODE: AtomicU8 = AtomicU8::new(0);
@@ -36,14 +36,35 @@ pub enum Reason {
     /// Check mode found the kernel's result different from the original's (the original's
     /// result was returned).
     Check = 6,
+    /// The kernel stopped and CPython's algorithm finished the call from the same state
+    /// (nothing done twice: a scan continued by the original, a containment test resumed).
+    Continue = 7,
+    /// The kernel had done work, met something it cannot decide, and restarted the call in
+    /// the original (the work is wasted: debited by its weight, `TargetSpec::abandon_debit`).
+    Abandon = 8,
 }
 
-pub const REASONS: [&str; 7] = ["args", "deps", "tools", "interp", "deopt", "error", "check"];
+/// Fallback reasons, in [`Counters::fallback`] order. `deopt` is a restart in the original
+/// before any work (root-blocked); `continue` and `abandon` split the other deopts.
+pub const REASONS: [&str; 9] = ["args", "deps", "tools", "interp", "deopt", "error", "check", "continue", "abandon"];
+
+/// Words per target row of the live counter file (`hits`, the first 7 reasons,
+/// `suspensions`, then `continue` and `abandon`).
+pub const ROW_WORDS: usize = 11;
 
 /// Consecutive fallbacks, from a fresh (or balanced) state, after which a vectorcall target
 /// is suspended (its original vectorcall restored until the next `enable()`): the floor of
 /// the net-benefit score is `-STREAK_LIMIT × fallback_debit`. See [`Counters::fallback_streak`].
 pub const STREAK_LIMIT: i32 = 64;
+
+/// The decision window (credits v2, docs/atlas/w2-floors.md §3): a target that has hit at
+/// least once is not suspended before this many scored calls since it was armed, so a burst
+/// of fallbacks at startup (a program constructing subclasses first, among a few hits) does
+/// not suspend a target that pays off later. A target with no hit at all is suspended as
+/// soon as its score reaches the floor (64 consecutive fallbacks with the default debit):
+/// the early exit keeps the all-fallback exceedance as short as before. Calls at the
+/// score's ceiling (a target paying off) are not counted: nothing is stored on that path.
+pub const WINDOW: u32 = 256;
 
 /// The net-benefit score's ceiling: after a long run of hits it takes
 /// `SCORE_CEILING / debit + STREAK_LIMIT` consecutive fallbacks to suspend.
@@ -60,18 +81,32 @@ pub const FALLBACK_DEBIT: u8 = 1;
 #[derive(Debug)]
 pub struct Counters {
     pub hits: AtomicU64,
-    pub fallback: [AtomicU64; 7],
-    /// Net benefit of the kernel: a hit adds `credit`, a fallback (except `Deps`) subtracts
-    /// `debit`, clamped to `[floor, SCORE_CEILING]`; reaching the floor suspends. Racy
-    /// load/store: approximate under contention, by design.
+    pub fallback: [AtomicU64; 9],
+    /// Net benefit of the kernel: a hit adds `credit`, a fallback subtracts `debit` (an
+    /// `Abandon` also its weight), clamped to `[floor, SCORE_CEILING]`; reaching the floor
+    /// after the decision window suspends. Racy load/store: approximate under contention,
+    /// by design.
     pub score: AtomicI32,
+    /// Scored calls since armed (saturating; see [`WINDOW`]).
+    seen: AtomicU32,
+    /// A hit was credited since armed (no early exit then; see [`WINDOW`]).
+    credited: AtomicBool,
     credit: AtomicI32,
     debit: AtomicI32,
+    abandon: AtomicI32,
     floor: AtomicI32,
+    /// The target's row in the live counter file (`counters_file`), or null: counts go to
+    /// the fields above.
+    slot: AtomicPtr<AtomicU64>,
     /// The score reached its floor: the registry suspends the target.
     pub suspend_requested: AtomicBool,
     /// Times the registry suspended the target for persistent fallback.
     pub suspensions: AtomicU64,
+    /// The target's sites hold its kernels (installed, validated, not suspended): set by
+    /// the registry. Dynamic sites check it per call and retire when it is false.
+    live: AtomicBool,
+    /// Dynamic sites installed and not yet retired (status `dynamic_sites`).
+    pub dynamic: AtomicU64,
 }
 
 fn set_bits(bits: u8, on: bool) {
@@ -117,30 +152,52 @@ impl Counters {
     pub const fn new() -> Self {
         Counters {
             hits: AtomicU64::new(0),
-            fallback: [const { AtomicU64::new(0) }; 7],
+            fallback: [const { AtomicU64::new(0) }; 9],
             score: AtomicI32::new(0),
+            seen: AtomicU32::new(0),
+            credited: AtomicBool::new(false),
             credit: AtomicI32::new(HIT_CREDIT as i32),
             debit: AtomicI32::new(FALLBACK_DEBIT as i32),
+            abandon: AtomicI32::new(FALLBACK_DEBIT as i32),
             floor: AtomicI32::new(-STREAK_LIMIT * FALLBACK_DEBIT as i32),
+            slot: AtomicPtr::new(std::ptr::null_mut()),
             suspend_requested: AtomicBool::new(false),
             suspensions: AtomicU64::new(0),
+            live: AtomicBool::new(false),
+            dynamic: AtomicU64::new(0),
         }
+    }
+
+    /// Whether the target is live (installed with its kernels in place): one relaxed load.
+    /// Kernels of dynamic sites retire their site when it is not (`accel::dynamic::retire`).
+    #[inline(always)]
+    pub fn live(&self) -> bool {
+        self.live.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_live(&self, on: bool) {
+        self.live.store(on, Ordering::Relaxed);
     }
 
     /// Set the score policy (the registry, from the installing target's spec; counters
     /// shared by several targets take the last installed one's) and start fresh.
-    pub(crate) fn arm(&self, credit: u8, debit: u8) {
+    pub(crate) fn arm(&self, credit: u8, debit: u8, abandon: u8) {
         let (credit, debit) = (i32::from(credit.max(1)), i32::from(debit.max(1)));
         self.credit.store(credit, Ordering::Relaxed);
         self.debit.store(debit, Ordering::Relaxed);
+        self.abandon.store(i32::from(abandon), Ordering::Relaxed);
         self.floor.store(-STREAK_LIMIT * debit, Ordering::Relaxed);
         self.score.store(0, Ordering::Relaxed);
+        self.seen.store(0, Ordering::Relaxed);
+        self.credited.store(false, Ordering::Relaxed);
         self.suspend_requested.store(false, Ordering::Relaxed);
     }
 
     /// Start the score fresh (resume after a dependency suspension).
     pub(crate) fn rearm(&self) {
         self.score.store(0, Ordering::Relaxed);
+        self.seen.store(0, Ordering::Relaxed);
+        self.credited.store(false, Ordering::Relaxed);
     }
 
     /// Credit a hit: a load and a compare at the ceiling (the steady state of a target that
@@ -151,6 +208,19 @@ impl Counters {
         if s < SCORE_CEILING {
             let c = self.credit.load(Ordering::Relaxed);
             self.score.store((s + c).min(SCORE_CEILING), Ordering::Relaxed);
+            self.see();
+            if !self.credited.load(Ordering::Relaxed) {
+                self.credited.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// One more scored call (saturating; a racy load/store like the score).
+    #[inline(always)]
+    fn see(&self) {
+        let n = self.seen.load(Ordering::Relaxed);
+        if n < WINDOW {
+            self.seen.store(n + 1, Ordering::Relaxed);
         }
     }
 
@@ -168,43 +238,100 @@ impl Counters {
         self.hit_check()
     }
 
-    /// [`Self::fallback`] for vectorcall kernels: every fallback except `Deps` (which
-    /// suspends through the pins) debits the net-benefit score; when it reaches its floor
-    /// the registry suspends the target (original vectorcall restored, so the remaining
-    /// calls cost what CPython's do) until the next `enable()`. From a fresh state that is
-    /// [`STREAK_LIMIT`] consecutive fallbacks; with default policy, traffic where fewer
-    /// than 20% of the calls hit gets there too, however the hits are interleaved.
+    /// [`Self::fallback`] for vectorcall kernels: every fallback debits the net-benefit
+    /// score; when it reaches its floor the calling thread suspends the target (original
+    /// vectorcall restored, so the remaining calls cost what CPython's do) until the next
+    /// `enable()`. From a fresh state that is [`STREAK_LIMIT`] consecutive fallbacks; with
+    /// default policy, traffic where fewer than 20% of the calls hit gets there too, however
+    /// the hits are interleaved. On GIL builds a `Deps` fallback does not debit: a changed
+    /// dependency suspends the target through its pins at once (this thread performs it)
+    /// and resumes it when the pins re-arm. Free-threaded builds swap nothing in steady
+    /// state for a dependency (a swap stops the world): there `Deps` debits like the others.
     #[inline(always)]
     pub fn fallback_streak(&self, why: Reason) {
         self.fallback(why);
-        if !matches!(why, Reason::Deps) {
-            self.debit_fallback();
+        if matches!(why, Reason::Deps) && !cfg!(Py_GIL_DISABLED) {
+            super::registry::deps_fallback();
+        } else {
+            self.debit_fallback(why);
         }
     }
 
     #[inline]
-    fn debit_fallback(&self) {
+    fn debit_fallback(&self, why: Reason) {
+        self.see();
         let s = self.score.load(Ordering::Relaxed);
         let floor = self.floor.load(Ordering::Relaxed);
         if s > floor {
-            let n = (s - self.debit.load(Ordering::Relaxed)).max(floor);
+            let mut d = self.debit.load(Ordering::Relaxed);
+            if matches!(why, Reason::Abandon) {
+                d += self.abandon.load(Ordering::Relaxed);
+            }
+            let n = (s - d).max(floor);
             self.score.store(n, Ordering::Relaxed);
-            if n == floor {
+            if n == floor && self.decided() {
                 self.request_suspend();
             }
+        } else if self.decided() && !self.suspend_requested.load(Ordering::Relaxed) {
+            // At the floor when the window closes.
+            self.request_suspend();
         }
     }
 
+    /// At the floor: suspend now (no hit since armed, or the decision window has passed)?
+    #[inline]
+    fn decided(&self) -> bool {
+        !self.credited.load(Ordering::Relaxed) || self.seen.load(Ordering::Relaxed) >= WINDOW
+    }
+
+    /// Ask the registry to suspend the target(s) using these counters (any site kind):
+    /// their sites get their originals back until the next `enable()`. Performed on this
+    /// thread when the registry is free (only pointer swaps happen: callable from a kernel or
+    /// handler about to fall back, attached, outside any watcher), else by the registry's
+    /// holder or a pending call. The net-benefit score calls it at its floor.
     #[cold]
-    fn request_suspend(&self) {
+    pub fn request_suspend(&self) {
         self.suspend_requested.store(true, Ordering::Release);
-        super::registry::schedule_resync();
+        super::registry::suspend_from_kernel();
+    }
+
+    /// The word counting index `i` of [`ROW_WORDS`] order (the live counter file's row when
+    /// there is one).
+    #[inline(always)]
+    fn word(&self, i: usize) -> &AtomicU64 {
+        let p = self.slot.load(Ordering::Relaxed);
+        if p.is_null() {
+            match i {
+                0 => &self.hits,
+                1..=7 => &self.fallback[i - 1],
+                8 => &self.suspensions,
+                _ => &self.fallback[i - 2],
+            }
+        } else {
+            // SAFETY: a row of ROW_WORDS aligned words in a mapping that lives as long as the
+            // process (never unmapped while a kernel may count).
+            unsafe { &*p.add(i) }
+        }
+    }
+
+    /// Point the counts at a row of the live counter file (null: the fields again).
+    pub(crate) fn set_slot(&self, row: *mut AtomicU64) {
+        self.slot.store(row, Ordering::Release);
+    }
+
+    /// Index of a fallback reason in [`ROW_WORDS`] order.
+    #[inline(always)]
+    fn reason_word(why: Reason) -> usize {
+        match why as usize {
+            r @ 0..=6 => r + 1,
+            r => r + 2,
+        }
     }
 
     #[inline(always)]
     pub fn hit(&self) {
         if MODE.load(Ordering::Relaxed) & STATS != 0 {
-            self.hits.fetch_add(1, Ordering::Relaxed);
+            self.word(0).fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -217,7 +344,7 @@ impl Counters {
             return false;
         }
         if m & STATS != 0 {
-            self.hits.fetch_add(1, Ordering::Relaxed);
+            self.word(0).fetch_add(1, Ordering::Relaxed);
         }
         m & CHECK != 0
     }
@@ -225,28 +352,51 @@ impl Counters {
     #[inline(always)]
     pub fn fallback(&self, why: Reason) {
         if MODE.load(Ordering::Relaxed) & STATS != 0 {
-            self.fallback[why as usize].fetch_add(1, Ordering::Relaxed);
+            self.word(Self::reason_word(why)).fetch_add(1, Ordering::Relaxed);
         }
     }
 
     /// Count a check mismatch (always, also with counting off: mismatches are bugs).
     pub fn mismatch(&self) {
-        self.fallback[Reason::Check as usize].fetch_add(1, Ordering::Relaxed);
+        self.word(Self::reason_word(Reason::Check)).fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count a suspension (always: suspensions are rare and the report shows them).
+    pub(crate) fn suspended(&self) {
+        self.word(8).fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Suspensions counted so far.
+    pub fn suspension_count(&self) -> u64 {
+        self.word(8).load(Ordering::Relaxed)
     }
 
     pub fn snapshot(&self) -> (u64, Vec<(&'static str, u64)>) {
         (
-            self.hits.load(Ordering::Relaxed),
-            REASONS.iter().zip(&self.fallback).map(|(n, c)| (*n, c.load(Ordering::Relaxed))).collect(),
+            self.word(0).load(Ordering::Relaxed),
+            REASONS
+                .iter()
+                .enumerate()
+                .map(|(i, n)| {
+                    let w = if i <= 6 { i + 1 } else { i + 2 };
+                    (*n, self.word(w).load(Ordering::Relaxed))
+                })
+                .collect(),
         )
     }
 
+    /// Zero every count (also those of the live counter file row).
     pub fn reset(&self) {
-        self.hits.store(0, Ordering::Relaxed);
-        self.suspensions.store(0, Ordering::Relaxed);
-        for c in &self.fallback {
-            c.store(0, Ordering::Relaxed);
+        for i in 0..ROW_WORDS {
+            self.word(i).store(0, Ordering::Relaxed);
         }
+    }
+
+    /// Zero the process-local fields and drop the file row (a forked child: async-signal
+    /// safe, atomics only).
+    pub(crate) fn reset_after_fork(&self) {
+        self.slot.store(std::ptr::null_mut(), Ordering::Relaxed);
+        self.reset();
     }
 }
 

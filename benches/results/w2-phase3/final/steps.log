@@ -1,0 +1,172 @@
+[2026-11-03T04:24:02Z] final.sh start (7fec7e4)
+[2026-11-03T04:24:02Z] START setup
+[2026-11-03T04:24:03Z] END   setup rc=0 1s
+[2026-11-03T04:24:03Z] START build-3.15.1
+[2026-11-03T04:24:42Z] END   build-3.15.1 rc=0 39s
+[2026-11-03T04:24:42Z] START wheel-3.15.1
+[2026-11-03T04:24:42Z] END   wheel-3.15.1 rc=0 0s
+[2026-11-03T04:24:42Z] START status-3.15.1
+[2026-11-03T04:24:43Z] END   status-3.15.1 rc=0 1s
+[2026-11-03T04:24:43Z] START pytest-3.15.1
+[2026-11-03T04:27:20Z] END   pytest-3.15.1 rc=0 157s
+[2026-11-03T04:27:20Z] START build-3.15.1t
+[2026-11-03T04:27:58Z] END   build-3.15.1t rc=0 38s
+[2026-11-03T04:27:58Z] START wheel-3.15.1t
+[2026-11-03T04:27:58Z] END   wheel-3.15.1t rc=0 0s
+[2026-11-03T04:27:58Z] START status-3.15.1t
+[2026-11-03T04:27:58Z] END   status-3.15.1t rc=0 0s
+[2026-11-03T04:27:58Z] START pytest-3.15.1t
+[2026-11-03T04:31:11Z] END   pytest-3.15.1t rc=0 193s
+[2026-11-03T04:31:11Z] START build-3.14.9
+[2026-11-03T04:31:50Z] END   build-3.14.9 rc=0 39s
+[2026-11-03T04:31:50Z] START wheel-3.14.9
+[2026-11-03T04:31:51Z] END   wheel-3.14.9 rc=0 1s
+[2026-11-03T04:31:51Z] START status-3.14.9
+[2026-11-03T04:31:51Z] END   status-3.14.9 rc=0 0s
+[2026-11-03T04:31:51Z] START pytest-3.14.9
+[2026-11-03T04:34:30Z] END   pytest-3.14.9 rc=0 159s
+[2026-11-03T04:34:30Z] START build-3.14.9t
+[2026-11-03T04:35:07Z] END   build-3.14.9t rc=0 37s
+[2026-11-03T04:35:07Z] START wheel-3.14.9t
+[2026-11-03T04:35:08Z] END   wheel-3.14.9t rc=0 1s
+[2026-11-03T04:35:08Z] START status-3.14.9t
+[2026-11-03T04:35:08Z] END   status-3.14.9t rc=0 0s
+[2026-11-03T04:35:08Z] START pytest-3.14.9t
+[2026-11-03T04:37:53Z] END   pytest-3.14.9t rc=0 165s
+[2026-11-03T04:37:53Z] START statusx-3.15.2
+[2026-11-03T04:37:53Z] END   statusx-3.15.2 rc=0 0s
+[2026-11-03T04:37:53Z] START statusx-3.15.2t
+[2026-11-03T04:37:54Z] END   statusx-3.15.2t rc=0 1s
+[2026-11-03T04:37:54Z] START statusx-3.14.10
+[2026-11-03T04:37:54Z] END   statusx-3.14.10 rc=0 0s
+[2026-11-03T04:37:54Z] START statusx-3.14.10t
+[2026-11-03T04:37:54Z] END   statusx-3.14.10t rc=0 0s
+[2026-11-03T04:37:54Z] START statusx-3.15.0
+[2026-11-03T04:37:54Z] END   statusx-3.15.0 rc=0 0s
+[2026-11-03T04:37:54Z] START statusx-3.14.0
+[2026-11-03T04:37:55Z] END   statusx-3.14.0 rc=0 1s
+[2026-11-03T04:37:55Z] START statusx-3.14.1
+[2026-11-03T04:37:55Z] END   statusx-3.14.1 rc=0 0s
+[2026-11-03T04:37:55Z] START statusx-3.14.5
+[2026-11-03T04:37:55Z] END   statusx-3.14.5 rc=0 0s
+[2026-11-03T04:37:55Z] START statusx-3.14.6
+[2026-11-03T04:37:56Z] END   statusx-3.14.6 rc=0 1s
+[2026-11-03T04:37:56Z] START statusx-3.14.8
+[2026-11-03T04:37:56Z] END   statusx-3.14.8 rc=0 0s
+[2026-11-03T04:37:56Z] START status316-3.16.0a1
+[2026-11-03T04:38:35Z] END   status316-3.16.0a1 rc=0 39s
+[2026-11-03T04:38:35Z] START rust-fmt
+[2026-11-03T04:38:35Z] END   rust-fmt rc=0 0s
+[2026-11-03T04:38:35Z] START rust-clippy
+[2026-11-03T04:38:45Z] END   rust-clippy rc=0 10s
+[2026-11-03T04:38:45Z] START rust-test
+[2026-11-03T04:38:59Z] END   rust-test rc=0 14s
+[2026-11-03T04:38:59Z] START conformance-3.15.1
+[2026-11-03T04:41:46Z] END   conformance-3.15.1 rc=0 167s
+[2026-11-03T04:41:46Z] START conformance-3.15.1t
+[2026-11-03T04:44:41Z] END   conformance-3.15.1t rc=0 175s
+[2026-11-03T04:44:41Z] START conformance-3.14.9
+[2026-11-03T04:47:28Z] END   conformance-3.14.9 rc=0 167s
+[2026-11-03T04:47:28Z] START conformance-3.14.9t
+[2026-11-03T04:50:26Z] END   conformance-3.14.9t rc=0 178s
+[2026-11-03T04:50:26Z] START wlvenv-3.15.1
+[2026-11-03T04:50:28Z] END   wlvenv-3.15.1 rc=0 2s
+[2026-11-03T04:50:28Z] START wlvenv-3.15.1t
+[2026-11-03T04:50:30Z] END   wlvenv-3.15.1t rc=0 2s
+[2026-11-03T04:50:30Z] START pyperf-venv-3.15.1
+[2026-11-03T04:50:55Z] END   pyperf-venv-3.15.1 rc=0 25s
+[2026-11-03T04:50:55Z] START pyperf-venv-3.15.1t
+[2026-11-03T04:51:21Z] END   pyperf-venv-3.15.1t rc=0 26s
+[2026-11-03T04:51:21Z] A done (stage 1, conformance, venvs)
+[2026-11-03T04:51:21Z] START instr-3.15.1
+[2026-11-03T04:51:32Z] B3 start (domain 3 free)
+[2026-11-03T04:51:32Z] START workloads-3.15.1
+[2026-11-03T05:01:43Z] END   instr-3.15.1 rc=0 622s
+[2026-11-03T05:01:43Z] START instr-3.15.1t
+[2026-11-03T05:13:35Z] END   instr-3.15.1t rc=0 712s
+[2026-11-03T05:13:35Z] START isolate-instr-3.15.1
+[2026-11-03T05:14:01Z] END   isolate-instr-3.15.1 rc=0 26s
+[2026-11-03T05:14:01Z] START isolate-instr-3.15.1t
+[2026-11-03T05:14:01Z] END   isolate-instr-3.15.1t rc=0 0s
+[2026-11-03T05:14:01Z] START sbheap-3.15.1
+[2026-11-03T05:14:01Z] END   sbheap-3.15.1 rc=0 0s
+[2026-11-03T05:14:01Z] START sbheap-3.15.1t
+[2026-11-03T05:14:01Z] END   sbheap-3.15.1t rc=0 0s
+[2026-11-03T05:14:01Z] A2 done (callgrind scoreboard)
+[2026-11-03T05:31:24Z] START ftquiet-all
+[2026-11-03T05:42:34Z] END   workloads-3.15.1 rc=0 3062s
+[2026-11-03T05:42:34Z] SKIP  whole 3.15.1 (/work/w2p3f/skip/whole-3.15.1)
+[2026-11-03T05:42:34Z] SKIP  whole 3.15.1t (/work/w2p3f/skip/whole-3.15.1t)
+[2026-11-03T05:42:34Z] SKIP  startup 3.15.1 (/work/w2p3f/skip/startup-3.15.1)
+[2026-11-03T05:42:34Z] SKIP  startup 3.14.9 (/work/w2p3f/skip/startup-3.14.9)
+[2026-11-03T05:42:48Z] B2 start (domain 2 free)
+[2026-11-03T05:42:48Z] START workloads-3.15.1t
+[2026-11-03T06:05:58Z] END   ftquiet-all rc=0 2074s
+[2026-11-03T06:07:39Z] START est-3.15.1 (domain 0, est_d0.sh)
+[2026-11-03T06:09:44Z] END   est-3.15.1 rc=0 125s
+[2026-11-03T06:09:44Z] START est-3.15.1t (domain 0, est_d0.sh)
+[2026-11-03T06:12:04Z] END   est-3.15.1t rc=0 140s
+[2026-11-03T06:12:21Z] START wlstats-run-3.15.1
+[2026-11-03T06:14:07Z] END   wlstats-run-3.15.1 rc=0 106s
+[2026-11-03T06:19:18Z] B1 start (domain 1 free)
+[2026-11-03T06:19:18Z] SKIP  est 3.15.1 (/work/w2p3f/skip/est-3.15.1)
+[2026-11-03T06:19:18Z] SKIP  est 3.15.1t (/work/w2p3f/skip/est-3.15.1t)
+[2026-11-03T06:34:46Z] END   workloads-3.15.1t rc=0 3118s
+[2026-11-03T06:34:46Z] START t7-3.15.1t
+[2026-11-03T06:36:33Z] END   t7-3.15.1t rc=0 107s
+[2026-11-03T06:36:48Z] C start
+[2026-11-03T06:51:10Z] START pyperformance-enabled-3.15.1
+[2026-11-03T06:51:10Z] START pyperformance-enabled-3.15.1t
+[2026-11-03T06:51:10Z] START pyperformance-plain-3.15.1
+[2026-11-03T06:51:10Z] START pyperformance-plain-3.15.1t
+[2026-11-03T07:52:05Z] END   pyperformance-enabled-3.15.1 rc=1 3655s
+[2026-11-03T07:54:10Z] END   pyperformance-plain-3.15.1 rc=1 3780s
+[2026-11-03T07:54:17Z] END   pyperformance-plain-3.15.1t rc=1 3787s
+[2026-11-03T07:54:32Z] END   pyperformance-enabled-3.15.1t rc=1 3802s
+[2026-11-03T07:54:32Z] START pyperformance-plain-3.15.1-ports
+[2026-11-03T07:56:55Z] END   pyperformance-plain-3.15.1-ports rc=0 143s
+[2026-11-03T07:56:55Z] START pyperformance-enabled-3.15.1-ports
+[2026-11-03T07:59:19Z] END   pyperformance-enabled-3.15.1-ports rc=0 144s
+[2026-11-03T07:59:19Z] START pyperformance-plain-3.15.1t-ports
+[2026-11-03T08:02:00Z] END   pyperformance-plain-3.15.1t-ports rc=0 161s
+[2026-11-03T08:02:00Z] START pyperformance-enabled-3.15.1t-ports
+[2026-11-03T08:04:42Z] END   pyperformance-enabled-3.15.1t-ports rc=0 162s
+[2026-11-03T08:04:42Z] START pyperformance-compare-3.15.1
+[2026-11-03T08:04:42Z] END   pyperformance-compare-3.15.1 rc=0 0s
+[2026-11-03T08:04:42Z] START pyperformance-compare-3.15.1t
+[2026-11-03T08:04:43Z] END   pyperformance-compare-3.15.1t rc=0 1s
+[2026-11-03T08:04:43Z] START gcquiet
+[2026-11-03T08:04:57Z] START pyperformance-plain-3.15.1t-sphinx
+[2026-11-03T08:06:19Z] END   pyperformance-plain-3.15.1t-sphinx rc=0 82s
+[2026-11-03T08:06:19Z] START pyperformance-enabled-3.15.1t-sphinx
+[2026-11-03T08:07:38Z] END   pyperformance-enabled-3.15.1t-sphinx rc=0 79s
+[2026-11-03T08:07:38Z] START pyperformance-plain-3.15.1-solo1
+[2026-11-03T08:08:06Z] END   pyperformance-plain-3.15.1-solo1 rc=0 28s
+[2026-11-03T08:08:06Z] START pyperformance-enabled-3.15.1-solo1
+[2026-11-03T08:08:33Z] END   pyperformance-enabled-3.15.1-solo1 rc=0 27s
+[2026-11-03T08:08:33Z] START pyperformance-enabled-3.15.1-solo2
+[2026-11-03T08:09:01Z] END   pyperformance-enabled-3.15.1-solo2 rc=0 28s
+[2026-11-03T08:09:01Z] START pyperformance-plain-3.15.1-solo2
+[2026-11-03T08:09:28Z] END   pyperformance-plain-3.15.1-solo2 rc=0 27s
+[2026-11-03T08:09:28Z] START pyperformance-plain-3.15.1t-solo1
+[2026-11-03T08:09:56Z] END   pyperformance-plain-3.15.1t-solo1 rc=0 28s
+[2026-11-03T08:09:56Z] START pyperformance-enabled-3.15.1t-solo1
+[2026-11-03T08:10:25Z] END   pyperformance-enabled-3.15.1t-solo1 rc=0 29s
+[2026-11-03T08:10:25Z] START pyperformance-enabled-3.15.1t-solo2
+[2026-11-03T08:10:54Z] END   pyperformance-enabled-3.15.1t-solo2 rc=0 29s
+[2026-11-03T08:10:54Z] START pyperformance-plain-3.15.1t-solo2
+[2026-11-03T08:11:22Z] END   pyperformance-plain-3.15.1t-solo2 rc=0 28s
+[2026-11-03T08:11:22Z] pp_extra done
+[2026-11-03T09:18:25Z] END   gcquiet rc=0 4422s
+[2026-11-03T09:18:25Z] START time-3.15.1
+[2026-11-03T10:14:58Z] END   time-3.15.1 rc=0 3393s
+[2026-11-03T10:14:58Z] START isolate-time-3.15.1
+[2026-11-03T10:39:26Z] END   isolate-time-3.15.1 rc=0 1468s
+[2026-11-03T10:39:26Z] START sbprobe-3.15.1
+[2026-11-03T10:55:26Z] END   sbprobe-3.15.1 rc=0 960s
+[2026-11-03T10:55:26Z] START report-3.15.1
+[2026-11-03T10:55:28Z] END   report-3.15.1 rc=0 2s
+[2026-11-03T10:55:28Z] START report-3.15.1t
+[2026-11-03T10:55:28Z] END   report-3.15.1t rc=0 0s
+[2026-11-03T10:55:29Z] C done
+[2026-11-03T10:55:29Z] ALL done

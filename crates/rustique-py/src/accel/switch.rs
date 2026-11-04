@@ -6,8 +6,10 @@
 //! Variables (ignored under `-E`/`-I`, read at every call): `RUSTIQUE` (1/true/yes/on:
 //! enable at startup; 0/false/no/off or empty: kill switch for every enable path, and the
 //! `.pth` line loads nothing; anything else: a warning, nothing enabled), `RUSTIQUE_ONLY`, `RUSTIQUE_EXCLUDE`,
-//! `RUSTIQUE_STATS`, `RUSTIQUE_CHECK`, `RUSTIQUE_REPORT`. Warnings are single lines on
-//! `sys.stderr`; parsing never raises.
+//! `RUSTIQUE_STATS`, `RUSTIQUE_CHECK`, `RUSTIQUE_REPORT`, `RUSTIQUE_TIERS` (opt-in tiers, in
+//! union with `enable(tiers=...)`; `none`/`0`/empty turns every tier off even when code asks;
+//! `RUSTIQUE_EXCLUDE` may name a tier). Warnings are single lines on `sys.stderr`; parsing
+//! never raises.
 
 use std::sync::Mutex;
 
@@ -16,8 +18,16 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 
 use super::{registry, stats};
 
-const VARIABLES: [&str; 6] =
-    ["RUSTIQUE", "RUSTIQUE_ONLY", "RUSTIQUE_EXCLUDE", "RUSTIQUE_STATS", "RUSTIQUE_REPORT", "RUSTIQUE_CHECK"];
+const VARIABLES: [&str; 8] = [
+    "RUSTIQUE",
+    "RUSTIQUE_ONLY",
+    "RUSTIQUE_EXCLUDE",
+    "RUSTIQUE_STATS",
+    "RUSTIQUE_REPORT",
+    "RUSTIQUE_CHECK",
+    "RUSTIQUE_TIERS",
+    "RUSTIQUE_UNVALIDATED_PATCH",
+];
 const ON: [&str; 4] = ["1", "true", "yes", "on"];
 const OFF: [&str; 4] = ["0", "false", "no", "off"];
 
@@ -27,14 +37,23 @@ struct State {
     source: Option<String>,
     only: Option<Vec<String>>,
     exclude: Vec<String>,
+    /// Opt-in tiers in effect (union over enable paths since the last `disable()`).
+    tiers: Vec<String>,
     killed_calls: u64,
     /// Where the report goes at exit (`"stderr"` or a path).
     report: Option<String>,
     atexit: bool,
 }
 
-static STATE: Mutex<State> =
-    Mutex::new(State { source: None, only: None, exclude: Vec::new(), killed_calls: 0, report: None, atexit: false });
+static STATE: Mutex<State> = Mutex::new(State {
+    source: None,
+    only: None,
+    exclude: Vec::new(),
+    tiers: Vec::new(),
+    killed_calls: 0,
+    report: None,
+    atexit: false,
+});
 
 fn state() -> std::sync::MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|p| p.into_inner())
@@ -62,6 +81,11 @@ fn env(py: Python<'_>, name: &str) -> Option<String> {
         return None;
     }
     std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
+}
+
+/// A `RUSTIQUE*` variable set to an ON value (respecting `-E`/`-I`).
+pub(crate) fn env_on(py: Python<'_>, name: &str) -> bool {
+    env(py, name).is_some_and(|v| flag(&v) == Some(true))
 }
 
 /// `Some(true)` for ON values, `Some(false)` for OFF values, `None` otherwise.
@@ -102,7 +126,7 @@ fn split_names(value: &str) -> Vec<String> {
 /// Names of a variable without the unknown ones (one warning per variable).
 fn known(py: Python<'_>, var: &str, names: Vec<String>) -> Vec<String> {
     let specs = registry::all_specs();
-    let is_known = |n: &str| specs.iter().any(|s| s.name == n || s.group == n);
+    let is_known = |n: &str| registry::known_name(n);
     let unknown: Vec<&String> = names.iter().filter(|n| !is_known(n)).collect();
     if !unknown.is_empty() {
         let mut groups: Vec<&str> = specs.iter().map(|s| s.group).filter(|g| !g.starts_with('_')).collect();
@@ -119,6 +143,48 @@ fn known(py: Python<'_>, var: &str, names: Vec<String>) -> Vec<String> {
         );
     }
     names.into_iter().filter(|n| is_known(n)).collect()
+}
+
+/// What `RUSTIQUE_TIERS` asks for: `None` (unset: the code's tiers), `Some(None)` (`none`,
+/// `0`, an OFF value or empty: no tier at all), `Some(Some(names))` (known names; unknown
+/// ones warned about and dropped).
+fn tiers_request(py: Python<'_>) -> Option<Option<Vec<String>>> {
+    let raw = env(py, "RUSTIQUE_TIERS")?;
+    let v = raw.trim().to_lowercase();
+    if v.is_empty() || v == "none" || OFF.contains(&v.as_str()) {
+        return Some(None);
+    }
+    let known_tiers = registry::tier_names();
+    let names = split_names(&v);
+    let unknown: Vec<String> =
+        names.iter().filter(|n| !known_tiers.contains(&n.as_str())).map(|n| py_repr(py, n)).collect();
+    if !unknown.is_empty() {
+        warn(
+            py,
+            &format!(
+                "rustique: RUSTIQUE_TIERS: no tier named {}, ignored (tiers: {})",
+                unknown.join(", "),
+                known_tiers.join(", ")
+            ),
+        );
+    }
+    Some(Some(names.into_iter().filter(|n| known_tiers.contains(&n.as_str())).collect()))
+}
+
+/// `RUSTIQUE_VALIDATE` (`eager` | `first-call`): the validation policy. Read by every
+/// enable path (also `_accel.enable()`, once per process), so child processes of a CI job
+/// inherit it.
+pub(crate) fn apply_validate_env(py: Python<'_>) {
+    if let Some(v) = env(py, "RUSTIQUE_VALIDATE") {
+        match v.trim().to_lowercase().as_str() {
+            "eager" => registry::store_eager(true),
+            "first-call" | "" => registry::store_eager(false),
+            _ => warn(
+                py,
+                &format!("rustique: ignoring RUSTIQUE_VALIDATE={} (expected eager or first-call)", py_repr(py, &v)),
+            ),
+        }
+    }
 }
 
 /// `RUSTIQUE` set to an OFF value or empty: exactly like `0` (kill switch; the `.pth`
@@ -228,6 +294,7 @@ pub fn switch_enable(
     exclude: Vec<String>,
     builtins: bool,
     source: &str,
+    tiers: Option<Vec<String>>,
 ) -> PyResult<()> {
     // 1. Report registration (also when killed: the report says why nothing ran).
     let report = report_request(py);
@@ -244,6 +311,24 @@ pub fn switch_enable(
         registry::check_names(o)?;
     }
     registry::check_names(&exclude)?;
+    if let Some(t) = &tiers {
+        registry::check_tiers(t)?;
+    }
+    // Opt-in tiers: the code's in union with the environment's; the environment's `none`
+    // turns every tier off.
+    let sel_tiers: Vec<String> = match tiers_request(py) {
+        Some(None) => Vec::new(),
+        Some(Some(e)) => {
+            let mut t = tiers.unwrap_or_default();
+            for n in e {
+                if !t.contains(&n) {
+                    t.push(n);
+                }
+            }
+            t
+        }
+        None => tiers.unwrap_or_default(),
+    };
     // 3. Environment names (unknown ones dropped with a warning).
     let env_only = env(py, "RUSTIQUE_ONLY").map(|v| known(py, "RUSTIQUE_ONLY", split_names(&v)));
     let env_exclude =
@@ -268,6 +353,7 @@ pub fn switch_enable(
             sel_exclude.push(n);
         }
     }
+    apply_validate_env(py);
     // 5. Check mode.
     match check_request(py) {
         Some("warn") => stats::set_check(Some(false)),
@@ -275,14 +361,20 @@ pub fn switch_enable(
         Some(_) => stats::set_check(None),
         None => {}
     }
-    // 6. Counters.
+    // 6. Counters; with a `*.json` report, the live per-process counter file.
     if report.is_some() || env(py, "RUSTIQUE_STATS").is_some_and(|v| flag(&v) == Some(true)) {
         stats::set_enabled(true);
+    }
+    if let Some(r) = &report
+        && r.ends_with(".json")
+        && stats::enabled()
+    {
+        super::counters_file::start(py, r);
     }
     // 7. Install (quiet). An empty `only` (every RUSTIQUE_ONLY name unknown) installs
     // nothing.
     if sel_only.as_ref().is_none_or(|o| !o.is_empty()) {
-        registry::enable(py, sel_only.clone(), sel_exclude.clone())?;
+        registry::enable_tiers(py, sel_only.clone(), sel_exclude.clone(), sel_tiers.clone())?;
     }
     // 8–9. Source (first path that ran) and the effective selection.
     let mut st = state();
@@ -291,12 +383,19 @@ pub fn switch_enable(
     }
     st.only = sel_only;
     st.exclude = sel_exclude;
+    for t in sel_tiers {
+        if !st.tiers.contains(&t) {
+            st.tiers.push(t);
+        }
+    }
     Ok(())
 }
 
 /// `disable()`: the next enable path records its source again.
 pub fn reset_source() {
-    state().source = None;
+    let mut st = state();
+    st.source = None;
+    st.tiers.clear();
 }
 
 /// `process["switch"]` and `process["free_threaded"]` of `status()`.
@@ -307,6 +406,7 @@ pub fn describe(py: Python<'_>, process: &Bound<'_, PyDict>) -> PyResult<()> {
         sw.set_item("source", st.source.as_deref())?;
         sw.set_item("only", st.only.as_ref().map(|o| PyTuple::new(py, o)).transpose()?)?;
         sw.set_item("exclude", PyTuple::new(py, &st.exclude)?)?;
+        sw.set_item("tiers", PyTuple::new(py, &st.tiers)?)?;
         sw.set_item("killed_calls", st.killed_calls)?;
         sw.set_item("report", st.report.as_deref())?;
     }
@@ -348,7 +448,7 @@ pub fn startup(py: Python<'_>) {
         warn(py, &format!("rustique: ignoring RUSTIQUE={} (expected 1 or 0)", py_repr(py, &raw)));
         return;
     }
-    if let Err(e) = switch_enable(py, None, Vec::new(), true, "RUSTIQUE=1") {
+    if let Err(e) = switch_enable(py, None, Vec::new(), true, "RUSTIQUE=1", None) {
         let ty = e.get_type(py).name().map(|n| n.to_string()).unwrap_or_default();
         warn(py, &format!("rustique: RUSTIQUE={raw} ignored: {ty}: {}", e.value(py)));
     }
@@ -356,17 +456,19 @@ pub fn startup(py: Python<'_>) {
 
 /// The env-aware enable of `rustique.enable()` & co. (quiet: returns None).
 #[pyfunction]
-#[pyo3(name = "switch_enable", signature = (only=None, exclude=None, builtins=true, source="rustique.enable()"))]
+#[pyo3(name = "switch_enable", signature = (only=None, exclude=None, builtins=true, source="rustique.enable()", tiers=None))]
 pub fn py_switch_enable(
     py: Python<'_>,
     only: Option<&Bound<'_, PyAny>>,
     exclude: Option<&Bound<'_, PyAny>>,
     builtins: bool,
     source: &str,
+    tiers: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<()> {
     let only = code_names(only)?;
     let exclude = code_names(exclude)?.unwrap_or_default();
-    switch_enable(py, only, exclude, builtins, source)
+    let tiers = code_names(tiers)?;
+    switch_enable(py, only, exclude, builtins, source, tiers)
 }
 
 /// The kill switch (`RUSTIQUE` set to an OFF value), live.
@@ -407,5 +509,6 @@ pub fn report_at_exit(py: Python<'_>) -> PyResult<()> {
     let Some(target) = state().report.take() else { return Ok(()) };
     let accel = crate::module(py)?.getattr("_accel")?;
     py.import("rustique._report")?.call_method1("write", (target, accel.getattr("_record")?))?;
+    super::counters_file::mark_json_written();
     Ok(())
 }

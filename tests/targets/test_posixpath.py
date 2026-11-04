@@ -195,6 +195,41 @@ def test_relpath(p, s, kind):
         check("relpath", p, s)
 
 
+COMPS = ["a", "bc", ".a", "...", "..a", "a.", "x.py", "\xe9", "\u4f60", "\U0001f600", "\udc80", " ", "~"]
+comp = st.lists(st.sampled_from(COMPS), min_size=1, max_size=3).map("".join)
+# Absolute normalized paths: `abspath`/`relpath` read these in place (no normpath pass).
+norm_abs = st.lists(comp, max_size=8).map(lambda cs: "/" + "/".join(cs))
+# Near-normalized variants: one defect each (double slash, '.', '..', trailing slash).
+DEFECTS = ["", "", "/", "/.", "/..", "/./", "//"]
+near_abs = st.tuples(norm_abs, st.sampled_from(DEFECTS), norm_abs).map(lambda t: t[0] + t[1] + t[2])
+
+
+def enc(x):
+    return x.encode("utf-8", "surrogateescape")
+
+
+@settings(max_examples=400)
+@given(p=st.one_of(norm_abs, near_abs), s=st.one_of(st.none(), norm_abs, near_abs, comp), as_bytes=st.booleans())
+def test_relpath_normalized_inputs(p, s, as_bytes):
+    if as_bytes:
+        check("relpath", enc(p), None if s is None else enc(s))
+        check("abspath", enc(p))
+    else:
+        check("relpath", p, s)
+        check("abspath", p)
+
+
+def test_relpath_long_paths():
+    """Paths longer than the stack scratch buffer (512 units) take one heap buffer."""
+    deep = "/" + "/".join(f"dir{i:03d}" for i in range(120))
+    for p, s in [(deep, "/"), (deep + "/x.py", deep), (deep + "/./a//b/../c", deep[:300]), ("rel/" * 150, None),
+                 (deep.replace("dir0", "d\u4f600"), deep)]:
+        check("relpath", p, s)
+        check("relpath", enc(p), None if s is None else enc(s))
+        check("abspath", p)
+        check("abspath", enc(p))
+
+
 def test_edge_cases():
     for args in [("",), ("", ""), ("a/", ""), ("/", ""), ("a", ""), ("", "b"), ("a", "/b", ""), ("//", "a")]:
         check("join", *args)
@@ -430,6 +465,9 @@ def test_threads_with_enable_disable():
 def test_shared_mechanics():
     """tests/targets/_mechanics.py: every tool kind sees the original's frames (incl.
     LINE-only/RAISE-only global tools and local events), introspection unchanged."""
+    import cProfile  # noqa: F401  (imported outside the counted windows: their import
+    import pstats  # noqa: F401   code calls os.path functions, which would count as hits)
+
     import _mechanics as M
 
     A.disable(["posixpath"])
@@ -459,8 +497,18 @@ def calls():
             str(p), p.name, p.relative_to("/a").parts, hash(p) == hash(pathlib.PurePosixPath("/a/b/c.txt")))
 
 # Registered before enable(): runs after the exit hook (originals restored, references released).
-atexit.register(lambda: print("before", calls() == EXPECTED, posixpath.join.__code__ is CODE,
-                              sys.getrefcount(posixpath.__dict__) - RC))
+# The daemon threads stop first (they were inside kernels during the release, which is the
+# point), so a call one of them has in flight cannot hold a transient reference to the module
+# dict while it is counted (free-threaded builds read the count concurrently).
+def before():
+    STOP.append(True)
+    for t in THREADS:
+        t.join(5)
+    print("before", calls() == EXPECTED, posixpath.join.__code__ is CODE,
+          sys.getrefcount(posixpath.__dict__) - RC)
+STOP = []
+THREADS = []
+atexit.register(before)
 EXPECTED = calls()
 CODE = posixpath.join.__code__
 gc.collect()
@@ -471,11 +519,12 @@ assert calls() == EXPECTED
 atexit.register(lambda: print("after", calls() == EXPECTED))  # runs before the hook: kernels
 
 def spin():
-    while True:
+    while not STOP:
         calls()
 
 for _ in range(3):
-    threading.Thread(target=spin, daemon=True).start()
+    THREADS.append(threading.Thread(target=spin, daemon=True))
+    THREADS[-1].start()
 time.sleep(0.05)
 """
 
@@ -494,3 +543,33 @@ def test_exit_release_and_daemon_threads():
     )
     assert r.returncode == 0, r.stderr
     assert r.stdout.splitlines() == ["after True", "before True True 0"], (r.stdout, r.stderr)
+
+
+def test_join_with_cached_pathlib_paths_hits_and_matches():
+    """`join(PurePosixPath, ...)`: `os.fspath` of an exact path object whose `str()` is cached
+    is that str (no reference to the path is taken: free-threaded 8-thread rule)."""
+    import pathlib
+
+    rearm()
+    A.enable(["pathlib"])
+    rt.stats(True)
+    try:
+        p = pathlib.PurePosixPath("/srv/app")
+        q = pathlib.PosixPath("static")
+        fresh = pathlib.PurePosixPath("/never/stringified")
+        str(p), str(q)
+        before = hits("posixpath.join")
+        for args in [(p, "static"), (p, q), ("/x", q), (p,), (p, "/abs"), (p, ""), (q, p)]:
+            check("join", *args)
+            r = posixpath.join(*args)
+            assert r == REF["join"](*args)
+        assert hits("posixpath.join") - before >= 7, (rt.stats()["posixpath.join"], [t["state"] for t in rt.status()["targets"] if t["name"] == "posixpath.join"])
+        assert posixpath.join(p) is str(p)  # `path = a` after `a = os.fspath(a)`: the cached str itself
+        # `_str` unset: CPython computes and caches it; the kernel declines (same result)
+        check("join", fresh, "x")
+        class Sub(pathlib.PurePosixPath):
+            def __fspath__(self):
+                return "/sub"
+        check("join", Sub("/a"), "b")
+    finally:
+        A.disable(["pathlib"])

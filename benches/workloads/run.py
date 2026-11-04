@@ -26,7 +26,9 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FAMILIES = ("web", "data", "devtools")
+# Wave 1: web, data, devtools. Wave 2 adds framework apps, third-party-heavy code, complex
+# custom applications, long-running services and multi-threaded programs.
+FAMILIES = ("web", "data", "devtools", "frameworks", "libs", "custom", "services", "threads")
 
 
 def discover() -> list[str]:

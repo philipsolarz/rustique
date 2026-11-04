@@ -1,0 +1,37 @@
+data/backup_archive                      nojit     599.2 ms  jit     598.8 ms  ratio  0.999  same
+data/billing_engine                      nojit     914.0 ms  jit     899.7 ms  ratio  0.984  same
+data/config_merge                        nojit     538.8 ms  jit     545.7 ms  ratio  1.013  same
+data/csv_etl                             nojit     392.8 ms  jit     389.4 ms  ratio  0.991  same
+data/fs_inventory                        nojit     315.2 ms  jit     307.1 ms  ratio  0.974  same
+data/log_analytics                       nojit     769.3 ms  jit     758.0 ms  ratio  0.985  same
+data/pandas_etl                          nojit     535.0 ms  jit     530.0 ms  ratio  0.991  same
+data/report_render                       nojit     404.8 ms  jit     388.2 ms  ratio  0.959  same
+data/state_snapshot                      nojit     637.0 ms  jit     625.2 ms  ratio  0.982  same
+data/text_corpus                         nojit     603.3 ms  jit     608.1 ms  ratio  1.008  same
+data/tz_events                           nojit     528.6 ms  jit     532.2 ms  ratio  1.007  same
+data/xml_feeds                           nojit     503.5 ms  jit     488.1 ms  ratio  0.970  same
+geometric mean                                                                ratio  0.988
+devtools/black_format                    nojit    1196.0 ms  jit    1233.4 ms  ratio  1.031  same
+devtools/coverage_pyflakes_tests         nojit     383.0 ms  jit     376.8 ms  ratio  0.984  same
+devtools/import_startup                  nojit    1881.9 ms  jit    1885.9 ms  ratio  1.002  same
+devtools/isort_stdlib                    nojit     283.6 ms  jit     272.6 ms  ratio  0.961  same
+devtools/pip_resolve                     nojit     564.3 ms  jit     573.2 ms  ratio  1.016  same
+devtools/pycodestyle_stdlib              nojit    1011.1 ms  jit     950.6 ms  ratio  0.940  same
+devtools/pyflakes_stdlib                 nojit    1217.1 ms  jit    1221.4 ms  ratio  1.004  same
+devtools/pylint_stdlib                   nojit    1184.8 ms  jit    1239.7 ms  ratio  1.046  same
+devtools/pytest_networkx                 nojit     641.0 ms  jit     654.2 ms  ratio  1.021  same
+devtools/rich_render                     nojit     283.9 ms  jit     294.3 ms  ratio  1.037  same
+devtools/sphinx_autodoc                  nojit     847.8 ms  jit     842.7 ms  ratio  0.994  same
+devtools/sqlglot_transpile               nojit     862.5 ms  jit     913.1 ms  ratio  1.059  same
+geometric mean                                                                ratio  1.007
+web/aiohttp_app                          nojit     269.8 ms  jit     283.6 ms  ratio  1.051  same
+web/asyncio_http                         nojit     232.3 ms  jit     246.0 ms  ratio  1.059  same
+web/django_blog                          nojit     489.5 ms  jit     517.9 ms  ratio  1.058  same
+web/email_mime                           nojit     659.2 ms  jit     700.8 ms  ratio  1.063  same
+web/fastapi_pydantic                     nojit     296.2 ms  jit     328.4 ms  ratio  1.109  same
+web/flask_jinja                          nojit     419.2 ms  jit     436.3 ms  ratio  1.041  same
+web/json_api                             nojit     396.3 ms  jit     434.7 ms  ratio  1.097  same
+web/logging_service                      nojit     282.2 ms  jit     280.4 ms  ratio  0.994  same
+web/requests_local                       nojit     250.2 ms  jit     270.9 ms  ratio  1.083  same
+web/sqlalchemy_orm                       nojit     341.6 ms  jit     351.6 ms  ratio  1.029  same
+geometric mean                                                                ratio  1.058

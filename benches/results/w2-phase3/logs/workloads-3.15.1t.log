@@ -1,0 +1,73 @@
+web/aiohttp_app                          plain     300.6 ms  enabled     280.0 ms  ratio  0.932  same
+web/asyncio_http                         plain     241.9 ms  enabled     196.5 ms  ratio  0.812  same
+web/django_blog                          plain     541.1 ms  enabled     539.3 ms  ratio  0.997  same
+web/email_mime                           plain     703.7 ms  enabled     712.1 ms  ratio  1.012  same
+web/fastapi_pydantic                     plain     337.6 ms  enabled     327.2 ms  ratio  0.969  same
+web/flask_jinja                          plain     459.0 ms  enabled     445.2 ms  ratio  0.970  same
+web/json_api                             plain     442.4 ms  enabled     332.7 ms  ratio  0.752  same
+web/logging_service                      plain     301.1 ms  enabled     223.6 ms  ratio  0.742  same
+web/requests_local                       plain     249.4 ms  enabled     231.3 ms  ratio  0.928  same
+web/sqlalchemy_orm                       plain     353.7 ms  enabled     352.4 ms  ratio  0.996  same
+geometric mean                                                                    ratio  0.905
+data/backup_archive                      plain     606.7 ms  enabled     606.3 ms  ratio  0.999  same
+data/billing_engine                      plain     744.7 ms  enabled     710.3 ms  ratio  0.954  same
+data/config_merge                        plain     608.7 ms  enabled     603.4 ms  ratio  0.991  same
+data/csv_etl                             plain     430.4 ms  enabled     274.1 ms  ratio  0.637  same
+data/fs_inventory                        plain     320.1 ms  enabled     230.4 ms  ratio  0.720  same
+data/log_analytics                       plain     811.2 ms  enabled     475.7 ms  ratio  0.586  same
+data/pandas_etl                          plain     589.4 ms  enabled     587.8 ms  ratio  0.997  same
+data/report_render                       plain     461.2 ms  enabled     161.9 ms  ratio  0.351  same
+data/state_snapshot                      plain    1217.9 ms  enabled     580.9 ms  ratio  0.477  same
+data/text_corpus                         plain     630.0 ms  enabled     629.7 ms  ratio  1.000  same
+data/tz_events                           plain     609.6 ms  enabled     360.3 ms  ratio  0.591  same
+data/xml_feeds                           plain     569.3 ms  enabled     569.5 ms  ratio  1.000  same
+geometric mean                                                                    ratio  0.736
+devtools/black_format                    plain    1290.8 ms  enabled    1282.7 ms  ratio  0.994  same
+devtools/coverage_pyflakes_tests         plain     491.7 ms  enabled     491.5 ms  ratio  1.000  same
+devtools/import_startup                  plain    2239.3 ms  enabled    2238.1 ms  ratio  0.999  same
+devtools/isort_stdlib                    plain    1146.3 ms  enabled     232.6 ms  ratio  0.203  same
+devtools/pip_resolve                     plain     626.1 ms  enabled     588.8 ms  ratio  0.940  same
+devtools/pycodestyle_stdlib              plain    1067.4 ms  enabled    1061.5 ms  ratio  0.995  same
+devtools/pyflakes_stdlib                 plain    1203.0 ms  enabled    1197.2 ms  ratio  0.995  same
+devtools/pylint_stdlib                   plain     899.0 ms  enabled     897.3 ms  ratio  0.998  same
+devtools/pytest_networkx                 plain     632.6 ms  enabled     596.9 ms  ratio  0.944  same
+devtools/rich_render                     plain     310.4 ms  enabled     307.7 ms  ratio  0.991  same
+devtools/sphinx_autodoc                  plain     895.3 ms  enabled     897.1 ms  ratio  1.002  same
+devtools/sqlglot_transpile               plain    1031.9 ms  enabled    1005.9 ms  ratio  0.975  same
+geometric mean                                                                    ratio  0.863
+frameworks/django_admin                  plain    1126.1 ms  enabled    1105.9 ms  ratio  0.982  same
+frameworks/drf_api                       plain    1358.2 ms  enabled    1348.9 ms  ratio  0.993  same
+frameworks/falcon_api                    plain     430.6 ms  enabled     350.4 ms  ratio  0.814  same
+frameworks/fastapi_sqlalchemy            plain    1363.6 ms  enabled    1359.7 ms  ratio  0.997  same
+frameworks/flask_marshmallow             plain     817.2 ms  enabled     807.5 ms  ratio  0.988  same
+frameworks/strawberry_graphql            plain    1089.4 ms  enabled    1068.0 ms  ratio  0.980  same
+geometric mean                                                                    ratio  0.957
+libs/attrs_cattrs                        plain     875.4 ms  enabled     767.5 ms  ratio  0.877  same
+libs/boto3_client                        plain    1647.3 ms  enabled    1560.6 ms  ratio  0.947  same
+libs/bs4_scrape                          plain    1173.4 ms  enabled    1162.4 ms  ratio  0.991  same
+libs/jsonschema_validate                 plain    1477.4 ms  enabled    1450.7 ms  ratio  0.982  same
+libs/pydantic_payloads                   plain     745.2 ms  enabled     741.3 ms  ratio  0.995  same
+libs/yaml_config                         plain    1123.9 ms  enabled    1120.0 ms  ratio  0.996  same
+geometric mean                                                                    ratio  0.964
+custom/di_plugins                        plain     831.7 ms  enabled     816.9 ms  ratio  0.982  same
+custom/ecs_arena                         plain    1060.8 ms  enabled    1060.7 ms  ratio  1.000  same
+custom/event_ledger                      plain    1553.7 ms  enabled    1515.0 ms  ratio  0.975  same
+custom/fulfilment_sim                    plain    1357.9 ms  enabled    1318.0 ms  ratio  0.971  same
+custom/mini_interp                       plain    1213.5 ms  enabled    1232.2 ms  ratio  1.015  same
+custom/order_domain                      plain    1390.4 ms  enabled    1371.0 ms  ratio  0.986  same
+custom/orm_mapper                        plain     855.3 ms  enabled     813.4 ms  ratio  0.951  same
+custom/report_engine                     plain    1033.1 ms  enabled     930.5 ms  ratio  0.901  same
+custom/rules_engine                      plain    1079.4 ms  enabled    1049.0 ms  ratio  0.972  same
+custom/task_planner                      plain     533.4 ms  enabled     533.9 ms  ratio  1.001  same
+geometric mean                                                                    ratio  0.975
+services/cache_service                   plain    1043.2 ms  enabled    1040.9 ms  ratio  0.998  same
+services/job_worker                      plain     297.6 ms  enabled     202.9 ms  ratio  0.682  same
+services/uvicorn_fastapi                 plain    1024.0 ms  enabled     999.2 ms  ratio  0.976  same
+services/waitress_flask                  plain     184.5 ms  enabled     170.7 ms  ratio  0.925  same
+geometric mean                                                                    ratio  0.885
+threads/compute_pool                     plain     173.3 ms  enabled     170.4 ms  ratio  0.983  same
+threads/http_server                      plain      87.5 ms  enabled      78.1 ms  ratio  0.893  same
+threads/pipeline_queue                   plain     266.4 ms  enabled     189.4 ms  ratio  0.711  same
+threads/request_pool                     plain     140.8 ms  enabled     109.7 ms  ratio  0.780  same
+threads/shared_cache                     plain     229.7 ms  enabled     141.6 ms  ratio  0.616  same
+geometric mean                                                                    ratio  0.786

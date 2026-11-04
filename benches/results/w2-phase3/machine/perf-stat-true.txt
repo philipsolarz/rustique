@@ -1,0 +1,13 @@
+
+ Performance counter stats for 'true':
+
+            747950      instructions                                                          
+           1592626      cycles                                                                
+             51.11 msec task-clock                                                            
+
+       0.051841413 seconds time elapsed
+
+       0.000000000 seconds user
+       0.051935000 seconds sys
+
+

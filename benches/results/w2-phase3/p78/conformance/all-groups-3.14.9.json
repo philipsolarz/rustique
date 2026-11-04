@@ -1,0 +1,134 @@
+{
+ "python": "3.14.9",
+ "targets": [
+  "builtins",
+  "containers",
+  "contextlib",
+  "copy",
+  "dataclasses",
+  "datetime",
+  "enum",
+  "float",
+  "fnmatch",
+  "functools",
+  "generated",
+  "json",
+  "logging",
+  "pathlib",
+  "posixpath",
+  "random",
+  "re",
+  "set",
+  "statistics",
+  "textwrap",
+  "urllib"
+ ],
+ "modules": {
+  "test.test_posixpath": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 91,
+    "skip": 3
+   },
+   "differences": [],
+   "seconds": [
+    0.3,
+    0.3
+   ],
+   "stderr": ""
+  },
+  "test.test_genericpath": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 25
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_fnmatch": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 24
+   },
+   "differences": [],
+   "seconds": [
+    0.1,
+    0.1
+   ],
+   "stderr": ""
+  },
+  "test.test_glob": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 22,
+    "skip": 2
+   },
+   "differences": [],
+   "seconds": [
+    0.2,
+    0.2
+   ],
+   "stderr": ""
+  },
+  "test.test_pathlib": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 966,
+    "skip": 403
+   },
+   "differences": [],
+   "seconds": [
+    1.2,
+    1.1
+   ],
+   "stderr": ""
+  },
+  "test.test_os": {
+   "plain": "ran",
+   "enabled": "ran",
+   "counts": {
+    "pass": 317,
+    "skip": 66,
+    "fail": 2
+   },
+   "differences": [],
+   "seconds": [
+    12.8,
+    12.8
+   ],
+   "stderr": ""
+  }
+ },
+ "ok": false,
+ "not_installed": {
+  "statistics.mean": [
+   "pending-import",
+   null
+  ],
+  "statistics.pstdev": [
+   "pending-import",
+   null
+  ],
+  "statistics.pvariance": [
+   "pending-import",
+   null
+  ],
+  "statistics.stdev": [
+   "pending-import",
+   null
+  ],
+  "statistics.variance": [
+   "pending-import",
+   null
+  ]
+ }
+}

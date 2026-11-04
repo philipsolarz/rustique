@@ -1,11 +1,12 @@
 """The `RUSTIQUE=1` startup path that loads only the extension (docs/ACCELERATION.md §8;
-the environment semantics are dx's, tested in tests/test_dx*.py): the `.pth` line loads
-`rustique._rustique` by file without importing the `rustique` package and calls
-`_accel.startup()`.
+the environment semantics are dx's, tested in tests/test_dx*.py): the `.pth` line imports
+the top-level `_rustique` without importing the `rustique` package and calls its
+`startup()`.
 
-Each case runs a fresh interpreter that executes the line exactly as `site` does for a
-`.pth` import line (`exec(line)` in a frame with a local `sitedir`), with `sitedir` set to
-the directory holding the `rustique` package.
+Each case runs a fresh interpreter that executes the shipped line exactly as `site` does for
+a `.pth` import line (`exec(line)` in a frame with a local `sitedir`). In the source tree
+`_rustique` is the in-package layout's shim (`python/_rustique.py`); tests/test_engine.py
+covers the release wheel's top-level layout.
 """
 
 from __future__ import annotations
@@ -19,43 +20,31 @@ import textwrap
 
 import pytest
 
-# The line shipped in `_rustique_startup.pth` (dx's file; this is its exact text). `site`
-# compiles every `.pth` import line at each start, so the line itself stays short
-# (RUSTIQUE unset or 0: one getenv); the loader is a string literal, compiled by exec()
-# only when RUSTIQUE is set. It runs through exec() in site's frame, where `sitedir` is
-# defined (3.14: addpackage's parameter; 3.15: injected by _exec_imports for
-# compatibility); the inner exec sees the same locals; it uses no nested scopes.
-# Compiled only when RUSTIQUE is set and not "0"; kept small: 3.15's compiler costs ~140k
-# Ir for a one-call statement, 0.43M for this one, 1.0M for an earlier walrus/filter chain.
-# `_frozen_importlib._load` is importlib's own spec loader (sys.modules insertion, module
-# attributes, cleanup on failure). Wheel installs: `sitedir/rustique/`; other layouts
-# (editable installs, where the package is on sys.path): a normal import.
-LOADER = (
-    "import sys,_imp;p=sitedir+'/rustique/_rustique'+_imp.extension_suffixes()[0];"
-    "os.environ['RUSTIQUE'].strip().lower() in ('', 'off', 'false', 'no') or sys.flags.ignore_environment or "
-    "(sys.modules['_frozen_importlib']._load("
-    "sys.modules['_frozen_importlib_external'].spec_from_file_location('rustique._rustique',p)) "
-    "if os.path.isfile(p) else __import__('rustique._rustique')._rustique)._accel.startup()"
-)
-# The gate stays as short as possible (every interpreter start compiles it): "0" and unset
-# stop here; the other OFF values (any case, surrounding spaces) and "" stop at the head of
-# the loader, which is compiled only then. Nothing is loaded for any of them.
-PTH_LINE = "import os; os.environ.get('RUSTIQUE', '0') != '0' and exec(" + repr(LOADER) + ")"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# The line shipped in `_rustique_startup.pth`. `site` compiles every `.pth` import line at
+# each start, so it stays one short statement: RUSTIQUE unset or 0 stops at one getenv;
+# anything else imports the extension, whose `startup()` decides (OFF values and -E/-I
+# leave nothing loaded, ON values enable, others warn).
+with open(os.path.join(ROOT, "python", "_rustique_startup.pth")) as _f:
+    PTH_LINE = _f.read().strip()
 
 SITEDIR = os.path.dirname(os.path.dirname(importlib.util.find_spec("rustique").origin))
 
 
 def run(body: str, env: dict[str, str | None], *flags: str, sitedir: str = SITEDIR) -> subprocess.CompletedProcess[str]:
-    """Run the `.pth` line as site would, then `body`, in a fresh interpreter."""
+    """Run the `.pth` line as site would, then `body`, in a fresh interpreter. Without `site`
+    (`-S`; the package's directory is put on sys.path instead), so that a `.pth` installed in
+    the venv (a wheel's) does not run the line first."""
     prologue = (
+        f"import sys; sys.path.insert(0, {SITEDIR!r})\n"
         "def _site(sitedir):\n"
         f"    exec({PTH_LINE!r})\n"
         f"_site({sitedir!r})\n"
     )
-    e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
+    e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE") or k == "RUSTIQUE_VALIDATE"}
     e.update({k: v for k, v in env.items() if v is not None})
     return subprocess.run(
-        [sys.executable, *flags, "-c", prologue + textwrap.dedent(body)],
+        [sys.executable, "-S", *flags, "-c", prologue + textwrap.dedent(body)],
         capture_output=True,
         text=True,
         env=e,
@@ -70,7 +59,7 @@ def test_the_line_is_one_import_line():
 @pytest.mark.parametrize("value", [None, "0", "off", "", " No ", "FALSE", "Off"])
 def test_unset_and_off_values_load_nothing(value):
     r = run(
-        "import sys\nnames = sorted(m for m in sys.modules if m.startswith('rustique'))\nprint(names)",
+        "import sys\nnames = sorted(m for m in sys.modules if 'rustique' in m)\nprint(names)",
         {"RUSTIQUE": value},
     )
     assert r.returncode == 0, r.stderr
@@ -112,8 +101,8 @@ def test_startup_loads_only_the_extension_and_enables():
         """
         import sys
         assert 'rustique' not in sys.modules, sorted(sys.modules)
-        assert 'rustique._rustique' in sys.modules
-        ext = sys.modules['rustique._rustique']
+        ext = sys.modules['_rustique']
+        assert sys.modules['rustique._rustique'] is ext
         st = ext._accel.status()
         installed = sorted(t['name'] for t in st['targets'] if t['state'] == 'installed')
         print(st['process']['switch']['source'], len(installed))
@@ -121,7 +110,6 @@ def test_startup_loads_only_the_extension_and_enables():
         import rustique
         assert rustique._rustique is sys.modules['rustique._rustique'] is ext
         assert rustique.status()['process']['enabled']
-        assert type(rustique.List([1, 2])).__name__ == 'List'   # lazy opt-in API
         assert [3, 1, 2].index(2) == 2 and sum([1, 2]) == 3
         """,
         {"RUSTIQUE": "1"},
@@ -132,8 +120,9 @@ def test_startup_loads_only_the_extension_and_enables():
     assert source == "RUSTIQUE=1" and int(n) >= 13
 
 
-def test_ignore_environment_imports_nothing():
-    r = run("import sys; print([m for m in sys.modules if m.startswith('rustique')])", {"RUSTIQUE": "1"}, "-E")
+@pytest.mark.parametrize("flag", ["-E", "-I"])
+def test_ignore_environment_imports_nothing(flag):
+    r = run("import sys; print([m for m in sys.modules if 'rustique' in m])", {"RUSTIQUE": "1"}, flag)
     assert r.returncode == 0 and r.stdout.strip() == "[]", (r.stdout, r.stderr)
 
 
@@ -187,20 +176,22 @@ def test_report_at_exit_imports_formatting_only_then(tmp_path):
     assert rec["stats"]["list.index"]["hits"] >= 1
 
 
-def test_other_layouts_fall_back_to_a_normal_import(tmp_path):
-    # The `.pth` sits in a site dir without the package (editable installs): the extension
-    # comes through the package on sys.path.
+@pytest.mark.skipif(not os.path.isfile(os.path.join(SITEDIR, "_rustique.py")),
+                    reason="the extension is installed top-level here (a release wheel)")
+def test_in_package_layout_loads_through_the_shim():
+    # The source tree (and wheels built from the sdist): `_rustique` is the shim, which loads
+    # `rustique/_rustique<suffix>` by path, still without importing the package.
     r = run(
         """
-        import sys
-        st = sys.modules['rustique._rustique']._accel.status()
-        print(st['process']['switch']['source'], 'rustique' in sys.modules)
+        import sys, os, importlib.util
+        ext = sys.modules['_rustique']
+        package_dir = os.path.dirname(importlib.util.find_spec('rustique').origin)
+        print(ext.__name__, os.path.dirname(ext.__file__) == package_dir, 'rustique' in sys.modules)
         """,
         {"RUSTIQUE": "1"},
-        sitedir=str(tmp_path),
     )
     assert r.returncode == 0, r.stderr
-    assert r.stdout.split() == ["RUSTIQUE=1", "True"]
+    assert r.stdout.split() == ["rustique._rustique", "True", "False"], r.stdout
 
 
 # --- interpreter exit -------------------------------------------------------------------
@@ -220,7 +211,7 @@ def same(x):
 def _exit_run(tmp_path, body):
     (tmp_path / "_rustique_selftest.py").write_text(EXIT_MODULE)
     code = f"import sys; sys.path.insert(0, {str(tmp_path)!r})\n" + textwrap.dedent(body)
-    e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE")}
+    e = {k: v for k, v in os.environ.items() if not k.startswith("RUSTIQUE") or k == "RUSTIQUE_VALIDATE"}
     return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=e, timeout=120)
 
 

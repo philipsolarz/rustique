@@ -30,6 +30,8 @@
 //! (CPython's `getrandbits`/`random` are `@critical_section`), together with the list for
 //! list arguments; nothing that can run Python code (or GC) happens inside it.
 
+pub mod variates;
+
 use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 
 use pyo3::ffi;
@@ -39,12 +41,43 @@ use rustique_core::random::{Mt, N};
 
 use crate::accel::{self, Prepare, Reason, Refusal, TargetSpec};
 use crate::targets::utils_kit::{
-    _PyType_Lookup, Guard, INST, O, TypeCache, bind, call_original, generic_getattro, get_s, int_value, interned,
-    is_type, keep, key, long_from_i128, module_dict_s, nargs, prepare_symbols, unshadowed, version_tag, with_cs,
-    with_cs2,
+    _PyType_Lookup, Guard, INST, O, TypeCache, call_original, generic_getattro, get_s, int_value, interned, is_type,
+    keep, key, long_from_i128, module_dict_s, nargs, prepare_symbols, unshadowed, version_tag, with_cs, with_cs2,
 };
 
 const R: Ordering = Ordering::Relaxed;
+
+/// `utils_kit::bind` with a first pass by identity: the keyword names a call site passes
+/// are interned constants of its code object, the same objects as the interned parameter
+/// names, so they match by pointer without comparing against every other name
+/// (`PyUnicode_Compare`). Any keyword not found that way takes the general path.
+///
+/// # Safety
+/// Vectorcall arguments; `names` are interned str.
+#[inline(always)]
+unsafe fn bind<const K: usize>(args: *const O, npos: usize, kw: O, names: [O; K]) -> Option<[O; K]> {
+    // SAFETY: kwnames tuple of str and its values after the positional arguments.
+    unsafe {
+        if kw.is_null() || npos > K {
+            return crate::targets::utils_kit::bind(args, npos, kw, names);
+        }
+        let mut out = [std::ptr::null_mut(); K];
+        for (i, slot) in out.iter_mut().enumerate().take(npos) {
+            *slot = *args.add(i);
+        }
+        for i in 0..ffi::PyTuple_GET_SIZE(kw) as usize {
+            let k = ffi::PyTuple_GET_ITEM(kw, i as ffi::Py_ssize_t);
+            let Some(j) = names.iter().position(|&n| n == k) else {
+                return crate::targets::utils_kit::bind(args, npos, kw, names);
+            };
+            if !out[j].is_null() {
+                return None;
+            }
+            out[j] = *args.add(npos + i);
+        }
+        Some(out)
+    }
+}
 
 // ---------------------------------------------------------------------------------------
 // Statics filled by `prepare` (main interpreter objects; strong references kept).
@@ -778,8 +811,20 @@ unsafe fn sample(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
             if k > n {
                 return None; // ValueError (the list shrank on another thread)
             }
-            let idx = mt(slf).sample_indices(n, k);
-            Some(fill(out, pop, kind, idx))
+            // Items go straight into the result (no index vector); the draws continue
+            // after an allocation failure so the stream ends where CPython's would.
+            let mut ok = true;
+            mt(slf).sample_each(n, k, |i, j| {
+                if ok {
+                    let item = seq_item(pop, kind, j);
+                    if item.is_null() {
+                        ok = false;
+                    } else {
+                        ffi::PyList_SET_ITEM(out, i as ffi::Py_ssize_t, item);
+                    }
+                }
+            });
+            Some(ok)
         });
         finish_list(g, out, ok)
     }
@@ -808,70 +853,53 @@ unsafe fn finish_list(g: &Guard, out: O, ok: Option<bool>) -> Option<O> {
     }
 }
 
-/// A cumulative weight: CPython's `int` or `float` running sum.
+/// A cumulative weight: CPython's `int` or `float` running sum. Ints stay within
+/// `±2**53` (beyond, a cumulative int no longer compares exactly through `f64`).
 #[derive(Clone, Copy, Debug)]
 enum Num {
-    I(i128),
+    I(i64),
     F(f64),
 }
 
-const EXACT_F64_INT: u128 = 1 << 53;
+const EXACT_F64_INT: i64 = 1 << 53;
 
 impl Num {
-    /// `self + other` with Python's int/float semantics (`None`: outside the exact range).
+    /// `self + other` with Python's int/float semantics (`None`: an int sum outside
+    /// `±2**53`, which [`Num::exact_f64`] would reject anyway).
+    #[inline(always)]
     fn add(self, o: Num) -> Option<Num> {
         Some(match (self, o) {
-            (Num::I(a), Num::I(b)) => {
-                let s = a.checked_add(b)?;
-                if s.unsigned_abs() >= 1 << 100 {
-                    return None;
-                }
-                Num::I(s)
-            }
-            // int + float: the int converts with correct rounding (as `i128 as f64` does).
+            (Num::I(a), Num::I(b)) => Num::I(a.checked_add(b).filter(|s| s.unsigned_abs() <= EXACT_F64_INT as u64)?),
+            // int + float: the int converts exactly (|int| <= 2**53, checked when it was
+            // read or summed).
             (Num::I(a), Num::F(b)) => Num::F(a as f64 + b),
             (Num::F(a), Num::I(b)) => Num::F(a + b as f64),
             (Num::F(a), Num::F(b)) => Num::F(a + b),
         })
     }
 
-    /// The value as an `f64` for exact comparisons with a float (`None` when an int is too
-    /// large to compare exactly through `f64`).
-    fn exact_f64(self) -> Option<f64> {
+    /// The value as an `f64` for exact comparisons with a float.
+    #[inline(always)]
+    fn exact_f64(self) -> f64 {
         match self {
-            Num::I(v) => (v.unsigned_abs() <= EXACT_F64_INT).then_some(v as f64),
-            Num::F(v) => Some(v),
+            Num::I(v) => v as f64,
+            Num::F(v) => v,
         }
     }
 }
 
-/// Read a weight list/tuple: exact `int` (i64) or `float` elements. `None`: not supported.
-unsafe fn read_weights(o: O) -> Option<Vec<Num>> {
-    // SAFETY: exact list/tuple, read under the list's critical section.
+/// One weight: an exact `float`, or an exact `int` within `±2**53`.
+#[inline(always)]
+unsafe fn weight(x: O) -> Option<Num> {
+    // SAFETY: live object.
     unsafe {
-        let list = is_type(o, &raw mut ffi::PyList_Type);
-        if !list && !is_type(o, &raw mut ffi::PyTuple_Type) {
-            return None;
+        if is_type(x, &raw mut ffi::PyFloat_Type) {
+            Some(Num::F(ffi::PyFloat_AS_DOUBLE(x)))
+        } else if is_type(x, &raw mut ffi::PyLong_Type) {
+            int_value(x).filter(|v| v.unsigned_abs() <= EXACT_F64_INT as u64).map(Num::I)
+        } else {
+            None
         }
-        with_cs(o, || {
-            let (n, items) = if list {
-                (ffi::PyList_GET_SIZE(o) as usize, (*o.cast::<ffi::PyListObject>()).ob_item as *const O)
-            } else {
-                (ffi::PyTuple_GET_SIZE(o) as usize, (*o.cast::<ffi::PyTupleObject>()).ob_item.as_ptr() as *const O)
-            };
-            let mut out = Vec::with_capacity(n);
-            for i in 0..n {
-                let x = *items.add(i);
-                if is_type(x, &raw mut ffi::PyFloat_Type) {
-                    out.push(Num::F(ffi::PyFloat_AS_DOUBLE(x)));
-                } else if is_type(x, &raw mut ffi::PyLong_Type) {
-                    out.push(Num::I(i128::from(int_value(x)?)));
-                } else {
-                    return None;
-                }
-            }
-            Some(out)
-        })
     }
 }
 
@@ -900,32 +928,83 @@ unsafe extern "C" fn vc_choices(func: O, args: *const O, nargsf: usize, kw: O) -
     }
 }
 
-/// Cumulative weights as exact `f64`s (CPython: `list(_accumulate(weights))` or
-/// `cum_weights` itself), when every value compares exactly through `f64`.
-unsafe fn cumulative(weights: O, cum_weights: O) -> Option<Option<Vec<f64>>> {
+/// Cumulative weights as exact `f64`s, written to a stack buffer (or `heap` beyond
+/// [`CUM_STACK`]): CPython's `list(_accumulate(weights))`, or `cum_weights` itself.
+struct Cum {
+    stack: [std::mem::MaybeUninit<f64>; CUM_STACK],
+    heap: Vec<f64>,
+    len: usize,
+}
+
+const CUM_STACK: usize = 64;
+
+impl Cum {
+    fn new() -> Self {
+        Cum { stack: [std::mem::MaybeUninit::uninit(); CUM_STACK], heap: Vec::new(), len: 0 }
+    }
+
+    #[inline(always)]
+    fn as_slice(&self) -> &[f64] {
+        if self.heap.is_empty() {
+            // SAFETY: the first `len` entries were written by `fill`.
+            unsafe { &*(&raw const self.stack[..self.len] as *const [f64]) }
+        } else {
+            &self.heap
+        }
+    }
+
+    /// Read `weights` (a list/tuple of exact ints/floats) under its lock, accumulating
+    /// (`acc`) or not. `false`: not supported (the original runs).
+    unsafe fn fill(&mut self, o: O, acc: bool) -> bool {
+        // SAFETY: exact list/tuple, read under the list's critical section.
+        unsafe {
+            let list = is_type(o, &raw mut ffi::PyList_Type);
+            if !list && !is_type(o, &raw mut ffi::PyTuple_Type) {
+                return false;
+            }
+            with_cs(o, || {
+                let (n, items) = if list {
+                    (ffi::PyList_GET_SIZE(o) as usize, (*o.cast::<ffi::PyListObject>()).ob_item as *const O)
+                } else {
+                    (ffi::PyTuple_GET_SIZE(o) as usize, (*o.cast::<ffi::PyTupleObject>()).ob_item.as_ptr() as *const O)
+                };
+                if n > CUM_STACK {
+                    self.heap.reserve_exact(n);
+                }
+                let mut cur: Option<Num> = None;
+                for i in 0..n {
+                    let Some(x) = weight(*items.add(i)) else { return false };
+                    let v = match cur {
+                        Some(c) if acc => match c.add(x) {
+                            Some(v) => v,
+                            None => return false,
+                        },
+                        _ => x,
+                    };
+                    cur = Some(v);
+                    if n > CUM_STACK {
+                        self.heap.push(v.exact_f64());
+                    } else {
+                        self.stack[i].write(v.exact_f64());
+                    }
+                }
+                self.len = n;
+                true
+            })
+        }
+    }
+}
+
+/// Fill `cum` from `weights` / `cum_weights`: `Some(false)` no weights, `Some(true)`
+/// filled, `None` not supported (or a `TypeError`: both given).
+unsafe fn cumulative(weights: O, cum_weights: O, cum: &mut Cum) -> Option<bool> {
     // SAFETY: argument objects.
     unsafe {
         let none = ffi::Py_None();
         match (weights.is_null() || weights == none, cum_weights.is_null() || cum_weights == none) {
-            (true, true) => Some(None),
-            (false, true) => {
-                let w = read_weights(weights)?;
-                let mut acc: Vec<f64> = Vec::with_capacity(w.len());
-                let mut cur: Option<Num> = None;
-                for x in w {
-                    let v = match cur {
-                        None => x,
-                        Some(c) => c.add(x)?,
-                    };
-                    cur = Some(v);
-                    acc.push(v.exact_f64()?);
-                }
-                Some(Some(acc))
-            }
-            (true, false) => {
-                let w = read_weights(cum_weights)?;
-                Some(Some(w.into_iter().map(Num::exact_f64).collect::<Option<Vec<f64>>>()?))
-            }
+            (true, true) => Some(false),
+            (false, true) => cum.fill(weights, true).then_some(true),
+            (true, false) => cum.fill(cum_weights, false).then_some(true),
             (false, false) => None, // TypeError
         }
     }
@@ -935,6 +1014,7 @@ unsafe fn choices(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
     // SAFETY: vectorcall arguments.
     unsafe {
         let g = &G_CHOICES;
+        let mut cum = Cum::new();
         let parsed = (|| {
             let names = [std::ptr::null_mut(), ld(&S.population), ld(&S.weights), ld(&S.cum_weights), ld(&S.k)];
             let npos = nargs(nargsf);
@@ -954,20 +1034,21 @@ unsafe fn choices(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
             if n == 0 || n as u64 >= 1 << 53 {
                 return None; // IndexError (or out of the exact range)
             }
-            let cum = cumulative(weights, cum_weights)?;
-            if cum.as_ref().is_some_and(|c| c.len() != n) {
-                return None; // ValueError
-            }
-            if let Some(c) = &cum {
+            let weighted = cumulative(weights, cum_weights, &mut cum)?;
+            if weighted {
+                let c = cum.as_slice();
+                if c.len() != n {
+                    return None; // ValueError
+                }
                 // ValueError: total <= 0 or not finite (also: empty -> IndexError).
                 let total = c.last().copied().unwrap_or(f64::NAN) + 0.0;
                 if !(total > 0.0 && total.is_finite()) {
                     return None;
                 }
             }
-            Some((slf, pop, kind, k, cum))
+            Some((slf, pop, kind, k, weighted))
         })();
-        let Some((slf, pop, kind, k, cum)) = parsed else {
+        let Some((slf, pop, kind, k, weighted)) = parsed else {
             g.counters.fallback_streak(Reason::Args);
             return None;
         };
@@ -990,19 +1071,17 @@ unsafe fn choices(func: O, args: *const O, nargsf: usize, kw: O) -> Option<O> {
                 return None; // IndexError (or out of the exact range)
             }
             let mut rng = mt(slf);
-            match &cum {
-                None => {
-                    // `n += 0.0`; `population[floor(random() * n)]`
-                    let nf = n as f64;
-                    Some(fill(out, pop, kind, (0..kk).map(|_| ((rng.random() * nf).floor() as usize).min(n - 1))))
+            if !weighted {
+                // `n += 0.0`; `population[floor(random() * n)]`
+                let nf = n as f64;
+                Some(fill(out, pop, kind, (0..kk).map(|_| ((rng.random() * nf).floor() as usize).min(n - 1))))
+            } else {
+                let c = cum.as_slice();
+                if c.len() != n {
+                    return None; // ValueError
                 }
-                Some(c) => {
-                    if c.len() != n {
-                        return None; // ValueError
-                    }
-                    let total = c[n - 1] + 0.0;
-                    Some(fill(out, pop, kind, (0..kk).map(|_| bisect_right(c, rng.random() * total, n - 1))))
-                }
+                let total = c[n - 1] + 0.0;
+                Some(fill(out, pop, kind, (0..kk).map(|_| bisect_right(c, rng.random() * total, n - 1))))
             }
         });
         finish_list(g, out, ok)
@@ -1028,6 +1107,10 @@ fn prepare_group<'py>(py: Python<'py>, cx: &mut Prepare<'py>) -> Result<(), Refu
     if cls.as_ptr() != ld(&RANDOM_CLS) {
         prepare_statics(py, cx, &cls)?;
     }
+    // `self._randbelow(n)`, which the kernels run natively, is this method: fingerprinted
+    // so that a patch release changing it refuses instead of differing.
+    let rb = get_s(cx, &crate::accel::prepare::type_dict(&cls)?, &key(py, "_randbelow_with_getrandbits"))?;
+    cx.fingerprint_code(&rb, &[(3, 14, "f35f0d709dc5c1bf"), (3, 15, "7acb0dd4029b9a49")])?;
     // Module globals: pinned and checked to be what `random` imports them as (`from math
     // import floor as _floor`, ...), read from the source modules' dicts.
     let math = module_dict_s(cx, &key(py, "math"))?;
@@ -1293,4 +1376,16 @@ target!(
     &[(3, 14, "de1e524b9f5e3ca9"), (3, 15, "748775b6bd8b61e8")]
 );
 
-pub static TARGETS: &[&TargetSpec] = &[&RANDINT, &RANDRANGE, &CHOICE, &SHUFFLE, &SAMPLE, &CHOICES];
+pub static TARGETS: &[&TargetSpec] = &[
+    &RANDINT,
+    &RANDRANGE,
+    &CHOICE,
+    &SHUFFLE,
+    &SAMPLE,
+    &CHOICES,
+    &variates::NORMALVARIATE,
+    &variates::LOGNORMVARIATE,
+    &variates::EXPOVARIATE,
+    &variates::PARETOVARIATE,
+    &variates::GAUSS,
+];

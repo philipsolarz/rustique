@@ -1,0 +1,132 @@
+........................................................................ [  1%]
+........................................................................ [  2%]
+...............................s...............s........................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  6%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [ 11%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 19%]
+........................................................................ [ 20%]
+........................................................................ [ 22%]
+........................................................................ [ 23%]
+........................................................................ [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 30%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 37%]
+..........ssss.......................................................... [ 38%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+..........................................s............................. [ 41%]
+.........................................s.............................. [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+......................s................................................. [ 46%]
+........................................................................ [ 48%]
+........................................................................ [ 49%]
+........................................................................ [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 53%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+........................................................................ [ 60%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 64%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 67%]
+........................................................................ [ 69%]
+........................................................................ [ 70%]
+........................................................................ [ 71%]
+........................................................................ [ 72%]
+........................................................................ [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 76%]
+........................................................................ [ 77%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 83%]
+........................................................................ [ 85%]
+........................................................................ [ 86%]
+........................................................................ [ 87%]
+........................................................................ [ 88%]
+........................................................................ [ 90%]
+........................................................................ [ 91%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+..........................ssssssssssss.................................. [ 95%]
+.....s.................................................................. [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+..................................ss...................................  [100%]
+=============================== warnings summary ===============================
+tests/targets/test_random.py::test_subclasses_match[LoggingRandom]
+tests/targets/test_random.py::test_subclasses_match[FloatyRandom]
+tests/targets/test_random.py::test_subclasses_match[OddRandom]
+  /home/ubuntu/.local/share/uv/python/cpython-3.15.2-linux-x86_64-gnu/lib/python3.15/random.py:263: UserWarning: Underlying random() generator does not supply 
+  enough bits to choose from a population range this large.
+  To remove the range limitation, add a getrandbits() method.
+    warn("Underlying random() generator does not supply \n"
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+============================= slowest 25 durations =============================
+8.35s call     tests/targets/test_json_loads.py::test_hypothesis_repeated_keys
+5.12s call     tests/targets/test_json_loads.py::test_hypothesis_numbers
+5.01s call     tests/targets/test_json_loads.py::test_hypothesis_roundtrip_documents
+4.86s call     tests/targets/test_json_dumps.py::test_hypothesis_jsonish
+4.38s call     tests/targets/test_json_loads.py::test_hypothesis_mutated_documents
+2.98s call     tests/targets/test_fnmatch.py::test_port_equals_regex
+2.11s call     tests/test_differential.py::test_list_differential[untyped-mixed]
+1.96s call     tests/test_differential.py::test_dict_differential[untyped-int]
+1.91s call     tests/test_differential.py::test_dict_differential[builtin-str]
+1.88s call     tests/test_differential.py::test_dict_differential[builtin-mixed]
+1.87s call     tests/test_differential.py::test_set_differential[untyped-str]
+1.86s call     tests/test_differential.py::test_dict_differential[builtin-float-dups]
+1.84s call     tests/test_differential.py::test_dict_differential[untyped-mixed]
+1.82s call     tests/targets/test_copy_differential.py::test_recursion_high_limit[plain]
+1.79s call     tests/test_differential.py::test_set_differential[builtin-numeric-mix]
+1.78s call     tests/test_differential.py::test_dict_differential[untyped-numeric-mix]
+1.75s call     tests/test_differential.py::test_set_differential[typed-float]
+1.75s call     tests/test_differential.py::test_dict_differential[untyped-float]
+1.72s call     tests/test_differential.py::test_dict_differential[typed-bigint]
+1.63s call     tests/test_differential.py::test_set_differential[untyped-float]
+1.62s call     tests/test_differential.py::test_dict_differential[builtin-numeric-mix]
+1.62s call     tests/test_differential.py::test_set_differential[untyped-mixed]
+1.61s call     tests/test_differential.py::test_list_differential[typed-float-dups]
+1.60s call     tests/test_differential.py::test_set_differential[typed-str]
+1.58s call     tests/test_differential.py::test_dict_differential[typed-int]
+=========================== short test summary info ============================
+SKIPPED [1] tests/targets/test_copy_mechanics.py:235: 3.14: copy's type sets are mutable sets
+SKIPPED [1] tests/targets/test_copy_mechanics.py:507: 3.14: copy's type sets are mutable sets
+SKIPPED [1] tests/test_capi.py:280: rustique_demo is not built; run `maturin develop --uv -m examples/rust_extension/Cargo.toml` to test the C API from a separate extension module
+SKIPPED [1] tests/test_capi.py:289: rustique_demo is not built; run `maturin develop --uv -m examples/rust_extension/Cargo.toml` to test the C API from a separate extension module
+SKIPPED [1] tests/test_capi.py:303: rustique_demo is not built; run `maturin develop --uv -m examples/rust_extension/Cargo.toml` to test the C API from a separate extension module
+SKIPPED [1] tests/test_capi.py:309: rustique_demo is not built; run `maturin develop --uv -m examples/rust_extension/Cargo.toml` to test the C API from a separate extension module
+SKIPPED [1] tests/test_dx_cli.py:366: could not import 'xdist': No module named 'xdist'
+SKIPPED [1] tests/test_hardening.py:233: needs a free-threaded build with the GIL disabled
+SKIPPED [1] tests/test_hardening_dictset.py:707: build it with `maturin develop --uv -m examples/rust_extension/Cargo.toml`
+SKIPPED [12] tests/test_takeover_conformance.py:126: set CPYTHON_SRC to a CPython checkout matching this interpreter
+SKIPPED [1] tests/test_takeover_safe.py:314: needs the free-threaded build
+SKIPPED [1] tests/test_list_core.py:863: needs a free-threaded build with the GIL disabled
+SKIPPED [1] tests/test_list_core.py:897: needs a free-threaded build with the GIL disabled
+5807 passed, 24 skipped, 3 warnings in 223.98s (0:03:43)

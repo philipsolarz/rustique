@@ -1,0 +1,12 @@
+
+ Performance counter stats for 'taskset -c 9 timeout 5 sh -c while :; do :; done':
+
+       18400612597      cycles                                                                
+           5001.64 msec task-clock                                                            
+
+       5.006063473 seconds time elapsed
+
+       4.999688000 seconds user
+       0.002840000 seconds sys
+
+

@@ -139,6 +139,16 @@ L_OFF = _logger('b.off', level=logging.WARNING)
 L_CHILD = logging.getLogger('b.time.child.leaf')
 AD = logging.LoggerAdapter(L_TIME, {'svc': 'x'})
 o = Obj()
+import decimal, tempfile
+DEC = decimal.Decimal('12.50')
+_TF = tempfile.TemporaryFile('w+')
+L_FILE = logging.getLogger('b.file')
+L_FILE.handlers.clear(); L_FILE.propagate = False; L_FILE.setLevel(logging.INFO)
+_HF = logging.StreamHandler(_TF)
+_HF.setFormatter(logging.Formatter('%(asctime)s %(levelname)-8s [%(name)s] %(message)s'))
+L_FILE.addHandler(_HF)
+_HS = L_TIME.handlers[0]
+L_ON = _logger('b.on', '%(message)s')
 try:
     1 / 0
 except ZeroDivisionError:
@@ -198,6 +208,13 @@ CELLS = {
     "formatTime": "F_TIME.formatTime(rec)",
     "formatTime datefmt": "F_TIME.formatTime(rec, '%Y-%m-%dT%H:%M:%S')",
     "formatTime subclass": "F_SUB.formatTime(rec)",
+    # wave 2: Handler.handle, Decimal arguments, enabled level calls
+    "Handler.handle StringIO": "_HS.handle(rec)",
+    "info Decimal arg": "L_TIME.info('total %s', DEC)",
+    "Handler.handle file stream [fallback, steady]": "_HF.handle(rec)",
+    "Handler.handle file + StringIO [fallback, alternating]": "_HF.handle(rec); _HS.handle(rec)",
+    "info to file stream": "L_FILE.info('x=%s', v)",
+    "info enabled calls only (Logger.level steps aside)": "L_ON.info('x=%s', v)",
 }
 
 

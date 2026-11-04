@@ -11,8 +11,6 @@
 //! over an exact list or tuple. Private state skipped: `_compile_pattern`'s cache,
 //! `re`'s compile cache, `_re_escape`'s cache. See docs/targets/fnmatch.md.
 
-use std::cell::RefCell;
-
 use pyo3::ffi;
 use pyo3::prelude::*;
 
@@ -84,14 +82,9 @@ pub static TARGETS: &[&TargetSpec] = &[&FNMATCH, &FNMATCHCASE, &FILTER];
 /// The group's shared declarations: everything `fnmatchcase(name, pat)` reaches on a
 /// cache miss (the whole `fnmatch` namespace by snapshot, the builtins it uses,
 /// `re.compile`, `re._compile`, the parts of `re._parser` whose set semantics the port
-/// reproduces) and `os.path.normcase` as `fnmatch`/`filter` reach it (`fnmatch.os` →
-/// `os.path` → `posixpath.normcase` → `os.fspath`): validated and pinned once.
+/// reproduces): validated and pinned once. Platform-independent (`fnmatchcase` is the same
+/// code everywhere); `fnmatch`/`filter` add [`normcase_deps`].
 fn shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
-    if !cfg!(unix) {
-        // POSIX path semantics only: on Windows `os.path` is `ntpath`, `fnmatch` normalises
-        // with `ntpath.normcase` and `pathlib.Path` is `WindowsPath`.
-        return Err(Refusal::with(crate::accel::spec::Category::Platform, "validated on POSIX systems only"));
-    }
     if !rt::init_str_layout(py) {
         return Err(refuse!("str layout not calibrated"));
     }
@@ -129,6 +122,21 @@ fn shared(py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
     for name in ["isinstance", "str", "bytes", "len", "range"] {
         cx.pin_global(&g, name, &DEPS)?;
     }
+    Ok(())
+}
+
+/// What `fnmatch` and `filter` add: `os.path.normcase` as they reach it (`fnmatch.os` →
+/// `os.path` → `posixpath.normcase` → `os.fspath`), validated and pinned. POSIX only: on
+/// Windows `os.path` is `ntpath`, whose `normcase` lowers case with `LCMapStringEx`.
+/// `fnmatchcase` does not normalize and installs everywhere.
+fn normcase_deps(cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    if !cfg!(unix) {
+        return Err(Refusal::with(
+            crate::accel::spec::Category::Platform,
+            "fnmatch/filter: os.path.normcase validated with posixpath only",
+        ));
+    }
+    let g = cx.module()?.dict();
     // os.path.normcase
     let os = cx.loaded_module("os")?;
     let pp = cx.loaded_module("posixpath")?;
@@ -165,12 +173,14 @@ fn prep_fnmatchcase(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal
 }
 
 fn prep_fnmatch(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    normcase_deps(cx)?;
     // Its original calls the global `fnmatchcase` (covered by the namespace snapshot).
     rt::check_fp(cx, FPS, "fnmatch.fnmatchcase", &cx.module_attr("fnmatchcase")?)?;
     prep_fn(cx, "fnmatch", k_fnmatch)
 }
 
 fn prep_filter(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
+    normcase_deps(cx)?;
     prep_fn(cx, "filter", k_filter)
 }
 
@@ -178,73 +188,152 @@ fn prep_filter(_py: Python<'_>, cx: &mut Prepare<'_>) -> Result<(), Refusal> {
 // Kernels
 // ---------------------------------------------------------------------------------------
 
-/// Compiled patterns of this thread, keyed by content (CPython keeps the regexes in the
-/// `lru_cache` of `_compile_pattern`; this cache is the kernel's own and private). Patterns
-/// outside the reproduced grammar are cached as `None`.
-struct Cached {
+/// Compiled patterns, keyed by content (CPython keeps the regexes in the `lru_cache` of
+/// `_compile_pattern`; this table is the kernel's own and private). A process-wide,
+/// insert-only open-addressing table: an entry is published once (`Release`) and never
+/// changed or freed, so lookups are plain `Acquire` loads with no lock and no shared write
+/// (free-threaded builds: no cache-line bouncing between threads matching the same
+/// patterns). Patterns outside the reproduced grammar are cached as `prog: None`. When the
+/// probe window is full, the pattern is compiled for that call only.
+struct Entry {
+    hash: u64,
     bytes: bool,
-    units: Vec<u32>,
+    units: Box<[u32]>,
     prog: Option<Program>,
+    /// Shape of a pattern made of literals and at most one `*` (the common `*.py`,
+    /// `coverage.*`, exact names): matched by comparing the ends instead of interpreting
+    /// the program (same result: every literal matches exactly its code point and `*`
+    /// under DOTALL matches anything).
+    fast: Option<Fast>,
 }
 
-const CACHE_SIZE: usize = 32;
-
-#[derive(Default)]
-struct Cache {
-    entries: Vec<Cached>,
-    next: usize,
+/// `PRE*SUF` (`star`) or the literal `PRE` (not `star`), as code points.
+struct Fast {
+    pre: Box<[u32]>,
+    suf: Box<[u32]>,
+    star: bool,
 }
 
-thread_local! {
-    static CACHE: RefCell<Cache> = RefCell::new(Cache::default());
+impl Fast {
+    fn of(prog: &Program) -> Option<Fast> {
+        use rustique_core::paths::glob::Tok;
+        let mut pre = Vec::new();
+        let mut suf = Vec::new();
+        let mut star = false;
+        for &t in &prog.toks {
+            match t {
+                Tok::Lit(c) if star => suf.push(c),
+                Tok::Lit(c) => pre.push(c),
+                Tok::Star if !star => star = true,
+                _ => return None,
+            }
+        }
+        Some(Fast { pre: pre.into(), suf: suf.into(), star })
+    }
+
+    #[inline(always)]
+    fn matches<T: Unit>(&self, name: &[T]) -> bool {
+        let (p, s) = (self.pre.len(), self.suf.len());
+        if self.star {
+            name.len() >= p + s && same(&self.pre, &name[..p]) && same(&self.suf, &name[name.len() - s..])
+        } else {
+            same(&self.pre, name)
+        }
+    }
 }
 
+/// A compiled pattern: `Program::matches`, or the [`Fast`] shape when it has one.
+#[derive(Clone, Copy)]
+struct Compiled<'a> {
+    prog: &'a Program,
+    fast: Option<&'a Fast>,
+}
+
+impl Compiled<'_> {
+    #[inline(always)]
+    fn matches<T: Unit>(self, name: &[T]) -> bool {
+        match self.fast {
+            Some(f) => f.matches(name),
+            None => self.prog.matches(name),
+        }
+    }
+}
+
+const TABLE_SIZE: usize = 256;
+const PROBES: usize = 4;
+
+static TABLE: [std::sync::atomic::AtomicPtr<Entry>; TABLE_SIZE] =
+    [const { std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()) }; TABLE_SIZE];
+
+#[inline(always)]
 fn same<T: Unit>(units: &[u32], s: &[T]) -> bool {
     units.len() == s.len() && units.iter().zip(s).all(|(&a, &b)| a == b.cp())
 }
 
+/// The entry of a pattern with content `s` and hash `h`, compiled and published on first
+/// use; `Err(entry)` is an unpublished entry (probe window full) owned by the caller for
+/// this call.
+#[inline(always)]
+fn lookup<T: Unit>(bytes: bool, h: u64, s: &[T]) -> Result<&'static Entry, Box<Entry>> {
+    use std::sync::atomic::Ordering::{Acquire, Release};
+    let base = h as usize;
+    for k in 0..PROBES {
+        let slot = &TABLE[(base + k) % TABLE_SIZE];
+        let e = slot.load(Acquire);
+        if e.is_null() {
+            break;
+        }
+        // SAFETY: published entries are immutable and never freed.
+        let e = unsafe { &*e };
+        if e.hash == h && e.bytes == bytes && same(&e.units, s) {
+            return Ok(e);
+        }
+    }
+    let mut prog = Program::default();
+    let ok = prog.compile_into(s).is_some();
+    let fast = if ok { Fast::of(&prog) } else { None };
+    let entry =
+        Box::new(Entry { hash: h, bytes, units: s.iter().map(|u| u.cp()).collect(), prog: ok.then_some(prog), fast });
+    let raw = Box::into_raw(entry);
+    for k in 0..PROBES {
+        let slot = &TABLE[(base + k) % TABLE_SIZE];
+        match slot.compare_exchange(std::ptr::null_mut(), raw, Release, Acquire) {
+            // SAFETY: just published; never freed from now on.
+            Ok(_) => return Ok(unsafe { &*raw }),
+            Err(other) => {
+                // SAFETY: published by another thread: immutable, never freed.
+                let o = unsafe { &*other };
+                if o.hash == h && o.bytes == bytes && same(&o.units, s) {
+                    // SAFETY: ours was never published.
+                    drop(unsafe { Box::from_raw(raw) });
+                    return Ok(o);
+                }
+            }
+        }
+    }
+    // SAFETY: never published.
+    Err(unsafe { Box::from_raw(raw) })
+}
+
 /// Run `f` on the compiled program of `pat`; `None` when the pattern is outside the
 /// reproduced grammar.
-unsafe fn with_program<R>(k: Kind, pat: O, f: impl FnOnce(&Program) -> R) -> Option<R> {
-    // SAFETY: live exact str/bytes; no Python code runs while the cache is borrowed.
-    unsafe {
-        CACHE.with(|c| {
-            let mut c = c.borrow_mut();
-            let bytes = k == Kind::Bytes;
-            let hit = match k {
-                Kind::Str => {
-                    let t = str_view(pat).text;
-                    c.entries.iter().position(|e| !e.bytes && crate::with_text!(t, |s| same(&e.units, s)))
-                }
-                Kind::Bytes => {
-                    let b = bytes_view(pat);
-                    c.entries.iter().position(|e| e.bytes && same(&e.units, b))
-                }
-            };
-            let i = match hit {
-                Some(i) => i,
-                None => {
-                    let mut prog = Program::default();
-                    let ok = compile(k, pat, &mut prog);
-                    let units: Vec<u32> = match k {
-                        Kind::Str => crate::with_text!(str_view(pat).text, |s| s.iter().map(|u| u.cp()).collect()),
-                        Kind::Bytes => bytes_view(pat).iter().map(|&u| u32::from(u)).collect(),
-                    };
-                    let entry = Cached { bytes, units, prog: ok.then_some(prog) };
-                    if c.entries.len() < CACHE_SIZE {
-                        c.entries.push(entry);
-                        c.entries.len() - 1
-                    } else {
-                        let i = c.next;
-                        c.entries[i] = entry;
-                        c.next = (i + 1) % CACHE_SIZE;
-                        i
-                    }
-                }
-            };
-            c.entries[i].prog.as_ref().map(f)
-        })
-    }
+#[inline(always)]
+unsafe fn with_program<R>(k: Kind, pat: O, f: impl FnOnce(Compiled<'_>) -> R) -> Option<R> {
+    // SAFETY: live exact str/bytes (immutable buffers). The key is the object's own hash
+    // (cached in the object after its first computation; CPython's original computes it
+    // too, as the `lru_cache` key of `_compile_pattern`); entries are confirmed by content.
+    let found = unsafe {
+        let h = ffi::PyObject_Hash(pat) as u64;
+        match k {
+            Kind::Str => crate::with_text!(str_view(pat).text, |s| lookup(false, h, s)),
+            Kind::Bytes => lookup(true, h, bytes_view(pat)),
+        }
+    };
+    let e: &Entry = match &found {
+        Ok(e) => e,
+        Err(e) => e,
+    };
+    e.prog.as_ref().map(|prog| f(Compiled { prog, fast: e.fast.as_ref() }))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -294,7 +383,7 @@ unsafe fn compile(k: Kind, pat: O, prog: &mut Program) -> bool {
 }
 
 #[inline(always)]
-unsafe fn matches(k: Kind, prog: &Program, name: O) -> bool {
+unsafe fn matches(k: Kind, prog: Compiled<'_>, name: O) -> bool {
     // SAFETY: `name_ok(k, name)`.
     unsafe {
         match k {
@@ -353,12 +442,11 @@ unsafe fn filter(func: O, names: O, pat: O) -> Option<O> {
             return Some(g);
         }
         with_program(k, pat, |prog| {
-            let py = Python::assume_attached();
-            let seq = Bound::from_borrowed_ptr(py, names);
             // Hold the list's lock while reading it (free-threaded builds; a no-op with
-            // the GIL). Matched items get a strong reference before the result list is
-            // allocated (an allocation may run a finalizer that mutates `names`).
-            let picked: Option<Vec<O>> = pyo3::sync::critical_section::with_critical_section(&seq, || {
+            // the GIL), without a refcount round trip on a possibly shared list. Matched
+            // items get a strong reference before the result list is allocated (an
+            // allocation may run a finalizer that mutates `names`).
+            let picked: Option<Picked> = rt::with_cs(names, || {
                 let len = if is_list { ffi::PyList_GET_SIZE(names) } else { ffi::PyTuple_GET_SIZE(names) } as usize;
                 let item = |i: usize| {
                     if is_list {
@@ -370,7 +458,7 @@ unsafe fn filter(func: O, names: O, pat: O) -> Option<O> {
                 if !(0..len).all(|i| name_ok(k, item(i))) {
                     return None;
                 }
-                let mut out = Vec::new();
+                let mut out = Picked::new();
                 for i in 0..len {
                     let it = item(i);
                     if matches(k, prog, it) {
@@ -380,19 +468,56 @@ unsafe fn filter(func: O, names: O, pat: O) -> Option<O> {
                 Some(out)
             });
             let picked = picked?;
-            let list = ffi::PyList_New(picked.len() as ffi::Py_ssize_t);
+            let items = picked.as_slice();
+            let list = ffi::PyList_New(items.len() as ffi::Py_ssize_t);
             if list.is_null() {
-                for o in picked {
+                for &o in items {
                     ffi::Py_DECREF(o);
                 }
                 return Some(list);
             }
-            for (i, o) in picked.into_iter().enumerate() {
+            for (i, &o) in items.iter().enumerate() {
                 ffi::PyList_SET_ITEM(list, i as ffi::Py_ssize_t, o);
             }
             Some(list)
         })
         .flatten()
+    }
+}
+
+/// Matched names (strong references), inline up to 64, spilling to the heap beyond.
+struct Picked {
+    inline: [std::mem::MaybeUninit<O>; 64],
+    n: usize,
+    more: Vec<O>,
+}
+
+impl Picked {
+    #[inline(always)]
+    fn new() -> Self {
+        Picked { inline: [const { std::mem::MaybeUninit::uninit() }; 64], n: 0, more: Vec::new() }
+    }
+    #[inline(always)]
+    fn push(&mut self, o: O) {
+        if self.n < 64 {
+            self.inline[self.n].write(o);
+            self.n += 1;
+        } else {
+            if self.more.is_empty() {
+                let first: Vec<O> = self.inline_slice().to_vec();
+                self.more = first;
+            }
+            self.more.push(o);
+        }
+    }
+    #[inline(always)]
+    fn inline_slice(&self) -> &[O] {
+        // SAFETY: the first `n` entries are initialised.
+        unsafe { std::slice::from_raw_parts(self.inline.as_ptr().cast::<O>(), self.n) }
+    }
+    #[inline(always)]
+    fn as_slice(&self) -> &[O] {
+        if self.more.is_empty() { self.inline_slice() } else { &self.more }
     }
 }
 
@@ -415,7 +540,8 @@ fn _paths_fnmatch_port(name: &Bound<'_, PyAny>, pat: &Bound<'_, PyAny>) -> PyRes
         if !compile(k, pat.as_ptr(), &mut prog) {
             return Ok(None);
         }
-        Ok(Some(matches(k, &prog, name.as_ptr())))
+        let fast = Fast::of(&prog);
+        Ok(Some(matches(k, Compiled { prog: &prog, fast: fast.as_ref() }, name.as_ptr())))
     }
 }
 

@@ -9,6 +9,7 @@ results, `record.__dict__` (keys *and* order), exceptions and side effects.
 from __future__ import annotations
 
 import copy
+import decimal
 import io
 import logging
 import pickle
@@ -18,18 +19,23 @@ import time
 import types
 from unittest import mock
 
+import sysconfig
+
 import pytest
 
 from rustique import _rustique
 import rustique as rt
 
 A = _rustique._accel
+FT = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+# `Logger.level` is not installed on free-threaded builds (8-thread rule: docs/targets/logging.md §0)
 TARGETS = [
-    "logging.Logger.level",
+    *([] if FT else ["logging.Logger.level"]),
     "logging.Logger.findCaller",
     "logging.LogRecord.__init__",
     "logging.Formatter.formatTime",
     "logging.Formatter.format",
+    "logging.Handler.handle",
 ]
 
 
@@ -97,10 +103,13 @@ def both(fn):
 
 def test_status_installed_with_sites():
     st = {t["name"]: t for t in rt.status()["targets"] if t["group"] == "logging"}
+    if FT:  # listed, refused on this build
+        assert st.pop("logging.Logger.level")["state"] == "refused"
     assert set(st) == set(TARGETS)
     for t in st.values():
         assert t["state"] == "installed", t
-    assert len(st["logging.Logger.level"]["sites"]) == 6
+    if not FT:
+        assert len(st["logging.Logger.level"]["sites"]) == 6
 
 
 def test_introspection_unchanged():
@@ -179,7 +188,14 @@ ARGS_SHAPES = [
     (b"x",),
     (0,),
     (2**80,),
+    (decimal.Decimal("1.50"),),
+    (decimal.Decimal("NaN"), 2),
 ]
+
+
+class DecSub(decimal.Decimal):
+    def __str__(self):
+        return "sub"
 
 
 @pytest.mark.parametrize("args", ARGS_SHAPES, ids=repr)
@@ -361,6 +377,7 @@ def make_logger(name, level=logging.INFO):
     return lg, h
 
 
+@pytest.mark.skipif(FT, reason='Logger.level is not installed on free-threaded builds')
 def test_disabled_calls_are_kernel_hits_and_enabled_calls_log():
     lg, h = make_logger("t.level")
     lg.isEnabledFor(10), lg.isEnabledFor(5)  # fill the level cache (a miss takes the lock: CPython's path)
@@ -670,6 +687,12 @@ MESSAGES = [
     (12345, ()),
     (None, ()),
     ("%(x)s", ({"x": object()},)),
+    ("total %s", (decimal.Decimal("12.50"),)),
+    ("%s %s|%r", (decimal.Decimal("1E+3"), "x", decimal.Decimal("-0"))),
+    ("%d %.1f", (decimal.Decimal("7.9"), decimal.Decimal("2.25"))),
+    ("%(a)s", ({"a": decimal.Decimal("3")},)),
+    ("%s", (DecSub("4"),)),
+    ("%s", (decimal.Decimal("sNaN"),)),
 ]
 
 
@@ -938,3 +961,184 @@ def test_enable_disable_under_load():
     lines = sio.getvalue().splitlines()
     assert len(lines) == sum(count)
     assert all(l.startswith("INFO v") for l in lines)
+
+
+def test_decimal_arguments_follow_the_thread_context():
+    """`str(Decimal)` reads the current decimal context (exponent letter): the kernel calls
+    the C `str` at the same point CPython's getMessage does."""
+    def run():
+        out = []
+        with decimal.localcontext() as ctx:
+            ctx.capitals = 0
+            for d in (decimal.Decimal("1E+3"), decimal.Decimal("12.5")):
+                out.append(logging.Formatter("%(message)s").format(fixed_record(msg="v=%s", args=(d,))))
+        out.append(logging.Formatter("%(message)s").format(fixed_record(msg="v=%s", args=(decimal.Decimal("1E+3"),))))
+        return out
+
+    a, b = both(run)
+    assert a == b == ["v=1e+3", "v=12.5", "v=1E+3"]
+    A.stats(True, True)
+    logging.Formatter("%(message)s").format(fixed_record(msg="v=%s", args=(decimal.Decimal("2"),)))
+    # Only the C `decimal.Decimal` is a known scalar; an interpreter built without `_decimal`
+    # (e.g. no libmpdec) has `_pydecimal`'s Python class, and such records go to CPython.
+    c_decimal = not isinstance(decimal.Decimal.__dict__.get("__str__"), types.FunctionType)
+    assert hits("logging.Formatter.format") == (1 if c_decimal else 0)
+
+
+def test_record_subclass_presetting_attributes_keeps_dict_order():
+    """Fast inline stores apply only to fresh records; a subclass that stores first gets
+    CPython's generic stores (same keys, same order)."""
+    class Pre(logging.LogRecord):
+        def __init__(self, *a):
+            self.request = "r1"
+            self.name = "early"
+            super().__init__(*a)
+
+    def mk():
+        return [record_view(Pre("n", 20, "/p.py", 1, "m %s", (i,), None)) for i in range(3)]
+
+    a, b = both(mk)
+    assert a == b
+
+
+@pytest.mark.skipif(FT, reason='Logger.level is not installed on free-threaded builds')
+def test_level_target_steps_aside_when_enabled_calls_dominate():
+    lg, h = make_logger("t.busy")
+    lg.isEnabledFor(20)
+    A.stats(True, True)
+    for i in range(200):
+        lg.info("busy %d", i)
+    settle()
+    st = {t["name"]: t for t in rt.status()["targets"]}
+    assert len(h.records) == 200 and h.records[-1][1] == "busy 199"
+    assert st["logging.Logger.level"].get("suspended") == "fallback"
+    assert stats("logging.Logger.level")["fallback"]["deopt"] < 200
+
+
+# ---------------------------------------------------------------------------------------
+# Handler.handle (StreamHandler -> io.StringIO)
+# ---------------------------------------------------------------------------------------
+
+
+def handler_scenario(configure, n=5):
+    """Log through a fresh StreamHandler(StringIO) configured by `configure(h, stream)`;
+    returns (output, stderr captured from handleError, lock state)."""
+    sio = io.StringIO()
+    lg = logging.getLogger("t.handle")
+    lg.handlers.clear()
+    lg.propagate = False
+    lg.setLevel(logging.DEBUG)
+    h = logging.StreamHandler(sio)
+    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s", "%H:%M"))
+    configure(h, sio)
+    lg.addHandler(h)
+    err = io.StringIO()
+    with mock.patch.object(sys, "stderr", err):
+        for i in range(n):
+            lg.info("req %s n=%d", "a", i)
+            lg.warning("dec %s", decimal.Decimal("1.5"))
+        lg.info("%d", "bad")  # formatting error -> handleError (CPython's frames)
+        try:
+            1 / 0
+        except ZeroDivisionError:
+            lg.exception("boom")
+    lines = [ln.split(" ", 1)[1] if ln[:2].isdigit() else ln for ln in sio.getvalue().splitlines()] \
+        if not sio.closed else None
+    norm = "\n".join(ln for ln in err.getvalue().splitlines() if "line " not in ln)
+    return lines, norm, h.lock._is_owned()
+
+
+HANDLER_CONFIGS = {
+    "plain": lambda h, s: None,
+    "default formatter": lambda h, s: h.setFormatter(None),
+    "terminator": lambda h, s: setattr(h, "terminator", "|\n"),
+    "level": lambda h, s: h.setLevel(logging.WARNING),
+    "filter (user code: fallback)": lambda h, s: h.addFilter(lambda r: r.levelno > 20),
+    "formatter subclass": lambda h, s: h.setFormatter(type("F", (logging.Formatter,), {})("%(message)s")),
+    "formatter overriding format (fallback)": lambda h, s: h.setFormatter(
+        type("F", (logging.Formatter,), {"format": lambda self, r: "X" + r.getMessage()})()),
+    "{-style (fallback)": lambda h, s: h.setFormatter(logging.Formatter("{levelname} {message}", style="{")),
+    "emit overridden on the instance (fallback)": lambda h, s: setattr(h, "emit", lambda r: s.write("E\n")),
+    "stream attribute set (fallback)": lambda h, s: setattr(s, "tag", 1),
+    "closed stream (handleError)": lambda h, s: s.close(),
+    "lock replaced by the Python RLock (fallback)": lambda h, s: setattr(h, "lock", threading._PyRLock()),
+}
+
+
+@pytest.mark.parametrize("config", list(HANDLER_CONFIGS), ids=list(HANDLER_CONFIGS))
+def test_handler_path_identical(config):
+    a, b = both(lambda: handler_scenario(HANDLER_CONFIGS[config]))
+    assert a == b
+    assert a[2] is False  # the lock is released
+
+
+def test_handler_path_hits_and_return_value():
+    A.stats(True, True)
+    sio = io.StringIO()
+    h = logging.StreamHandler(sio)
+    r = logging.LogRecord("n", 20, "/p.py", 1, "m %s", (5,), None)
+    rv = h.handle(r)
+    assert rv is r
+    assert sio.getvalue() == "m 5\n"
+    assert hits("logging.Handler.handle") == 1
+    # a file stream stays CPython's
+    import tempfile
+    with tempfile.TemporaryFile("w+") as f:
+        h2 = logging.StreamHandler(f)
+        assert h2.handle(r) is r
+        f.seek(0)
+        assert f.read() == "m 5\n"
+    assert stats("logging.Handler.handle")["fallback"]["args"] == 1
+
+
+def test_handler_lock_held_by_another_thread_waits_in_cpython():
+    sio = io.StringIO()
+    h = logging.StreamHandler(sio)
+    r = logging.LogRecord("n", 20, "/p.py", 1, "m", (), None)
+    h.acquire()
+    done = threading.Event()
+
+    def worker():
+        h.handle(r)
+        done.set()
+
+    t = threading.Thread(target=worker)
+    t.start()
+    assert not done.wait(0.2)  # blocked on the lock (CPython's own acquire)
+    h.release()
+    t.join(5)
+    assert done.is_set() and sio.getvalue() == "m\n"
+
+
+def test_handler_reentrant_from_same_thread():
+    sio = io.StringIO()
+    h = logging.StreamHandler(sio)
+    r = logging.LogRecord("n", 20, "/p.py", 1, "m", (), None)
+    with h.lock:
+        h.handle(r)
+        assert h.lock._recursion_count() == 1
+    assert sio.getvalue() == "m\n"
+
+
+def test_handler_concurrent_records_complete():
+    sio = io.StringIO()
+    lg = logging.getLogger("t.handle.mt")
+    lg.handlers.clear()
+    lg.propagate = False
+    lg.setLevel(logging.INFO)
+    h = logging.StreamHandler(sio)
+    h.setFormatter(logging.Formatter("%(threadName)s %(message)s"))
+    lg.addHandler(h)
+
+    def worker(k):
+        for i in range(300):
+            lg.info("w%d %d", k, i)
+
+    ts = [threading.Thread(target=worker, args=(k,), name=f"T{k}") for k in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    lines = sio.getvalue().splitlines()
+    assert len(lines) == 2400
+    assert sorted(lines) == sorted(f"T{k} w{k} {i}" for k in range(8) for i in range(300))

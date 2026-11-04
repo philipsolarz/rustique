@@ -1,31 +1,27 @@
 //! # rustique-core
 //!
-//! The Python-independent heart of Rustique: typed native storage ([`Column`]), Python
-//! slice semantics ([`slice`]), bulk kernels ([`kernels`]), the vectorised expression
-//! engine ([`expr`]), a CPython-style compact hash index ([`index`]) and CPython-compatible
-//! hashing/formatting of numbers ([`pyhash`], [`pyfmt`]).
+//! The Python-independent parts of Rustique's kernels: CPython-identical algorithms that
+//! the engine (`rustique-py`, `targets/`) runs behind CPython's own entry points, testable
+//! without an interpreter: `repr(float)` ([`float_repr`]), JSON scanning and escaping
+//! ([`json`]), `strftime`/`strptime` and calendar arithmetic ([`datetime`]), path
+//! manipulation and glob patterns ([`paths`]), the Mersenne Twister and `random`'s
+//! variates ([`random`]), exact sums for `statistics` ([`stats`]), `logging` formatting
+//! ([`logging`]), `textwrap` ([`textwrap`]), `urllib.parse` ([`urlparse`]) and the `re` compiler ([`re`]).
 //!
 //! Nothing in this crate links against Python; the `rustique-py` crate adds the bindings.
 
-pub mod column;
 pub mod datetime;
-pub mod dtype;
-pub mod expr;
 pub mod float_repr;
-pub mod index;
 pub mod json;
-pub mod kernels;
 pub mod logging;
 pub mod paths;
-pub mod pyfmt;
-pub mod pyhash;
 pub mod random;
-pub mod slice;
+pub mod re;
 pub mod stats;
 pub mod textwrap;
 pub mod urlparse;
 
-pub use column::{Column, ColumnError, Element, Value};
-pub use compact_str::CompactString;
-pub use dtype::DType;
-pub use slice::{SliceError, SliceIndices};
+/// The slow, exact formatter that [`float_repr`] is verified against.
+#[cfg(test)]
+#[allow(dead_code)]
+mod pyfmt;

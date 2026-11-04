@@ -1,0 +1,5 @@
+devtools/isort_stdlib                    plain    1139.4 ms  enabled     296.1 ms  ratio  0.260  same
+geometric mean                                                                    ratio  0.260
+data/state_snapshot                      plain    1221.5 ms  enabled     815.4 ms  ratio  0.668  same
+geometric mean                                                                    ratio  0.668
+copy group with RUSTIQUE_EXCLUDE=copy: {'copy.deepcopy': 'disabled', 'copy.copy': 'disabled'}
